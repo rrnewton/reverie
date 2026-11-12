@@ -75,6 +75,8 @@ pub enum DbtRuntimeKind {
     Counter1,
     /// The per-thread local syscall counter (`CounterLocal`).
     CounterLocal,
+    /// A caller-selected concrete Tool with an acknowledged lifecycle.
+    CallerTool,
     /// A runtime whose wire code did not match a known kind.
     Unknown,
 }
@@ -90,6 +92,7 @@ impl DbtRuntimeKind {
             0 => Self::PrototypeTool,
             1 => Self::Counter1,
             2 => Self::CounterLocal,
+            4 => Self::CallerTool,
             _ => Self::Unknown,
         }
     }
@@ -100,6 +103,7 @@ impl DbtRuntimeKind {
             Self::PrototypeTool => 0,
             Self::Counter1 => 1,
             Self::CounterLocal => 2,
+            Self::CallerTool => 4,
             Self::Unknown => 255,
         }
     }
@@ -110,6 +114,7 @@ impl DbtRuntimeKind {
             Self::PrototypeTool => "prototype",
             Self::Counter1 => "counter1",
             Self::CounterLocal => "counter_local",
+            Self::CallerTool => "caller_tool",
             Self::Unknown => "unknown",
         }
     }

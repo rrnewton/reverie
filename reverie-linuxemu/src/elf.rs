@@ -20,6 +20,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
@@ -34,6 +35,7 @@ use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
 use goblin::elf::program_header::PF_W;
 use goblin::elf::program_header::PF_X;
+use goblin::elf::program_header::PT_GNU_STACK;
 use goblin::elf::program_header::PT_INTERP;
 use goblin::elf::program_header::PT_LOAD;
 use reverie::ExitStatus;
@@ -58,8 +60,6 @@ pub(crate) mod parent_death;
 
 const PAGE_SIZE: u64 = 4096;
 pub(crate) const TASK_COMM_LEN: usize = 16;
-/// The fixed ELF64 layout also used by the ptrace tracee initializer.
-pub(crate) const LINUX_FIXED_PERSONALITY: u32 = 0x0004_0000;
 pub const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 
 /// The PID-namespace init process seen by the deterministic container. The
@@ -68,6 +68,11 @@ pub const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 /// `getppid() == 1`. KVM synthesizes the guest identity rather than using a real
 /// namespace, so it must reproduce the same parent value for parity.
 pub const CONTAINER_INIT_PID: i32 = 1;
+/// The largest program-header table of a main image this loader runs: the
+/// one boot page it copies the table to (`PROGRAM_HEADERS_ADDRESS`), 73
+/// entries. That is a limit of this backend's own, not Linux's: Linux reads a
+/// table of up to 64 KiB ([`MAX_PROGRAM_HEADER_TABLE`]), and an interpreter's
+/// table, which is not copied, is accepted up to that.
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCRIPT_INTERPRETERS: usize = 4;
@@ -348,8 +353,6 @@ pub struct GuestFileIdentityTable {
     /// keyed by their pinned backing memfd.
     pub proc_transfers:
         std::collections::BTreeMap<(libc::dev_t, libc::ino_t), crate::executor::ProcTransfer>,
-    /// Run-wide virtual inotify rename cookies; see executor/inotify.rs.
-    pub inotify_cookies: crate::executor::InotifyCookieTable,
 }
 
 /// Process-tree-wide state whose lifetime follows a guest task rather than an
@@ -650,6 +653,19 @@ impl TaskLifecycleTable {
         self.tasks
             .values()
             .any(|task| task.tgid == tgid && task.process_generation == generation)
+    }
+
+    /// Whether `process` has committed its exit: its thread group's exit
+    /// (the first `exit` with `group`), or the exit of its last task. From
+    /// then on none of its tasks returns to user mode, whatever their host
+    /// threads have yet to notice.
+    pub(crate) fn process_exit_committed(&self, process: reverie::SignalProcessId) -> bool {
+        let (tgid, generation) = (process.tgid.as_raw(), process.generation);
+        !self.contains_process(tgid, generation)
+            || self
+                .process_exits
+                .get(&(tgid, generation))
+                .is_some_and(|exit| exit.group.is_some())
     }
 
     pub(crate) fn has_live_sibling(&self, tid: i32, tgid: i32) -> bool {
@@ -1094,6 +1110,12 @@ fn file_system_is_read_only(file: &std::fs::File) -> std::io::Result<bool> {
 pub struct LoadedStaticElf {
     pub entry_point: u64,
     pub stack_pointer: u64,
+    /// Whether the main image asks for an executable stack: its last
+    /// `PT_GNU_STACK` program header has `PF_X` (`load_elf_binary` in Linux's
+    /// `fs/binfmt_elf.c`), so Linux maps the stack executable
+    /// (`setup_arg_pages` in `fs/exec.c`). The stack window is mapped the same
+    /// either way.
+    pub stack_executable: bool,
     /// Initial program break set at load time (`align_up(main_end)`); the base
     /// of the brk-managed heap. The live heap spans `[heap_base, program_break)`.
     pub heap_base: u64,
@@ -1109,10 +1131,18 @@ pub struct LoadedStaticElf {
     pub mmap_limit: u64,
     pub executable_path: PathBuf,
     pub executable_file: Option<std::sync::Arc<std::fs::File>>,
-    pub executable_image: std::sync::Arc<[u8]>,
+    /// The image this process was loaded from, which an exec of its
+    /// `/proc/self/exe` loads again. Its buffer is allocated fallibly, as
+    /// large as the file it came from (`copy_image`).
+    pub executable_image: std::sync::Arc<Vec<u8>>,
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
     pub cwd_fd: std::fs::File,
+    /// Whether another task's retirement of a shared entry may still replace
+    /// this task's copy of it ([`crate::executor::PrivateCopyGate`]).
+    /// Declared before `stdin` and `files`, so dropping the state closes it
+    /// before any copy is closed.
+    pub private_copy_gate: crate::executor::PrivateCopyGate,
     pub stdin: Option<std::fs::File>,
     /// Identity of the inherited stdin slot, distinct from its inode/OFD.
     /// Loader setup precedes table publication; fork and exec retain this
@@ -1156,8 +1186,9 @@ pub struct LoadedStaticElf {
     /// so conflating the two makes the root guest invisible to the tool.
     pub is_traced_tree_root: bool,
     pub umask: libc::mode_t,
-    /// Per-task ELF64 Linux personality. Only UNAME26 can change within the
-    /// fixed ADDR_NO_RANDOMIZE layout. Fork and clone copy it by value; ordinary
+    /// Per-task ELF64 Linux personality. It starts as the launcher's plus
+    /// ADDR_NO_RANDOMIZE, and only UNAME26 can change within that base.
+    /// Fork and clone copy it by value; ordinary
     /// supported exec preserves the calling task's value.
     pub(crate) linux_personality: u32,
     /// Task IDs each new task spends (`reverie::task_ids`): Linux's 1 unless
@@ -1198,6 +1229,13 @@ pub struct LoadedStaticElf {
     /// Threads share this flag; fork takes an independent copy and exec keeps
     /// the existing value.
     pub thp_disabled: std::sync::Arc<AtomicU8>,
+    /// Bit 0 of Linux's `mm->context.pkey_allocation_map` on a CPU without
+    /// protection keys, which this vCPU is: the first `pkey_alloc` that passes
+    /// its argument checks takes key 0 and cannot give it back, so every later
+    /// one in this address space finds every key taken (`pkey_alloc` in
+    /// `executor/pkeys.rs`). Threads and a vfork child share it, fork takes
+    /// an independent copy, and exec starts a new address space without it.
+    pub pkey_zero_claimed: std::sync::Arc<AtomicBool>,
     // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
     pub keep_capabilities: bool,
     pub capability_effective: u64,
@@ -1234,7 +1272,9 @@ pub struct LoadedStaticElf {
     // with each executor, reset across exec, and removed when that executor is
     // destroyed.
     pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
-    pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    /// This task's private copies of its descriptor table's entries, looked
+    /// up through `private_copy_gate`'s ledger ([`crate::executor::PrivateFiles`]).
+    pub files: crate::executor::PrivateFiles,
     pub file_retirement: FileRetirement,
     pub(crate) pipe_owners:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::pipe_owner::PipeOwner>>,
@@ -1275,7 +1315,6 @@ pub struct LoadedStaticElf {
     pub regular_create_directory_policy: RegularCreateDirectoryPolicy,
     pub fdinfo_files:
         std::collections::BTreeMap<i32, std::sync::Arc<crate::executor::FdinfoDescription>>,
-    pub fdinfo_table: std::sync::Weak<std::sync::Mutex<crate::executor::FileTableState>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
     // TODO-HUMAN-REVIEW(PR-136): Review descriptor identity and fork inheritance.
     // Every live descriptor strongly holds its identity; the process-shared
@@ -1319,6 +1358,26 @@ impl LoadedStaticElf {
         retired
     }
 
+    /// This task's copy of standard input, for a guest operation: `None`
+    /// when there is none, or when another task's retirement of it replaced
+    /// it since this task's last install (the guest's descriptor 0 is then
+    /// closed). A copy returned stays this task's original until the call
+    /// ends, as for [`crate::executor::PrivateFiles::get`].
+    pub(crate) fn stdin_copy(&self) -> Option<&std::fs::File> {
+        self.stdin
+            .as_ref()
+            .filter(|file| self.private_copy_gate.reach(file.as_raw_fd()))
+    }
+
+    /// [`Self::stdin_copy`], mutably.
+    pub(crate) fn stdin_copy_mut(&mut self) -> Option<&mut std::fs::File> {
+        let reached = self
+            .stdin
+            .as_ref()
+            .is_some_and(|file| self.private_copy_gate.reach(file.as_raw_fd()));
+        if reached { self.stdin.as_mut() } else { None }
+    }
+
     pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {
         let stdin = self.stdin.take();
         if stdin.is_some() {
@@ -1346,22 +1405,36 @@ impl LoadedStaticElf {
         let _retirement = self.file_retirement.hold();
         let transaction = self.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
-        self.try_clone_for_fork_locked(child_pid)
+        self.try_clone_for_fork_locked(child_pid, crate::executor::ForkDescriptors::of_state(self)?)
     }
 
-    pub(crate) fn try_clone_for_fork_locked(&self, child_pid: i32) -> Result<Self> {
+    /// A new task's state: this one's, with the descriptors `descriptors`.
+    pub(crate) fn try_clone_for_fork_locked(
+        &self,
+        child_pid: i32,
+        descriptors: crate::executor::ForkDescriptors,
+    ) -> Result<Self> {
         // TODO-HUMAN-REVIEW(PR-136): Review shared file identity inheritance across fork.
-        let files = self
-            .files
-            .iter()
-            .map(|(&fd, file)| Ok((fd, self.file_retirement.stage_clone(file)?)))
-            .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+        let crate::executor::ForkDescriptors {
+            files,
+            stdin,
+            stdin_entry_id,
+            fd_entry_ids,
+            epoll_domain,
+            poll_table_id,
+            native_poll_fds,
+            pipe_owners,
+            stdout_alias_fds,
+            stderr_alias_fds,
+            cloexec_fds,
+            closed_standard_fds,
+            proc_files,
+            synthetic_proc_nofollow_fds,
+            fdinfo_files,
+            fd_object_inodes,
+        } = descriptors;
         let cwd_fd = self.file_retirement.stage_clone(&self.cwd_fd)?;
-        let stdin = self
-            .stdin
-            .as_ref()
-            .map(|file| self.file_retirement.stage_clone(file))
-            .transpose()?;
+        let private_copy_gate = crate::executor::PrivateCopyGate::default();
         let process_signals = self
             .process_signals
             .lock()
@@ -1370,6 +1443,7 @@ impl LoadedStaticElf {
         Ok(Self {
             entry_point: self.entry_point,
             stack_pointer: self.stack_pointer,
+            stack_executable: self.stack_executable,
             heap_base: self.heap_base,
             min_break: self.min_break,
             program_break: self.program_break,
@@ -1383,8 +1457,15 @@ impl LoadedStaticElf {
             argv0: self.argv0.clone(),
             cwd: self.cwd.clone(),
             cwd_fd: cwd_fd.into_file(),
+            files: private_copy_gate.bind(
+                files
+                    .into_iter()
+                    .map(|(fd, file)| (fd, file.into_file()))
+                    .collect(),
+            ),
+            private_copy_gate,
             stdin: stdin.map(StagedFile::into_file),
-            stdin_entry_id: self.stdin_entry_id.clone(),
+            stdin_entry_id,
             auxv: self.auxv.clone(),
             fs_base: self.fs_base,
             gs_base: self.gs_base,
@@ -1406,6 +1487,9 @@ impl LoadedStaticElf {
             thp_disabled: std::sync::Arc::new(AtomicU8::new(
                 self.thp_disabled.load(Ordering::SeqCst),
             )),
+            pkey_zero_claimed: std::sync::Arc::new(AtomicBool::new(
+                self.pkey_zero_claimed.load(Ordering::SeqCst),
+            )),
             keep_capabilities: self.keep_capabilities,
             capability_effective: self.capability_effective,
             capability_permitted: self.capability_permitted,
@@ -1419,33 +1503,24 @@ impl LoadedStaticElf {
             thread_signals: self.thread_signals.for_fork(),
             signal_dequeue_failure: None,
             task_lifecycle: self.task_lifecycle.clone(),
-            files: files
-                .into_iter()
-                .map(|(fd, file)| (fd, file.into_file()))
-                .collect(),
             file_retirement: FileRetirement::default(),
             signal_refusal: None,
-            pipe_owners: self.pipe_owners.clone(),
-            fd_entry_ids: self.fd_entry_ids.clone(),
-            epoll_domain: self.epoll_domain.clone(),
-            poll_table_id: self.poll_table_id.fork_identity(),
-            native_poll_fds: self
-                .native_poll_fds
-                .iter()
-                .map(|(&fd, binding)| (fd, binding.fork_binding()))
-                .collect(),
-            stdout_alias_fds: self.stdout_alias_fds.clone(),
-            stderr_alias_fds: self.stderr_alias_fds.clone(),
-            cloexec_fds: self.cloexec_fds.clone(),
-            closed_standard_fds: self.closed_standard_fds.clone(),
+            pipe_owners,
+            fd_entry_ids,
+            epoll_domain,
+            poll_table_id,
+            native_poll_fds,
+            stdout_alias_fds,
+            stderr_alias_fds,
+            cloexec_fds,
+            closed_standard_fds,
             children: crate::executor::ChildWaitContext::default(),
             consumed_child_wait: None,
-            proc_files: self.proc_files.clone(),
-            synthetic_proc_nofollow_fds: self.synthetic_proc_nofollow_fds.clone(),
+            proc_files,
+            synthetic_proc_nofollow_fds,
             regular_create_directory_policy: self.regular_create_directory_policy,
-            fdinfo_files: self.fdinfo_files.clone(),
-            fdinfo_table: self.fdinfo_table.clone(),
-            fd_object_inodes: self.fd_object_inodes.clone(),
+            fdinfo_files,
+            fd_object_inodes,
             file_identity_table: self.file_identity_table.clone(),
         })
     }
@@ -1503,6 +1578,7 @@ impl LoadedStaticElf {
         let mut stdin_entry_id = previous.stdin_entry_id;
         let files: std::collections::BTreeMap<_, _> = previous
             .files
+            .into_map()
             .into_iter()
             .filter_map(|(fd, file)| {
                 if cloexec_fds.contains(&fd) {
@@ -1648,7 +1724,7 @@ impl LoadedStaticElf {
         self.signal_transaction = previous.signal_transaction;
         self.thread_signals = thread_signals;
         self.task_lifecycle = task_lifecycle;
-        retired.extend(std::mem::replace(&mut self.files, files).into_values());
+        retired.extend(self.files.replace_map(files).into_values());
         self.file_retirement = previous.file_retirement;
         self.pipe_owner_process = previous.pipe_owner_process;
         self.pipe_owners = pipe_owners;
@@ -1665,7 +1741,6 @@ impl LoadedStaticElf {
         self.synthetic_proc_nofollow_fds = synthetic_proc_nofollow_fds;
         self.regular_create_directory_policy = regular_create_directory_policy;
         self.fdinfo_files = fdinfo_files;
-        self.fdinfo_table = previous.fdinfo_table;
         self.fd_object_inodes = fd_object_inodes;
         self.file_identity_table = file_identity_table;
         // The caller releases both descriptor and transaction guards before close.
@@ -1723,9 +1798,32 @@ pub fn load_static_elf_with_execfn(
     result
 }
 
+/// Loads the image read from `file` as exec'd by the filename `argv[0]`; see
+/// [`load_static_elf_file_with_execfn`].
 pub fn load_static_elf_file(
     memory: &mut GuestMemory,
     file: File,
+    argv: &[&str],
+    envp: &[&str],
+    cwd: &Path,
+) -> Result<LoadedStaticElf> {
+    load_static_elf_file_with_execfn(memory, file, None, argv, envp, cwd)
+}
+
+/// Loads the image read from `file`, keeping `file` as the process's
+/// executable, as `execve(execfn, argv, envp)` would. The retained file is
+/// what an exec or a following stat of `/proc/self/exe` reaches. For a
+/// `#!` script, each interpreter is read from a file of its own, and the
+/// final interpreter's file is retained instead. `execfn` is as
+/// [`load_static_elf_with_execfn`] takes it: the filename Linux names in
+/// `AT_EXECFN` and copies to the top of the new stack, and a script's own
+/// argument after its interpreter; `None` means `argv[0]` and, for a script,
+/// the path of `file`. Either way the new task is named by the path of
+/// `file`.
+pub fn load_static_elf_file_with_execfn(
+    memory: &mut GuestMemory,
+    file: File,
+    execfn: Option<&[u8]>,
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
@@ -1736,11 +1834,12 @@ pub fn load_static_elf_file(
     let owner = memory.clone();
     let _transaction = owner.allocation_guard();
     begin_image(memory)?;
+    let script_name = execfn.map(|execfn| String::from_utf8_lossy(execfn).into_owned());
     let result = load_executable(
         memory,
         &image,
-        None,
-        None,
+        execfn,
+        script_name.as_deref(),
         argv,
         envp,
         cwd,
@@ -1767,6 +1866,13 @@ pub fn load_static_elf_file(
 // rollback. Initial-install errors release tentative ownership. Exec invokes
 // this only after its existing fatal point of no return.
 fn begin_image(memory: &GuestMemory) -> Result<()> {
+    // The new image is a new address space. A vfork child that shares its
+    // parent's stack-window record
+    // (`GuestMemory::snapshot_sharing_address_space`) takes one of its own
+    // first, so clearing the old image here, which counts a change, leaves
+    // the parent's list, as Linux leaves the parent's mappings when the
+    // child execs.
+    memory.detach_user_stack_window_watch();
     memory.clear_user_access();
     // The new image's layout replaces the old one whole: its identity end and
     // windows may differ (a larger image raises the identity end).
@@ -1896,7 +2002,7 @@ fn load_executable(
         );
     }
 
-    let elf = Elf::parse(image)?;
+    let elf = parse_elf(image)?;
     validate_elf(&elf, true)?;
 
     for entry in argv
@@ -1918,7 +2024,7 @@ fn load_executable(
     let interpreter = interpreter_image
         .as_deref()
         .map(|interpreter_image| -> Result<_> {
-            let interpreter = Elf::parse(interpreter_image)?;
+            let interpreter = parse_elf(interpreter_image)?;
             validate_elf(&interpreter, false)?;
             if interpreter.header.e_type != ET_DYN {
                 return Err(Error::UnsupportedElf(
@@ -2088,7 +2194,24 @@ fn load_executable(
         at_base,
         main_entry,
     )?;
-    memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
+    // Linux takes the last PT_GNU_STACK header's PF_X.
+    let stack_executable = elf
+        .program_headers
+        .iter()
+        .rfind(|header| header.p_type == PT_GNU_STACK)
+        .is_some_and(|header| header.p_flags & PF_X != 0);
+    // The stack's mapping as Linux's setup_arg_pages makes it: read-write,
+    // and executable for a PT_GNU_STACK with PF_X.
+    let stack_prot =
+        libc::PROT_READ | libc::PROT_WRITE | if stack_executable { libc::PROT_EXEC } else { 0 };
+    memory.map_user_protection(
+        memory.guest_end() - STACK_LIMIT,
+        STACK_LIMIT,
+        stack_prot as u8,
+    )?;
+    // The window as this image starts with it: from here on, every change to
+    // it is counted (`GuestMemory::user_stack_window_pages`).
+    memory.watch_user_stack_window();
     let program_break = align_up(main_end, PAGE_SIZE)?;
     // Mappings are placed top-down in the mmap window, [mmap_base, mmap_limit)
     // physically; the program break grows up to the end of the identity
@@ -2132,6 +2255,12 @@ fn load_executable(
     // in-guest exec replaces these with its caller's, put through the same
     // rule, in `inherit_process_state_locked`.
     let launcher = crate::credentials::LauncherCredentials::get()?;
+    if launcher.personality & crate::credentials::UNIMPLEMENTED_LAUNCHER_PERSONALITY != 0 {
+        return Err(Error::UnsupportedElf(format!(
+            "launcher personality {:#x} has bits LinuxEmu does not implement",
+            launcher.personality
+        )));
+    }
     let capabilities = launcher.guest_capabilities();
 
     memory.set_allocation_cursors(AllocationCursors {
@@ -2140,9 +2269,14 @@ fn load_executable(
         mmap_next,
         mmap_limit,
     });
+    // Last, once every check of the image has passed: a host that cannot
+    // allocate the copy refuses only an image Linux would load.
+    let executable_image = copy_image(image)?;
+    let private_copy_gate = crate::executor::PrivateCopyGate::default();
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
+        stack_executable,
         heap_base: program_break,
         min_break,
         program_break,
@@ -2152,10 +2286,12 @@ fn load_executable(
         mmap_limit,
         executable_path,
         executable_file,
-        executable_image: std::sync::Arc::from(image),
+        executable_image,
         argv0,
         cwd: cwd.to_owned(),
         cwd_fd,
+        files: private_copy_gate.bind(std::collections::BTreeMap::new()),
+        private_copy_gate,
         stdin: None,
         stdin_entry_id: std::sync::Arc::new(()),
         auxv,
@@ -2172,13 +2308,14 @@ fn load_executable(
         // must not change this.
         is_traced_tree_root: true,
         umask: launcher.umask,
-        linux_personality: LINUX_FIXED_PERSONALITY,
+        linux_personality: crate::credentials::guest_personality(launcher.personality),
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
         thread_name,
         thread_group_leader_name: std::sync::Arc::new(std::sync::Mutex::new(thread_name)),
         thp_disabled: std::sync::Arc::new(AtomicU8::new(0)),
+        pkey_zero_claimed: std::sync::Arc::new(AtomicBool::new(false)),
         keep_capabilities: false,
         capability_effective: capabilities.effective,
         capability_permitted: capabilities.permitted,
@@ -2194,7 +2331,6 @@ fn load_executable(
         task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
             1, 1, 1, true,
         ))),
-        files: std::collections::BTreeMap::new(),
         file_retirement: FileRetirement::default(),
         signal_refusal: None,
         pipe_owners: Default::default(),
@@ -2212,10 +2348,8 @@ fn load_executable(
         synthetic_proc_nofollow_fds: std::collections::BTreeSet::new(),
         regular_create_directory_policy: initialize_regular_create_directory_policy()?,
         fdinfo_files: std::collections::BTreeMap::new(),
-        fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: std::sync::Arc::new(std::sync::Mutex::new(GuestFileIdentityTable {
-            inotify_cookies: crate::executor::InotifyCookieTable::default(),
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
@@ -2235,26 +2369,26 @@ pub fn initial_thread_name(executable_path: &Path) -> [u8; TASK_COMM_LEN] {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review Linux shebang parsing limits.
+/// `image`'s `#!` line, read as Linux reads it ([`parse_script_line`]): the
+/// interpreter and at most one optional argument. Both must be UTF-8 here,
+/// since the loader passes them on as `&str`.
 fn parse_shebang(image: &[u8]) -> Result<Option<(String, Option<String>)>> {
-    let Some(rest) = image.strip_prefix(b"#!") else {
+    let Some(line) = parse_script_line(image).map_err(|()| {
+        Error::UnsupportedElf(
+            "script shebang has no interpreter, or one Linux's 256-byte buffer cuts off"
+                .to_string(),
+        )
+    })?
+    else {
         return Ok(None);
     };
-    let line = rest.split(|byte| *byte == b'\n').next().unwrap_or(rest);
-    let line = line.strip_suffix(b"\r").unwrap_or(line);
-    let line = std::str::from_utf8(line)
-        .map_err(|_| Error::UnsupportedElf("script shebang is not UTF-8".to_string()))?
-        .trim_matches([' ', '\t']);
-    let split = line.find([' ', '\t']).unwrap_or(line.len());
-    let interpreter = line[..split].to_string();
-    if interpreter.is_empty() {
-        return Err(Error::UnsupportedElf(
-            "script shebang has no interpreter".to_string(),
-        ));
-    }
-    let argument = line[split..].trim_matches([' ', '\t']);
+    let utf8 = |bytes: Vec<u8>| {
+        String::from_utf8(bytes)
+            .map_err(|_| Error::UnsupportedElf("script shebang is not UTF-8".to_string()))
+    };
     Ok(Some((
-        interpreter,
-        (!argument.is_empty()).then(|| argument.to_string()),
+        utf8(line.interpreter)?,
+        line.argument.map(utf8).transpose()?,
     )))
 }
 
@@ -2342,6 +2476,14 @@ fn interpreter_path(image: &[u8], elf: &Elf<'_>) -> Result<Option<String>> {
         .map_err(|_| Error::UnsupportedElf("PT_INTERP offset is too large".to_string()))?;
     let size = usize::try_from(header.p_filesz)
         .map_err(|_| Error::UnsupportedElf("PT_INTERP size is too large".to_string()))?;
+    // Linux reads a PT_INTERP of 2 to PATH_MAX bytes, its NUL included, and
+    // refuses any other size with ENOEXEC (`load_elf_binary`,
+    // fs/binfmt_elf.c), so the path this copies is at most 4095 bytes.
+    if !(2..=MAX_INTERPRETER_PATH).contains(&size) {
+        return Err(Error::UnsupportedElf(format!(
+            "PT_INTERP of {size} bytes: Linux reads only 2 to {MAX_INTERPRETER_PATH} bytes"
+        )));
+    }
     let end = start
         .checked_add(size)
         .ok_or_else(|| Error::UnsupportedElf("PT_INTERP range overflow".to_string()))?;
@@ -2363,13 +2505,177 @@ fn interpreter_path(image: &[u8], elf: &Elf<'_>) -> Result<Option<String>> {
     Ok(Some(path.to_string()))
 }
 
+/// A copy of `image` for the loaded process to keep ([`LoadedStaticElf`]'s
+/// `executable_image`). An image is as large as the file it came from, so the
+/// buffer is allocated fallibly: a host that cannot allocate it reports the
+/// host error (`OutOfMemory`, naming the request), which an exec refuses as
+/// this backend's own, rather than aborting the process.
+fn copy_image(image: &[u8]) -> Result<std::sync::Arc<Vec<u8>>> {
+    let mut copy = Vec::new();
+    copy.try_reserve_exact(image.len())
+        .map_err(|_| Error::HostAllocation {
+            what: "a copy of the new image",
+            bytes: image.len(),
+        })?;
+    copy.extend_from_slice(image);
+    Ok(std::sync::Arc::new(copy))
+}
+
+/// The largest PT_INTERP Linux reads, its NUL included: `PATH_MAX`
+/// (`load_elf_binary`, fs/binfmt_elf.c).
+const MAX_INTERPRETER_PATH: usize = libc::PATH_MAX as usize;
+
+/// The size of an ELF64 program header, the only entry size Linux accepts
+/// (`load_elf_phdrs`, fs/binfmt_elf.c).
+const ELF64_PROGRAM_HEADER_SIZE: usize = 56;
+
+/// The largest program-header table Linux reads: 64 KiB, 1170 entries
+/// (`load_elf_phdrs`, fs/binfmt_elf.c). Linux 6.16 and earlier also refused a
+/// table larger than one page; 6.17 dropped that (kernel commit 8030790477e8,
+/// "binfmt_elf: remove the 4k limitation of program header size").
+const MAX_PROGRAM_HEADER_TABLE: usize = 65536;
+
+/// `image`'s ELF header and program headers: the only parts of an image this
+/// loader reads.
+///
+/// Linux's ELF loader reads exactly these, and never a section header or a
+/// string table (`load_elf_binary` and `load_elf_phdrs`, fs/binfmt_elf.c). A
+/// full parse (`goblin::elf::Elf::parse`) would also build the section-header
+/// table and an index of every string table, both sized by the file and
+/// allocated infallibly, so a host short of memory would abort the process
+/// rather than refuse the exec. This parse allocates only the program-header
+/// table, which, as Linux does, it accepts only with 56-byte entries, and only
+/// when it is not empty and at most [`MAX_PROGRAM_HEADER_TABLE`] (64 KiB) long;
+/// Linux loads no image with any other table. A main image's table must also
+/// fit the one page this loader copies it to ([`MAX_PROGRAM_HEADERS_SIZE`]),
+/// a limit of this backend's own that `copy_program_headers` checks.
+pub(crate) fn parse_elf(image: &[u8]) -> Result<Elf<'_>> {
+    let header = Elf::parse_header(image)?;
+    let mut elf = Elf::lazy_parse(header)?;
+    let count = usize::from(header.e_phnum);
+    let table = count * ELF64_PROGRAM_HEADER_SIZE;
+    if usize::from(header.e_phentsize) != ELF64_PROGRAM_HEADER_SIZE
+        || count == 0
+        || table > MAX_PROGRAM_HEADER_TABLE
+    {
+        return Err(Error::UnsupportedElf(format!(
+            "program header table of {count} entries of {} bytes: Linux loads only \
+             {ELF64_PROGRAM_HEADER_SIZE}-byte entries, at least one and at most \
+             {MAX_PROGRAM_HEADER_TABLE} bytes of them",
+            header.e_phentsize
+        )));
+    }
+    let offset = usize::try_from(header.e_phoff)
+        .map_err(|_| Error::UnsupportedElf("program header offset overflow".to_string()))?;
+    let ctx = goblin::container::Ctx::new(header.container()?, header.endianness()?);
+    elf.program_headers =
+        goblin::elf::program_header::ProgramHeader::parse(image, offset, count, ctx)?;
+    Ok(elf)
+}
+
+/// How much of a file Linux reads to recognize its format, and so the most of
+/// a `#!` line it reads (`BINPRM_BUF_SIZE`, include/uapi/linux/binfmts.h).
+pub(crate) const BINPRM_BUF_SIZE: usize = 256;
+
+/// A `#!` line as Linux's script loader reads it: the interpreter's path and
+/// at most one optional argument.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ScriptLine {
+    /// The interpreter's path, byte for byte.
+    pub(crate) interpreter: Vec<u8>,
+    /// The rest of the line after the interpreter, if any: one argument,
+    /// whatever spaces it holds.
+    pub(crate) argument: Option<Vec<u8>>,
+}
+
+/// `image`'s `#!` line read exactly as Linux's `load_script` reads it
+/// (fs/binfmt_script.c): from the first [`BINPRM_BUF_SIZE`] bytes only, the
+/// interpreter's path up to the first space, tab or NUL after any leading
+/// spaces and tabs, then at most one optional argument, the rest of the line
+/// with leading and trailing spaces and tabs removed, never split. A line
+/// that the buffer cuts off keeps its interpreter only if a space, tab or NUL
+/// follows the interpreter within the buffer; the argument is then cut at the
+/// buffer's last byte. `Ok(None)` for an image that does not start with
+/// `#!`; `Err(())`, Linux's ENOEXEC, for a line with no interpreter or one the
+/// buffer cuts off. Both fields are at most 253 bytes, so nothing here grows
+/// with the file.
+pub(crate) fn parse_script_line(image: &[u8]) -> std::result::Result<Option<ScriptLine>, ()> {
+    // bprm->buf: the file's first BINPRM_BUF_SIZE bytes, zero-padded.
+    let mut buf = [0_u8; BINPRM_BUF_SIZE];
+    let length = image.len().min(BINPRM_BUF_SIZE);
+    buf[..length].copy_from_slice(&image[..length]);
+    if buf[0] != b'#' || buf[1] != b'!' {
+        return Ok(None);
+    }
+    let spacetab = |byte: u8| byte == b' ' || byte == b'\t';
+    let next_non_spacetab =
+        |buf: &[u8], first: usize, last: usize| (first..=last).find(|&at| !spacetab(buf[at]));
+    let next_terminator = |buf: &[u8], first: usize, last: usize| {
+        (first..=last).find(|&at| spacetab(buf[at]) || buf[at] == 0)
+    };
+    let buf_end = BINPRM_BUF_SIZE - 1;
+    // strnchr(buf, BINPRM_BUF_SIZE, '\n'): it stops at a NUL.
+    let newline = buf
+        .iter()
+        .take_while(|&&byte| byte != 0)
+        .position(|&byte| byte == b'\n');
+    let mut end = match newline {
+        Some(newline) => newline,
+        None => {
+            // Entirely spaces and tabs, or an interpreter the buffer cuts off.
+            let first = next_non_spacetab(&buf, 2, buf_end).ok_or(())?;
+            next_terminator(&buf, first, buf_end).ok_or(())?;
+            buf_end
+        }
+    };
+    // buf[1] is '!', so this stops at 2 at the latest.
+    while spacetab(buf[end - 1]) {
+        end -= 1;
+    }
+    let name = next_non_spacetab(&buf, 2, end)
+        .filter(|&name| name != end)
+        .ok_or(())?;
+    let separator = next_terminator(&buf, name, end);
+    let argument = separator
+        .filter(|&separator| buf[separator] != 0)
+        .and_then(|separator| next_non_spacetab(&buf, separator, end));
+    buf[end] = 0;
+    if let (Some(_), Some(separator)) = (argument, separator) {
+        buf[separator] = 0;
+    }
+    let c_string = |at: usize| {
+        let end = buf[at..]
+            .iter()
+            .position(|&byte| byte == 0)
+            .map_or(buf.len(), |length| at + length);
+        buf[at..end].to_vec()
+    };
+    Ok(Some(ScriptLine {
+        interpreter: c_string(name),
+        argument: argument.map(c_string),
+    }))
+}
+
+/// The loader's error for an open or stat of the program interpreter at
+/// `path` that failed with `error`. Linux opens the interpreter inside the
+/// kernel, with no descriptor of the process's, so a descriptor, memory or
+/// file-table entry this process could not get (EMFILE, ENOMEM, ENFILE) is
+/// this backend's own: the host error itself, which an exec refuses by name.
+/// Any other failure stays the image's (ENOEXEC), as before.
+fn interpreter_open_error(path: &str, action: &str, error: std::io::Error) -> Error {
+    if reverie_kvm_core::host_limits::HostResourceExhaustion::of(&error).is_some() {
+        Error::HostIo(error)
+    } else {
+        Error::UnsupportedElf(format!("cannot {action} interpreter {path:?}: {error}"))
+    }
+}
+
 fn read_interpreter_image(path: &str) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path).map_err(|error| {
-        Error::UnsupportedElf(format!("cannot open interpreter {path:?}: {error}"))
-    })?;
-    let metadata = file.metadata().map_err(|error| {
-        Error::UnsupportedElf(format!("cannot stat interpreter {path:?}: {error}"))
-    })?;
+    let file =
+        std::fs::File::open(path).map_err(|error| interpreter_open_error(path, "open", error))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| interpreter_open_error(path, "stat", error))?;
     if !metadata.is_file() {
         return Err(Error::UnsupportedElf(format!(
             "interpreter {path:?} is not a regular file",
@@ -2381,11 +2687,27 @@ fn read_interpreter_image(path: &str) -> Result<Vec<u8>> {
         )));
     }
 
-    let mut image = Vec::with_capacity(metadata.len() as usize);
+    // A buffer this process cannot allocate is the host running out of
+    // memory, not a defect of the image: report it as the host error it is.
+    let length = metadata.len() as usize;
+    let mut image = Vec::new();
+    image
+        .try_reserve_exact(length)
+        .map_err(|_| Error::HostAllocation {
+            what: "the program interpreter's image",
+            bytes: length,
+        })?;
     file.take(MAX_INTERPRETER_BYTES + 1)
         .read_to_end(&mut image)
         .map_err(|error| {
-            Error::UnsupportedElf(format!("cannot read interpreter {path:?}: {error}"))
+            if error.kind() == std::io::ErrorKind::OutOfMemory {
+                Error::HostAllocation {
+                    what: "the program interpreter's image, which grew while it was read",
+                    bytes: length,
+                }
+            } else {
+                Error::UnsupportedElf(format!("cannot read interpreter {path:?}: {error}"))
+            }
         })?;
     if image.len() as u64 > MAX_INTERPRETER_BYTES {
         return Err(Error::UnsupportedElf(format!(
@@ -2518,9 +2840,11 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
         .checked_mul(usize::from(elf.header.e_phnum))
         .ok_or_else(|| Error::UnsupportedElf("program-header size overflow".to_string()))?;
     if size > MAX_PROGRAM_HEADERS_SIZE {
-        return Err(Error::UnsupportedElf(
-            "program-header table exceeds one page".to_string(),
-        ));
+        return Err(Error::UnsupportedElf(format!(
+            "the main image's program-header table of {size} bytes exceeds the one page \
+             ({MAX_PROGRAM_HEADERS_SIZE} bytes) this loader copies it to for AT_PHDR, a limit of \
+             this backend's own"
+        )));
     }
     let end = start
         .checked_add(size)
@@ -2529,6 +2853,14 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
         Error::UnsupportedElf("program-header table extends past the image".to_string())
     })?;
     memory.write_raw(PROGRAM_HEADERS_ADDRESS, headers)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The most recent host draw on this thread, so a test can compare the
+    /// bytes placed on the guest stack against the actual host draw.
+    static LAST_HOST_RANDOM: std::cell::RefCell<Vec<u8>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// `N` bytes from the host's getrandom(2), the source Linux's
@@ -2548,6 +2880,8 @@ fn host_random_bytes<const N: usize>() -> Result<[u8; N]> {
         }
         filled += result as usize;
     }
+    #[cfg(test)]
+    LAST_HOST_RANDOM.with(|last| *last.borrow_mut() = bytes.to_vec());
     Ok(bytes)
 }
 
@@ -2933,6 +3267,85 @@ pub fn minimal_test_elf(code: &[u8]) -> Vec<u8> {
     image
 }
 
+/// [`minimal_test_elf`] padded to `length` bytes past its only segment with
+/// valid ELF metadata as large as the file allows: a section-header table of
+/// 64-byte entries filling the first half of the file from offset 0x2000, its
+/// size counted in the first entry's `sh_size` (extended numbering: `e_shnum`
+/// is 0), and, filling the second half, the section-name string table that its
+/// second entry names, holding one one-byte string in every two bytes. Linux
+/// reads no section header and no string table, so the image loads exactly as
+/// [`minimal_test_elf`] does; a parser that reads them allocates in
+/// proportion to `length` (a full goblin parse indexes about `length / 2`
+/// strings, at 24 bytes each). For tests.
+#[cfg(any(test, feature = "test-support"))]
+pub fn minimal_test_elf_with_vast_metadata(code: &[u8], length: usize) -> Vec<u8> {
+    const TABLE: usize = 0x2000;
+    let mut image = minimal_test_elf(code);
+    let half = (length / 2) & !0xfff;
+    assert!(image.len() <= TABLE && half >= TABLE + 2 * 64);
+    image.resize(length, 0);
+    let count = ((half - TABLE) / 64) as u64;
+    image[40..48].copy_from_slice(&(TABLE as u64).to_le_bytes());
+    image[58..60].copy_from_slice(&64_u16.to_le_bytes());
+    image[60..62].copy_from_slice(&0_u16.to_le_bytes());
+    image[62..64].copy_from_slice(&1_u16.to_le_bytes());
+    image[TABLE + 32..TABLE + 40].copy_from_slice(&count.to_le_bytes());
+    let strtab = TABLE + 64;
+    image[strtab + 4..strtab + 8].copy_from_slice(&3_u32.to_le_bytes());
+    image[strtab + 24..strtab + 32].copy_from_slice(&(half as u64).to_le_bytes());
+    image[strtab + 32..strtab + 40].copy_from_slice(&((length - half) as u64).to_le_bytes());
+    for byte in image[half..].iter_mut().step_by(2) {
+        *byte = b'a';
+    }
+    image
+}
+
+/// A minimal program interpreter: an `ET_DYN` image of `program_headers`
+/// program headers, one PT_LOAD of the whole file at address 0 and PT_NULL
+/// entries after it, whose entry point holds `code` just past the table.
+/// `code` must be position-independent. For tests.
+#[cfg(any(test, feature = "test-support"))]
+pub fn minimal_test_interpreter(code: &[u8], program_headers: u16) -> Vec<u8> {
+    let table_end = 64 + usize::from(program_headers) * 56;
+    let code_offset = table_end.next_multiple_of(PAGE_SIZE as usize);
+    let mut image = vec![0; code_offset + code.len()];
+    image[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
+    for (offset, value) in [(16, ET_DYN), (18, EM_X86_64), (52, 64), (54, 56)] {
+        image[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    image[56..58].copy_from_slice(&program_headers.to_le_bytes());
+    image[20..24].copy_from_slice(&1_u32.to_le_bytes());
+    image[24..32].copy_from_slice(&(code_offset as u64).to_le_bytes());
+    image[32..40].copy_from_slice(&64_u64.to_le_bytes());
+    let length = image.len() as u64;
+    image[64..68].copy_from_slice(&PT_LOAD.to_le_bytes());
+    image[68..72].copy_from_slice(&5_u32.to_le_bytes());
+    for (offset, value) in [(96, length), (104, length), (112, PAGE_SIZE)] {
+        image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+    image[code_offset..].copy_from_slice(code);
+    image
+}
+
+/// [`minimal_test_elf`] with a second program header, a PT_INTERP whose
+/// contents are `interpreter` (a path and its NUL, as Linux reads them),
+/// placed at the end of the image. For tests.
+#[cfg(any(test, feature = "test-support"))]
+pub fn minimal_test_elf_with_interpreter(code: &[u8], interpreter: &[u8]) -> Vec<u8> {
+    let mut image = minimal_test_elf(code);
+    let offset = image.len().next_multiple_of(8);
+    image.resize(offset, 0);
+    image.extend_from_slice(interpreter);
+    image[56..58].copy_from_slice(&2_u16.to_le_bytes());
+    image[120..124].copy_from_slice(&PT_INTERP.to_le_bytes());
+    image[124..128].copy_from_slice(&4_u32.to_le_bytes());
+    image[128..136].copy_from_slice(&(offset as u64).to_le_bytes());
+    image[152..160].copy_from_slice(&(interpreter.len() as u64).to_le_bytes());
+    image[160..168].copy_from_slice(&(interpreter.len() as u64).to_le_bytes());
+    image[168..176].copy_from_slice(&1_u64.to_le_bytes());
+    image
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3190,6 +3603,10 @@ mod tests {
         );
         assert_eq!(loaded.credential_root, launcher.root);
         assert_eq!(loaded.umask, launcher.umask);
+        assert_eq!(
+            loaded.linux_personality,
+            crate::credentials::guest_personality(launcher.personality)
+        );
     }
 
     /// The initial stack follows Linux's exec layout at Linux's addresses, so
@@ -3241,6 +3658,11 @@ mod tests {
         );
         assert_eq!(read(platform, 7), b"x86_64\0");
 
+        // AT_RANDOM holds exactly the 16 bytes of this load's host draw.
+        let first_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(first_draw.len(), 16);
+        assert_eq!(read(random, 16), first_draw);
+
         // AT_RANDOM holds 16 bytes from the host's getrandom, as Linux's
         // get_random_bytes fills it, so a second load draws other bytes.
         let mut second_memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
@@ -3262,6 +3684,10 @@ mod tests {
         let mut second_bytes = [0; 16];
         let physical = second_memory.user_range_to_guest(random, 16).unwrap();
         second_memory.read_raw(physical, &mut second_bytes).unwrap();
+        // The second stack holds exactly the second host draw, which differs
+        // from the first.
+        let second_draw = LAST_HOST_RANDOM.with(|last| last.borrow().clone());
+        assert_eq!(second_bytes.as_slice(), second_draw.as_slice());
         assert_ne!(read(random, 16), second_bytes);
 
         let words = 1 + 3 + 3 + 2 * loaded.auxv.len() as u64 + 2;
@@ -4092,5 +4518,300 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The program interpreter's open or stat failing for want of a host
+    /// resource of this process's own (a descriptor, memory, the host's file
+    /// table) is reported as the host error, which an exec refuses by name.
+    /// Any other failure, such as a missing interpreter, stays the image's
+    /// `UnsupportedElf` (ENOEXEC), as before.
+    #[test]
+    fn interpreter_open_failures_are_host_errors_only_for_host_resources() {
+        const INTERPRETER: &str = "/lib64/ld-linux-x86-64.so.2";
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOMEM] {
+            let error = interpreter_open_error(
+                INTERPRETER,
+                "open",
+                std::io::Error::from_raw_os_error(errno),
+            );
+            assert!(
+                matches!(&error, Error::HostIo(host) if host.raw_os_error() == Some(errno)),
+                "{error}"
+            );
+            assert!(error.host_resource_exhaustion().is_some(), "{error}");
+        }
+        for errno in [
+            libc::ENOENT,
+            libc::EACCES,
+            libc::ELOOP,
+            libc::ENOTDIR,
+            libc::EIO,
+        ] {
+            let error = interpreter_open_error(
+                INTERPRETER,
+                "stat",
+                std::io::Error::from_raw_os_error(errno),
+            );
+            assert!(
+                matches!(&error, Error::UnsupportedElf(message)
+                    if message.starts_with(&format!("cannot stat interpreter {INTERPRETER:?}: "))),
+                "{error}"
+            );
+            assert!(error.host_resource_exhaustion().is_none(), "{error}");
+        }
+    }
+
+    /// With no descriptor left under this process's `RLIMIT_NOFILE`, opening
+    /// the program interpreter fails with EMFILE. The loader reports it as the
+    /// host error, which an exec refuses by name, where it used to report the
+    /// image's ENOEXEC. Runs in an isolated child, since it lowers a limit of
+    /// its own process.
+    #[test]
+    fn an_interpreter_this_process_has_no_descriptor_to_open_is_a_host_error() {
+        const CHILD_ENV: &str = "REVERIE_KVM_INTERPRETER_DESCRIPTOR_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg(
+                    "elf::tests::an_interpreter_this_process_has_no_descriptor_to_open_is_a_host_error",
+                )
+                .arg("--exact")
+                .env(CHILD_ENV, "1")
+                .output()
+                .expect("failed to run the isolated interpreter check");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "isolated interpreter check failed with {}\nstdout:\n{stdout}\nstderr:\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let interpreter = std::env::current_exe().unwrap();
+        let interpreter = interpreter.to_str().expect("UTF-8 test binary path");
+        let mut original = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: getrlimit writes only `original`.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut original) },
+            0
+        );
+        let lowered = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: original.rlim_max,
+        };
+        // SAFETY: setrlimit reads only `lowered`; only the soft limit drops,
+        // so the original can be restored without privilege.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lowered) }, 0);
+        let result = read_interpreter_image(interpreter);
+        // SAFETY: as above, with the original limits.
+        assert_eq!(
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
+            0
+        );
+        let error = result.expect_err("no descriptor is left to open the interpreter");
+        assert!(
+            matches!(&error, Error::HostIo(host) if host.raw_os_error() == Some(libc::EMFILE)),
+            "{error}"
+        );
+        assert_eq!(
+            error
+                .host_resource_exhaustion()
+                .map(|exhaustion| exhaustion.resource),
+            Some(reverie_kvm_core::host_limits::HostResource::Descriptors)
+        );
+    }
+
+    /// The loader reads an image's ELF header and program headers only, as
+    /// Linux's ELF loader does: an image whose section-header table and string
+    /// table fill its file (a full parse reads every entry and indexes every
+    /// string) parses with no section header at all, and its program headers
+    /// are the image's own.
+    #[test]
+    fn an_image_is_parsed_for_its_program_headers_only() {
+        let image = minimal_test_elf_with_vast_metadata(&[0xf4], 1024 * 1024);
+        let full = Elf::parse(&image).expect("a full parse reads the section table");
+        assert_eq!(full.section_headers.len(), (512 * 1024 - 0x2000) / 64);
+        assert_eq!(full.shdr_strtab.len(), 512 * 1024);
+        assert_eq!(full.shdr_strtab.get_at(2), Some("a"));
+        let elf = parse_elf(&image).unwrap();
+        assert!(elf.section_headers.is_empty());
+        assert_eq!(elf.program_headers, full.program_headers);
+        assert_eq!(elf.header, full.header);
+        assert_eq!(elf.entry, full.entry);
+    }
+
+    /// [`minimal_test_elf`] with its program-header table moved to 0x2000 and
+    /// grown to `count` entries of `entry_size` bytes: its PT_LOAD first, then
+    /// PT_NULL entries.
+    fn program_header_table_test_elf(count: u16, entry_size: u16) -> Vec<u8> {
+        let mut image = minimal_test_elf(&[0xf4]);
+        let load = image[64..120].to_vec();
+        image.resize(
+            0x2000 + usize::from(count) * usize::from(entry_size) + 0x1000,
+            0,
+        );
+        image[32..40].copy_from_slice(&0x2000_u64.to_le_bytes());
+        image[54..56].copy_from_slice(&entry_size.to_le_bytes());
+        image[56..58].copy_from_slice(&count.to_le_bytes());
+        image[0x2000..0x2000 + load.len()].copy_from_slice(&load);
+        image
+    }
+
+    /// The program-header table is accepted only as Linux's
+    /// `load_elf_phdrs` accepts it (fs/binfmt_elf.c): 56-byte entries, at
+    /// least one, and no more than 64 KiB of them (1170 entries). Linux 6.16
+    /// and earlier stopped at one page (73 entries); 6.17 lifted that (kernel
+    /// commit 8030790477e8), so 74 entries parse. Any other table is not an
+    /// image Linux loads.
+    #[test]
+    fn a_program_header_table_is_accepted_only_within_linuxs_bounds() {
+        for count in [73_u16, 74, 1170] {
+            let image = program_header_table_test_elf(count, 56);
+            let elf = parse_elf(&image).unwrap_or_else(|error| panic!("{count} entries: {error}"));
+            assert_eq!(elf.program_headers.len(), usize::from(count));
+            assert_eq!(elf.program_headers[0].p_type, PT_LOAD);
+        }
+        for (count, entry_size) in [(1171, 56), (0, 56), (1, 64), (1, 32)] {
+            assert!(
+                matches!(
+                    parse_elf(&program_header_table_test_elf(count, entry_size)),
+                    Err(Error::UnsupportedElf(_))
+                ),
+                "{count} entries of {entry_size} bytes"
+            );
+        }
+    }
+
+    /// A main image's program-header table must also fit the one page this
+    /// loader copies it to for AT_PHDR: 73 entries load, 74 are refused, with
+    /// an error that names the limit as this backend's own. Linux runs both;
+    /// an interpreter's table is not copied and parses up to Linux's 64 KiB.
+    #[test]
+    fn a_main_images_program_header_table_must_fit_the_page_this_loader_copies_it_to() {
+        let cwd = std::env::current_dir().unwrap();
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        load_static_elf(
+            &mut memory,
+            &program_header_table_test_elf(73, 56),
+            &["main"],
+            &[],
+            &cwd,
+        )
+        .expect("73 entries fit one page");
+        let mut memory = GuestMemory::new(0, TEST_MEMORY_SIZE).unwrap();
+        let error = load_static_elf(
+            &mut memory,
+            &program_header_table_test_elf(74, 56),
+            &["main"],
+            &[],
+            &cwd,
+        )
+        .expect_err("74 entries exceed the page");
+        assert!(
+            matches!(&error, Error::UnsupportedElf(message)
+                if message.contains("a limit of this backend's own")),
+            "{error}"
+        );
+    }
+
+    /// A PT_INTERP is read only within Linux's bounds (`load_elf_binary`,
+    /// fs/binfmt_elf.c): 2 to `PATH_MAX` (4096) bytes, its NUL included. Any
+    /// other size is refused before the path is copied, so the copy is at most
+    /// 4095 bytes, whatever the file holds.
+    #[test]
+    fn a_pt_interp_is_read_only_within_linuxs_bounds() {
+        let path = |size: usize| {
+            let mut contents = vec![b'a'; size];
+            if let Some(first) = contents.first_mut() {
+                *first = b'/';
+            }
+            if let Some(last) = contents.last_mut() {
+                *last = 0;
+            }
+            contents
+        };
+        let read = |contents: &[u8]| {
+            let image = minimal_test_elf_with_interpreter(&[0xf4], contents);
+            interpreter_path(&image, &parse_elf(&image).unwrap())
+        };
+        assert_eq!(read(&path(2)).unwrap().as_deref(), Some("/"));
+        let longest = read(&path(4096)).unwrap().unwrap();
+        assert_eq!(longest.len(), 4095);
+        assert!(longest.starts_with("/a"));
+        for size in [0, 1, 4097, 64 * 1024] {
+            assert!(
+                matches!(read(&path(size)), Err(Error::UnsupportedElf(_))),
+                "{size} bytes"
+            );
+        }
+    }
+
+    /// Parses `image`'s `#!` line as UTF-8, for the assertions below.
+    fn script_line(image: &[u8]) -> std::result::Result<Option<(String, Option<String>)>, ()> {
+        parse_script_line(image).map(|line| {
+            line.map(|line| {
+                (
+                    String::from_utf8(line.interpreter).unwrap(),
+                    line.argument
+                        .map(|argument| String::from_utf8(argument).unwrap()),
+                )
+            })
+        })
+    }
+
+    /// A `#!` line is read as Linux's `load_script` reads it
+    /// (fs/binfmt_script.c): the interpreter, then at most one optional
+    /// argument, the rest of the line, never split; only the first 256 bytes
+    /// count.
+    #[test]
+    fn a_script_line_is_read_as_linux_reads_it() {
+        let some = |interpreter: &str, argument: Option<&str>| {
+            Ok(Some((interpreter.to_owned(), argument.map(str::to_owned))))
+        };
+        assert_eq!(script_line(b"\x7fELF"), Ok(None));
+        assert_eq!(script_line(b"#"), Ok(None));
+        assert_eq!(script_line(b"#!/bin/sh\n"), some("/bin/sh", None));
+        // One argument, trimmed of spaces and tabs at both ends, whatever it
+        // holds in between.
+        assert_eq!(
+            script_line(b"#! \t/bin/sh -e  -x \t\nexit 1\n"),
+            some("/bin/sh", Some("-e  -x"))
+        );
+        assert_eq!(
+            script_line(b"#!/usr/bin/env -S python3 -u\n"),
+            some("/usr/bin/env", Some("-S python3 -u"))
+        );
+        // A carriage return is part of the line.
+        assert_eq!(script_line(b"#!/bin/sh\r\n"), some("/bin/sh\r", None));
+        assert_eq!(
+            script_line(b"#!/bin/sh -e\r\n"),
+            some("/bin/sh", Some("-e\r"))
+        );
+        // A NUL ends the interpreter, and the line has no argument.
+        assert_eq!(script_line(b"#!/bin/sh\0 -e\n"), some("/bin/sh", None));
+        // A file shorter than the buffer ends at its zero padding.
+        assert_eq!(script_line(b"#!/bin/sh"), some("/bin/sh", None));
+        assert_eq!(script_line(b"#!/bin/sh -x"), some("/bin/sh", Some("-x")));
+        // No interpreter.
+        assert_eq!(script_line(b"#!\n"), Err(()));
+        assert_eq!(script_line(b"#!  \t \n"), Err(()));
+        assert_eq!(
+            script_line(" ".repeat(300).replacen("  ", "#!", 1).as_bytes()),
+            Err(())
+        );
+        // A long line's argument is cut at the buffer's last byte...
+        let long = format!("#!/bin/echo {}\n", "x ".repeat(200));
+        assert_eq!(
+            script_line(long.as_bytes()),
+            some("/bin/echo", Some(long[12..BINPRM_BUF_SIZE - 1].trim_end()))
+        );
+        // ...and an interpreter that the buffer cuts off is refused.
+        assert_eq!(
+            script_line(format!("#!/{}\n", "a".repeat(300)).as_bytes()),
+            Err(())
+        );
     }
 }

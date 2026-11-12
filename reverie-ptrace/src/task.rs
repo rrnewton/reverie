@@ -11,10 +11,12 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+#[cfg(target_arch = "x86_64")]
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::ops::DerefMut;
+#[cfg(target_arch = "x86_64")]
 use std::os::unix::ffi::OsStringExt;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -35,13 +37,16 @@ use futures::future::Either;
 use futures::future::Future;
 use futures::future::FutureExt;
 use futures::future::TryFutureExt;
+use gdb_stop::GdbPorts;
+use gdb_stop::GdbTracee;
+use gdb_stop::ParkedForGdb;
+use gdb_stop::SentSignal;
 use nix::sys::mman::ProtFlags;
 use nix::sys::signal::Signal;
 use reverie::BackendFailure;
 use reverie::Backtrace;
 use reverie::Errno;
 use reverie::ExitStatus;
-use reverie::Frame;
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
@@ -86,10 +91,12 @@ use crate::error::Error;
 use crate::error::TraceResultExt;
 use crate::failure::PtraceCleanupFailure;
 use crate::failure::PtraceRunFailure;
-use crate::gdbstub::BreakpointType;
+use crate::gdbstub::ClientFeatures;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
 use crate::gdbstub::GdbServer;
+use crate::gdbstub::Interrupt;
+use crate::gdbstub::PassedSignals;
 use crate::gdbstub::ResumeAction;
 use crate::gdbstub::ResumeInferior;
 use crate::gdbstub::StopEvent;
@@ -104,7 +111,7 @@ use crate::poll_on_wake::PollOnWake;
 use crate::regs::Reg;
 use crate::regs::RegAccess;
 use crate::segv_state::SIGSEGV_BIT;
-use crate::segv_state::SegvRun;
+use crate::segv_state::SignalRun;
 use crate::segv_state::segv_repair;
 use crate::sigtrap_state::BLOCKABLE_SIGNAL_BITS;
 use crate::sigtrap_state::KernelSigaction;
@@ -116,6 +123,7 @@ use crate::sigtrap_state::mask_after_sigprocmask;
 use crate::sigtrap_state::parse_sigtrap_disposition;
 use crate::sigtrap_state::step_kind;
 use crate::stack::GuestStack;
+use crate::stack::StackArena;
 use crate::timer::HandleFailure;
 use crate::timer::OwnNotification;
 use crate::timer::StepUnit;
@@ -130,6 +138,9 @@ use crate::tracer::PtracerWaitOwner;
 use crate::tracer::RootStopLease;
 use crate::tracer::WaitOnPtracer;
 use crate::vdso;
+use crate::watch::Arch as WatchArch;
+use crate::watch::HwWatch;
+use crate::watch::WatchSet;
 
 // A lifecycle association failure must prevent the following resume, not just
 // report a flag whose waiter may be polled after this future resumes the guest.
@@ -152,7 +163,13 @@ fn observe_ready_thread_state<T: Tool>(
         })
 }
 
+mod gdb_stop;
 mod host_linux;
+mod reserved_input;
+use reserved_input::NativeInputCall;
+mod native_syscall;
+use native_syscall::DeferredNativeCall;
+use native_syscall::NativeCallContext;
 
 #[cfg(test)]
 mod thread_state_ready_tests;
@@ -167,6 +184,7 @@ fn is_legacy_vsyscall_ip(ip: Reg) -> bool {
 
 #[derive(Debug)]
 struct Suspended {
+    input_task: Option<reverie::reserved_input::InputTaskId>,
     waker: Option<mpsc::Sender<Pid>>,
     suspended: Arc<AtomicBool>,
 }
@@ -189,6 +207,29 @@ enum ExpectedGdbResume {
     /// gdb could then issue an `vCont;p<pid>:-1` to resume all threads in
     /// the thread group, which could cause the main thread to miss events.
     StepOnly,
+}
+
+/// Native stop provenance, not the event label presented to GDB. Only these
+/// unchanged ptrace event stops discard their resume signal in the kernel.
+#[derive(Clone, Copy)]
+enum GdbResumeSignalOrigin {
+    Unclassified,
+    NewChildEvent,
+    VforkDoneEvent,
+}
+
+/// Whether the timer observed a breakpoint stop (`Timer::observe_event`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum BreakpointStop {
+    /// A stop that the run loop handles (`handle_sigtrap`), the latest stop
+    /// the timer observed. It makes no Tool callback, so gdb's continue
+    /// without a signal leaves the timer event as it was
+    /// (`TracedTask::resume_at_breakpoint`).
+    Observed,
+    /// A stop that a step inside another stop's handling ran into
+    /// (`check_swbreak`). The timer did not observe it, and the stop being
+    /// handled decides the timer event.
+    Unobserved,
 }
 
 enum OrdinaryStart {
@@ -257,6 +298,8 @@ pub enum PreinitOutcome {
     Ready(Stopped),
     /// Initialization published a named fatal-session failure. Keep its stop
     /// owned until the ordinary task-tree driver completes consuming cleanup.
+    // Only the x86_64 CPUID-faulting setup refuses.
+    #[cfg(target_arch = "x86_64")]
     Refused(Stopped),
     /// A wait during initialization returned the tracee's final status. A
     /// SIGKILLed tracee first stops at `PTRACE_EVENT_EXIT`, but that stop is
@@ -548,7 +591,7 @@ const NEVER_SHIELDED: u64 = 1 << (reverie::PERF_EVENT_SIGNAL as u64 - 1)
     | 1 << (Signal::SIGSTOP as u64 - 1);
 
 /// Whether the registers of the syscall `nr` with `args` may name a temporary
-/// signal mask that `temporary_signal_mask` reads: a non-NULL mask argument
+/// signal mask that `temporary_signal_mask_prepared` reads: a non-NULL mask argument
 /// of size 8, or, for pselect6, a non-NULL wrapper. Checked before any read
 /// or ptrace request, so a call that installs no mask, such as a wait probe
 /// with a NULL mask, costs nothing.
@@ -562,21 +605,37 @@ fn may_name_temporary_signal_mask(nr: Sysno, args: &SyscallArgs) -> bool {
     }
 }
 
+fn preparation_word(
+    task: &Stopped,
+    input: Option<&NativeCallContext>,
+    address: usize,
+) -> Option<u64> {
+    match input {
+        Some(input) => input.preparation_word(task, address),
+        None => task.read_value(Addr::<u64>::from_raw(address)?).ok(),
+    }
+}
+
 /// The temporary signal mask that the syscall `nr` with `args` installs, read
-/// from the tracee: ppoll's, pselect6's, epoll_pwait's and epoll_pwait2's
-/// mask argument, or rt_sigsuspend's. `None` when the call installs none (a
-/// NULL mask), names a size other than 8, or names memory that is not mapped.
+/// from the prepared input view: ppoll's, pselect6's, epoll_pwait's and
+/// epoll_pwait2's mask argument, or rt_sigsuspend's. `None` when the call installs
+/// none (a NULL mask), names a size other than 8, or names memory that is not mapped.
 ///
-/// The words are read with `PTRACE_PEEKDATA`, which, like the kernel's own
-/// `copy_from_user`, reads an x86 write-only mapping: a valid write-only mask
-/// is shielded as a readable one is (Codex review of
+/// Outside a staged image, words are read with `PTRACE_PEEKDATA`, which, like
+/// the kernel's own `copy_from_user`, reads an x86 write-only mapping: a valid
+/// write-only mask is shielded as a readable one is (Codex review of
 /// https://github.com/rrnewton/reverie/pull/996). It also reads a `PROT_NONE`
 /// page, which the kernel's copy faults on. Such a call is shielded too: it
 /// still fails with EFAULT at entry, before it would wait, and a pending
 /// signal is then taken after it returns, as it is after the guest's own
 /// call. io_pgetevents and io_uring_enter are not read.
-fn temporary_signal_mask(task: &Stopped, nr: Sysno, args: &SyscallArgs) -> Option<u64> {
-    let read = |address: usize| task.read_value(Addr::<u64>::from_raw(address)?).ok();
+fn temporary_signal_mask_prepared(
+    task: &Stopped,
+    nr: Sysno,
+    args: &SyscallArgs,
+    input: Option<&NativeCallContext>,
+) -> Option<u64> {
+    let read = |address| preparation_word(task, input, address);
     let (mask, size) = match nr {
         Sysno::rt_sigsuspend => (args.arg0, args.arg1),
         Sysno::ppoll => (args.arg3, args.arg4),
@@ -853,6 +912,15 @@ impl TakenSignal {
     }
 }
 
+/// What gdb chose for a signal it was shown before delivery
+/// (`TracedTask::signal_stop_for_gdb`).
+enum GdbSignalResume {
+    /// Continue, delivering this signal, or none.
+    Continue(Option<AnySignal>),
+    /// Step one instruction, delivering this signal, or none.
+    Step(Option<AnySignal>),
+}
+
 /// The signal a stopped guest resumes with, and, if
 /// `Tool::handle_signal_event` reported it, how its delivery stop took it.
 struct SignalResume {
@@ -866,6 +934,10 @@ struct SignalResume {
     /// (`Guest::set_signal_info`), written when the signal is resumed from a
     /// signal-delivery stop (`resume_with_signal`).
     replacement: Option<(AnySignal, SiginfoBytes)>,
+    /// Whether the thread steps one instruction with `signal` rather than
+    /// continuing: gdb answered the signal's stop with a step
+    /// (`GdbSignalResume::Step`).
+    step: bool,
 }
 
 /// A delivery that `Guest::deliver_signal` approved in the running signal
@@ -1269,6 +1341,12 @@ struct StepChoice {
     shielded: bool,
 }
 
+/// Masks retained while preparing a private-page syscall entry.
+struct InjectionSignalMasks {
+    original: u64,
+    current: u64,
+}
+
 /// What an injection's single-step can change of SIGTRAP's state, read
 /// before the injection (`TracedTask::read_sigtrap_before_injection`).
 struct SigtrapBeforeInjection {
@@ -1613,6 +1691,23 @@ fn next_instruction_raises_sigtrap(task: &Stopped) -> Result<bool, TraceError> {
 /// also reads a `PROT_NONE` page, and a foreign read ignores the guest's
 /// protection keys. Whether the call installed it is decided from the call's
 /// result (`repair_sigtrap_after_injection`).
+fn read_sigaction_prepared(
+    task: &Stopped,
+    address: usize,
+    input: Option<&NativeCallContext>,
+) -> Option<KernelSigaction> {
+    if input.is_none() {
+        return read_sigaction_forced(task, address);
+    }
+    let word = |offset| preparation_word(task, input, address.checked_add(offset)?);
+    Some(KernelSigaction {
+        handler: word(0)?,
+        flags: word(8)?,
+        restorer: word(16)?,
+        mask: word(24)?,
+    })
+}
+
 fn read_sigaction_forced(task: &Stopped, address: usize) -> Option<KernelSigaction> {
     if let Some(action) =
         Addr::<KernelSigaction>::from_raw(address).and_then(|address| task.read_value(address).ok())
@@ -1880,19 +1975,84 @@ thread_local! {
 
 /// Whether the SIGTRAP `task` stopped to take was sent by a process: by
 /// `kill`, `tgkill`, `raise`, `sigqueue`, or a POSIX timer or `F_SETSIG` file
-/// that names SIGTRAP. Linux marks every such signal with a `si_code` of zero
-/// or below (`SI_FROMUSER`); every trap of Reverie's own, a single step
-/// (`TRAP_TRACE`), a breakpoint (`TRAP_BRKPT`, `SI_KERNEL`) or a rewritten
-/// site's trap, has a positive one. The kernel's one sender-coded SIGTRAP,
-/// the legacy exec report (`SI_USER`), never comes: Reverie sets
-/// `PTRACE_O_TRACEEXEC`. A siginfo that cannot be read is not evidence, and
-/// the stop keeps its other handling. Not covered: a thread that queues
+/// that names SIGTRAP (`is_sender_coded_sigtrap`). A siginfo that cannot be
+/// read is not evidence, and the stop keeps its other handling.
+fn is_sigtrap_sent_by_a_process(task: &Stopped) -> bool {
+    task.getsiginfo()
+        .is_ok_and(|info| is_sender_coded_sigtrap(&info))
+}
+
+/// Whether `info` is a SIGTRAP a process sent, as `is_sigtrap_sent_by_a_process`
+/// reads it. Linux marks every sent signal with a `si_code` of zero or below
+/// (`SI_FROMUSER`). Reverie's own single steps (`TRAP_TRACE`), breakpoints
+/// (`TRAP_BRKPT`, `SI_KERNEL`) and rewritten sites' traps have a positive one,
+/// save one: where the architecture has no `user_single_step_report` of its
+/// own, aarch64 among them, a stepped syscall's report is `SI_USER` with pid 0
+/// (include/linux/ptrace.h:338-351 at v6.9). There `SI_USER` counts as sent
+/// only with a sender's pid; a kill from a pid namespace the guest cannot see
+/// also carries pid 0 and is taken for a trap. x86_64 reports a stepped
+/// syscall with `TRAP_BRKPT`, so there every `SI_USER` is a sender's. The
+/// kernel's other sender-coded SIGTRAP, the legacy exec report, never comes:
+/// Reverie sets `PTRACE_O_TRACEEXEC`. Not covered: a thread that queues
 /// itself a SIGTRAP with a positive code (`rt_sigqueueinfo` and
 /// `rt_tgsigqueueinfo` allow that only to the calling thread itself) is not
 /// told apart from a kernel trap.
-fn is_sigtrap_sent_by_a_process(task: &Stopped) -> bool {
-    task.getsiginfo()
-        .is_ok_and(|info| info.si_signo == libc::SIGTRAP && info.si_code <= 0)
+fn is_sender_coded_sigtrap(info: &libc::siginfo_t) -> bool {
+    sender_coded_sigtrap(info, !cfg!(target_arch = "x86_64"))
+}
+
+/// `is_sender_coded_sigtrap`'s rule, where `step_report_is_si_user` says
+/// whether this architecture reports a stepped syscall with `SI_USER` and
+/// pid 0, so that both answers can be tested on any host.
+fn sender_coded_sigtrap(info: &libc::siginfo_t, step_report_is_si_user: bool) -> bool {
+    info.si_signo == libc::SIGTRAP
+        && (info.si_code < 0
+            || (info.si_code == libc::SI_USER
+                // SAFETY: `si_pid` reads the sender member, which `SI_USER`
+                // fills in.
+                && (!step_report_is_si_user || unsafe { info.si_pid() } != 0)))
+}
+
+/// SIGTRAP stops that `handle_sigtrap` took as watch hits only.
+pub(crate) static WATCH_TRAPS_CLAIMED: AtomicU64 = AtomicU64::new(0);
+
+/// Precise-timer step stops at which a watch fired too.
+pub(crate) static WATCH_HITS_IN_TIMER_STEPS: AtomicU64 = AtomicU64::new(0);
+
+/// Stops at which a thread's debug status was read for watch hits, by
+/// thread.
+pub(crate) static WATCH_STATUS_READS: std::sync::LazyLock<StdMutex<HashMap<Pid, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// Reads which watches fired at `task`'s SIGTRAP stop, clearing them
+/// ([`HwWatch::take_hits`]), as a mask of slots. Only a stop of a thread
+/// with a watch armed reads it.
+fn take_watch_hits(task: &Stopped) -> Result<u8, TraceError> {
+    *WATCH_STATUS_READS
+        .lock()
+        .unwrap()
+        .entry(task.pid())
+        .or_default() += 1;
+    WatchArch::take_hits(task)
+}
+
+/// Reports to `global`, in slot order, the hits of `watches` that `mask`
+/// ([`take_watch_hits`]) gives at `task`'s stop, each with `sigtrap`.
+fn report_watch_hits<G: GlobalTool>(
+    global: &G,
+    watches: &mut WatchSet,
+    task: &Stopped,
+    tid: Pid,
+    mask: u8,
+    sigtrap: reverie::SigtrapAtHit,
+) -> Result<(), TraceError> {
+    if mask != 0 {
+        let ip = task.getregs()?.ip();
+        for hit in watches.hits::<WatchArch>(tid, mask, ip, sigtrap) {
+            global.on_watchpoint_hit(&hit);
+        }
+    }
+    Ok(())
 }
 
 /// Whether the SIGTRAP `task` stopped with is the guest's own `int3`, retired
@@ -1940,6 +2100,14 @@ fn swaps_signal_mask(nr: Sysno) -> bool {
     )
 }
 
+// The trap's ABI is x86_64's (see `TracerBuilder::injected_syscall_trap`).
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(
+        dead_code,
+        reason = "only x86_64 handles the trap; elsewhere only its presence is read"
+    )
+)]
 #[derive(Clone)]
 pub(crate) struct InjectedSyscallTrap {
     pub(crate) marker: u64,
@@ -1947,6 +2115,10 @@ pub(crate) struct InjectedSyscallTrap {
     pub(crate) provenance: Option<InjectedSyscallProvenance>,
 }
 
+#[cfg_attr(
+    not(target_arch = "x86_64"),
+    allow(dead_code, reason = "only x86_64 validates a trap's site")
+)]
 #[derive(Clone)]
 pub(crate) struct InjectedSyscallProvenance {
     pub(crate) image: PathBuf,
@@ -1955,6 +2127,8 @@ pub(crate) struct InjectedSyscallProvenance {
     pub(crate) patched_site_addresses: Arc<[u64]>,
 }
 
+// The maps and auxv reads below serve only `validates_site_provenance`.
+#[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug)]
 struct GuestMap {
     start: u64,
@@ -1964,12 +2138,14 @@ struct GuestMap {
     path: Option<PathBuf>,
 }
 
+#[cfg(target_arch = "x86_64")]
 impl GuestMap {
     fn contains(&self, address: u64) -> bool {
         self.start <= address && address < self.end
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 fn read_guest_maps(pid: Pid) -> std::io::Result<Vec<GuestMap>> {
     let maps = crate::launch_window::read(format!("/proc/{pid}/maps"))?;
     Ok(maps
@@ -1978,10 +2154,12 @@ fn read_guest_maps(pid: Pid) -> std::io::Result<Vec<GuestMap>> {
         .collect())
 }
 
+#[cfg(target_arch = "x86_64")]
 fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
     read_guest_maps(pid).ok()
 }
 
+#[cfg(target_arch = "x86_64")]
 fn next_proc_maps_field<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
     while line.get(*cursor).is_some_and(u8::is_ascii_whitespace) {
         *cursor += 1;
@@ -1996,6 +2174,7 @@ fn next_proc_maps_field<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u
     (start < *cursor).then(|| &line[start..*cursor])
 }
 
+#[cfg(target_arch = "x86_64")]
 fn parse_guest_map(line: &[u8]) -> Option<GuestMap> {
     let mut cursor = 0;
     let range = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
@@ -2026,6 +2205,7 @@ fn parse_guest_map(line: &[u8]) -> Option<GuestMap> {
     })
 }
 
+#[cfg(target_arch = "x86_64")]
 fn decode_proc_maps_path(bytes: &[u8]) -> PathBuf {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -2051,6 +2231,7 @@ fn decode_proc_maps_path(bytes: &[u8]) -> PathBuf {
     PathBuf::from(OsString::from_vec(decoded))
 }
 
+#[cfg(target_arch = "x86_64")]
 fn guest_auxv_entry(pid: Pid, key: u64) -> Option<u64> {
     let bytes = crate::launch_window::read(format!("/proc/{pid}/auxv")).ok()?;
     bytes.as_chunks::<16>().0.iter().find_map(|entry| {
@@ -2316,6 +2497,16 @@ fn kernel_task_flags(tid: Pid) -> std::io::Result<u64> {
 /// actual error until the entire tree has completed its real terminal waits.
 #[derive(Default)]
 pub(crate) struct FatalSession {
+    reserved_input: Option<reverie::reserved_input::ReservedInputControl>,
+    native_sequence: AtomicU64,
+    native_attempts: StdMutex<Vec<Arc<native_syscall::NativeAttempt>>>,
+    native_operations: StdMutex<Vec<native_syscall::NativeOperationOwner>>,
+    input_generations: StdMutex<
+        Vec<(
+            Arc<safeptrace::TerminalCleanup>,
+            reverie::reserved_input::InputTaskId,
+        )>,
+    >,
     ptracer_thread: Option<std::thread::ThreadId>,
     ptracer_controller: StdMutex<Option<PtracerController>>,
     callback_diagnostics: StdMutex<Vec<crate::PtraceCallbackDiagnostic>>,
@@ -2357,6 +2548,16 @@ struct ReplacedLeaderStatusUnavailable {
 struct FatalGroup {
     terminal: safeptrace::TerminalCleanup,
     identity: crate::tracer::TraceeIdentity,
+}
+
+/// The `/proc/<tid>` directory the session retained for one task it traces:
+/// see [`FatalSession::traced_directories`].
+pub(crate) struct TracedDirectory(Arc<FatalGroup>);
+
+impl std::os::fd::AsFd for TracedDirectory {
+    fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.0.identity.proc_dir()
+    }
 }
 
 /// Only subscribe_group constructs this after successful same-generation capture.
@@ -2644,6 +2845,7 @@ impl FatalSession {
         tree.newborns
             .push(FatalNewborn::with_controller(parent, child, controller));
         drop(tree);
+        self.capture_input_birth(parent, child);
         match crate::tracer::TraceeIdentity::capture_event_child(child.pid(), parent, op) {
             Ok(identity) => self
                 .groups
@@ -2847,6 +3049,7 @@ impl FatalSession {
     }
 
     fn finished(&self, stop: &FatalTaskStop) {
+        self.finish_input_generation(&stop.terminal);
         let mut tree = self.tree.lock().unwrap();
         tree.tasks
             .retain(|task| !task.terminal.same_generation(&stop.terminal));
@@ -2868,6 +3071,7 @@ impl FatalSession {
     pub(crate) fn finished_unhanded(&self, terminal: &safeptrace::TerminalCleanup) {
         // Called by the sole newborn owner only after its actual final status
         // and worker retirement. A refusal/Pending keeps all these authorities.
+        self.finish_input_generation(terminal);
         let mut tree = self.tree.lock().unwrap();
         tree.unconfirmed_newborns
             .retain(|(_, entry)| !entry.same_generation(terminal));
@@ -2879,6 +3083,53 @@ impl FatalSession {
             .unwrap()
             .retain(|group| !group.terminal.same_generation(terminal));
         self.changed.notify_waiters();
+    }
+
+    /// The `/proc/<tid>` directories this session retained for the tasks it
+    /// traces as `tid` now, newest first: a task whose owner runs (from
+    /// `register` until `finished`, after its final status), or a child
+    /// captured at its parent's clone, fork or vfork event that no owner has
+    /// taken yet. Each directory was opened while its task was certainly
+    /// traced here (`capture`, `capture_root`) and names that task until it is
+    /// reaped, and no task after, so a file read through it is never that of
+    /// a task that took the number over while the session still held it.
+    /// Empty for a number the session does not trace: a task of another
+    /// session or of none, a host task.
+    pub(crate) fn traced_directories(&self, tid: Pid) -> Vec<TracedDirectory> {
+        enum Record {
+            Task(Arc<FatalTaskStop>),
+            Newborn(Arc<safeptrace::TerminalCleanup>),
+        }
+        let records: Vec<Record> = {
+            let tree = self.tree.lock().unwrap();
+            tree.tasks
+                .iter()
+                .filter(|task| task.tid == tid)
+                .map(|task| Record::Task(task.clone()))
+                .chain(
+                    tree.newborns
+                        .iter()
+                        .filter(|newborn| newborn.tid == tid)
+                        .map(|newborn| Record::Newborn(newborn.terminal.clone())),
+                )
+                .collect()
+        };
+        let groups = self.groups.lock().unwrap();
+        records
+            .iter()
+            .rev()
+            .filter_map(|record| {
+                let terminal = match record {
+                    Record::Task(task) => &task.terminal,
+                    Record::Newborn(terminal) => terminal.as_ref(),
+                };
+                groups
+                    .iter()
+                    .find(|group| group.terminal.same_generation(terminal))
+                    .cloned()
+                    .map(TracedDirectory)
+            })
+            .collect()
     }
 
     pub(crate) fn subscribe_group(
@@ -3084,10 +3335,15 @@ impl FatalSession {
             changed.await;
         }
     }
-    fn new<G: GlobalTool + 'static>(global: &Arc<G>, root: Pid) -> Self {
+    fn new<G: GlobalTool + 'static>(
+        global: &Arc<G>,
+        root: Pid,
+        reserved_input: Option<reverie::reserved_input::ReservedInputControl>,
+    ) -> Self {
         let weak = Arc::downgrade(global);
         let fatal_weak = weak.clone();
         Self {
+            reserved_input,
             root: Some(root),
             ptracer_thread: Some(std::thread::current().id()),
             reporter: Some(Box::new(move |origin| {
@@ -3364,18 +3620,26 @@ struct GlobalState<G: GlobalTool> {
     /// sequence (`drive_timer`).
     traces_signal_state_syscalls: bool,
 
-    /// Whether Reverie keeps the guest's SIGSEGV action and mask across its
-    /// rdtsc and cpuid traps (`segv_state`): where it keeps SIGTRAP's
-    /// (`keeps_sigtrap_state`), for a Tool that subscribes to rdtsc or cpuid,
-    /// and only if every change of the mask or of SIGSEGV's action is one
-    /// Reverie sees: the Tool subscribes to every syscall that makes one
+    /// Whether every change of the guest's mask or of a signal's action is
+    /// one Reverie sees, so that it can keep a signal's mask bit across the
+    /// resumes of a thread (`SignalRun`) and know which signal-action tables
+    /// a thread it does not trace may use (`SigtrapTables::segv_unseen`):
+    /// where it keeps SIGTRAP's state (`keeps_sigtrap_state`), the Tool
+    /// subscribes to every syscall that makes one
     /// (`traces_signal_state_syscalls`), Reverie's filter traces a guest
     /// `rt_sigreturn` (`reports_sigreturns`; otherwise it lets every one
-    /// run), the Tool subscribes to every clone that could make a thread it
-    /// does not trace (`sees_every_sighand_clone`). The kernel must also
+    /// run), and the Tool subscribes to every clone that could make a thread
+    /// it does not trace (`sees_every_sighand_clone`). The kernel must also
     /// refuse x32 syscalls, which the filter would let run; that is probed
     /// when first needed, by a tracer thread with no seccomp filter of its
-    /// own (`TracedTask::keeps_segv_state`, `x32_syscalls_refused`).
+    /// own (`TracedTask::keeps_signal_records`, `x32_syscalls_refused`).
+    /// Hardware watchpoint hits use it (`TracedTask::restore_sigtrap_after_hit`).
+    keeps_signal_records: bool,
+
+    /// Whether Reverie keeps the guest's SIGSEGV action and mask across its
+    /// rdtsc and cpuid traps (`segv_state`): where it keeps signal records
+    /// (`keeps_signal_records`), for a Tool that subscribes to rdtsc or cpuid
+    /// (`TracedTask::keeps_segv_state`).
     keeps_segv_state: bool,
 
     /// guests are sequentialized already (by detcore for example), gdbserver
@@ -3476,7 +3740,7 @@ thread_local! {
 
 /// Timer steps over a guest `rt_sigreturn` whose frame blocked SIGTRAP
 /// (`TimerStepShield::prepare`), counted for the test that must know one ran.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) static FRAME_SHIELDS_FOR_TEST: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -3492,7 +3756,7 @@ pub(crate) fn record_step_for_test(tid: Pid) {
 }
 
 /// Test-only: the number of single-step requests issued for `tid` so far.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) fn step_count_for_test(tid: Pid) -> u64 {
     STEP_COUNTS_GLOBAL
         .lock()
@@ -3520,7 +3784,7 @@ pub(crate) fn record_stepped_seccomp_for_test(tid: Pid) {
 
 /// Test-only: the number of timer single-steps of `tid` so far that ended
 /// at a seccomp stop.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 pub(crate) fn stepped_seccomp_count_for_test(tid: Pid) -> u64 {
     STEPPED_SECCOMP_GLOBAL
         .lock()
@@ -3633,6 +3897,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             caches_sigtrap_disposition: self.caches_sigtrap_disposition,
             sees_every_sighand_clone: self.sees_every_sighand_clone,
             traces_signal_state_syscalls: self.traces_signal_state_syscalls,
+            keeps_signal_records: self.keeps_signal_records,
             keeps_segv_state: self.keeps_segv_state,
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap.clone(),
@@ -3691,6 +3956,7 @@ impl fmt::Debug for SyscallArgsForLog {
 
 /// Event configuration supplied when a traced task is created.
 pub(crate) struct TracedTaskOptions<'a> {
+    pub(crate) reserved_input: Option<reverie::reserved_input::ReservedInputControl>,
     pub(crate) command_bootstrap: bool,
     pub(crate) events: &'a Subscription,
     pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
@@ -3706,6 +3972,10 @@ pub(crate) struct TracedTaskOptions<'a> {
 /// Our runtime representation of what Reverie knows about a guest thread. Its
 /// lifetime matches the lifetime of the thread.
 pub struct TracedTask<L: Tool> {
+    // Native registry identity; never stored in serialized Tool thread state.
+    reserved_input_task: Option<reverie::reserved_input::InputTaskId>,
+    reserved_input_initial: Option<reverie::reserved_input::InputAdmission>,
+    reserved_input_exec_transferred: bool,
     // Shared with the original fatal owner before any callback can suspend.
     // Driver refusals and cancelled adapters keep their exact core here.
     pub(crate) ptracer_waits: Arc<PtracerWaitOwner>,
@@ -3740,6 +4010,17 @@ pub struct TracedTask<L: Tool> {
     /// True if we can intercept CPUID, false otherwise.
     has_cpuid_interception: bool,
 
+    /// This thread's armed hardware watchpoints (`Guest::set_watchpoints`).
+    /// A new thread or process starts with none, and an exec disarms them,
+    /// as Linux does (`copy_thread`, `flush_thread`).
+    watches: WatchSet,
+
+    /// SIGTRAP's bit in the mask this thread's guest code runs under since
+    /// its last `PTRACE_CONT`, recorded while it has a watch armed
+    /// (`records_watch_sigtrap`), for the repair at a hit
+    /// (`restore_sigtrap_after_hit`).
+    watch_run: StdMutex<SignalRun>,
+
     /// The stack pointer the current image started with, recorded at its
     /// exec stop (`Guest::initial_stack_pointer`). Tasks forked or cloned
     /// from the image share it.
@@ -3751,6 +4032,9 @@ pub struct TracedTask<L: Tool> {
     /// Taking this record consumes that authority, including fast tail injection
     /// which transfers the original call to the callback's final resume.
     pending_syscall: Option<(Sysno, SyscallArgs)>,
+    native_callback: Option<u64>,
+    native_entry_pending: Option<Arc<AtomicBool>>,
+    deferred_native_call: Option<DeferredNativeCall>,
 
     /// Address of the writable e9tool register frame for the active event.
     injected_syscall_frame: Option<usize>,
@@ -3824,7 +4108,7 @@ pub struct TracedTask<L: Tool> {
     sigtrap_scratch_state: Arc<AtomicU8>,
     /// SIGSEGV's bit in the mask this thread's guest code runs under, as its
     /// last `PTRACE_CONT` left it (`note_segv_resume`).
-    segv_run: StdMutex<SegvRun>,
+    segv_run: StdMutex<SignalRun>,
     /// The syscall the coming `PTRACE_CONT` runs, as its number plus one, or
     /// 0: a tail injection's original syscall, or a reported `rt_sigreturn`
     /// (`note_segv_resume`).
@@ -4012,6 +4296,23 @@ pub struct TracedTask<L: Tool> {
     /// Where this thread is when another thread is in a gdb stop.
     gdb_view: ThreadView,
 
+    /// The signals gdb asked to have delivered without a stop.
+    gdb_passed_signals: PassedSignals,
+
+    /// The optional stop events gdb asked for: a fork, a vfork or an exec is
+    /// reported only if gdb follows it.
+    gdb_client_features: ClientFeatures,
+
+    /// This thread reported a vfork to gdb, whose return gdb waits for as a
+    /// `vforkdone` stop (`handle_vfork_done_event`).
+    gdb_vfork_reported: bool,
+
+    /// This thread shares its address space with the process it was forked
+    /// from (a vfork, or a clone with `CLONE_VM` into a new process), so a
+    /// breakpoint gdb set there is in its memory too and must stay there
+    /// (`step_over_unfollowed_breakpoint`).
+    shares_breakpoint_memory: bool,
+
     /// Notify gdbserver start accepting incoming packets.
     gdbserver_start_tx: Option<oneshot::Sender<()>>,
 
@@ -4034,15 +4335,23 @@ pub struct TracedTask<L: Tool> {
     /// GDB resume request, gdbstub is the sender
     gdb_resume_tx: Option<mpsc::Sender<ResumeInferior>>,
 
-    /// GDB resume request, reverie is the receiver
-    gdb_resume_rx: Option<mpsc::Receiver<ResumeInferior>>,
-
     /// Request sent by gdb. the tx channel is used by gdb instead of
     /// `TracedTask`.
     gdb_request_tx: Option<mpsc::Sender<GdbRequest>>,
 
-    /// Receiver to receive gdb request.
-    gdb_request_rx: Option<mpsc::Receiver<GdbRequest>>,
+    /// Where gdb's resume and requests reach this thread in a gdb stop.
+    gdb_ports: GdbPorts,
+
+    /// gdb's interrupt, which this thread takes at a stop it makes if it is
+    /// the first to get there (`interrupt_point`).
+    gdb_interrupt: Interrupt,
+
+    /// gdb stepped this thread from a stop made before the stop it stopped at
+    /// was handled (`stop_for_gdb_at`): the step ends at its next stop.
+    gdb_step_pending: bool,
+
+    /// The signal gdb resumed this thread with from such a stop, once sent.
+    gdb_sent_signal: SentSignal,
 
     /// Wait to be resumed when in sigstop due to all stop mode.
     exit_suspend_tx: Option<mpsc::Sender<Pid>>,
@@ -4061,9 +4370,9 @@ pub struct TracedTask<L: Tool> {
     /// causing others to miss the breakpoint.
     needs_step_over: Arc<Mutex<()>>,
 
-    /// Whether or not the tool is currently holding a handle on the guest Stack (and thus
-    /// potentially using actual stack memory within the guest).
-    stack_checked_out: Arc<AtomicBool>,
+    /// Live bounded scratch frames for this task's current image. Guards keep
+    /// their arena alive across nested callbacks and release only their frame.
+    stack_arena: Arc<StackArena>,
 }
 
 impl<L: Tool> fmt::Debug for TracedTask<L> {
@@ -4091,7 +4400,11 @@ impl<L: Tool> TracedTask<L> {
         L::GlobalState: 'static,
     {
         let process_state = Arc::new(L::new(tid, &cfg));
-        let fatal_session = Arc::new(FatalSession::new(&gs_ref, tid));
+        let fatal_session = Arc::new(FatalSession::new(
+            &gs_ref,
+            tid,
+            options.reserved_input.clone(),
+        ));
         // The report reads an x86-64 signal frame (`report_sigreturn`).
         let reports_sigreturns =
             cfg!(target_arch = "x86_64") && L::observes_sigreturns(&cfg) && gdbserver.is_none();
@@ -4116,6 +4429,10 @@ impl<L: Tool> TracedTask<L> {
             .chain(Sysno::iter().filter(|&nr| swaps_signal_mask(nr)))
             .all(|nr| traced.contains(&nr))
         };
+        let keeps_signal_records = keeps_sigtrap_state
+            && traces_signal_state_syscalls
+            && reports_sigreturns
+            && sees_every_sighand_clone;
         let global_state = GlobalState {
             gs_ref,
             cfg,
@@ -4125,11 +4442,9 @@ impl<L: Tool> TracedTask<L> {
             caches_sigtrap_disposition,
             sees_every_sighand_clone,
             traces_signal_state_syscalls,
-            keeps_segv_state: keeps_sigtrap_state
-                && (options.events.has_rdtsc() || options.events.has_cpuid())
-                && traces_signal_state_syscalls
-                && reports_sigreturns
-                && sees_every_sighand_clone,
+            keeps_signal_records,
+            keeps_segv_state: keeps_signal_records
+                && (options.events.has_rdtsc() || options.events.has_cpuid()),
             sequentialized_guest: Arc::new(
                 gdbserver
                     .as_ref()
@@ -4162,10 +4477,25 @@ impl<L: Tool> TracedTask<L> {
         let (next_state, next_state_rx) = mpsc::channel(1);
         let (daemonizer, daemonizer_rx) = mpsc::channel(1);
         let (gdb_resume_tx, gdb_resume_rx) = mpsc::channel(1);
+        let gdb_passed_signals = gdbserver
+            .as_ref()
+            .map(|server| server.passed_signals.clone())
+            .unwrap_or_default();
+        let gdb_client_features = gdbserver
+            .as_ref()
+            .map(|server| server.client_features.clone())
+            .unwrap_or_default();
+        let gdb_interrupt = gdbserver
+            .as_ref()
+            .map(|server| server.interrupt.clone())
+            .unwrap_or_default();
         let (gdb_request_tx, gdb_request_rx) = mpsc::channel(1);
         let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
         let sigtrap_table = global_state.sigtrap_tables.lock().unwrap().copy(tid, None);
         Self {
+            reserved_input_task: None,
+            reserved_input_initial: None,
+            reserved_input_exec_transferred: false,
             tid,
             pid: tid,
             ppid: None,
@@ -4177,8 +4507,13 @@ impl<L: Tool> TracedTask<L> {
             ordinary_exec: Arc::new(StdMutex::new(HashMap::new())),
             command_bootstrap: options.command_bootstrap,
             has_cpuid_interception: false,
+            watches: WatchSet::default(),
+            watch_run: StdMutex::new(SignalRun::Unknown),
             initial_stack_pointer: None,
             pending_syscall: None,
+            native_callback: None,
+            native_entry_pending: None,
+            deferred_native_call: None,
             injected_syscall_frame: None,
             injected_tail_result: None,
             next_state,
@@ -4206,7 +4541,7 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table,
             sigtrap_scratch_state: Arc::new(AtomicU8::new(SCRATCH_PENDING)),
-            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_run: StdMutex::new(SignalRun::Unknown),
             segv_resume_syscall: AtomicU64::new(0),
             segv_new_task_seen: false,
             segv_clone_on_resume: false,
@@ -4239,17 +4574,23 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: false,
             resumed_by_gdb: None,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
             breakpoints: Default::default(),
             gdb_view: ThreadView::default(),
+            gdb_passed_signals: gdb_passed_signals.clone(),
+            gdb_client_features,
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: false,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt,
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: Arc::new(Mutex::new(())),
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -4273,6 +4614,14 @@ impl<L: Tool> TracedTask<L> {
         let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
         self.ntasks.fetch_add(1, Ordering::SeqCst);
         Self {
+            reserved_input_task: self
+                .global_state
+                .fatal_session
+                .reserved_input
+                .as_ref()
+                .and_then(|control| control.task_identity(child.as_raw())),
+            reserved_input_initial: self.reserved_input_initial.clone(),
+            reserved_input_exec_transferred: false,
             tid: child,
             pid: self.pid,
             ppid: self.ppid,
@@ -4284,8 +4633,13 @@ impl<L: Tool> TracedTask<L> {
             ordinary_exec: self.ordinary_exec.clone(),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
+            watches: WatchSet::default(),
+            watch_run: StdMutex::new(SignalRun::Unknown),
             initial_stack_pointer: self.initial_stack_pointer,
             pending_syscall: None,
+            native_callback: None,
+            native_entry_pending: None,
+            deferred_native_call: None,
             injected_syscall_frame: None,
             injected_tail_result: None,
             next_state,
@@ -4309,7 +4663,7 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table: self.sigtrap_table,
             sigtrap_scratch_state: self.sigtrap_scratch_state.clone(),
-            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_run: StdMutex::new(SignalRun::Unknown),
             segv_resume_syscall: AtomicU64::new(0),
             segv_new_task_seen: false,
             segv_clone_on_resume: false,
@@ -4340,17 +4694,23 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: self.attached_by_gdb,
             resumed_by_gdb: self.resumed_by_gdb,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
             breakpoints: self.breakpoints.clone(),
             gdb_view: ThreadView::default(),
+            gdb_passed_signals: self.gdb_passed_signals.clone(),
+            gdb_client_features: self.gdb_client_features.clone(),
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: self.shares_breakpoint_memory,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt: self.gdb_interrupt.clone(),
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
             needs_step_over: self.needs_step_over.clone(),
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -4392,6 +4752,14 @@ impl<L: Tool> TracedTask<L> {
         let (exit_suspend_tx, exit_suspend_rx) = mpsc::channel(16);
         self.ntasks.fetch_add(1, Ordering::SeqCst);
         Self {
+            reserved_input_task: self
+                .global_state
+                .fatal_session
+                .reserved_input
+                .as_ref()
+                .and_then(|control| control.task_identity(child.as_raw())),
+            reserved_input_initial: self.reserved_input_initial.clone(),
+            reserved_input_exec_transferred: false,
             tid: child,
             pid: child,
             ppid: Some(self.pid),
@@ -4403,8 +4771,13 @@ impl<L: Tool> TracedTask<L> {
             ordinary_exec: Arc::new(StdMutex::new(HashMap::new())),
             command_bootstrap: false,
             has_cpuid_interception: self.has_cpuid_interception,
+            watches: WatchSet::default(),
+            watch_run: StdMutex::new(SignalRun::Unknown),
             initial_stack_pointer: self.initial_stack_pointer,
             pending_syscall: None,
+            native_callback: None,
+            native_entry_pending: None,
+            deferred_native_call: None,
             injected_syscall_frame: None,
             injected_tail_result: None,
             next_state,
@@ -4428,7 +4801,7 @@ impl<L: Tool> TracedTask<L> {
             restore_maybe_pending: true,
             sigtrap_table,
             sigtrap_scratch_state,
-            segv_run: StdMutex::new(SegvRun::Unknown),
+            segv_run: StdMutex::new(SignalRun::Unknown),
             segv_resume_syscall: AtomicU64::new(0),
             segv_new_task_seen: false,
             segv_clone_on_resume: false,
@@ -4460,22 +4833,41 @@ impl<L: Tool> TracedTask<L> {
             attached_by_gdb: self.attached_by_gdb,
             resumed_by_gdb: None,
             gdb_resume_tx: Some(gdb_resume_tx),
-            gdb_resume_rx: Some(gdb_resume_rx),
-            breakpoints: Arc::new(StdMutex::new(
-                self.breakpoints
-                    .lock()
-                    .expect("should not be poisoned: no code panics while holding it")
-                    .clone(),
-            )),
+            // A shared address space holds the same breakpoints, which gdb
+            // may insert or remove through either process; a copy holds a
+            // copy of them.
+            breakpoints: if shares_address_space {
+                self.breakpoints.clone()
+            } else {
+                Arc::new(StdMutex::new(
+                    self.breakpoints
+                        .lock()
+                        .expect("should not be poisoned: no code panics while holding it")
+                        .clone(),
+                ))
+            },
             gdb_view: ThreadView::default(),
+            gdb_passed_signals: self.gdb_passed_signals.clone(),
+            gdb_client_features: self.gdb_client_features.clone(),
+            gdb_vfork_reported: false,
+            shares_breakpoint_memory: shares_address_space,
             suspended: Arc::new(AtomicBool::new(false)),
             gdb_request_tx: Some(gdb_request_tx),
-            gdb_request_rx: Some(gdb_request_rx),
+            gdb_ports: GdbPorts::new(gdb_resume_rx, gdb_request_rx),
+            gdb_interrupt: self.gdb_interrupt.clone(),
+            gdb_step_pending: false,
+            gdb_sent_signal: SentSignal::default(),
             exit_suspend_tx: Some(exit_suspend_tx),
             exit_suspend_rx: Some(exit_suspend_rx),
-            needs_step_over: Arc::new(Mutex::new(())),
+            // A step over a breakpoint in shared memory takes it out of
+            // both processes.
+            needs_step_over: if shares_address_space {
+                self.needs_step_over.clone()
+            } else {
+                Arc::new(Mutex::new(()))
+            },
             suspended_tasks: BTreeMap::new(),
-            stack_checked_out: Arc::new(AtomicBool::new(false)),
+            stack_arena: Arc::new(StackArena::default()),
         }
     }
 
@@ -4778,6 +5170,62 @@ impl SegfaultTrapInfo {
     }
 }
 
+/// Invocation-local register policy, not ownership of a ptrace stop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InjectionRestoration {
+    PreserveResult,
+    PublicReturning,
+}
+
+impl InjectionRestoration {
+    fn for_public_returning(
+        pending_syscall: bool,
+        injected_frame: bool,
+        signal_callback: bool,
+        held_signal_callback: bool,
+    ) -> Self {
+        if cfg!(target_arch = "x86_64")
+            && !pending_syscall
+            && !injected_frame
+            && !signal_callback
+            && !held_signal_callback
+        {
+            Self::PublicReturning
+        } else {
+            Self::PreserveResult
+        }
+    }
+}
+
+/// Restore the invocation's computational/control frame without undoing
+/// architectural effects such as ARCH_SET_FS/GS. The caller separately owns
+/// the extracted syscall result and the authentic stopped task.
+fn public_returning_regs(
+    post_call: libc::user_regs_struct,
+    context: &libc::user_regs_struct,
+) -> libc::user_regs_struct {
+    #[cfg(target_arch = "x86_64")]
+    {
+        libc::user_regs_struct {
+            fs_base: post_call.fs_base,
+            gs_base: post_call.gs_base,
+            cs: post_call.cs,
+            ss: post_call.ss,
+            ds: post_call.ds,
+            es: post_call.es,
+            fs: post_call.fs,
+            gs: post_call.gs,
+            ..*context
+        }
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // The new disposition is selected only on x86_64. Keep the existing
+        // result/argument policy on other architectures.
+        restored_regs(post_call, context, None, false)
+    }
+}
+
 // restore syscall context when it returns. This is needed because we might
 // have injected a different syscall (or arguments) in handle_seccomp.
 fn restore_context(
@@ -4843,8 +5291,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         use reverie::syscalls::ArchPrctl;
         use reverie::syscalls::ArchPrctlCmd;
 
-        self.inject_with_retry(ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_GET_CPUID(None)))
-            .await
+        self.inject_backend_private_with_retry(
+            ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_GET_CPUID(None)),
+        )
+        .await
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -4852,8 +5302,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         use reverie::syscalls::ArchPrctl;
         use reverie::syscalls::ArchPrctlCmd;
 
-        self.inject_with_retry(ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_SET_CPUID(0)))
-            .await
+        self.inject_backend_private_with_retry(
+            ArchPrctl::new().with_cmd(ArchPrctlCmd::ARCH_SET_CPUID(0)),
+        )
+        .await
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -5003,7 +5455,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             let shielded =
                 shield_sigtrap && owner.shield_sigtrap_for_step(&task, "pre-init mmap")?;
             // Execute the injected mmap call.
+            owner.input_continuation(None)?;
+            let native = NativeCallContext::internal();
+            let (a, b, c, d, e, f) = regs.args();
+            owner.observe_native_at_stop(
+                &task,
+                Sysno::mmap as u64,
+                [a, b, c, d, e, f],
+                Some(&native),
+            )?;
+            owner.native_transition_started(Some(&native));
             let mut running = RootStopLease::new(task, held_root_stop.clone()).step(None)?;
+            owner.native_resume_issued(Some(&native))?;
             #[cfg(test)]
             at_preinit_point(
                 preinit_point,
@@ -5054,6 +5517,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                                 reverie::UnreportedSignalReason::DuringInitialization,
                             )
                             .await;
+                        owner.input_continuation(None)?;
                         running =
                             RootStopLease::new(task, held_root_stop.clone()).resume_any(sig)?;
                     }
@@ -5061,6 +5525,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // Injected mmap trapped. We may not necessarily
                         // intercept a seccomp event here if the tool hasn't
                         // subscribed to the mmap syscall.
+                        owner.input_continuation(None)?;
                         running = RootStopLease::new(task, held_root_stop.clone()).resume(None)?;
                     }
                     unknown => {
@@ -5069,6 +5534,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             };
 
+            let result = Errno::from_ret(task.getregs()?.ret() as usize).map(|x| x as i64);
+            owner.native_result_at_stop(&task, Some(&native), result, true, false)?;
             // Make sure we got our desired address.
             assert_eq!(
                 Errno::from_ret(task.getregs()?.ret() as usize)?,
@@ -5197,7 +5664,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await;
         let mut task = match outcome? {
             PreinitOutcome::Ready(task) => task,
-            ended @ (PreinitOutcome::Exited(..) | PreinitOutcome::Refused(_)) => return Ok(ended),
+            ended @ PreinitOutcome::Exited(..) => return Ok(ended),
+            #[cfg(target_arch = "x86_64")]
+            ended @ PreinitOutcome::Refused(_) => return Ok(ended),
         };
         #[cfg(test)]
         at_preinit_point(
@@ -5286,7 +5755,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         // Protect our trampoline page from being written to. We won't need to
         // change this again for the lifetime of the guest process.
-        self.inject_with_retry(
+        self.inject_backend_private_with_retry(
             Mprotect::new()
                 .with_addr(AddrMut::from_raw(cp::TRAMPOLINE_BASE))
                 .with_len(cp::TRAMPOLINE_SIZE)
@@ -5342,6 +5811,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             self.has_cpuid_interception = true;
         }
+
+        let task = self.setup_reserved_input(task).await?;
 
         // Restore registers again after we've injected syscalls so that we
         // don't leave the return value register (%rax) in a dirty state.
@@ -5496,6 +5967,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Resumes the root from its exit stop during initialization and returns
     /// its final status.
     async fn preinit_exit_stop(&self, stopped: Stopped) -> Result<PreinitOutcome, TraceError> {
+        // Publish any unsettled input failure before the exit-drain continuation.
+        // Cleanup must still reap the actual task after a fatal publication.
+        let _ = self.input_cancelled();
         let held_root_stop = self.liteinst_root_stop_slot();
         let mut wait =
             match Self::wait_after_exit_event(stopped, &self.ptracer_waits, held_root_stop).await {
@@ -5554,13 +6028,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<libc::user_regs_struct, TraceError> {
         let eax = regs.rax as u32;
         let ecx = regs.rcx as u32;
-        let parked = self.park_for_gdb();
-        let result = self
-            .process_state
-            .clone()
-            .handle_cpuid_event(self, eax, ecx)
-            .await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        let result = ParkedForGdb::hold(
+            &mut parked,
+            self.process_state
+                .clone()
+                .handle_cpuid_event(self, eax, ecx),
+        )
+        .await;
+        self.unpark(parked);
+        let result = result?;
         let cpuid = self
             .ordinary_callback_errno("ptrace cpuid callback", result)
             .await?;
@@ -5580,13 +6057,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         mut regs: libc::user_regs_struct,
         request: Rdtsc,
     ) -> Result<libc::user_regs_struct, TraceError> {
-        let parked = self.park_for_gdb();
-        let result = self
-            .process_state
-            .clone()
-            .handle_rdtsc_event(self, request)
-            .await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        let result = ParkedForGdb::hold(
+            &mut parked,
+            self.process_state.clone().handle_rdtsc_event(self, request),
+        )
+        .await;
+        self.unpark(parked);
+        let result = result?;
         let retval = self
             .ordinary_callback_errno("ptrace rdtsc callback", result)
             .await?;
@@ -5690,7 +6168,25 @@ impl<L: Tool + 'static> TracedTask<L> {
         // wrote; every later one is a trap the kernel just reported, which
         // nothing here writes, so it takes the one-call probe.
         let mut first_step = self.held_siginfo_written.swap(false, Ordering::Relaxed);
+        let input_control = self.input_control();
+        let input_task = self.reserved_input_task;
+        let input_session = self.fatal_session();
+        let input_pid = self.pid();
         let mut step = move |task: Stopped, unit| {
+            if let (Some(control), Some(identity)) = (&input_control, input_task)
+                && let Err(error) = control.backend_continuation(identity, None)
+            {
+                control.backend_fail(error.to_string());
+                input_session.fail_at(
+                    BackendFailure {
+                        pid: input_pid,
+                        tid: task.pid(),
+                        phase: "ptrace input timer continuation",
+                    },
+                    anyhow::Error::new(error).into(),
+                );
+                return Err(Errno::ECANCELED.into());
+            }
             if !filtered {
                 step_shield.lock().unwrap().prepare(&task)?;
             }
@@ -5721,9 +6217,33 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         let observe_shield = Arc::clone(&shield);
         let newborn_owner = self.global_state.newborn_owner();
+        // A step that ran an instruction a watch catches stops once, with
+        // the step's report, so its hit is read here (`crate::watch`).
+        // Their stack budgets are spent on this copy, put back after.
+        let mut watches = self.watches;
+        let watch_global = Arc::clone(&self.global_state.gs_ref);
+        let tid = self.tid();
         let mut observe = |wait: &Wait| {
             if let Wait::Stopped(task, _) = wait {
                 observe_shield.lock().unwrap().settle(task)?;
+            }
+            // The step's own trap, which the shield accounts for, carried
+            // the hit: the hit adds nothing to SIGTRAP's state.
+            if watches.is_armed()
+                && let Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) = wait
+            {
+                let mask = take_watch_hits(task)?;
+                if mask != 0 {
+                    WATCH_HITS_IN_TIMER_STEPS.fetch_add(1, Ordering::Relaxed);
+                    report_watch_hits(
+                        &*watch_global,
+                        &mut watches,
+                        task,
+                        tid,
+                        mask,
+                        reverie::SigtrapAtHit::Unchanged,
+                    )?;
+                }
             }
             if let Wait::Stopped(task, event) = wait {
                 // A step can decode a new child. `HandleFailure::Event` then
@@ -5757,6 +6277,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await
             }
         };
+        self.watches = watches;
         // An ignored SIGTRAP that a step reset is put back before the Tool's
         // callback. A stop that is passed on or kept for later cannot take an
         // injection here, so the next injection or syscall skip puts it back.
@@ -5813,12 +6334,32 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             self.apply_sigtrap_repair(task).await?
         };
-        let parked = self.park_for_gdb();
-        self.process_state.clone().handle_timer_event(self).await;
-        drop(parked);
+        let mut parked = self.park_for_gdb();
+        let result = ParkedForGdb::hold(
+            &mut parked,
+            self.process_state.clone().handle_timer_event(self),
+        )
+        .await;
+        self.unpark(parked);
+        result?;
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
         Ok((true, task))
+    }
+
+    /// Disregards the thread's latest stop, one that makes no Tool callback,
+    /// so that it leaves the timer event as it was, and finishes what of the
+    /// event nothing else will drive: the single steps toward it that the
+    /// stop interrupted, or the whole event if the stop found its
+    /// notification lost (`Timer::disregard_stop`). The guest then resumes
+    /// toward the event as if the stop had not happened. Does not return if
+    /// the steps run into another stop, which goes to the run loop
+    /// (`drive_timer`, `abort`).
+    async fn disregard_stop_for_timer(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        match self.timer.disregard_stop()? {
+            Some(unfinished) => Ok(self.drive_timer(task, Some(unfinished)).await?.1),
+            None => Ok(task),
+        }
     }
 
     /// Finishes, before the guest resumes, what of the timer event a
@@ -5826,6 +6367,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// a notification an injection took (`Timer::take_notification`), by
     /// driving it from this stop. A guest signal held for the resume instead
     /// retires the event (`Timer::retire`); see `handle_injected_syscall`.
+    #[cfg(target_arch = "x86_64")]
     async fn finish_disregarded_timer(
         &mut self,
         task: Stopped,
@@ -5850,6 +6392,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        // gdb's interrupt stops the guest at the first stop a thread makes,
+        // before the stop is handled.
+        self.interrupt_point(&stopped, &event)
+            .await
+            .tracee_context(self.tid(), "stop for gdb's interrupt")?;
         // An original clone the last resume ran made a child Reverie traces
         // only if this stop is its new-task event; otherwise (no child, or one
         // made with CLONE_UNTRACED) the table it may share is marked
@@ -5893,7 +6440,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .tracee_context(tid, "handle exec stop"),
             Event::Seccomp => self.handle_seccomp(stopped).await,
             Event::NewChild(op, child) => self
-                .handle_new_task(op, stopped, child, None, None)
+                .handle_new_task(op, stopped, child, None, None, None)
                 .await
                 .tracee_context(tid, "handle new tracee stop"),
             Event::VforkDone => self
@@ -5952,9 +6499,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
         self.segv_resume_syscall
             .store(Sysno::rt_sigreturn as u64 + 1, Ordering::SeqCst);
-        self.resume_stopped(task, None)?
-            .next_state_with_owner(&self.ptracer_waits)
-            .await
+        let native = NativeCallContext::application(None);
+        let (a, b, c, d, e, f) = regs.args();
+        self.observe_native_at_stop(
+            &task,
+            Sysno::rt_sigreturn as u64,
+            [a, b, c, d, e, f],
+            Some(&native),
+        )?;
+        let running = self.resume_stopped_input(task, None, Some(&native))?;
+        self.native_unobserved(Some(&native))?;
+        running.next_state_with_owner(&self.ptracer_waits).await
     }
 
     // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
@@ -5975,10 +6530,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             // included: an injected-trap site is e9patch's, whose
             // capabilities say it does not report sigreturns. More than the keep margin
             // (`PmuConfig::keep_margin`) short of a precise event's target,
-            // before the programming can pass its period on any supported
+            // before a whole programming can pass its period on any supported
             // processor, it leaves the timer event as it was, and the
             // notification, yet to come, reaches the restored context and
-            // delivers the event. Nothing of the event is continued across
+            // delivers the event. A halved programming (`PmuConfig::halves`)
+            // can pass its period this far short, but its notification, pending
+            // or lost, only re-arms the rest of the event, so the same holds. Nothing of the event is continued across
             // the context switch, so closer to the target, where host timing
             // decides whether the notification is still pending, was taken
             // as single steps began, or was lost, the event is cancelled
@@ -6060,16 +6617,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = Some((nr, args));
 
             self.in_syscall_callback = true;
-            let parked = self.park_for_gdb();
-            let retval = cancellable(self.cancel_handler.clone(), async {
-                self.process_state
-                    .clone()
-                    .handle_syscall_event(self, syscall)
-                    .await
-            })
+            let mut parked = self.park_for_gdb();
+            let retval = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), async {
+                    self.process_state
+                        .clone()
+                        .handle_syscall_event(self, syscall)
+                        .await
+                }),
+            )
             .await;
-            drop(parked);
+            self.unpark(parked);
             self.in_syscall_callback = false;
+            let retval = retval?;
 
             let retval = match retval {
                 Some(Err(error)) => match error.into_errno() {
@@ -6118,6 +6679,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn handle_sigtrap(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
+        // SIGTRAP's disposition as known before this stop, which a hardware
+        // watchpoint hit's repair reads (`restore_sigtrap_after_hit`).
+        let remembered = if self.watches.is_armed() {
+            self.remembered_sigtrap_disposition()
+        } else {
+            None
+        };
         // A SIGTRAP that reaches here may be a guest's own trap, whose forced
         // delivery reset an ignored SIGTRAP natively, or a delivery whose
         // `SA_RESETHAND` reset a caught one.
@@ -6125,6 +6693,56 @@ impl<L: Tool + 'static> TracedTask<L> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
+        // A hardware watchpoint hit. Whatever the stop is, the slots that
+        // fired are read and reported first, before a stale step trap is
+        // discarded below, so that no hit is lost and no stale one is read at
+        // a later trap.
+        //
+        // A trap that is only a hit forced a SIGTRAP of its own, whose reset
+        // is repaired before the hit is reported. Linux says so in the
+        // `si_code` it takes from the debug status: `TRAP_HWBKPT` for a trap
+        // with the single-step bit clear, `TRAP_TRACE` for one with it set
+        // (`get_si_code`). Only `TRAP_HWBKPT` is claimed. A `TRAP_TRACE`
+        // may be a step of the guest's own, which raises its SIGTRAP whether
+        // or not a watch fired with it: two `popfq` instructions, the first
+        // setting the trap flag and the second clearing it as it reads a
+        // watched word, leave the flag clear at a real step's trap. A host
+        // that sets the single-step bit for a hit alone (an AMD EPYC VM
+        // does) therefore has its hits reported with their SIGTRAP state
+        // unknown, and its traps left to the arms below, which treat them
+        // exactly as they did before watches existed.
+        let mut task = task;
+        let hit_trap = self.watches.is_armed() && task.getsiginfo()?.si_code == libc::TRAP_HWBKPT;
+        if self.watches.is_armed() {
+            let mask = take_watch_hits(&task)?;
+            if mask != 0 {
+                let tid = self.tid();
+                let sigtrap = if hit_trap {
+                    let (stopped, sigtrap) =
+                        self.restore_sigtrap_after_hit(task, remembered).await?;
+                    task = stopped;
+                    sigtrap
+                } else if resumed_by_gdb_step {
+                    // A step Reverie made for the debugger: its own SIGTRAP
+                    // is shielded as every step of Reverie's is, and the hit
+                    // added nothing to it.
+                    reverie::SigtrapAtHit::Unchanged
+                } else {
+                    // The trap is another's, and what its own forced SIGTRAP
+                    // left of the guest's SIGTRAP state is that trap's
+                    // business; whether the hit added to it is not known.
+                    reverie::SigtrapAtHit::Unknown
+                };
+                report_watch_hits(
+                    &*self.global_state.gs_ref,
+                    &mut self.watches,
+                    &task,
+                    tid,
+                    mask,
+                    sigtrap,
+                )?;
+            }
+        }
         // A standard signal is queued at most once, so any SIGTRAP stop
         // consumes the step SIGTRAP an injection left queued.
         if std::mem::take(&mut self.stale_private_step_trap)
@@ -6144,12 +6762,44 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await?,
             ));
         }
+        // A trap that is only a hit is not delivered and makes no Tool
+        // callback, so the timer event it interrupted is finished as for the
+        // unclaimed trap below. (A hit inside a block step was read and
+        // reported at the step's stop, `drive_timer`.)
+        if hit_trap {
+            WATCH_TRAPS_CLAIMED.fetch_add(1, Ordering::Relaxed);
+            let task = match self.timer.disregard_stop()? {
+                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
+                None => task,
+            };
+            let running = self.resume_stopped(task, None)?;
+            return Ok(HandleSignalResult::SignalSuppressed(
+                running.next_state_with_owner(&self.ptracer_waits).await?,
+            ));
+        }
         let mut regs = task.getregs()?;
         // A SIGTRAP a process sent (the guest's own `raise(SIGTRAP)`, say) is
         // a signal like any other: Linux delivers it, so a handler runs or the
         // default action kills the guest with a core. None of the traps below
         // carries a sender's code. Before, it fell to the last arm and was
         // dropped, so a guest that raised SIGTRAP to die ran on.
+        //
+        // Not covered: a SIGTRAP sent to this thread (`raise`, `tgkill`,
+        // `pthread_kill`, `rt_tgsigqueueinfo`) already pending, blocked or
+        // racing in from another thread, when one of Reverie's own `int3`s
+        // fires, at a rewritten syscall site or a gdb breakpoint. The trap is
+        // forced into the thread's own queue, which keeps one standard
+        // signal, so the trap's siginfo is dropped and the stop carries the
+        // sender's (`legacy_queue` in `__send_signal_locked`,
+        // kernel/signal.c:1095 and :1352 at v6.9); a process-directed `kill`
+        // waits in the shared queue and cannot do this. This check takes the
+        // stop for the sent signal: at a rewritten site the syscall does not
+        // run, and at a breakpoint `rip` is not rewound. If the guest blocked
+        // SIGTRAP, forcing the trap also reset its action to `SIG_DFL` and
+        // unblocked it (:1338-1344), so the guest dies there, where natively
+        // the sent signal would have stayed pending. Before this check, the
+        // same race lost the sent signal instead
+        // (https://github.com/rrnewton/hermit/issues/4858).
         if is_sigtrap_sent_by_a_process(&task) {
             return self.deliver_guest_sigtrap(task, regs).await;
         }
@@ -6179,18 +6829,27 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         Ok(if self.breakpoints().contains_key(&rip_minus_one) {
             *regs.ip_mut() = rip_minus_one;
-            let next_state = self.resume_from_swbreak(task, regs).await?;
+            let next_state = if self.attached_by_gdb {
+                self.resume_from_swbreak(task, regs, BreakpointStop::Observed)
+                    .await?
+            } else {
+                self.step_over_unfollowed_breakpoint(task, regs).await?
+            };
             HandleSignalResult::SignalSuppressed(next_state)
         } else if resumed_by_gdb_step {
             self.notify_gdb_stop(StopReason::stopped(
                 task.pid(),
                 self.pid(),
-                StopEvent::Signal(Signal::SIGTRAP),
+                StopEvent::Signal(Signal::SIGTRAP.into()),
                 regs.into(),
             ))
             .await?;
             let running = self
-                .await_gdb_resume(task, ExpectedGdbResume::Resume)
+                .await_gdb_resume(
+                    task,
+                    ExpectedGdbResume::Resume,
+                    GdbResumeSignalOrigin::Unclassified,
+                )
                 .await?;
             HandleSignalResult::SignalSuppressed(
                 running.next_state_with_owner(&self.ptracer_waits).await?,
@@ -6204,14 +6863,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.deliver_guest_sigtrap(task, regs).await?
         } else {
             UNCLAIMED_SIGTRAPS_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
-            // The trap is not delivered and makes no Tool callback, so it
-            // leaves the timer event as it was, and what of the event nothing
-            // else will drive, the single steps toward it that it interrupted
-            // or a lost notification, is finished here.
-            let task = match self.timer.disregard_stop()? {
-                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                None => task,
-            };
+            // The trap is not delivered and makes no Tool callback.
+            let task = self.disregard_stop_for_timer(task).await?;
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(
                 running.next_state_with_owner(&self.ptracer_waits).await?,
@@ -6237,12 +6890,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.notify_gdb_stop(StopReason::stopped(
             task.pid(),
             self.pid(),
-            StopEvent::Signal(Signal::SIGTRAP),
+            StopEvent::Signal(Signal::SIGTRAP.into()),
             regs.into(),
         ))
         .await?;
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .await_gdb_resume(
+                task,
+                ExpectedGdbResume::Resume,
+                GdbResumeSignalOrigin::Unclassified,
+            )
             .await?;
         Ok(HandleSignalResult::SignalSuppressed(
             running.next_state_with_owner(&self.ptracer_waits).await?,
@@ -6256,11 +6913,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         debug_assert!(!resumed_by_gdb_step);
         if let Some((suspended_flag, stop_tx)) = self.get_stop_tx().await {
             // Frozen for another thread's gdb stop: let gdb inspect this one.
-            let _parked = self.park_for_gdb();
+            let _parked = self.publish_registers_for_gdb();
             let notify_stop_tx = stop_tx
                 .send((
                     task.pid(),
                     Suspended {
+                        input_task: self.reserved_input_task,
                         waker: self.exit_suspend_tx.clone(),
                         suspended: suspended_flag,
                     },
@@ -6536,6 +7194,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             reported: Some(taken),
             approved: verdict.approved,
             replacement: verdict.replacement,
+            step: false,
         })
     }
 
@@ -6567,6 +7226,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             reported: None,
             approved: false,
             replacement: None,
+            step: false,
         }
     }
 
@@ -6730,11 +7390,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         resume: SignalResume,
     ) -> Result<Wait, TraceError> {
+        self.resume_with_signal_and_native(task, resume, None).await
+    }
+
+    async fn resume_with_signal_and_native(
+        &mut self,
+        task: Stopped,
+        resume: SignalResume,
+        deferred: Option<&DeferredNativeCall>,
+    ) -> Result<Wait, TraceError> {
         let SignalResume {
             signal,
             reported,
             approved,
             replacement,
+            step,
         } = resume;
         // Before a siginfo write below: a write can land on an exit stop the
         // tracee already took (https://github.com/rrnewton/reverie/issues/1091).
@@ -6807,9 +7477,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.held_siginfo_written.store(true, Ordering::Relaxed);
             task.setsiginfo_bytes(&bytes)?;
         }
-        self.resume_stopped_any(task, signal)?
-            .next_state_with_owner(&self.ptracer_waits)
-            .await
+        let native = self.prepare_deferred_native(&task, deferred)?;
+        let running = if step {
+            self.step_stopped_any_input(task, signal, native)?
+        } else {
+            self.resume_stopped_any_input(task, signal, native)?
+        };
+        // This route deliberately has no syscall exit stop. Do not turn a
+        // later unrelated register value into the tail call's return value.
+        self.native_unobserved(native)?;
+        running.next_state_with_owner(&self.ptracer_waits).await
     }
 
     /// The Tool's verdict on `sig`: `Tool::handle_signal_event` for a signal
@@ -6882,11 +7559,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let outer_guest_block =
             std::mem::replace(&mut self.signal_callback_guest_restart_block, false);
         let outer_held = std::mem::replace(&mut self.in_held_signal_callback, held);
-        let parked = self.park_for_gdb();
+        let mut parked = self.park_for_gdb();
         let result = if held {
             let outer_execed = std::mem::replace(&mut self.signal_callback_execed, false);
-            let result =
-                cancellable(self.cancel_handler.clone(), self.tool_signal_verdict(sig)).await;
+            let result = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), self.tool_signal_verdict(sig)),
+            )
+            .await;
             let execed = self.signal_callback_execed;
             self.signal_callback_execed = outer_execed || execed;
             // A callback that executed a program cannot ask for the signal:
@@ -6896,11 +7576,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             // `tail_inject` cancels it. On main the guest's handler took the
             // signal when it made the exec, and the replacement resumed with
             // none.
-            result.unwrap_or(Ok((!execed).then_some(sig)))
+            result.map(|result| result.unwrap_or(Ok((!execed).then_some(sig))))
         } else {
-            self.tool_signal_verdict(sig).await
+            ParkedForGdb::hold(&mut parked, self.tool_signal_verdict(sig)).await
         };
-        drop(parked);
+        self.unpark(parked);
         self.in_signal_callback = outer;
         self.reported_signal = outer_reported;
         let replacement = std::mem::replace(&mut self.replacement_signal_info, outer_replacement);
@@ -6909,6 +7589,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.in_held_signal_callback = outer_held;
         self.signal_callback_replaced_restart_block = outer_replaced;
         self.signal_callback_guest_restart_block = outer_guest_block;
+        let result = result?;
         let signal = self
             .ordinary_callback_errno("ptrace signal callback", result)
             .await?;
@@ -7007,10 +7688,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // callback and leaves the timer event as it was.
             // Under a tracer filter it is not told apart, as on main, and is
             // reported again (`is_group_stop_unless_filtered`).
-            let task = match self.timer.disregard_stop()? {
-                Some(unfinished) => self.drive_timer(task, Some(unfinished)).await?.1,
-                None => task,
-            };
+            let task = self.disregard_stop_for_timer(task).await?;
             return self
                 .resume_stopped(task, None)?
                 .next_state_with_owner(&self.ptracer_waits)
@@ -7081,12 +7759,52 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let verdict = self
                     .report_signal(sig, false, taken.map(|taken| taken.bytes))
                     .await?;
-                let signal = verdict.signal;
+                let mut signal = verdict.signal;
+                let mut step = false;
+                // gdb chose this signal when it resumed the thread from a stop
+                // made before a stop was handled (`stop_for_gdb_at`), and is
+                // not shown it again.
+                let chosen_by_gdb = self.gdb_sent_signal.take_if(sig);
+                // A signal the Tool delivers stops for gdb first, which then
+                // decides what the guest gets. A step with the signal resumes
+                // through `resume_with_signal`, as a continue does, so that
+                // the signal keeps its own siginfo, or the one the callback
+                // chose, and a put-back instance is counted.
+                if let Some(delivered) = signal
+                    && !chosen_by_gdb
+                    && self.stops_for_gdb_at(delivered)
+                {
+                    (signal, step) = match self.signal_stop_for_gdb(&task, delivered).await? {
+                        GdbSignalResume::Continue(chosen) => (chosen, false),
+                        GdbSignalResume::Step(chosen) => (chosen, true),
+                    };
+                    // The completed Tool verdict covers `delivered`, not a
+                    // different signal selected by the debugger. Retain the
+                    // generic uncertainty before the stopped task can resume;
+                    // Linux disposition policy remains in the Tool. Suppression
+                    // creates no new delivery and cannot erase an older cause.
+                    if signal.is_some()
+                        && signal != Some(delivered)
+                        && let Some(control) = self.input_control()
+                    {
+                        control
+                            .backend_expose_before_continuation(
+                                self.reserved_input_task
+                                    .ok_or_else(|| self.input_failure("input-task-unavailable"))?,
+                                reverie::reserved_input::InputExposure {
+                                    target: reverie::reserved_input::InputTarget::Unknown,
+                                    cause: "unclassified-signal-forward".into(),
+                                },
+                            )
+                            .map_err(|error| self.input_failure(error))?;
+                    }
+                }
                 let resume = SignalResume {
                     signal,
                     reported: taken,
                     approved: verdict.approved,
                     replacement: verdict.replacement,
+                    step,
                 };
                 self.resume_with_signal(task, resume).await
             }
@@ -7107,9 +7825,25 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     // handle ptrace exec event
     async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+        // Successful exec replaced the old scratch memory. Its callback can
+        // still own guards until the injected exec unwinds; those retain the
+        // old Arc, so their Drop cannot release a frame of this new image.
+        self.stack_arena = Arc::new(StackArena::default());
+        // Actual successful exec ends the displaced image's native effects
+        // even for an observing Tool with no reserved-input facility. Do this
+        // before new-image initialization or any consuming Tool callback.
+        self.fatal_session()
+            .complete_native_effects(&task.terminal_cleanup())
+            .map_err(|error| self.input_failure(error))?;
+        if !std::mem::take(&mut self.reserved_input_exec_transferred) {
+            self.reserved_input_exec_transfer(&task, self.reserved_input_task)?;
+            self.reserved_input_exec_transferred = false;
+        }
         // Linux enables CPUID again on every successful replacement exec.
         // This old-image fact must not survive until the new arm is verified.
         self.has_cpuid_interception = false;
+        // And it disarms the thread's hardware watchpoints (`flush_thread`).
+        self.watches = WatchSet::default();
         // A signal callback that injected the exec never resumes, so the
         // replacement image runs outside it, and its state, which
         // `report_signal` would have restored, must not reach the post-exec
@@ -7147,6 +7881,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // inject or tail inject after execve succeeded.
         self.pending_syscall = None;
         self.injected_syscall_frame = None;
+        // The new image is a new address space, of this process alone,
+        // holding none of gdb's breakpoints: a later `z0` for an old one
+        // fails instead of writing the old image's byte into the new one.
+        self.breakpoints = Arc::new(StdMutex::new(HashMap::new()));
+        self.needs_step_over = Arc::new(Mutex::new(()));
+        self.shares_breakpoint_memory = false;
 
         // TODO: Update PID? Need to write a test checking this.
 
@@ -7311,8 +8051,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             || task.terminal_cleanup(),
             PreinitPoint::PostExecDrained,
         );
+        self.reserved_input_exec_begin(&task)?;
         let task = match self.tracee_preinit(task, PreinitPlace::AtExec).await? {
             PreinitOutcome::Ready(task) => task,
+            #[cfg(target_arch = "x86_64")]
             PreinitOutcome::Refused(_task) => return Err(Errno::ECANCELED.into()),
             PreinitOutcome::Exited(pid, exit_status) => {
                 self.exec_sigtrap_quiet = false;
@@ -7330,7 +8072,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         if initial_command {
             self.timer.finish_initial_exec();
         }
-        let parked = self.park_for_gdb();
+        // gdb is shown the new image only once it is set up, below: the
+        // thread does not stop for gdb's interrupt in this callback.
+        let parked = self.publish_registers_for_gdb();
         let result = self.process_state.clone().handle_post_exec(self).await;
         drop(parked);
         self.ordinary_callback_errno("ptrace post-exec callback", result)
@@ -7354,16 +8098,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 proc_exe.clone().into()
             });
 
+            // An exec is reported as one only if gdb follows execs
+            // (`exec-events+`); otherwise, as natively without
+            // `PTRACE_O_TRACEEXEC`, as the trap that stops the thread after
+            // it. The first stop, the guest's own start, is not reported.
+            let event = if self.gdb_client_features.exec_events() {
+                StopEvent::Exec(exe)
+            } else {
+                StopEvent::Signal(Signal::SIGTRAP.into())
+            };
             let stopped = StoppedInferior {
-                reason: StopReason::stopped(
-                    task.pid(),
-                    self.pid(),
-                    StopEvent::Exec(exe),
-                    task.getregs()?.into(),
-                ),
+                reason: StopReason::stopped(task.pid(), self.pid(), event, task.getregs()?.into()),
                 request_tx: request_tx.ok_or(Errno::EIO)?,
                 resume_tx: resume_tx.ok_or(Errno::EIO)?,
                 view: self.gdb_view.clone(),
+                replied: None,
             };
 
             // NB: notify initial gdb stop, this is the first time we can
@@ -7385,7 +8134,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .await;
             }
             let running = self
-                .await_gdb_resume(task, ExpectedGdbResume::Resume)
+                .await_gdb_resume(
+                    task,
+                    ExpectedGdbResume::Resume,
+                    GdbResumeSignalOrigin::Unclassified,
+                )
                 .await?;
             Ok(running.next_state_with_owner(&self.ptracer_waits).await?)
         } else {
@@ -7420,6 +8173,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(task, Event::Signal(Signal::SIGTRAP))
                     if task.getsiginfo()?.si_code == libc::TRAP_TRACE =>
                 {
+                    // A watch armed in post-exec that caught the first
+                    // instruction's access fired with the step's trap.
+                    if self.watches.is_armed() {
+                        let mask = take_watch_hits(&task)?;
+                        let tid = self.tid();
+                        report_watch_hits(
+                            &*self.global_state.gs_ref,
+                            &mut self.watches,
+                            &task,
+                            tid,
+                            mask,
+                            reverie::SigtrapAtHit::Unchanged,
+                        )?;
+                    }
                     let task = if ignored {
                         self.apply_sigtrap_repair(task).await?
                     } else {
@@ -7451,20 +8218,25 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// kernel run the call and resumes the guest at its return.
     async fn handle_unsubscribed_mapping_syscall(&mut self, task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        let native = NativeCallContext::application(None);
+        self.observe_native_entry(&task, &native)?;
         let wait = self
-            .syscall_stopped(task, None)
+            .syscall_stopped_input(task, None, Some(&native))
             .tracee_context(tid, "resume unsubscribed mapping syscall")?
             .next_state_with_owner(&self.ptracer_waits)
             .await
             .tracee_context(tid, "wait for unsubscribed mapping syscall")?;
         self.arm_liteinst_wait(&wait);
         match wait {
-            Wait::Stopped(stopped, Event::Syscall) => self
-                .resume_stopped(stopped, None)
-                .tracee_context(tid, "resume after unsubscribed mapping syscall")?
-                .next_state_with_owner(&self.ptracer_waits)
-                .await
-                .tracee_context(tid, "wait after unsubscribed mapping syscall"),
+            Wait::Stopped(stopped, Event::Syscall) => {
+                let result = Errno::from_ret(stopped.getregs()?.ret() as usize).map(|x| x as i64);
+                self.native_result_at_stop(&stopped, Some(&native), result, true, false)?;
+                self.resume_stopped(stopped, None)
+                    .tracee_context(tid, "resume after unsubscribed mapping syscall")?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
+                    .tracee_context(tid, "wait after unsubscribed mapping syscall")
+            }
             Wait::Stopped(_, event) => Err(Error::runtime(
                 tid,
                 "run unsubscribed mapping syscall",
@@ -7476,6 +8248,8 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        self.native_user_continuation(&task)
+            .tracee_context(tid, "account previous native continuation")?;
         let syscall = self
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
@@ -7586,9 +8360,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // background call of another thread rewrote before the kernel
                 // read it. The exit stop sends no signal and runs no guest
                 // instruction. Any other stop is the main loop's to handle.
-                if self.keeps_segv_state() {
+                let native = NativeCallContext::application(None);
+                self.observe_native_entry(&task, &native)?;
+                if self.keeps_segv_state() || self.records_watch_sigtrap() {
                     let wait = self
-                        .syscall_stopped(task, None)
+                        .syscall_stopped_input(task, None, Some(&native))
                         .tracee_context(tid, "run rt_sigreturn to its exit")?
                         .next_state_with_owner(&self.ptracer_waits)
                         .await
@@ -7596,6 +8372,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.arm_liteinst_wait(&wait);
                     return match wait {
                         Wait::Stopped(stopped, Event::Syscall) => {
+                            let result = Errno::from_ret(stopped.getregs()?.ret() as usize)
+                                .map(|x| x as i64);
+                            self.native_result_at_stop(
+                                &stopped,
+                                Some(&native),
+                                result,
+                                true,
+                                false,
+                            )?;
                             self.note_segv_sigreturn_exit(&stopped)
                                 .tracee_context(tid, "look for rt_sigreturn's SIGSEGV")?;
                             self.resume_stopped(stopped, None)
@@ -7607,26 +8392,50 @@ impl<L: Tool + 'static> TracedTask<L> {
                         wait => Ok(wait),
                     };
                 }
-                return self
-                    .resume_stopped(task, None)
-                    .tracee_context(tid, "resume rt_sigreturn")?
+                let running = self
+                    .resume_stopped_input(task, None, Some(&native))
+                    .tracee_context(tid, "resume rt_sigreturn")?;
+                self.native_unobserved(Some(&native))?;
+                return running
                     .next_state_with_owner(&self.ptracer_waits)
                     .await
                     .tracee_context(tid, "wait after rt_sigreturn");
             }
             self.pending_syscall = Some((nr, args));
+            let native_callback = self
+                .global_state
+                .fatal_session
+                .native_sequence
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                    old.checked_add(1)
+                })
+                .map_err(|_| self.input_failure("native-callback-identity-exhausted"))?;
+            self.native_callback = Some(native_callback);
+            self.native_entry_pending = Some(Arc::new(AtomicBool::new(true)));
 
             self.in_syscall_callback = true;
-            let parked = self.park_for_gdb();
-            let retval = cancellable(self.cancel_handler.clone(), async {
-                self.process_state
-                    .clone()
-                    .handle_syscall_event(self, syscall)
-                    .await
-            })
+            let mut parked = self.park_for_gdb();
+            let retval = ParkedForGdb::hold(
+                &mut parked,
+                cancellable(self.cancel_handler.clone(), async {
+                    self.process_state
+                        .clone()
+                        .handle_syscall_event(self, syscall)
+                        .await
+                }),
+            )
             .await;
-            drop(parked);
+            self.unpark(parked);
             self.in_syscall_callback = false;
+            self.native_callback = None;
+            let retval = retval?;
+            let mut deferred_native = self.deferred_native_call.take();
+            if deferred_native
+                .as_ref()
+                .is_some_and(|call| call.callback != native_callback)
+            {
+                return Err(self.input_failure("native-tail-callback-mismatch").into());
+            }
 
             let retval = match retval {
                 Some(Err(error)) if !matches!(error, reverie::Error::Errno(_)) => {
@@ -7708,13 +8517,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             // signal for the resume: Linux drops one handed to a resume from
             // this seccomp stop, but sends one handed over at the exit stop.
             if resume.signal.is_none()
-                && self.keeps_segv_state()
+                && (self.keeps_segv_state() || self.records_watch_sigtrap())
                 && [Sysno::rt_sigprocmask, Sysno::rt_sigreturn]
                     .iter()
                     .any(|&nr| self.segv_resume_syscall.load(Ordering::SeqCst) == nr as u64 + 1)
             {
+                let native = self.prepare_deferred_native(&task, deferred_native.as_ref())?;
                 let wait = self
-                    .syscall_stopped(task, None)
+                    .syscall_stopped_input(task, None, native)
                     .tracee_context(tid, "run a mask-setting syscall to its exit")?
                     .next_state_with_owner(&self.ptracer_waits)
                     .await
@@ -7722,6 +8532,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.arm_liteinst_wait(&wait);
                 task = match wait {
                     Wait::Stopped(stopped, Event::Syscall) => {
+                        let result = Errno::from_ret(stopped.getregs()?.ret() as usize)
+                            .map(|value| value as i64);
+                        self.native_result_at_stop(&stopped, native, result, true, false)?;
+                        deferred_native = None;
                         self.segv_resume_syscall.store(0, Ordering::SeqCst);
                         self.note_segv_sigreturn_exit(&stopped)
                             .tracee_context(tid, "look for a mask-setting syscall's SIGSEGV")?;
@@ -7731,9 +8545,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 };
             }
             let wait = self
-                .resume_with_signal(task, resume)
+                .resume_with_signal_and_native(task, resume, deferred_native.as_ref())
                 .await
                 .tracee_context(tid, "resume after seccomp stop")?;
+            self.native_entry_pending = None;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
                 "completed guest syscall interception"
@@ -7848,15 +8663,29 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        self.resume_stopped_input(task, signal, None)
+    }
+
+    fn resume_stopped_input<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
         let signal = signal.into();
         self.note_segv_resume(&task, signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
-        self.lease_liteinst_root_stop(task)
+        self.native_transition_started(input);
+        let running = self
+            .lease_liteinst_root_stop(task)
             .guard_exit_stop(guard)
-            .resume(signal)
+            .resume(signal)?;
+        self.native_resume_issued(input)?;
+        Ok(running)
     }
 
     fn step_stopped<T: Into<Option<Signal>>>(
@@ -7864,6 +8693,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        self.step_stopped_input(task, signal, None)
+    }
+
+    fn step_stopped_input<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
@@ -7872,9 +8711,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
-        self.lease_liteinst_root_stop(task)
+        self.native_transition_started(input);
+        let running = self
+            .lease_liteinst_root_stop(task)
             .guard_exit_stop(guard)
-            .step(signal)
+            .step(signal)?;
+        self.native_resume_issued(input)?;
+        Ok(running)
     }
 
     fn syscall_stopped<T: Into<Option<Signal>>>(
@@ -7882,15 +8725,29 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: T,
     ) -> Result<Running, TraceError> {
+        self.syscall_stopped_input(task, signal, None)
+    }
+
+    fn syscall_stopped_input<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         if self.global_state.fatal_session.is_failed() {
             return Err(Errno::ECANCELED.into());
         }
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
-        self.lease_liteinst_root_stop(task)
+        self.native_transition_started(input);
+        let running = self
+            .lease_liteinst_root_stop(task)
             .guard_exit_stop(guard)
-            .syscall(signal)
+            .syscall(signal)?;
+        self.native_resume_issued(input)?;
+        Ok(running)
     }
 
     /// `resume_stopped` for a signal that may be one nix cannot name
@@ -7900,20 +8757,32 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: Option<AnySignal>,
     ) -> Result<Running, TraceError> {
+        self.resume_stopped_any_input(task, signal, None)
+    }
+
+    fn resume_stopped_any_input(
+        &self,
+        task: Stopped,
+        signal: Option<AnySignal>,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         match signal {
             Some(signal) if signal.as_nix().is_none() => {
                 if self.global_state.fatal_session.is_failed() {
                     return Err(Errno::ECANCELED.into());
                 }
                 self.note_segv_resume(&task, Some(signal.raw()));
-                {
-                    let guard = self.exit_stop_guard(&task);
-                    self.lease_liteinst_root_stop(task)
-                        .guard_exit_stop(guard)
-                        .resume_raw(signal.raw())
-                }
+                let guard = self.exit_stop_guard(&task);
+                self.native_transition_started(input);
+                let running = self
+                    .lease_liteinst_root_stop(task)
+                    .guard_exit_stop(guard)
+                    .resume_raw(signal.raw())?;
+                self.native_resume_issued(input)?;
+                Ok(running)
             }
-            signal => self.resume_stopped(task, signal.and_then(AnySignal::as_nix)),
+            signal => self.resume_stopped_input(task, signal.and_then(AnySignal::as_nix), input),
         }
     }
 
@@ -7923,6 +8792,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         signal: Option<AnySignal>,
     ) -> Result<Running, TraceError> {
+        self.step_stopped_any_input(task, signal, None)
+    }
+
+    fn step_stopped_any_input(
+        &self,
+        task: Stopped,
+        signal: Option<AnySignal>,
+        input: Option<&NativeCallContext>,
+    ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         match signal {
             Some(signal) if signal.as_nix().is_none() => {
                 if self.global_state.fatal_session.is_failed() {
@@ -7931,23 +8810,27 @@ impl<L: Tool + 'static> TracedTask<L> {
                 #[cfg(test)]
                 record_step_for_test(task.pid());
                 self.note_segv_signal_without_cont(Some(signal.raw()));
-                {
-                    let guard = self.exit_stop_guard(&task);
-                    self.lease_liteinst_root_stop(task)
-                        .guard_exit_stop(guard)
-                        .step_raw(signal.raw())
-                }
+                let guard = self.exit_stop_guard(&task);
+                self.native_transition_started(input);
+                let running = self
+                    .lease_liteinst_root_stop(task)
+                    .guard_exit_stop(guard)
+                    .step_raw(signal.raw())?;
+                self.native_resume_issued(input)?;
+                Ok(running)
             }
-            signal => self.step_stopped(task, signal.and_then(AnySignal::as_nix)),
+            signal => self.step_stopped_input(task, signal.and_then(AnySignal::as_nix), input),
         }
     }
 
-    /// `syscall_stopped` for a signal that may be one nix cannot name.
-    fn syscall_stopped_any(
+    /// `syscall_stopped_input` for a signal that may be one nix cannot name.
+    fn syscall_stopped_any_input(
         &self,
         task: Stopped,
         signal: Option<AnySignal>,
+        input: Option<&NativeCallContext>,
     ) -> Result<Running, TraceError> {
+        self.input_continuation(input)?;
         match signal {
             Some(signal) if signal.as_nix().is_none() => {
                 if self.global_state.fatal_session.is_failed() {
@@ -7955,11 +8838,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 self.note_segv_signal_without_cont(Some(signal.raw()));
                 let guard = self.exit_stop_guard(&task);
-                self.lease_liteinst_root_stop(task)
+                self.native_transition_started(input);
+                let running = self
+                    .lease_liteinst_root_stop(task)
                     .guard_exit_stop(guard)
-                    .syscall_raw(signal.raw())
+                    .syscall_raw(signal.raw())?;
+                self.native_resume_issued(input)?;
+                Ok(running)
             }
-            signal => self.syscall_stopped(task, signal.and_then(AnySignal::as_nix)),
+            signal => self.syscall_stopped_input(task, signal.and_then(AnySignal::as_nix), input),
         }
     }
 
@@ -7970,6 +8857,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         child: Running,
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
+        input: Option<&NativeCallContext>,
     ) -> Result<Wait, TraceError> {
         self.segv_new_task_seen = true;
         tracing::debug!(
@@ -8016,16 +8904,47 @@ impl<L: Tool + 'static> TracedTask<L> {
             ChildOp::Fork | ChildOp::Vfork => Ok(Some(self.pid)),
         };
         let is_thread = op == ChildOp::Clone && !matches!(own_process_parent, Ok(Some(_)));
+        if let Some(control) = self.input_control() {
+            let identity = control
+                .task_identity(child.pid().as_raw())
+                .ok_or_else(|| self.input_failure("input-child-not-retained"))?;
+            // These are exactly the `tid`/`pid` operands used below by
+            // cloned()/forked(), before their Tool state constructors run.
+            let tool_pid = if is_thread { self.pid } else { child.pid() };
+            let registration = control
+                .backend_bind_tool_identity(identity, child.pid().as_raw(), tool_pid.as_raw())
+                .map_err(|error| self.input_failure(error))?;
+            self.global_state
+                .gs_ref
+                .on_reserved_input_task(registration)
+                .map_err(|error| self.input_failure(error))?;
+        }
         // Read once: a clone3's flags are guest memory, and the table the
         // child is given and the check of it below must see the same value.
-        let shares_actions = !is_thread && shares_signal_actions(&parent);
+        let issued_flags = input.and_then(|input| {
+            let input = input.input.as_ref()?;
+            let desc = input.control().backend_description(input.id())?;
+            let nr = Sysno::new(desc.number as usize)?;
+            let args = SyscallArgs::from(&desc.args.map(|value| value as usize));
+            input.future_flags(nr, &args)
+        });
+        let shares_actions = !is_thread
+            && issued_flags.map_or_else(
+                || shares_signal_actions(&parent),
+                |flags| flags & libc::CLONE_SIGHAND as u64 != 0,
+            );
         let mut child_task = if is_thread {
             self.cloned(child.pid())
         } else {
             self.forked(
                 child.pid(),
                 shares_actions,
-                op == ChildOp::Vfork || shares_address_space(&parent),
+                if input.is_some() {
+                    reserved_input::kcmp_relation(parent.pid().as_raw(), child.pid().as_raw(), 1)
+                        .unwrap_or(true)
+                } else {
+                    op == ChildOp::Vfork || shares_address_space(&parent)
+                },
             )
         };
         // A process a `clone3` made: its `clone_args` flags, read from guest
@@ -8038,12 +8957,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // may have had it flushed (`CLONE_CLEAR_SIGHAND`), which is read from
         // the same flags, so its action is read again rather than copied.
         // kcmp is asked only by a tracer thread with no seccomp filter of its
-        // own (`keeps_segv_state`), which a filter could refuse or kill it
-        // for; otherwise sharing is not known either.
-        if !is_thread && self.global_state.keeps_segv_state && made_by_clone3(&parent) {
+        // own (`keeps_signal_records`), which a filter could refuse or kill
+        // it for; otherwise sharing is not known either.
+        if !is_thread && self.global_state.keeps_signal_records && made_by_clone3(&parent) {
             let shared = shares_actions;
             let kernel = self
-                .keeps_segv_state()
+                .keeps_signal_records()
                 .then(|| shares_sighand(parent.pid(), child.pid()))
                 .flatten();
             if kernel != Some(shared) {
@@ -8063,6 +8982,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             && let Ok(Some(parent)) = own_process_parent
         {
             child_task.ppid = Some(parent);
+        }
+        // gdb is told of a new thread, and of a new process only if it asked
+        // to follow forks or vforks (`fork-events+`, `vfork-events+` in its
+        // `qSupported`). Natively gdbserver does not even trace a process gdb
+        // does not follow; here the child runs on under the Tool alone, and
+        // the parent goes on without a stop.
+        let reported_to_gdb = self.attached_by_gdb
+            && match op {
+                ChildOp::Clone => true,
+                ChildOp::Fork => self.gdb_client_features.fork_events(),
+                ChildOp::Vfork => self.gdb_client_features.vfork_events(),
+            };
+        if !reported_to_gdb {
+            child_task.attached_by_gdb = false;
         }
         child_task.ptracer_waits.bind_running(&child);
 
@@ -8188,7 +9121,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             TraceError::from(Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))
         })?;
         let parent_regs = parent.getregs()?;
-        if self.attached_by_gdb {
+        if reported_to_gdb {
+            // gdb waits for the parent's return from a vfork it was told of
+            // (`handle_vfork_done_event`).
+            self.gdb_vfork_reported = op == ChildOp::Vfork;
             // NB: We report T05;create event (for clone). However gdbserver
             // from binutils-gdb doesn't report it, even after toggling
             // QThreadEvents, as mentioned in https://sourceware.org/gdb/onlinedocs/gdb/General-Query-Packets.html#QThreadEvents
@@ -8207,7 +9143,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await?;
             // We just reported a new event, wait for gdb resume.
             let running = self
-                .await_gdb_resume(parent, ExpectedGdbResume::StepOnly)
+                .await_gdb_resume(
+                    parent,
+                    ExpectedGdbResume::StepOnly,
+                    GdbResumeSignalOrigin::NewChildEvent,
+                )
                 .await?;
             // NB: We could potentially hit a breakpoint after above resume,
             // make sure we don't miss the breakpoint and await for gdb
@@ -8278,7 +9218,66 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Reports the parent's return from a vfork gdb was told of, reached as
+    /// `wait` inside an injected vfork, as the `vforkdone` stop gdb waits for
+    /// (`handle_vfork_done_event`). The thread stays stopped for the rest of
+    /// its injection, and gdb's resume applies as from a stop made inside a
+    /// callback (`apply_resume_from_gdb_stop`).
+    async fn report_vfork_done_in_place(&mut self, wait: &Wait) -> Result<(), TraceError> {
+        if let Wait::Stopped(parent, Event::VforkDone) = wait
+            && self.gdb_vfork_reported
+        {
+            self.gdb_vfork_reported = false;
+            if !self.attached_by_gdb {
+                return Ok(());
+            }
+            let regs = parent.getregs()?;
+            self.notify_gdb_stop(StopReason::stopped(
+                parent.pid(),
+                self.pid(),
+                StopEvent::Vforkdone,
+                regs.into(),
+            ))
+            .await?;
+            // The thread's stop is still to be handled by its injection: gdb
+            // sees its registers but may not change them.
+            let shown = CoreRegs::from_parts(regs, parent.getfpregs()?);
+            let (resume, released_by_session) = self.serve_gdb_stop(Some(&shown)).await?;
+            let signal = self.prepare_gdb_resume_signal(resume)?;
+            self.apply_resume_from_gdb_stop(
+                resume,
+                released_by_session,
+                parent.pid(),
+                Some(signal),
+            );
+        }
+        Ok(())
+    }
+
     async fn handle_vfork_done_event(&mut self, stopped: Stopped) -> Result<Wait, TraceError> {
+        // Told of the vfork, gdb took its breakpoints out of the address space
+        // the parent shared with the child, and puts them back only at this
+        // stop, the parent's return from the vfork ("Stop Reply Packets",
+        // `vforkdone`). Until then it reports any other fork as an internal
+        // error.
+        if std::mem::take(&mut self.gdb_vfork_reported) && self.attached_by_gdb {
+            let regs = stopped.getregs()?;
+            self.notify_gdb_stop(StopReason::stopped(
+                stopped.pid(),
+                self.pid(),
+                StopEvent::Vforkdone,
+                regs.into(),
+            ))
+            .await?;
+            let running = self
+                .await_gdb_resume(
+                    stopped,
+                    ExpectedGdbResume::Resume,
+                    GdbResumeSignalOrigin::VforkDoneEvent,
+                )
+                .await?;
+            return running.next_state_with_owner(&self.ptracer_waits).await;
+        }
         self.resume_stopped(stopped, None)?
             .next_state_with_owner(&self.ptracer_waits)
             .await
@@ -8413,13 +9412,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
         // This is the beginning of the life of the guest. Allow the tool to
         // inject syscalls as soon as the thread starts.
-        let parked = self.park_for_gdb();
-        let started = cancellable(self.cancel_handler.clone(), async {
-            self.process_state.clone().handle_thread_start(self).await
-        })
+        let mut parked = self.park_for_gdb();
+        let started = ParkedForGdb::hold(
+            &mut parked,
+            cancellable(self.cancel_handler.clone(), async {
+                self.process_state.clone().handle_thread_start(self).await
+            }),
+        )
         .await;
-        drop(parked);
-        match started {
+        self.unpark(parked);
+        match started? {
             Some(Ok(())) => self.observe_ready_thread_state()?,
             Some(Err(err)) => {
                 if !matches!(err, reverie::Error::Errno(_)) {
@@ -8443,7 +9445,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         //
         // NB: await_gdb_resume == resume if not attached_by_gdb.
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .await_gdb_resume(
+                task,
+                ExpectedGdbResume::Resume,
+                GdbResumeSignalOrigin::Unclassified,
+            )
             .await
             .tracee_context(self.tid(), "initial tracee resume")?;
 
@@ -8736,6 +9742,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     fn ordinary_trace_continuation(&self) -> Result<(), TraceError> {
+        self.input_continuation(None)?;
         if self.global_state.fatal_session.is_failed() {
             Err(Errno::ECANCELED.into())
         } else {
@@ -8972,6 +9979,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                     result = drive => Some(Some(result)),
                 }
             };
+            // The outer transfer/lost arms can cancel drive_ordinary before
+            // its own post-drop gate. Preserve its registry obligations before
+            // publishing a boxed owner or retiring its native generation.
+            let _ = self.input_cancelled();
             match outcome {
                 Some(None) => {
                     // This former thread became the leader through de_thread
@@ -9023,6 +10034,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // return, keeps its original owner registered until the
                     // notifier retires. Announce physical quiescence first so a
                     // later peer failure does not wait for this finished loop.
+                    let _ = self.input_terminal();
                     stop.frozen.store(true, Ordering::Release);
                     session.changed.notify_waiters();
                     crate::tracer::retire_ordinary_terminal(&stop.terminal, &stop.held).await;
@@ -9095,6 +10107,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // the request; the actual kernel Exec supplies the edge.
                     assert!(Arc::ptr_eq(&self.process_state, &former_task.process_state));
                     self.ordinary_exec.lock().unwrap().remove(&former);
+                    // This actual Exec edge owns the surviving leader stop.
+                    // Transfer input ownership before former retirement or any
+                    // consuming Tool hook can publish a replacement task.
+                    // The Exec decoder owns both displaced incarnations here.
+                    // Generic observation must complete even with no facility;
+                    // neither ordinary callback Drop nor a new PID binding is
+                    // used as a substitute for this native edge.
+                    for owner in [&stop.terminal, &former_slot.stop.terminal] {
+                        if let Err(error) = session.complete_native_effects(owner) {
+                            let _ = self.input_failure(error);
+                        }
+                    }
+                    let _ = self
+                        .reserved_input_exec_transfer(&stopped, former_task.reserved_input_task);
                     session.finished(&former_slot.stop);
                     // The exec'ing thread was stopped for its whole callback,
                     // so an approval it holds means its own signal callback
@@ -9381,6 +10407,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         drop(global);
+        // The callback future has been dropped. Settle its retained ledger
+        // before terminal ownership can publish or await another task.
+        let _ = self.input_cancelled();
         match outcome {
             Some(Either::Right(Ok(status))) => {
                 // The run loop consumed the final status itself; this path
@@ -9762,7 +10791,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<Result<i64, Errno>, TraceError> {
-        self.untraced_syscall_with(task, nr, args, false).await
+        let native = NativeCallContext::application(None);
+        self.untraced_syscall_with(
+            task,
+            nr,
+            args,
+            false,
+            Some(&native),
+            InjectionRestoration::PreserveResult,
+        )
+        .await
     }
 
     /// `untraced_syscall`; `original` marks a frame-mode injection
@@ -9777,6 +10815,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
         original: bool,
+        input: Option<&NativeCallContext>,
+        restoration: InjectionRestoration,
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.timer.expire_overflow_records(&task);
         tracing::trace!(
@@ -9791,13 +10831,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         // main.
         // An exec never returns to this injection's repair; the exec stop and
         // pre-init keep SIGTRAP across it (`handle_exec_event`).
-        let (task, sigtrap) =
+        let (mut task, sigtrap) =
             if !self.keeps_sigtrap_state() || matches!(nr, Sysno::execve | Sysno::execveat) {
                 (task, None)
             } else {
                 let task = self.apply_sigtrap_repair(task).await?;
                 let task = self.learn_segv_action(task).await?;
-                let (task, before) = self.read_sigtrap_before_injection(task, nr, &args).await?;
+                let (task, before) = self
+                    .read_sigtrap_before_injection(task, nr, &args, input)
+                    .await?;
                 (task, Some(before))
             };
         // TODO-HUMAN-REVIEW(PR-103): Review original-frame syscall injection.
@@ -9845,7 +10887,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             && swaps_signal_mask(nr)
             && may_name_temporary_signal_mask(nr, &args)
             && !thread_may_be_seccomp_filtered()
-            && let Some(temporary) = temporary_signal_mask(&task, nr, &args)
+            && let Some(temporary) = temporary_signal_mask_prepared(&task, nr, &args, input)
         {
             temporary_shield = temporary & !NEVER_SHIELDED;
         }
@@ -9864,16 +10906,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             0
         };
+        self.observe_native_at_stop(
+            &task,
+            nr as u64,
+            *host_linux::request(nr, args).args(),
+            input,
+        )?;
+        if let Err(error) = self.prepare_input_at_stop(&mut task, input) {
+            let input = input.expect("only an input call prepares an image");
+            return Err(self.recover_input_not_run(&task, oldregs, input, error));
+        }
+        self.issue_input(input)?;
         if shield != 0 {
             // The shielded injection runs the thread to the syscall's entry
             // first, so the state read before is not reused for its step.
             self.injection_proc_state = None;
             let requeue = self.in_held_signal_callback;
             let (wait, seccomp_trapped) = self
-                .step_shielded_injection(task, nr, shield, requeue)
+                .step_shielded_injection(task, nr, shield, requeue, input)
                 .await?;
             let result = self
-                .status_to_result(wait, Some(oldregs), child_context)
+                .status_to_result(
+                    wait,
+                    Some(oldregs),
+                    child_context,
+                    input,
+                    seccomp_trapped,
+                    restoration,
+                )
                 .await?;
             if let Some(sigtrap) = sigtrap {
                 self.repair_sigtrap_after_injection(sigtrap, &result)
@@ -9888,7 +10948,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         // Step to run the syscall instruction.
         let (mut wait, mut seccomp_trapped) = self
-            .step_private_syscall_discarding_late_timer(task, nr)
+            .step_private_syscall_discarding_late_timer(task, nr, input)
             .await?;
         // A SIGTRAP the guest or another process sent can stop the step
         // before the `syscall` ran; a stale step SIGTRAP was discarded there
@@ -9917,18 +10977,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                 nr
             );
             (wait, seccomp_trapped) = self
-                .step_private_syscall_discarding_late_timer(stopped, nr)
+                .step_private_syscall_discarding_late_timer(stopped, nr, input)
                 .await?;
         }
         if (original && child_context.is_some()) || self.in_held_signal_callback {
             (wait, seccomp_trapped) = self
-                .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr)
+                .requeue_signals_before_original_syscall(wait, seccomp_trapped, nr, input)
                 .await?;
         }
 
         // Get the result of the syscall to return to the caller.
         let result = self
-            .status_to_result(wait, Some(oldregs), child_context)
+            .status_to_result(
+                wait,
+                Some(oldregs),
+                child_context,
+                input,
+                seccomp_trapped,
+                restoration,
+            )
             .await?;
         if let Some(sigtrap) = sigtrap {
             self.repair_sigtrap_after_injection(sigtrap, &result)
@@ -9952,8 +11019,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         nr: Sysno,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
-        let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr).await?;
+        let (mut wait, mut seccomp_trapped) = self.step_private_syscall(task, nr, input).await?;
 
         // A late overflow notification of the timer can be pending when the
         // step starts. Its delivery stop precedes the syscall instruction. No
@@ -10033,7 +11101,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // stays queued past this step and reaches the timer's own
             // handling at the next run-loop stop. It is therefore never
             // requeued or held in `pending_signal` here.
-            (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr).await?;
+            (wait, seccomp_trapped) = self.step_private_syscall(stopped, nr, input).await?;
         }
         Ok((wait, seccomp_trapped))
     }
@@ -10124,6 +11192,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         nr: Sysno,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
         let after_syscall = (cp::PRIVATE_PAGE_OFFSET + cp::SYSCALL_INSTR_SIZE) as u64;
         // Signals returned to the kernel queue during this step, still blocked
@@ -10140,7 +11209,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Ok(())
         };
-        let mut running = self.step_stopped(task, None)?;
+        let mut running = self.step_stopped_input(task, None, input)?;
         loop {
             let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
             self.arm_liteinst_wait(&wait);
@@ -10156,7 +11225,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             stopped.pid(),
                             nr
                         );
-                        running = self.step_stopped(stopped, None)?;
+                        running = self.step_stopped_input(stopped, None, input)?;
                         continue;
                     }
                     if sig == Signal::SIGTRAP {
@@ -10200,7 +11269,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     stopped.pid(),
                     sig
                 );
-                running = self.step_stopped(stopped, None)?;
+                running = self.step_stopped_input(stopped, None, input)?;
             } else if stopped.getregs()?.ip() == after_syscall {
                 let bit = signal_mask_bit(sig);
                 if returned & bit != 0 {
@@ -10237,7 +11306,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         nr
                     );
                     returned |= bit;
-                    running = self.step_stopped_any(stopped, Some(sig))?;
+                    running = self.step_stopped_any_input(stopped, Some(sig), input)?;
                 } else if let Some(mask) = mask {
                     tracing::debug!(
                         "[scheduler/tool] (pid = {}) requeueing {} delivered after injected {} completed",
@@ -10248,7 +11317,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     stopped.setsigmask(mask | bit)?;
                     requeued |= bit;
                     returned |= bit;
-                    running = self.step_stopped_any(stopped, Some(sig))?;
+                    running = self.step_stopped_any_input(stopped, Some(sig), input)?;
                 } else {
                     tracing::debug!(
                         "[scheduler/tool] (pid = {}) holding {} delivered after injected {} completed; later signals stay queued",
@@ -10341,6 +11410,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         nr: Sysno,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
         // The shield makes requests main does not, which a tracer filter may
         // refuse (`thread_may_be_seccomp_filtered`).
@@ -10366,7 +11436,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             unshielded_mask,
             shielded,
         });
-        let (wait, seccomp_trapped) = self.step_private_syscall_unshielded(task, nr).await?;
+        let (wait, seccomp_trapped) = self
+            .step_private_syscall_unshielded(task, nr, input)
+            .await?;
         if shielded {
             reblock_sigtrap_after_step(&wait)?;
         }
@@ -10426,8 +11498,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
         task.setregs(&regs)?;
         set_sigmask(&task, original_mask | BLOCKABLE_SIGNAL_BITS)?;
+        let native = NativeCallContext::internal();
+        self.observe_native_at_stop(
+            &task,
+            nr,
+            [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ],
+            Some(&native),
+        )?;
         let mut entered = false;
-        let mut running = self.syscall_stopped_any(task, None)?;
+        let mut running = self.syscall_stopped_any_input(task, None, Some(&native))?;
         loop {
             let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
             self.arm_liteinst_wait(&wait);
@@ -10446,10 +11532,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             match wait {
                 Wait::Stopped(stopped, Event::Syscall) if !entered => {
                     entered = true;
-                    running = self.syscall_stopped_any(stopped, None)?;
+                    running = self.syscall_stopped_any_input(stopped, None, Some(&native))?;
                 }
                 Wait::Stopped(stopped, Event::Syscall) => {
                     let ret = stopped.getregs()?.ret();
+                    self.native_result_at_stop(
+                        &stopped,
+                        Some(&native),
+                        Errno::from_ret(ret as usize).map(|x| x as i64),
+                        true,
+                        false,
+                    )?;
                     stopped.setregs(&oldregs)?;
                     set_sigmask(&stopped, original_mask)?;
                     return Ok((stopped, Errno::from_ret(ret as usize).map(|x| x as i64)));
@@ -10457,7 +11550,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(stopped, Event::Signal(sig))
                     if !entered && is_group_stop(&stopped, sig)? =>
                 {
-                    running = self.syscall_stopped_any(stopped, None)?;
+                    running = self.syscall_stopped_any_input(stopped, None, Some(&native))?;
                 }
                 // An outside SIGKILL: the paths that handle a killed tracee
                 // take ESRCH, as from a ptrace request.
@@ -10496,11 +11589,28 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// sequentialization, and so the contract), nothing is kept or repaired,
     /// as before.
     fn keeps_segv_state(&self) -> bool {
-        self.global_state.keeps_segv_state
+        self.global_state.keeps_segv_state && self.keeps_signal_records()
+    }
+
+    /// Whether Reverie keeps signal records for this thread
+    /// (`GlobalState::keeps_signal_records`) now: also, the guest has no
+    /// seccomp filter of its own, Reverie's repair page is sealed, the tracer
+    /// thread has no filter (`keeps_sigtrap_state`), and the kernel refuses
+    /// x32 syscalls. `keeps_segv_state` gives the conditions' reasons.
+    fn keeps_signal_records(&self) -> bool {
+        self.global_state.keeps_signal_records
             && self.global_state.seccomp_filter_baseline == Some(1)
             && self.sigtrap_scratch_state.load(Ordering::SeqCst) == SCRATCH_SEALED
             && self.keeps_sigtrap_state()
             && x32_syscalls_refused()
+    }
+
+    /// Whether this thread's SIGTRAP bit is recorded at each resume
+    /// (`watch_run`), for the repair at a hardware watchpoint hit
+    /// (`restore_sigtrap_after_hit`): it has a watch armed, and signal records
+    /// are kept.
+    fn records_watch_sigtrap(&self) -> bool {
+        self.watches.is_armed() && self.keeps_signal_records()
     }
 
     /// SIGSEGV's action in this thread's signal-action table, if known
@@ -10536,7 +11646,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// `clone` with `CLONE_SIGHAND`, whose flags are a register. Its result is
     /// checked against the new-task events it gave (`note_segv_clone_result`).
     fn checks_segv_clone(&self, nr: Sysno, args: &SyscallArgs) -> bool {
-        self.global_state.keeps_segv_state
+        self.global_state.keeps_signal_records
             && match nr {
                 Sysno::clone3 => true,
                 Sysno::clone => self.clone_may_share_signal_actions(nr, args),
@@ -10585,7 +11695,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (`restore_segv_after_trap`). Every guest instruction that Reverie does
     /// not step runs after such a resume, and a step changes no mask but by
     /// a syscall, which stops first. Until the next stop the mask changes only
-    /// by what this resume makes the kernel do (`segv_run_after_resume`).
+    /// by what this resume makes the kernel do (`signal_run_after_resume`).
     fn note_segv_resume(&self, task: &Stopped, signal: Option<i32>) {
         let syscall = self.segv_resume_syscall.swap(0, Ordering::SeqCst);
         // An rt_sigaction of SIGSEGV that the resume runs leaves its action
@@ -10601,11 +11711,29 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.set_segv_action(None);
         }
         let run = if self.keeps_segv_state() {
-            self.segv_run_after_resume(task, signal, syscall)
+            self.signal_run_after_resume(task, signal, syscall, SIGSEGV_BIT)
         } else {
-            SegvRun::Unknown
+            SignalRun::Unknown
         };
         *self.segv_run.lock().unwrap() = run;
+        // The same record of SIGTRAP's bit, for a hardware watchpoint hit,
+        // whose forced SIGTRAP resets it as these traps' SIGSEGV does. Its
+        // disposition is remembered too, if it can be, for the same repair;
+        // but a resume that hands SIGTRAP over to the guest runs its
+        // handler, whose `SA_RESETHAND` resets the action and whose mask the
+        // kernel installs, and neither is read here, so what is remembered
+        // is forgotten instead (`sigtrap_disposition_known`).
+        let run = if self.records_watch_sigtrap() {
+            if signal == Some(libc::SIGTRAP) {
+                self.forget_sigtrap_ignored();
+            } else {
+                let _ = self.sigtrap_disposition_known(task);
+            }
+            self.signal_run_after_resume(task, signal, syscall, SIGTRAP_BIT)
+        } else {
+            SignalRun::Unknown
+        };
+        *self.watch_run.lock().unwrap() = run;
     }
 
     /// At the exit stop of a mask-setting syscall run there for its mask
@@ -10630,7 +11758,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let Some(signal) = signal else {
             return;
         };
-        *self.segv_run.lock().unwrap() = SegvRun::Unknown;
+        *self.segv_run.lock().unwrap() = SignalRun::Unknown;
+        *self.watch_run.lock().unwrap() = SignalRun::Unknown;
         if signal == libc::SIGSEGV && self.global_state.keeps_segv_state {
             self.set_segv_action(None);
         }
@@ -10639,7 +11768,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// The `segv_run` a resume leaves, with `syscall` the number plus one of
     /// the syscall it runs, or 0:
     /// - a signal delivered at a signal-delivery stop runs its handler, if it
-    ///   has one (`segv_run_after_delivery`). Handed to a resume from any other
+    ///   has one (`signal_run_after_delivery`). Handed to a resume from any other
     ///   stop it runs none at that resume: Linux sends it anew from a syscall
     ///   stop and drops it at an event or group stop (`at_signal_delivery_stop`);
     /// - a syscall the resume runs that sets the mask (`rt_sigprocmask` with a
@@ -10655,18 +11784,24 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   read;
     /// - otherwise `PTRACE_GETSIGMASK` is the mask: while a temporary mask's
     ///   restore is pending it reports the saved mask the return restores.
-    fn segv_run_after_resume(&self, task: &Stopped, signal: Option<i32>, syscall: u64) -> SegvRun {
+    fn signal_run_after_resume(
+        &self,
+        task: &Stopped,
+        signal: Option<i32>,
+        syscall: u64,
+        bit: u64,
+    ) -> SignalRun {
         let Ok(saved) = task.getsigmask() else {
-            return SegvRun::Unknown;
+            return SignalRun::Unknown;
         };
         if let Some(signal) = signal {
             match at_signal_delivery_stop(task) {
-                Some(true) => return self.segv_run_after_delivery(task, signal, saved),
+                Some(true) => return self.signal_run_after_delivery(task, signal, saved, bit),
                 Some(false) => {}
-                None => return SegvRun::Unknown,
+                None => return SignalRun::Unknown,
             }
         }
-        let known = SegvRun::Known(saved & SIGSEGV_BIT != 0);
+        let known = SignalRun::Known(saved & bit != 0);
         let Some(nr) = syscall
             .checked_sub(1)
             .and_then(|nr| Sysno::new(nr as usize))
@@ -10674,15 +11809,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             return known;
         };
         let Ok(regs) = task.getregs() else {
-            return SegvRun::Unknown;
+            return SignalRun::Unknown;
         };
         let (_, arg1, _, arg3, _, _) = regs.args();
         match nr {
             // A NULL set leaves the mask, as does a wrong size (EINVAL).
             Sysno::rt_sigprocmask if arg1 != 0 && arg3 as usize == std::mem::size_of::<u64>() => {
-                SegvRun::Unknown
+                SignalRun::Unknown
             }
-            Sysno::rt_sigreturn => SegvRun::Unknown,
+            Sysno::rt_sigreturn => SignalRun::Unknown,
             // Its action was forgotten (`note_segv_resume`).
             _ => known,
         }
@@ -10695,27 +11830,38 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// restores `saved`. A delivered SIGSEGV is decided now, from its action,
     /// which a one-shot handler's delivery resets (`get_signal`); another
     /// signal's handler mask is read only if a trap needs it
-    /// ([`SegvRun::Delivered`]).
-    fn segv_run_after_delivery(&self, task: &Stopped, signal: i32, saved: u64) -> SegvRun {
+    /// ([`SignalRun::Delivered`]).
+    fn signal_run_after_delivery(
+        &self,
+        task: &Stopped,
+        signal: i32,
+        saved: u64,
+        bit: u64,
+    ) -> SignalRun {
         let Ok(state) = ProcSignalState::read(task) else {
-            return SegvRun::Unknown;
+            return SignalRun::Unknown;
         };
         if !(1..=64).contains(&signal) {
-            return SegvRun::Unknown;
+            return SignalRun::Unknown;
         }
-        let saved = saved & SIGSEGV_BIT != 0;
+        let saved = saved & bit != 0;
         if state.blocked & (1 << (signal as u64 - 1)) != 0 {
-            return SegvRun::Known(saved);
+            return SignalRun::Known(saved);
         }
-        let blocked = state.blocked & SIGSEGV_BIT != 0;
-        if signal == libc::SIGSEGV {
+        let blocked = state.blocked & bit != 0;
+        // A delivered SIGTRAP is the guest's own (an `int3`); its action is
+        // not kept, so the bit after its handler is not known.
+        if bit != SIGSEGV_BIT && 1 << (signal as u64 - 1) == bit {
+            return SignalRun::Unknown;
+        }
+        if signal == libc::SIGSEGV && bit == SIGSEGV_BIT {
             let before = self.segv_action();
             if let Some(before) = before {
                 self.set_segv_action(Some(before.after_delivery()));
             }
-            return SegvRun::after_segv_delivery(before, blocked, saved);
+            return SignalRun::after_segv_delivery(before, blocked, saved);
         }
-        SegvRun::Delivered {
+        SignalRun::Delivered {
             signal,
             blocked,
             saved,
@@ -10728,6 +11874,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// action before the stop (`force_sig_info_to_task`), so the action is
     /// forgotten unless it is known that neither was so. One a process sent
     /// reset nothing.
+    #[cfg(target_arch = "x86_64")]
     fn note_segv_delivered_to_guest(&self, task: &Stopped) {
         if !self.global_state.keeps_segv_state {
             return;
@@ -10740,7 +11887,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // resets SIGSEGV's handler whatever its mask and flags
         // (`force_fatal_sig`).
         let resets_any = code == Some(libc::SI_KERNEL);
-        let unblocked = *self.segv_run.lock().unwrap() == SegvRun::Known(false);
+        let unblocked = *self.segv_run.lock().unwrap() == SignalRun::Known(false);
         if forced
             && (resets_any
                 || !(unblocked && self.segv_action().is_some_and(|action| !action.ignored())))
@@ -10790,13 +11937,14 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// left it, as before, and is logged; an action that may have been reset
     /// and was not written back is forgotten. The common case, SIGSEGV
     /// unblocked and not ignored, makes no request.
+    #[cfg(target_arch = "x86_64")]
     async fn restore_segv_after_trap(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
         if !self.keeps_segv_state() {
             return Ok(task);
         }
         let run = *self.segv_run.lock().unwrap();
         let before = self.segv_action();
-        if run == SegvRun::Known(false) && before.is_some_and(|action| !action.ignored()) {
+        if run == SignalRun::Known(false) && before.is_some_and(|action| !action.ignored()) {
             return Ok(task);
         }
         let mask = sigmask(&task)?;
@@ -10814,7 +11962,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .segv_unseen
             .contains(&self.sigtrap_table);
         let delivered_action = match (run, scratch) {
-            (SegvRun::Delivered { signal, .. }, Some(scratch)) if !unseen => {
+            (SignalRun::Delivered { signal, .. }, Some(scratch)) if !unseen => {
                 #[cfg(test)]
                 SEGV_TRAP_QUERIES_FOR_TEST.with(|count| count.set(count.get() + 1));
                 let (stopped, action) = self.query_signal_action_at(task, scratch, signal).await?;
@@ -10823,7 +11971,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             _ => None,
         };
-        let blocked = run.resolve(mask, delivered_action);
+        let blocked = run.resolve(SIGSEGV_BIT, mask, delivered_action);
         // Only an action that is neither `SIG_DFL` (which the reset keeps)
         // nor caught with SIGSEGV unblocked (which it does not touch) can be
         // owed a write.
@@ -11254,6 +12402,203 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// Refuses to arm a watch on a thread that blocks SIGTRAP or whose
+    /// process ignores it: Linux reports a hit by forcing a SIGTRAP, which
+    /// unblocks it and resets its action (`force_sig_info_to_task`), so the
+    /// guest would see its own signal state change. Both the mask the thread
+    /// runs under now and the one a pending restore would put back count.
+    fn refuse_watch_under_sigtrap_state(&self, task: &Stopped) -> Result<(), reverie::WatchError> {
+        // Nothing is written yet: the thread keeps the watches it had.
+        let failed = |error: TraceError| reverie::WatchError::Failed {
+            errno: match error {
+                TraceError::Errno(errno) => errno,
+                TraceError::Died(_) => Errno::ESRCH,
+            },
+            disarmed: !self.watches.is_armed(),
+        };
+        let blocked =
+            sigmask(task).map_err(failed)? | blocked_signal_mask(self.tid()).map_err(failed)?;
+        if blocked & SIGTRAP_BIT != 0 {
+            return Err(reverie::WatchError::SigtrapBlocked);
+        }
+        if self.sigtrap_ignored(task).map_err(failed)? {
+            return Err(reverie::WatchError::SigtrapIgnored);
+        }
+        Ok(())
+    }
+
+    /// SIGTRAP's disposition, as `sigtrap_disposition_known` remembers it for
+    /// this thread's table, if it is remembered and can be trusted: Reverie
+    /// sees every change of it (`caches_sigtrap_disposition`), none is under
+    /// way, no repair of Reverie's own is owed, and no thread Reverie does not
+    /// trace may use the table (`SigtrapTables::segv_unseen`). Nothing is
+    /// read from the thread.
+    fn remembered_sigtrap_disposition(&self) -> Option<(bool, bool)> {
+        if !self.global_state.caches_sigtrap_disposition {
+            return None;
+        }
+        let tables = self.global_state.sigtrap_tables.lock().unwrap();
+        let table = self.sigtrap_table;
+        if tables
+            .changing
+            .get(&table)
+            .is_some_and(|threads| !threads.is_empty())
+            || tables.repairs.contains_key(&table)
+            || tables.segv_unseen.contains(&table)
+        {
+            return None;
+        }
+        tables.ignored.get(&table).copied()
+    }
+
+    /// Remembers SIGTRAP's `disposition` again for this thread's table, after
+    /// a hit that reset nothing: `handle_sigtrap` forgot it, and what
+    /// `remembered_sigtrap_disposition` read before still holds.
+    fn remember_sigtrap_disposition(&self, disposition: (bool, bool)) {
+        self.global_state
+            .sigtrap_tables
+            .lock()
+            .unwrap()
+            .ignored
+            .insert(self.sigtrap_table, disposition);
+    }
+
+    /// Puts back, at a hardware watchpoint hit's stop (a SIGTRAP that is only
+    /// a hit), what the hit's forced SIGTRAP reset, as
+    /// `restore_segv_after_trap` does for SIGSEGV, and says what it did. The
+    /// kernel unblocked SIGTRAP if the thread blocked it, and reset its action
+    /// to `SIG_DFL` if it was blocked or ignored (`force_sig_info_to_task`).
+    ///
+    /// SIGTRAP's bit before the hit is the one recorded as the last
+    /// `PTRACE_CONT` resumed the thread (`watch_run`), resolved as SIGSEGV's
+    /// is (`SignalRun::resolve`); its disposition is `remembered`, read before
+    /// this stop forgot it (`remembered_sigtrap_disposition`). Where the
+    /// records are not kept (`records_watch_sigtrap`) nothing is put back
+    /// and nothing is claimed, since the bit before the hit was not
+    /// recorded either; where they are kept but a thread Reverie does not
+    /// trace may share the thread's signal-action table, the mask bit is
+    /// put back and nothing is claimed of the action.
+    ///
+    /// Otherwise a bit known to
+    /// have been blocked is blocked again. An action is not written back: a
+    /// reset is reported (`SigtrapAtHit::ActionReset`) and its disposition
+    /// forgotten. What is not known is reported as `SigtrapAtHit::Unknown`.
+    /// SIGTRAP known to be neither blocked nor ignored, the common case, and
+    /// a state of which nothing is known make no request.
+    async fn restore_sigtrap_after_hit(
+        &mut self,
+        task: Stopped,
+        remembered: Option<(bool, bool)>,
+    ) -> Result<(Stopped, reverie::SigtrapAtHit), TraceError> {
+        use reverie::SigtrapAtHit;
+        let run = *self.watch_run.lock().unwrap();
+        // Nothing is inferred where the records are not kept
+        // (`records_watch_sigtrap`): the bit before the hit was not
+        // recorded, and what procfs reads now could be another thread's
+        // doing. A Tool that subscribes to `rt_sigaction` without the rest
+        // has Reverie remember SIGTRAP's disposition
+        // (`caches_sigtrap_disposition`), which alone says nothing about a
+        // hit.
+        //
+        // Nor on a signal-action table a thread Reverie does not trace may
+        // use (`SigtrapTables::segv_unseen`): such a thread can change
+        // SIGTRAP's action between the hit and the read, so an action read
+        // now is no evidence of what the hit reset. The mask bit is still
+        // this thread's own and is put back where it is known to have been
+        // blocked, but nothing else is claimed.
+        if !self.records_watch_sigtrap() {
+            return Ok((task, SigtrapAtHit::Unknown));
+        }
+        let unseen = self
+            .global_state
+            .sigtrap_tables
+            .lock()
+            .unwrap()
+            .segv_unseen
+            .contains(&self.sigtrap_table);
+        if unseen {
+            if run == SignalRun::Known(true) {
+                let mask = sigmask(&task)?;
+                set_sigmask(&task, mask | SIGTRAP_BIT)?;
+            }
+            return Ok((task, SigtrapAtHit::Unknown));
+        }
+        // The common case: SIGTRAP was neither blocked nor ignored, so the
+        // hit reset nothing, and nothing is read. Where neither the bit nor
+        // the disposition is known, nothing read can tell either.
+        if let (SignalRun::Known(false), Some(disposition @ (false, _))) = (run, remembered) {
+            self.remember_sigtrap_disposition(disposition);
+            return Ok((task, SigtrapAtHit::Unchanged));
+        }
+        if run == SignalRun::Unknown && remembered.is_none() {
+            return Ok((task, SigtrapAtHit::Unknown));
+        }
+        let (ignored_now, caught_now) = sigtrap_disposition(&task)?;
+        // The reset leaves `SIG_DFL`. A handler read now was not reset, so
+        // SIGTRAP was not blocked (no other thread runs meanwhile under the
+        // serialized-execution contract signal records rest on); `SIG_IGN`
+        // read now contradicts the hit.
+        if caught_now {
+            return Ok((task, SigtrapAtHit::Unchanged));
+        }
+        if ignored_now {
+            return Ok((task, SigtrapAtHit::Unknown));
+        }
+        let mask = sigmask(&task)?;
+        let mut task = task;
+        // A handler the last resume entered runs under its own mask, read
+        // now as `restore_segv_after_trap` reads it.
+        let delivered_action = match run {
+            SignalRun::Delivered { signal, .. } => {
+                let _repairs = self.lock_sigtrap_repairs().await;
+                match self.sigtrap_scratch(task.pid()) {
+                    Ok(Some(scratch)) => {
+                        let (stopped, action) =
+                            self.query_signal_action_at(task, scratch, signal).await?;
+                        task = stopped;
+                        action
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let mut blocked = run.resolve(SIGTRAP_BIT, mask, delivered_action);
+        // A caught SIGTRAP that reads `SIG_DFL` now was reset, so SIGTRAP
+        // was blocked.
+        if blocked.is_none() && remembered == Some((false, true)) {
+            blocked = Some(true);
+        }
+        let reset = match remembered {
+            Some((true, _)) => Some(true),
+            Some((false, true)) => blocked,
+            Some((false, false)) => Some(false),
+            None => None,
+        };
+        if blocked == Some(true) {
+            set_sigmask(&task, mask | SIGTRAP_BIT)?;
+        }
+        if let (Some(false), Some(disposition)) = (reset, remembered) {
+            self.remember_sigtrap_disposition(disposition);
+        }
+        let state = match (blocked, reset) {
+            (_, Some(true)) => SigtrapAtHit::ActionReset,
+            (Some(true), Some(false)) => SigtrapAtHit::Reblocked,
+            (Some(false), Some(false)) => SigtrapAtHit::Unchanged,
+            _ => SigtrapAtHit::Unknown,
+        };
+        if state.may_have_changed_guest() {
+            tracing::debug!(
+                "[scheduler/tool] (pid = {}) a watchpoint hit's SIGTRAP may have changed the guest's SIGTRAP state ({:?}; blocked {:?}, disposition {:?})",
+                task.pid(),
+                state,
+                blocked,
+                remembered
+            );
+        }
+        Ok((task, state))
+    }
+
     /// Whether SIGTRAP is ignored in this thread's signal-action table. procfs
     /// is read only when the table's answer is not known, or while a guest
     /// `rt_sigaction` of SIGTRAP may be changing it, which is read again each
@@ -11466,7 +12811,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// stop, before the Tool sees the syscall, so that neither the syscall nor
     /// the Tool reads the reset action. Reads SIGSEGV's action there too
     /// where it is not known (`learn_segv_action`): a guest `rt_sigaction`
-    /// of SIGSEGV run on a resume leaves it unknown (`segv_run_after_resume`),
+    /// of SIGSEGV run on a resume leaves it unknown (`signal_run_after_resume`),
     /// and a Tool that runs every syscall that way makes no injection where it
     /// could be read otherwise.
     ///
@@ -11564,7 +12909,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // blocking every signal as the guest's (`note_segv_resume`);
                 // no guest code ran under it, and the next resume records
                 // the guest's own.
-                *self.segv_run.lock().unwrap() = SegvRun::Unknown;
+                *self.segv_run.lock().unwrap() = SignalRun::Unknown;
+                *self.watch_run.lock().unwrap() = SignalRun::Unknown;
                 Ok(task)
             }
             Wait::Stopped(_, Event::Exit) | Wait::Exited(..) => Err(Errno::ESRCH.into()),
@@ -11697,6 +13043,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         nr: Sysno,
         args: &SyscallArgs,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Stopped, SigtrapBeforeInjection), TraceError> {
         let kind = step_kind(nr, swaps_signal_mask(nr));
         let mask = sigmask(&task)?;
@@ -11768,7 +13115,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let sets_action = (sets_sigtrap_action(nr, args)
             && args.arg3 == std::mem::size_of::<u64>())
-        .then(|| read_sigaction_forced(&task, args.arg1))
+        .then(|| read_sigaction_prepared(&task, args.arg1, input))
         .flatten()
         .map(|action: KernelSigaction| {
             if action.handler == libc::SIG_DFL as u64 {
@@ -11798,9 +13145,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             } else {
                 (task, None)
             };
-        let read_u64 = |address: usize| {
-            Addr::<u64>::from_raw(address).and_then(|address| task.read_value(address).ok())
-        };
+        let read_u64 = |address: usize| preparation_word(&task, input, address);
         let sigaction_call = sets_action.is_some().then_some((args.arg1, args.arg2 != 0));
         let sets_mask = (kind == StepKind::SetsMask).then(|| {
             let set = (args.arg1 != 0 && args.arg3 == std::mem::size_of::<u64>())
@@ -11809,7 +13154,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             mask_after_sigprocmask(mask, args.arg0 as i32, set)
         });
         let temporary_mask = (kind == StepKind::SwapsMask)
-            .then(|| temporary_signal_mask(&task, nr, args))
+            .then(|| temporary_signal_mask_prepared(&task, nr, args, input))
             .flatten();
         Ok((
             task,
@@ -12026,6 +13371,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         wait: Wait,
         seccomp_trapped: bool,
         nr: Sysno,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
         fn requeueable(sig: AnySignal) -> bool {
             !matches!(
@@ -12047,11 +13393,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let original_mask = stopped.getsigmask()?;
         self.requeue_signals_until_syscall_entry(
             wait,
-            original_mask,
-            original_mask,
+            InjectionSignalMasks {
+                original: original_mask,
+                current: original_mask,
+            },
             nr,
             false,
             true,
+            input,
         )
         .await
     }
@@ -12073,7 +13422,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///   losing it and its siginfo.
     /// - A mask-swapping injection (`swaps_signal_mask`) shields the signals
     ///   its temporary mask blocks and the thread's own mask admits
-    ///   (`temporary_signal_mask`), except the timer's own and SIGTRAP
+    ///   (`temporary_signal_mask_prepared`), except the timer's own and SIGTRAP
     ///   (`NEVER_SHIELDED`). The private-page step returns to user space
     ///   under the thread's own mask before the syscall installs its
     ///   temporary one, so such a signal would stop the step there, and the
@@ -12112,17 +13461,28 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         shield: u64,
         requeue: bool,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
         let original_mask = task.getsigmask()?;
         let mask = original_mask | shield;
         task.setsigmask(mask)?;
         let wait = self
-            .syscall_stopped_any(task, None)?
+            .syscall_stopped_any_input(task, None, input)?
             .next_state_with_owner(&self.ptracer_waits)
             .await?;
         self.arm_liteinst_wait(&wait);
-        self.requeue_signals_until_syscall_entry(wait, original_mask, mask, nr, true, requeue)
-            .await
+        self.requeue_signals_until_syscall_entry(
+            wait,
+            InjectionSignalMasks {
+                original: original_mask,
+                current: mask,
+            },
+            nr,
+            true,
+            requeue,
+            input,
+        )
+        .await
     }
 
     /// The loop of `requeue_signals_before_original_syscall` and
@@ -12139,12 +13499,16 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn requeue_signals_until_syscall_entry(
         &mut self,
         wait: Wait,
-        original_mask: u64,
-        mut mask: u64,
+        masks: InjectionSignalMasks,
         nr: Sysno,
         plain_injection: bool,
         requeue: bool,
+        input: Option<&NativeCallContext>,
     ) -> Result<(Wait, bool), TraceError> {
+        let InjectionSignalMasks {
+            original: original_mask,
+            current: mut mask,
+        } = masks;
         fn requeueable(sig: AnySignal) -> bool {
             !matches!(
                 sig.as_nix(),
@@ -12168,7 +13532,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         nr
                     );
                     wait = self
-                        .syscall_stopped_any(stopped, None)?
+                        .syscall_stopped_any_input(stopped, None, input)?
                         .next_state_with_owner(&self.ptracer_waits)
                         .await?;
                     self.arm_liteinst_wait(&wait);
@@ -12208,14 +13572,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                         Some(sig)
                     };
                     wait = self
-                        .syscall_stopped_any(stopped, deliver)?
+                        .syscall_stopped_any_input(stopped, deliver, input)?
                         .next_state_with_owner(&self.ptracer_waits)
                         .await?;
                     self.arm_liteinst_wait(&wait);
                 }
                 Wait::Stopped(stopped, Event::Syscall) => {
                     stopped.setsigmask(original_mask)?;
-                    return self.step_private_syscall(stopped, nr).await;
+                    return self.step_private_syscall(stopped, nr, input).await;
                 }
                 other => {
                     if let Wait::Stopped(stopped, _) = &other {
@@ -12235,10 +13599,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         nr: Sysno,
         args: SyscallArgs,
+        input: Option<&NativeCallContext>,
+        restoration: InjectionRestoration,
     ) -> Result<Result<i64, Errno>, TraceError> {
         let task = self.skip_seccomp_syscall(task).await?;
 
-        self.untraced_syscall(task, nr, args).await
+        self.untraced_syscall_with(task, nr, args, false, input, restoration)
+            .await
     }
 
     /// Records the stop an injection ended at in `latest_injection_stop`.
@@ -12294,6 +13661,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         wait_status: Wait,
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
+        input: Option<&NativeCallContext>,
+        seccomp_trapped: bool,
+        restoration: InjectionRestoration,
     ) -> Result<Result<i64, Errno>, TraceError> {
         self.note_injection_stop(&wait_status)?;
         self.last_injection_ran = true;
@@ -12304,7 +13674,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         && context.is_none() =>
                 {
                     // The guest's own pending syscall, resumed from its
-                    // syscall stop to its exit (`inner_inject`). Linux reports
+                    // syscall stop to its exit (`inner_inject_with_input`). Linux reports
                     // the exit stop before any signal-delivery stop for a
                     // syscall it ran, so this one did not run, and RAX holds
                     // no result of it. Report that it did not run, holding the
@@ -12316,6 +13686,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.hold_pending_signal(&stopped, sig);
                     }
                     self.last_injection_ran = false;
+                    self.native_result_at_stop(
+                        &stopped,
+                        input,
+                        Err(Errno::ERESTARTSYS),
+                        false,
+                        seccomp_trapped,
+                    )?;
+                    self.input_result(input, &Err(Errno::ERESTARTSYS), false, seccomp_trapped)?;
                     Ok(Err(Errno::ERESTARTSYS))
                 }
                 event if let Some(sig) = event.signal() => {
@@ -12386,6 +13764,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.last_injection_ran = false;
                     }
                     let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
+                    self.native_result_at_stop(
+                        &stopped,
+                        input,
+                        result,
+                        self.last_injection_ran,
+                        seccomp_trapped,
+                    )?;
+                    self.input_result(input, &result, self.last_injection_ran, seccomp_trapped)?;
                     if let Some(context) = context {
                         if child_context.is_some() {
                             // An injected-frame event temporarily replaces the
@@ -12394,6 +13780,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                             // leaving even a callee-saved register would
                             // corrupt the code that resumes after injection.
                             stopped.setregs(&context)?;
+                        } else if restoration == InjectionRestoration::PublicReturning {
+                            // `result` above is the actual classified kernel
+                            // outcome, including errno. Restore at this real
+                            // Wait::Stopped, before releasing the invocation;
+                            // neither its saved frame nor its policy is a
+                            // substitute stop owner.
+                            stopped.setregs(&public_returning_regs(regs, &context))?;
                         } else {
                             // Restore syscall args to original values. This is
                             // needed when we convert syscalls like SYS_open ->
@@ -12423,6 +13816,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Event::NewChild(op, child) => {
                     let ret = child.pid().as_raw() as i64;
+                    self.native_result_at_stop(&stopped, input, Ok(ret), true, seccomp_trapped)?;
                     // A held-signal callback's injection keeps the guest's
                     // return register, as above. The kernel writes the
                     // child's PID after the event stop, so it is restored at
@@ -12434,7 +13828,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         _ => None,
                     };
                     let wait = self
-                        .handle_new_task(op, stopped, child, context, child_context)
+                        .handle_new_task(op, stopped, child, context, child_context, input)
                         .await?;
                     // A vfork parent's step ends at its PTRACE_EVENT_VFORK_DONE
                     // stop, once the child exits or execs. Linux drops a signal
@@ -12449,6 +13843,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // handler can make requests of the tracer that the filter
                     // may refuse or kill it at
                     // (`thread_may_be_seccomp_filtered`).
+                    // Report the vforkdone stop this event already names
+                    // before the extra step below replaces its Wait: after
+                    // the step only the step trap remains, and
+                    // `report_vfork_done_in_place` would see no event and
+                    // report nothing, leaving the client's later forks to
+                    // be refused as unreported.
+                    self.report_vfork_done_in_place(&wait).await?;
                     let wait = match wait {
                         Wait::Stopped(parent, Event::VforkDone)
                             if self.in_signal_callback && !thread_may_be_seccomp_filtered() =>
@@ -12469,6 +13870,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         }
                         wait => wait,
                     };
+                    self.report_vfork_done_in_place(&wait).await?;
                     // That stop, not the event stop, is the one a resume from
                     // a signal callback leaves (`report_held_signal`).
                     self.note_injection_stop(&wait)?;
@@ -12480,6 +13882,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     Ok(Ok(ret))
                 }
                 Event::Exec(_new_pid) => {
+                    self.native_result_at_stop(&stopped, input, Ok(0), true, seccomp_trapped)?;
+                    self.input_result(input, &Ok(0), true, seccomp_trapped)?;
                     // The callback that injected the exec never resumes, so
                     // the replacement image runs outside it
                     // (`handle_exec_event` ends its state).
@@ -12489,7 +13893,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 Event::Syscall => {
                     let regs = stopped.getregs()?;
-                    Ok(Errno::from_ret(regs.ret() as usize).map(|x| x as i64))
+                    let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
+                    self.native_result_at_stop(&stopped, input, result, true, seccomp_trapped)?;
+                    self.input_result(input, &result, true, seccomp_trapped)?;
+                    Ok(result)
                 }
                 st => panic!("untraced_syscall returned unknown state: {:?}", st),
             },
@@ -12499,7 +13906,7 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Runs an injection through ptrace's [`LinuxProvider`], the host kernel
     /// ([`host_linux::HostLinux`]), which runs it in this stopped tracee with
-    /// [`Self::inner_inject`].
+    /// [`Self::inner_inject_with_input`].
     ///
     /// [`LinuxProvider`]: reverie::provider::LinuxProvider
     async fn do_inject(&mut self, nr: Sysno, args: SyscallArgs) -> Result<i64, Errno> {
@@ -12517,11 +13924,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> reverie::provider::ProviderOutcome<std::convert::Infallible> {
+        let context = NativeCallContext::application(None);
+        self.do_inject_outcome_with(nr, args, &context).await
+    }
+
+    async fn do_inject_outcome_with(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+        context: &NativeCallContext,
+    ) -> reverie::provider::ProviderOutcome<std::convert::Infallible> {
         use reverie::provider::LinuxProvider;
         self.injected_syscalls += 1;
         let request = host_linux::request(nr, args);
         let tid = self.tid();
-        match host_linux::HostLinux::<L>::new()
+        match host_linux::HostLinux::<L>::with_input(context)
             .execute(tid, &request, self)
             .await
         {
@@ -12530,11 +13947,30 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    async fn inner_inject(
+    pub(crate) async fn inject_backend_private_with_retry<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+    ) -> Result<i64, Errno> {
+        let (nr, args) = syscall.into_parts();
+        loop {
+            let native = NativeCallContext::internal();
+            let result =
+                host_linux::guest_result(self.do_inject_outcome_with(nr, args, &native).await);
+            match result {
+                Ok(Err(Errno::EINTR | Errno::ERESTARTSYS)) => continue,
+                Ok(result) => return result,
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+    }
+
+    async fn inner_inject_with_input(
         &mut self,
         nr: Sysno,
         args: SyscallArgs,
+        input: Option<&NativeCallContext>,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        self.retain_native_operation_owner(input)?;
         // A Tool's own `rt_sigaction` of SIGTRAP may change whether it is
         // ignored (`sigtrap_ignored`), here or, run in place, on the resume.
         if self.global_state.keeps_sigtrap_state && sets_sigtrap_action(nr, &args) {
@@ -12543,7 +13979,18 @@ impl<L: Tool + 'static> TracedTask<L> {
         // A clone that may share this group's signal-action table marks it
         // shared before it runs, whether or not its child is traced
         // (`CLONE_UNTRACED` gives no new-child event).
-        if self.global_state.keeps_sigtrap_state && self.clone_may_share_signal_actions(nr, &args) {
+        if self.global_state.keeps_sigtrap_state
+            && matches!(nr, Sysno::clone | Sysno::clone3)
+            && input
+                .and_then(|context| context.input.as_ref())
+                .map_or_else(
+                    || self.clone_may_share_signal_actions(nr, &args),
+                    |call| {
+                        call.future_flags(nr, &args)
+                            .is_none_or(|flags| flags & libc::CLONE_SIGHAND as u64 != 0)
+                    },
+                )
+        {
             self.global_state
                 .sigtrap_tables
                 .lock()
@@ -12559,7 +14006,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.segv_new_task_seen = false;
         }
         let sets_segv = self.sets_segv_action(nr, &args);
-        let result = self.inner_inject_unobserved(nr, args).await?;
+        let result = self.inner_inject_unobserved(nr, args, input).await?;
         if checks_clone {
             self.note_segv_clone_result(&result);
         }
@@ -12571,13 +14018,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(result)
     }
 
-    /// `inner_inject`, without forgetting SIGTRAP's disposition.
+    /// `inner_inject_with_input`, without forgetting SIGTRAP's disposition.
     async fn inner_inject_unobserved(
         &mut self,
         nr: Sysno,
         args: SyscallArgs,
+        input: Option<&NativeCallContext>,
     ) -> Result<Result<i64, Errno>, TraceError> {
-        let task = self.assume_stopped();
+        let mut task = self.assume_stopped();
+        let restoration = InjectionRestoration::for_public_returning(
+            self.pending_syscall.is_some(),
+            self.injected_syscall_frame.is_some(),
+            self.in_signal_callback,
+            self.in_held_signal_callback,
+        );
 
         tracing::debug!(
             "[tool] (tid {}) beginning inject of syscall: {}, args {:?}",
@@ -12589,7 +14043,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.injected_syscall_frame.is_some() {
             let original = self.pending_syscall.take() == Some((nr, args));
             self.pending_syscall = None;
-            self.untraced_syscall_with(task, nr, args, original).await
+            self.untraced_syscall_with(
+                task,
+                nr,
+                args,
+                original,
+                input,
+                InjectionRestoration::PreserveResult,
+            )
+            .await
         } else {
             match self.pending_syscall.take() {
                 Some(original) if original == (nr, args) => {
@@ -12602,12 +14064,34 @@ impl<L: Tool + 'static> TracedTask<L> {
                         self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                             .await;
                     }
+                    let oldregs = task.getregs()?;
+                    if let Some(input) = input {
+                        self.observe_native_entry(&task, input)?;
+                    }
+                    if let Err(error) = self.prepare_input_at_stop(&mut task, input) {
+                        return Err(self.recover_input_not_run(
+                            &task,
+                            oldregs,
+                            input.unwrap(),
+                            error,
+                        ));
+                    }
+                    self.issue_input(input)?;
                     let wait = self
-                        .syscall_stopped(task, None)?
+                        .syscall_stopped_input(task, None, input)?
                         .next_state_with_owner(&self.ptracer_waits)
                         .await?;
                     self.arm_liteinst_wait(&wait);
-                    let result = self.status_to_result(wait, None, None).await?;
+                    let result = self
+                        .status_to_result(
+                            wait,
+                            None,
+                            None,
+                            input,
+                            false,
+                            InjectionRestoration::PreserveResult,
+                        )
+                        .await?;
                     // A clone run in place steps its parent once
                     // (`handle_new_task`); an ignored SIGTRAP its trap reset is
                     // put back before the Tool goes on.
@@ -12617,13 +14101,31 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     Ok(result)
                 }
-                Some(_) => self.private_inject(task, nr, args).await,
-                None => self.untraced_syscall(task, nr, args).await,
+                Some(_) => {
+                    self.private_inject(task, nr, args, input, restoration)
+                        .await
+                }
+                // Also covers subsequent calls in a syscall callback after
+                // its pending event was consumed. Each call snapshots its own
+                // current frame, including intervening explicit Tool writes.
+                None => {
+                    self.untraced_syscall_with(task, nr, args, false, input, restoration)
+                        .await
+                }
             }
         }
     }
 
     async fn do_tail_inject(&mut self, nr: Sysno, args: SyscallArgs) -> ! {
+        self.do_tail_inject_with(nr, args, None).await
+    }
+
+    async fn do_tail_inject_with(
+        &mut self,
+        nr: Sysno,
+        args: SyscallArgs,
+        operation: Option<reverie::native_syscall::NativeOperation>,
+    ) -> ! {
         // A tail injection never returns to the signal callback that approved
         // a delivery (`Guest::deliver_signal`), so `report_signal` would never
         // enforce the approval. It is refused before anything runs.
@@ -12631,7 +14133,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             let error = self.fail_broken_approval(approval, "then made a tail injection");
             self.abort(Err(error)).await
         }
-        match self.inner_tail_inject_observed(nr, args).await {
+        match self
+            .inner_tail_inject_observed(nr, args, NativeCallContext::application(operation))
+            .await
+        {
             Ok(_) => {
                 // Drop the handle_syscall_event future.
                 self.cancel_handler.store(true, Ordering::SeqCst);
@@ -12642,19 +14147,21 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     /// `inner_tail_inject`, with the bookkeeping of SIGSEGV's state
-    /// (`segv_state`) that `inner_inject` keeps. An original syscall left to
+    /// (`segv_state`) that `inner_inject_with_input` keeps. An original syscall left to
     /// run on the final resume is accounted there (`note_segv_resume`).
     async fn inner_tail_inject_observed(
         &mut self,
         nr: Sysno,
         args: SyscallArgs,
+        native: NativeCallContext,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        self.retain_native_operation_owner(Some(&native))?;
         let checks_clone = self.checks_segv_clone(nr, &args);
         if checks_clone {
             self.segv_new_task_seen = false;
         }
         let sets_segv = self.sets_segv_action(nr, &args);
-        let result = self.inner_tail_inject(nr, args).await?;
+        let result = self.inner_tail_inject(nr, args, native).await?;
         let runs_on_resume = self.segv_resume_syscall.load(Ordering::SeqCst) == nr as u64 + 1;
         // An original clone left to run on the final resume gives no result
         // here: a traced child's new-task event is the thread's next stop
@@ -12678,9 +14185,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         nr: Sysno,
         args: SyscallArgs,
+        native: NativeCallContext,
     ) -> Result<Result<i64, Errno>, TraceError> {
         let tid = self.tid();
-        // As for `inner_inject`: whichever path runs it, and whenever.
+        // As for `inner_inject_with_input`: whichever path runs it, and whenever.
         if self.global_state.keeps_sigtrap_state && sets_sigtrap_action(nr, &args) {
             self.mark_sigtrap_changing();
         }
@@ -12704,7 +14212,16 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         if self.injected_syscall_frame.is_some() {
             let original = self.pending_syscall.take() == Some((nr, args));
-            let result = self.untraced_syscall_with(task, nr, args, original).await?;
+            let result = self
+                .untraced_syscall_with(
+                    task,
+                    nr,
+                    args,
+                    original,
+                    Some(&native),
+                    InjectionRestoration::PreserveResult,
+                )
+                .await?;
             // `handle_injected_syscall` owns the frame and applies this after
             // the callback is dropped, restarting the trap for a Linux restart
             // code instead of leaking it into the guest frame.
@@ -12714,7 +14231,15 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         if is_liteinst_mapping_syscall(nr) && self.pending_syscall == Some((nr, args)) {
             self.pending_syscall = None;
-            let result = self.private_inject(task, nr, args).await?;
+            let result = self
+                .private_inject(
+                    task,
+                    nr,
+                    args,
+                    Some(&native),
+                    InjectionRestoration::PreserveResult,
+                )
+                .await?;
             let task = self.assume_stopped();
             set_ret(
                 &task,
@@ -12727,12 +14252,47 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(original) if original == (nr, args) => {
                 // The callback is cancelled next. Its final resume still owns
                 // execution of this original syscall; no second skip is due.
+                let callback = self
+                    .native_callback
+                    .ok_or_else(|| self.input_failure("native-tail-without-callback-owner"))?;
+                let pending = self
+                    .native_entry_pending
+                    .clone()
+                    .ok_or_else(|| self.input_failure("native-tail-without-entry-owner"))?;
+                if self.deferred_native_call.is_some() {
+                    return Err(self.input_failure("native-tail-duplicate-completion"));
+                }
+                self.deferred_native_call = Some(DeferredNativeCall {
+                    callback,
+                    owner: task.generation(),
+                    pending,
+                    context: native,
+                });
                 self.segv_resume_syscall
                     .store(nr as u64 + 1, Ordering::SeqCst);
                 Ok(Ok(0))
             }
-            Some(_) => self.private_inject(task, nr, args).await,
-            None => self.untraced_syscall(task, nr, args).await,
+            Some(_) => {
+                self.private_inject(
+                    task,
+                    nr,
+                    args,
+                    Some(&native),
+                    InjectionRestoration::PreserveResult,
+                )
+                .await
+            }
+            None => {
+                self.untraced_syscall_with(
+                    task,
+                    nr,
+                    args,
+                    false,
+                    Some(&native),
+                    InjectionRestoration::PreserveResult,
+                )
+                .await
+            }
         }
     }
 
@@ -12758,32 +14318,238 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
-    /// Publishes this thread's registers to gdb while a tool callback holds the
-    /// thread, until the returned guard drops. A tool that sequentializes threads
-    /// keeps them in callbacks while another thread is in a gdb stop, where they
-    /// cannot answer gdb themselves. Costs nothing unless gdb is attached.
-    fn park_for_gdb(&self) -> Option<ThreadStateGuard> {
+    /// Publishes this thread's registers to gdb while it is held, until the
+    /// returned guard drops. A thread held by a Tool callback or for another
+    /// thread's gdb stop cannot answer gdb itself. Costs nothing unless gdb is
+    /// attached.
+    fn publish_registers_for_gdb(&self) -> Option<ThreadStateGuard> {
         if !self.attached_by_gdb {
             return None;
         }
         // A thread whose registers cannot be read shows gdb as running.
-        let regs = self.read_registers().ok()?;
+        let task = self.assume_stopped();
+        let regs = CoreRegs::from_parts(task.getregs().ok()?, task.getfpregs().ok()?);
         Some(self.gdb_view.enter(ThreadState::Parked(Box::new(regs))))
     }
 
-    async fn notify_gdb_stop(&self, reason: StopReason) -> Result<(), TraceError> {
+    /// Parks this thread for a Tool callback, which holds it until it returns:
+    /// the thread publishes its registers to gdb, and can stop for gdb's
+    /// interrupt (`ParkedForGdb::hold`). A tool that sequentializes threads
+    /// keeps them in callbacks while another thread is in a gdb stop, where they
+    /// cannot answer gdb themselves. Costs nothing unless gdb is attached.
+    /// Undone by `unpark`.
+    fn park_for_gdb(&self) -> Option<ParkedForGdb> {
+        if !self.attached_by_gdb {
+            return None;
+        }
+        // A thread whose registers cannot be read shows gdb as running.
+        let task = self.assume_stopped();
+        let regs = task.getregs().ok()?;
+        let core_regs = CoreRegs::from_parts(regs, task.getfpregs().ok()?);
+        let parked = self
+            .gdb_view
+            .enter(ThreadState::Parked(Box::new(core_regs.clone())));
+        Some(ParkedForGdb {
+            tid: self.tid(),
+            pid: self.pid(),
+            task,
+            regs,
+            core_regs,
+            breakpoints: self.breakpoints.clone(),
+            reserved_input: self.input_control().zip(self.reserved_input_task),
+            fatal_session: self.global_state.fatal_session.clone(),
+            input_task: self.reserved_input_task,
+            view: self.gdb_view.clone(),
+            ports: self.gdb_ports.clone(),
+            stop_tx: self.gdb_stop_tx.clone(),
+            request_tx: self.gdb_request_tx.clone(),
+            resume_tx: self.gdb_resume_tx.clone(),
+            interrupt: self.gdb_interrupt.clone(),
+            sent_signal: self.gdb_sent_signal.clone(),
+            sequentialized: *self.global_state.sequentialized_guest,
+            resumed: None,
+            _parked: parked,
+        })
+    }
+
+    /// Ends a park (`park_for_gdb`) once its callback has returned, applying the
+    /// resume gdb chose if the thread stopped for gdb there. Its signal was
+    /// sent then: a kill cannot wait for a callback that may never return.
+    fn unpark(&mut self, parked: Option<ParkedForGdb>) {
+        if let Some(parked) = parked
+            && let Some((resume, released_by_session)) = parked.resumed
+        {
+            self.apply_resume_from_gdb_stop(resume, released_by_session, parked.tid, None);
+        }
+    }
+
+    /// Where this thread, at a ptrace stop it has yet to handle, stops for gdb's
+    /// interrupt if it is the first thread to get to such a point since gdb sent
+    /// it. The guest then goes on from this stop as it would have without the
+    /// interrupt: the stop is one the thread made anyway, and it is handled
+    /// after gdb resumes the thread. While another thread is stopped for the
+    /// interrupt, a thread of a guest that the Tool runs one thread at a time
+    /// holds here until gdb resumes the guest; otherwise the thread stopped for
+    /// it froze the others (`freeze_all`). A step gdb made from such a stop
+    /// ends here too (`gdb_step_pending`).
+    ///
+    /// Not at a SIGTRAP or an exec, which their own handling reports to gdb:
+    /// it tells a breakpoint from Reverie's own traps, and shows gdb the new
+    /// image only once it is set up. Nor at a SIGSTOP, another thread's freeze
+    /// or the guest's own, unless it is the session's (`Interrupt::kick`).
+    async fn interrupt_point(&mut self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if !self.attached_by_gdb || matches!(event, Event::Exec(_) | Event::Signal(Signal::SIGTRAP))
+        {
+            return Ok(());
+        }
+        if *event == Event::Signal(Signal::SIGSTOP) && !self.gdb_interrupt.take_kick(self.tid()) {
+            return Ok(());
+        }
+        if std::mem::take(&mut self.gdb_step_pending) {
+            return self.stop_for_gdb_at(task, Signal::SIGTRAP).await;
+        }
+        if self.gdb_interrupt.take(self.tid()) {
+            tracing::debug!(tid = %self.tid(), ?event, "gdb's interrupt taken at a ptrace stop");
+            let stopped = self.stop_for_gdb_at(task, Signal::SIGINT).await;
+            self.gdb_interrupt.release();
+            stopped
+        } else if self.gdb_interrupt.is_taken() && *self.global_state.sequentialized_guest {
+            tracing::debug!(tid = %self.tid(), ?event, "holding at a ptrace stop for gdb's interrupt");
+            let _parked = self.publish_registers_for_gdb();
+            self.gdb_interrupt.released().await;
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Reports `sig` as this thread's stop at `task`, a ptrace stop it has yet
+    /// to handle, freezes the other threads unless the Tool runs one at a time,
+    /// and waits for gdb's resume. gdb sees the thread's registers but may not
+    /// change them: the stop is still to be handled. A thread that another
+    /// thread is freezing counts as frozen, as at a breakpoint
+    /// (`resume_from_swbreak`).
+    async fn stop_for_gdb_at(&mut self, task: &Stopped, sig: Signal) -> Result<(), TraceError> {
+        let regs = task.getregs()?;
+        let shown = CoreRegs::from_parts(regs, task.getfpregs()?);
+        let was_suspended = self.suspended.swap(true, Ordering::SeqCst);
+        if let Some((suspended, stop_tx)) = self.get_stop_tx().await {
+            let frozen = Suspended {
+                input_task: self.reserved_input_task,
+                waker: None,
+                suspended,
+            };
+            let _ = stop_tx.send((self.tid(), frozen)).await;
+        }
+        let stopped = self
+            .notify_gdb_stop(StopReason::stopped(
+                task.pid(),
+                self.pid(),
+                StopEvent::Signal(sig.into()),
+                regs.into(),
+            ))
+            .await;
+        let resumed = match stopped {
+            Ok(()) => {
+                self.freeze_all().await?;
+                let (resume, released_by_session) = match self.serve_gdb_stop(Some(&shown)).await {
+                    Ok(resumed) => resumed,
+                    Err(error) => {
+                        // Preserve legacy serve-error cleanup. In contrast,
+                        // a failed exposure below publishes a fatal ownership
+                        // error and must not thaw any callback.
+                        self.thaw_all().await?;
+                        if !was_suspended {
+                            self.suspended.store(false, Ordering::SeqCst);
+                        }
+                        return Err(error);
+                    }
+                };
+                // A direct signal can affect a different process sharing this
+                // MM. Publish before waking any suspended callback, not merely
+                // before the eventual tgkill after thaw.
+                let signal = self.prepare_gdb_resume_signal(resume)?;
+                self.thaw_all().await?;
+                Ok((resume, released_by_session, signal))
+            }
+            Err(error) => Err(error),
+        };
+        if !was_suspended {
+            self.suspended.store(false, Ordering::SeqCst);
+        }
+        let (resume, released_by_session, signal) = resumed?;
+        self.apply_resume_from_gdb_stop(resume, released_by_session, task.pid(), Some(signal));
+        Ok(())
+    }
+
+    fn prepare_gdb_resume_signal(
+        &self,
+        resume: Option<ResumeInferior>,
+    ) -> Result<gdb_stop::PreparedResumeSignal, TraceError> {
+        gdb_stop::prepare_resume_signal(
+            self.input_control().as_ref(),
+            self.reserved_input_task,
+            resume,
+        )
+        .map_err(|error| self.input_failure(error))
+    }
+
+    /// Applies gdb's resume from a stop made before the thread's stop was
+    /// handled, or inside a Tool callback (`stop_for_gdb_at`,
+    /// `ParkedForGdb`). The thread goes on with what it was doing, so a step
+    /// ends at its next stop (`gdb_step_pending`). The signal gdb resumed it
+    /// with is sent to it here if authorized (a park sends it itself, as soon as
+    /// gdb resumes it), and its delivery is not reported to gdb again
+    /// (`SentSignal`).
+    fn apply_resume_from_gdb_stop(
+        &mut self,
+        resume: Option<ResumeInferior>,
+        released_by_session: bool,
+        tid: Pid,
+        signal: Option<gdb_stop::PreparedResumeSignal>,
+    ) {
+        let stepped = resume
+            .is_some_and(|resume| !resume.detach && matches!(resume.action, ResumeAction::Step(_)));
+        let recorded = resume.map(|resume| ResumeInferior {
+            action: if stepped {
+                ResumeAction::Continue(None)
+            } else {
+                resume.action
+            },
+            ..resume
+        });
+        self.note_gdb_resume(recorded, released_by_session);
+        self.gdb_step_pending = stepped && self.attached_by_gdb;
+        if let Some(signal) = signal {
+            signal.send(self.pid(), tid, &self.gdb_sent_signal);
+        }
+    }
+
+    async fn notify_gdb_stop(&mut self, reason: StopReason) -> Result<(), TraceError> {
         if !self.attached_by_gdb {
             return Ok(());
         }
+        // Any stop gdb is told of ends a step it made (`gdb_step_pending`).
+        self.gdb_step_pending = false;
 
         if let Some(stop_tx) = self.gdb_stop_tx.as_ref() {
             let request_tx = self.gdb_request_tx.clone();
             let resume_tx = self.gdb_resume_tx.clone();
+            // The run can end as soon as a process exit is reported, which
+            // would drop gdb's connection with the reply unwritten: wait until
+            // the session has written it, or gone away.
+            let (replied, written) = if matches!(reason, StopReason::Exited(..)) {
+                let (replied, written) = oneshot::channel();
+                (Some(replied), Some(written))
+            } else {
+                (None, None)
+            };
             let stop = StoppedInferior {
                 reason,
                 request_tx: request_tx.ok_or(Errno::EIO)?,
                 resume_tx: resume_tx.ok_or(Errno::EIO)?,
                 view: self.gdb_view.clone(),
+                replied,
             };
             // The session closes a thread's stop channel when gdb lets the
             // thread go: at a detach or kill, at the thread's exit, and when
@@ -12794,44 +14560,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     tid = %self.tid(),
                     "GDB no longer follows this tracee; stop not reported"
                 );
+            } else if let Some(written) = written {
+                let _ = written.await;
             }
         }
         Ok(())
-    }
-
-    async fn handle_gdb_request(&mut self, request: Option<GdbRequest>) {
-        if let Some(request) = request {
-            match request {
-                GdbRequest::SetBreakpoint(bkpt, reply_tx) => {
-                    if bkpt.ty == BreakpointType::Software {
-                        let result = self.add_breakpoint(bkpt.addr).await;
-                        let _ = reply_tx.send(result);
-                    }
-                }
-                GdbRequest::RemoveBreakpoint(bkpt, reply_tx) => {
-                    if bkpt.ty == BreakpointType::Software {
-                        let result = self.remove_breakpoint(bkpt.addr).await;
-                        let _ = reply_tx.send(result);
-                    }
-                }
-                GdbRequest::ReadInferiorMemory(addr, length, reply_tx) => {
-                    let result = self.read_inferior_memory(addr, length);
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::WriteInferiorMemory(addr, length, data, reply_tx) => {
-                    let result = self.write_inferior_memory(addr, length, data);
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::ReadRegisters(reply_tx) => {
-                    let result = self.read_registers();
-                    let _ = reply_tx.send(result);
-                }
-                GdbRequest::WriteRegisters(core_regs, reply_tx) => {
-                    let result = self.write_registers(core_regs);
-                    let _ = reply_tx.send(result);
-                }
-            }
-        }
     }
 
     async fn handle_gdb_resume(
@@ -12839,7 +14572,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         resume: Option<ResumeInferior>,
         task: Stopped,
         resume_action: ExpectedGdbResume,
+        signal_origin: GdbResumeSignalOrigin,
     ) -> Result<(Running, Option<ResumeInferior>), TraceError> {
+        if matches!(signal_origin, GdbResumeSignalOrigin::Unclassified) {
+            // Breakpoints, step traps and guest SIGTRAP stops have no Tool
+            // verdict. Post-exec/start callbacks may also have changed the
+            // physical stop, regardless of the label GDB was shown.
+            let signal = resume.and_then(|resume| match resume.action {
+                ResumeAction::Continue(signal) | ResumeAction::Step(signal) => signal,
+                ResumeAction::Stop | ResumeAction::StepUntil(..) => None,
+            });
+            let _authorized = gdb_stop::prepare_signal(
+                self.input_control().as_ref(),
+                self.reserved_input_task,
+                signal,
+            )
+            .map_err(|error| self.input_failure(error))?;
+        }
         match resume {
             None => Ok((self.resume_stopped(task, None)?, None)),
             Some(resume) => {
@@ -12857,11 +14606,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // panic here).
                 let is_step_over = resume_action == ExpectedGdbResume::StepOver;
                 let running = match resume.action {
-                    ResumeAction::Step(sig) => self.step_stopped(task, sig)?,
-                    ResumeAction::Continue(sig) if is_resume => self.resume_stopped(task, sig)?,
-                    ResumeAction::Continue(sig) if is_step_only => self.step_stopped(task, sig)?,
+                    ResumeAction::Step(sig) => self.step_stopped_any(task, sig)?,
+                    ResumeAction::Continue(sig) if is_resume => {
+                        self.resume_stopped_any(task, sig)?
+                    }
+                    ResumeAction::Continue(sig) if is_step_only => {
+                        self.step_stopped_any(task, sig)?
+                    }
                     ResumeAction::Continue(sig) if is_step_over => {
-                        self.resume_stopped(task, sig)?
+                        self.resume_stopped_any(task, sig)?
                     }
                     action => panic!(
                         "[pid = {}] unexpected resume action {:?}, expecting: {:?}",
@@ -12879,61 +14632,54 @@ impl<L: Tool + 'static> TracedTask<L> {
         &mut self,
         task: Stopped,
         resume_action: ExpectedGdbResume,
+        signal_origin: GdbResumeSignalOrigin,
     ) -> Result<Running, TraceError> {
         if !self.attached_by_gdb {
             return self.resume_stopped(task, None);
         }
+        let (resume, released_by_session) = self.wait_for_gdb_resume().await?;
+        let (running, resumed) = self
+            .handle_gdb_resume(resume, task, resume_action, signal_origin)
+            .await?;
+        self.note_gdb_resume(resumed, released_by_session);
+        Ok(running)
+    }
 
-        let mut resume_rx = self.gdb_resume_rx.take().ok_or(Errno::EIO)?;
-        let mut gdb_request_rx = self.gdb_request_rx.take().ok_or(Errno::EIO)?;
+    /// Waits in a gdb stop, answering gdb's requests, until gdb resumes this
+    /// thread. Returns gdb's resume, `None` if the resume channel closed, and
+    /// whether the session let the thread go without one, in which case the
+    /// resume is a detach (`gdb_stop::serve_gdb_stop`).
+    async fn wait_for_gdb_resume(&mut self) -> Result<(Option<ResumeInferior>, bool), TraceError> {
+        self.serve_gdb_stop(None).await
+    }
+
+    /// `wait_for_gdb_resume`, showing gdb `shown` as the thread's registers,
+    /// which gdb may then not change, if given.
+    async fn serve_gdb_stop(
+        &mut self,
+        shown: Option<&CoreRegs>,
+    ) -> Result<(Option<ResumeInferior>, bool), TraceError> {
+        let mut ports = self.gdb_ports.take().ok_or(Errno::EIO)?;
         let answering = self.gdb_view.enter(ThreadState::InGdbStop);
-
-        let mut resume_future = Box::pin(resume_rx.recv());
-        // The session drops this thread's stop channel once gdb has let the
-        // thread go: at a detach or a kill, which send a resume only to the
-        // threads whose stops gdb has seen, and when gdb disconnects. No
-        // resume comes after that, so the thread resumes as a detach resumes
-        // it, whether it was waiting here already or arrives later.
-        let stop_tx = self.gdb_stop_tx.clone();
-        let mut released = Box::pin(async move {
-            match stop_tx {
-                Some(stop_tx) => stop_tx.closed().await,
-                None => future::pending().await,
-            }
-        });
-        let mut released_by_session = false;
-
-        let (running, resumed) = loop {
-            let request_future = Box::pin(gdb_request_rx.recv());
-            let resume_or_release = future::select(&mut resume_future, &mut released);
-
-            match future::select(request_future, resume_or_release).await {
-                Either::Left((gdb_request, _)) => {
-                    self.handle_gdb_request(gdb_request).await;
-                }
-                Either::Right((Either::Left((resume_request, _)), _)) => {
-                    break self
-                        .handle_gdb_resume(resume_request, task, resume_action)
-                        .await?;
-                }
-                Either::Right((Either::Right(((), _)), _)) => {
-                    released_by_session = true;
-                    let detach = ResumeInferior {
-                        action: ResumeAction::Continue(None),
-                        detach: true,
-                    };
-                    break self
-                        .handle_gdb_resume(Some(detach), task, resume_action)
-                        .await?;
-                }
-            }
+        let mut task = self.assume_stopped();
+        let mut tracee = GdbTracee {
+            task: &mut task,
+            breakpoints: &self.breakpoints,
+            parked_registers: shown,
+            reserved_input: self.input_control().zip(self.reserved_input_task),
         };
-
-        drop(resume_future);
+        let result = gdb_stop::serve_gdb_stop(&mut ports, self.gdb_stop_tx.clone(), |request| {
+            tracee.answer(request)
+        })
+        .await;
         drop(answering);
-        self.gdb_request_rx = Some(gdb_request_rx);
-        self.gdb_resume_rx = Some(resume_rx);
+        self.gdb_ports.put(ports);
+        Ok(result)
+    }
 
+    /// Records how gdb resumed this thread (`wait_for_gdb_resume`): a detach
+    /// ends gdb's hold on it, and a step makes its next trap one to report.
+    fn note_gdb_resume(&mut self, resumed: Option<ResumeInferior>, released_by_session: bool) {
         if let Some(resumed) = resumed {
             if resumed.detach {
                 tracing::debug!(
@@ -12957,17 +14703,166 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             self.resumed_by_gdb = Some(resumed.action);
         }
+    }
 
-        Ok(running)
+    /// Whether `sig`, about to be delivered, is reported to gdb as a stop
+    /// first: while gdb is attached, unless gdb asked for it to be passed
+    /// silently (`QPassSignals`) or has no number for it (Linux's SIGSTKFLT),
+    /// which gdb could not name when it resumes.
+    fn stops_for_gdb_at(&self, sig: AnySignal) -> bool {
+        self.attached_by_gdb
+            && self.gdb_stop_tx.is_some()
+            && !self.gdb_passed_signals.passes(sig)
+            && crate::gdbstub::signal_has_gdb_number(sig)
+    }
+
+    /// Reports `sig`, which the Tool is about to have delivered at this
+    /// signal-delivery stop, to gdb as a stop, as a native gdbserver does, and
+    /// returns what gdb chose: to continue with the signal (gdb's default for
+    /// a signal it passes), with another signal, or with none (`signal 0`), or
+    /// to step. A detach, or a session that lets the thread go, delivers the
+    /// signal as if gdb had never seen it, and a kill delivers SIGKILL.
+    async fn signal_stop_for_gdb(
+        &mut self,
+        task: &Stopped,
+        sig: AnySignal,
+    ) -> Result<GdbSignalResume, TraceError> {
+        self.notify_gdb_stop(StopReason::stopped(
+            task.pid(),
+            self.pid(),
+            StopEvent::Signal(sig),
+            task.getregs()?.into(),
+        ))
+        .await?;
+        let (resume, released_by_session) = self.wait_for_gdb_resume().await?;
+        self.note_gdb_resume(resume, released_by_session);
+        Ok(match resume {
+            None => GdbSignalResume::Continue(Some(sig)),
+            Some(resume) if resume.detach => match resume.action {
+                ResumeAction::Continue(Some(kill)) => GdbSignalResume::Continue(Some(kill)),
+                _ => GdbSignalResume::Continue(Some(sig)),
+            },
+            Some(resume) => match resume.action {
+                ResumeAction::Continue(chosen) => GdbSignalResume::Continue(chosen),
+                ResumeAction::Step(chosen) => GdbSignalResume::Step(chosen),
+                // Not advertised in `vCont?`; deliver as without gdb.
+                ResumeAction::Stop | ResumeAction::StepUntil(..) => {
+                    GdbSignalResume::Continue(Some(sig))
+                }
+            },
+        })
+    }
+
+    /// Runs a thread gdb does not follow past a breakpoint gdb set before the
+    /// thread's process was forked from one it follows: a process gdb was not
+    /// told of (`handle_new_task`) carries gdb's breakpoints in its copy of
+    /// the parent's memory, or in the memory it shares with the parent, and
+    /// would otherwise stop at them for good. In a copy, the breakpoint is
+    /// removed. In shared memory, where gdb's breakpoint must stay for the
+    /// parent, the instruction is stepped with the breakpoint out and the
+    /// breakpoint put back, whatever stop the step ends at. `regs` are the
+    /// thread's registers with rip at the breakpoint.
+    ///
+    /// The breakpoint stop makes no Tool callback, so before the thread runs
+    /// on it leaves the timer event as it was, and what of the event it
+    /// interrupted is finished (`disregard_stop_for_timer`), as at a
+    /// breakpoint gdb continues from (`resume_at_breakpoint`): in a copy once
+    /// the breakpoint is out, in shared memory after the step, once the
+    /// breakpoint lock is released. A step that ends at another stop (the
+    /// instruction is a system call, or faults) leaves the breakpoint stop
+    /// to decide the event, as before.
+    async fn step_over_unfollowed_breakpoint(
+        &mut self,
+        mut task: Stopped,
+        regs: libc::user_regs_struct,
+    ) -> Result<Wait, TraceError> {
+        task.setregs(&regs)?;
+        let addr = regs.ip();
+        let at = AddrMut::<u64>::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
+        if !self.shares_breakpoint_memory {
+            let insn = self.breakpoints().remove(&addr).ok_or(Errno::ENOENT)?;
+            let current: u64 = task.read_value(at)?;
+            self.check_input_debug_write(addr, std::mem::size_of::<u64>())?;
+            task.write_value(at, &breakpoint_removed(current, insn))?;
+            let task = self.disregard_stop_for_timer(task).await?;
+            return self
+                .resume_stopped(task, None)?
+                .next_state_with_owner(&self.ptracer_waits)
+                .await;
+        }
+        // As a gdb step-over does: no other thread may find the breakpoint
+        // out meanwhile.
+        let step_over = self.needs_step_over.clone().lock_owned().await;
+        let Some(insn) = self.breakpoints().get(&addr).copied() else {
+            // gdb removed it meanwhile, through the process it follows.
+            drop(step_over);
+            let task = self.disregard_stop_for_timer(task).await?;
+            return self
+                .resume_stopped(task, None)?
+                .next_state_with_owner(&self.ptracer_waits)
+                .await;
+        };
+        let current: u64 = task.read_value(at)?;
+        self.check_input_debug_write(addr, std::mem::size_of::<u64>())?;
+        task.write_value(at, &breakpoint_removed(current, insn))?;
+        // The step's trap must not reset a blocked or ignored SIGTRAP, as at
+        // Reverie's other steps (`sigtrap_state`).
+        let (shielded, ignored) = if self.keeps_sigtrap_state() {
+            let ignored = self.sigtrap_ignored(&task)?;
+            self.forget_sigtrap_ignored();
+            (
+                self.shield_sigtrap_for_step(&task, "unfollowed gdb breakpoint")?,
+                ignored,
+            )
+        } else {
+            (false, false)
+        };
+        let wait = self
+            .step_stopped(task, None)?
+            .next_state_with_owner(&self.ptracer_waits)
+            .await?;
+        self.arm_liteinst_wait(&wait);
+        if ignored {
+            self.note_sigtrap_repair(SigtrapRepair::Ignored);
+        }
+        if shielded {
+            reblock_sigtrap_after_step(&wait)?;
+        }
+        let Wait::Stopped(mut task, event) = wait else {
+            // The thread is gone. Its process shared the memory, whose
+            // breakpoint a thread that stops there next finds out: gdb
+            // inserts it again (`add_breakpoint`) once it sees it missing.
+            return Ok(wait);
+        };
+        // Put gdb's breakpoint back, whatever stop the step ended at, unless
+        // gdb removed it meanwhile.
+        if self.breakpoints().contains_key(&addr) {
+            let current: u64 = task.read_value(at)?;
+            self.check_input_debug_write(addr, std::mem::size_of::<u64>())?;
+            task.write_value(at, &breakpoint_inserted(current))?;
+        }
+        drop(step_over);
+        match event {
+            Event::Signal(Signal::SIGTRAP) if task.getsiginfo()?.si_code == libc::TRAP_TRACE => {
+                let task = self.disregard_stop_for_timer(task).await?;
+                self.resume_stopped(task, None)?
+                    .next_state_with_owner(&self.ptracer_waits)
+                    .await
+            }
+            // Another trap, an event or a signal, handled as any stop is.
+            event => Ok(Wait::Stopped(task, event)),
+        }
     }
 
     /// Resume from a software breakpoint set by gdb. The resume action is
-    /// initiated from gdb (client).
+    /// initiated from gdb (client). `stop` says whether the timer observed
+    /// the breakpoint stop (`resume_at_breakpoint`).
     // NB: caller to %rip accordingly prior to hitting breakpoint.
     async fn resume_from_swbreak(
         &mut self,
         task: Stopped,
         regs: libc::user_regs_struct,
+        stop: BreakpointStop,
     ) -> Result<Wait, TraceError> {
         task.setregs(&regs)?;
 
@@ -12979,6 +14874,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .send((
                     self.tid(),
                     Suspended {
+                        input_task: self.reserved_input_task,
                         waker: None,
                         suspended: suspended_flag,
                     },
@@ -12999,8 +14895,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // thread might miss the breakpoint after the breakpoint is removed
         // and before the breakpoint is (re-)inserted. Hence we must make
         // serialize this sequence.
-        let needs_step_over = self.needs_step_over.clone();
-        let _guard = needs_step_over.lock().await;
+        let mut step_over = Some(self.needs_step_over.clone().lock_owned().await);
 
         self.notify_gdb_stop(StopReason::stopped(
             task.pid(),
@@ -13013,7 +14908,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.freeze_all().await?;
 
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::StepOver)
+            .resume_at_breakpoint(task, ExpectedGdbResume::StepOver, &mut step_over, stop)
             .await?;
 
         // If gdb removed the breakpoint at the current PC and issued a plain
@@ -13028,7 +14923,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // task's next event. gdb has resumed everything, and this task may
             // now block on a sibling -- a join, a futex, a pipe read -- which a
             // frozen sibling can never satisfy. Waiting first deadlocks the
-            // guest.
+            // guest. (A continue without a signal has released them already,
+            // in `resume_at_breakpoint`.)
             self.thaw_all().await?;
             let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
             self.arm_liteinst_wait(&wait);
@@ -13083,16 +14979,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                 unknown => panic!("[pid = {}] got unexpected event {:?}", self.tid(), unknown),
             }
         };
+        // The step ran the instruction under the breakpoint; a watch that
+        // caught its access fired with the step's trap (`crate::watch`).
+        if self.watches.is_armed() {
+            let mask = take_watch_hits(&task)?;
+            let tid = self.tid();
+            report_watch_hits(
+                &*self.global_state.gs_ref,
+                &mut self.watches,
+                &task,
+                tid,
+                mask,
+                reverie::SigtrapAtHit::Unchanged,
+            )?;
+        }
         self.notify_gdb_stop(StopReason::stopped(
             task.pid(),
             self.pid(),
-            StopEvent::Signal(Signal::SIGTRAP),
+            StopEvent::Signal(Signal::SIGTRAP.into()),
             task.getregs()?.into(),
         ))
         .await?;
 
         let running = self
-            .await_gdb_resume(task, ExpectedGdbResume::Resume)
+            .resume_at_breakpoint(task, ExpectedGdbResume::Resume, &mut step_over, stop)
             .await?;
         // Same ordering requirement as the plain-continue path above: the
         // step-over is finished and the breakpoint is back in place, so the
@@ -13101,6 +15011,54 @@ impl<L: Tool + 'static> TracedTask<L> {
         let wait = running.next_state_with_owner(&self.ptracer_waits).await?;
         self.arm_liteinst_wait(&wait);
         Ok(wait)
+    }
+
+    /// Waits in this thread's breakpoint stop for gdb's resume, and applies
+    /// it as `await_gdb_resume` does. A resume that lets the thread run on
+    /// without a signal (gdb's continue, a detach, or a session that lets
+    /// the thread go) first releases the breakpoint lock (`step_over`) and
+    /// thaws the other threads. Then, for a stop the timer observed, it
+    /// finishes the timer event as if the stop had not happened
+    /// (`disregard_stop_for_timer`), as the run without gdb, which has no
+    /// breakpoint, does. The lock goes first because the event's Tool
+    /// callback can wait for another thread, which can stop at a breakpoint
+    /// and need the lock. gdb's step over its breakpoint leaves the decision
+    /// to its next resume at this stop (`resume_from_swbreak`). Any other
+    /// step, or a resume with a signal, leaves the stop to decide the timer
+    /// event, as any stop does: the guest then runs under gdb's control, or
+    /// takes a signal that no run without gdb takes.
+    async fn resume_at_breakpoint(
+        &mut self,
+        task: Stopped,
+        expected: ExpectedGdbResume,
+        step_over: &mut Option<OwnedMutexGuard<()>>,
+        stop: BreakpointStop,
+    ) -> Result<Running, TraceError> {
+        let (resume, released_by_session) = if self.attached_by_gdb {
+            self.wait_for_gdb_resume().await?
+        } else {
+            (None, false)
+        };
+        // Recorded before the timer is finished, which may not return
+        // (`disregard_stop_for_timer`); a detach also ends the timer
+        // callback's parking for gdb.
+        self.note_gdb_resume(resume, released_by_session);
+        let runs_on =
+            resume.is_none_or(|resume| matches!(resume.action, ResumeAction::Continue(None)));
+        let task = if runs_on {
+            drop(step_over.take());
+            self.thaw_all().await?;
+            match stop {
+                BreakpointStop::Observed => self.disregard_stop_for_timer(task).await?,
+                BreakpointStop::Unobserved => task,
+            }
+        } else {
+            task
+        };
+        let (running, _) = self
+            .handle_gdb_resume(resume, task, expected, GdbResumeSignalOrigin::Unclassified)
+            .await?;
+        Ok(running)
     }
 
     /// check if the stop is caused by sw breakpoint.
@@ -13112,7 +15070,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let rip_minus_one = regs.ip() - 1;
                 if self.breakpoints().contains_key(&rip_minus_one) {
                     *regs.ip_mut() = rip_minus_one;
-                    self.resume_from_swbreak(task, regs).await
+                    self.resume_from_swbreak(task, regs, BreakpointStop::Unobserved)
+                        .await
                 } else {
                     Ok(Wait::Stopped(task, event))
                 }
@@ -13128,31 +15087,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             .expect("should not be poisoned: no code panics while holding it")
     }
 
-    async fn add_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
-        if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            let mut task = self.assume_stopped();
-            // The word read here can include the int3 of another live
-            // breakpoint up to 7 bytes later. That is harmless: only the
-            // lowest byte, this breakpoint's own, is ever restored.
-            let saved_insn: u64 = task.read_value(bkpt_addr)?;
-            // `Z0` must be idempotent (GDB remote protocol, "Z0"). Inserting again
-            // would save the int3 as the original byte, so a later `z0` would
-            // leave the breakpoint in the tracee for good. An entry can be
-            // stale when something other than gdb rewrote the code, such as an
-            // exec. Trust the entry only while the int3 is still in memory;
-            // otherwise insert again, replacing the stale entry.
-            let mut breakpoints = self.breakpoints();
-            if breakpoints.contains_key(&addr) && saved_insn & 0xff == 0xcc {
-                return Ok(());
-            }
-            task.write_value(bkpt_addr, &breakpoint_inserted(saved_insn))?;
-            breakpoints.insert(addr, saved_insn);
-        }
-        Ok(())
-    }
-
     /// thaw all threads.
     async fn thaw_all(&mut self) -> Result<(), TraceError> {
+        // Check the complete publication before waking any member. A later
+        // failed resume cannot revoke an earlier callback continuation.
+        if let Some(control) = self.input_control() {
+            for suspended in self.suspended_tasks.values() {
+                let task = suspended
+                    .input_task
+                    .ok_or_else(|| self.input_failure("input-gdb-suspended-owner-missing"))?;
+                control
+                    .backend_continuation(task, None)
+                    .map_err(|error| self.input_failure(error))?;
+            }
+        }
         for (_pid, suspended_task) in core::mem::take(&mut self.suspended_tasks) {
             if let Some(tx) = suspended_task.waker.as_ref() {
                 suspended_task.suspended.store(false, Ordering::SeqCst);
@@ -13186,80 +15134,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         while let Some((pid, suspended_task)) = stop_rx.recv().await {
             self.suspended_tasks.insert(pid, suspended_task);
         }
-        Ok(())
-    }
-
-    async fn remove_breakpoint(&mut self, addr: u64) -> Result<(), TraceError> {
-        let insn = self.breakpoints().remove(&addr).ok_or(Errno::ENOENT)?;
-        let mut task = self.assume_stopped();
-        if let Some(bkpt_addr) = AddrMut::from_raw(addr as usize) {
-            // Restore this breakpoint's byte only. Writing the whole saved
-            // word back would also restore the 7 bytes after it as they were
-            // at insertion, erasing the int3 of any breakpoint inserted there
-            // since, such as GDB's breakpoint on a following short source
-            // line when it steps over this one.
-            let current: u64 = task.read_value(bkpt_addr)?;
-            task.write_value(bkpt_addr, &breakpoint_removed(current, insn))?;
-        }
-        Ok(())
-    }
-
-    fn read_inferior_memory(&self, addr: u64, mut size: usize) -> Result<Vec<u8>, TraceError> {
-        let task = self.assume_stopped();
-
-        // NB: dont' trust size to be sane blindly.
-        if size > 0x8000 {
-            size = 0x8000;
-        }
-
-        let mut res = vec![0; size];
-        if let Some(addr) = Addr::from_raw(addr as usize) {
-            let nb = task.read(addr, &mut res)?;
-            res.resize(nb, 0);
-        }
-
-        // There could be a software breakpoint within the address requested,
-        // we should return the orignal contents without the breakpoint insn.
-        // This is *not* documented in gdb remote protocol, however, both
-        // gdbserver and rr does this. see:
-        // rr: https://github.com/rr-debugger/rr/blob/master/src/GdbServer.cc#L561
-        // gdbserver: https://github.com/bminor/binutils-gdb/blob/master/gdbserver/mem-break.cc#L1914
-        for (bkpt, saved_insn) in self.breakpoints().iter() {
-            if (addr..addr + res.len() as u64).contains(bkpt) {
-                // This abuses bkpt insn 0xcc is single byte.
-                res[*bkpt as usize - addr as usize] = *saved_insn as u8;
-            }
-        }
-
-        Ok(res)
-    }
-
-    fn write_inferior_memory(
-        &self,
-        addr: u64,
-        size: usize,
-        data: Vec<u8>,
-    ) -> Result<(), TraceError> {
-        let mut task = self.assume_stopped();
-        let size = std::cmp::min(size, data.len());
-        let addr = AddrMut::from_raw(addr as usize).ok_or(Errno::EFAULT)?;
-        task.write(addr, &data[..size])?;
-        Ok(())
-    }
-
-    fn read_registers(&self) -> Result<CoreRegs, TraceError> {
-        let task = self.assume_stopped();
-        let regs = task.getregs()?;
-        let fpregs = task.getfpregs()?;
-        let core_regs = CoreRegs::from_parts(regs, fpregs);
-        Ok(core_regs)
-    }
-
-    fn write_registers(&self, core_regs: CoreRegs) -> Result<(), TraceError> {
-        let task = self.assume_stopped();
-        let (regs, fpregs) = core_regs.into_parts();
-        task.setregs(&regs)?;
-        task.setfpregs(&fpregs)?;
         Ok(())
     }
 }
@@ -13539,10 +15413,7 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        match GuestStack::new_on_ptracer_thread(
-            self.assume_stopped(),
-            self.stack_checked_out.clone(),
-        ) {
+        match GuestStack::new_on_ptracer_thread(self.assume_stopped(), self.stack_arena.clone()) {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }
@@ -13591,6 +15462,133 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
                 self.inject(syscall).await.map_err(reverie::Error::from)
             }
         }
+    }
+
+    fn reserved_input_control(&self) -> Option<reverie::reserved_input::ReservedInputControl> {
+        self.input_control()
+    }
+
+    fn reserved_input_task(&self) -> Option<reverie::reserved_input::InputTaskId> {
+        self.reserved_input_task
+    }
+
+    fn reserved_input_descriptors(
+        &self,
+    ) -> Result<
+        reverie::reserved_input::InputDescriptorSnapshot,
+        reverie::reserved_input::InputUnavailable,
+    > {
+        self.inspect_input_descriptors()
+    }
+
+    fn reserved_input_process_exit_signal(
+        &self,
+    ) -> Result<i32, reverie::reserved_input::InputUnavailable> {
+        self.inspect_process_exit_signal()
+    }
+
+    fn reserved_input_descriptor(
+        &self,
+        fd: i32,
+    ) -> Result<
+        reverie::reserved_input::PinnedInputDescriptor,
+        reverie::reserved_input::InputUnavailable,
+    > {
+        self.inspect_reserved_input_descriptor(fd)
+    }
+
+    fn supports_native_operations(&self) -> bool {
+        true
+    }
+
+    fn bind_native_request<S: SyscallInfo>(
+        &self,
+        operation: &reverie::native_syscall::NativeOperation,
+        syscall: S,
+    ) -> Result<reverie::native_syscall::NativeOperation, reverie::Error> {
+        let (nr, args) = syscall.into_parts();
+        self.bind_native_request_at_current_grant(operation, nr, args)
+    }
+
+    async fn inject_with_native_operation<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        operation: reverie::native_syscall::NativeOperation,
+    ) -> Result<i64, Errno> {
+        let (nr, args) = syscall.into_parts();
+        let context = NativeCallContext::application(Some(operation));
+        let outcome = self.do_inject_outcome_with(nr, args, &context).await;
+        match host_linux::guest_result(outcome) {
+            Ok(result) => result,
+            Err(error) => self.abort(Err(error)).await,
+        }
+    }
+    async fn inject_restartable_with_native_operation<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        operation: reverie::native_syscall::NativeOperation,
+    ) -> Result<i64, Errno> {
+        let (nr, args) = syscall.into_parts();
+        loop {
+            let context = NativeCallContext::application(Some(operation.clone()));
+            let outcome = self.do_inject_outcome_with(nr, args, &context).await;
+            match host_linux::restartable(outcome, self.pending_signal.is_some()) {
+                Ok(host_linux::Restart::Retry) => continue,
+                Ok(host_linux::Restart::Return(result)) => return result,
+                Err(error) => self.abort(Err(error)).await,
+            }
+        }
+    }
+    async fn tail_inject_with_native_operation<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        operation: reverie::native_syscall::NativeOperation,
+    ) -> Never {
+        let (nr, args) = syscall.into_parts();
+        self.do_tail_inject_with(nr, args, Some(operation)).await
+    }
+    async fn inject_observed_with_native_operation<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        receipt: reverie::reserved_input::PhysicalInjectionReceipt,
+        operation: reverie::native_syscall::NativeOperation,
+    ) -> Result<Result<i64, Errno>, reverie::reserved_input::InputInjectionError> {
+        let (nr, args) = syscall.into_parts();
+        self.do_input_inject(nr, args, None, receipt, Some(operation))
+            .await
+    }
+    async fn inject_staged_with_native_operation<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        scope: &reverie::reserved_input::InputOperationScope,
+        image: reverie::reserved_input::ReservedInputImage,
+        receipt: reverie::reserved_input::PhysicalInjectionReceipt,
+        operation: reverie::native_syscall::NativeOperation,
+    ) -> Result<Result<i64, Errno>, reverie::reserved_input::InputInjectionError> {
+        let (nr, args) = syscall.into_parts();
+        self.do_input_inject(nr, args, Some((scope, image)), receipt, Some(operation))
+            .await
+    }
+
+    async fn inject_observed<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        receipt: reverie::reserved_input::PhysicalInjectionReceipt,
+    ) -> Result<Result<i64, Errno>, reverie::reserved_input::InputInjectionError> {
+        let (nr, args) = syscall.into_parts();
+        self.do_input_inject(nr, args, None, receipt, None).await
+    }
+
+    async fn inject_staged_input<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        scope: &reverie::reserved_input::InputOperationScope,
+        image: reverie::reserved_input::ReservedInputImage,
+        receipt: reverie::reserved_input::PhysicalInjectionReceipt,
+    ) -> Result<Result<i64, Errno>, reverie::reserved_input::InputInjectionError> {
+        let (nr, args) = syscall.into_parts();
+        self.do_input_inject(nr, args, Some((scope, image)), receipt, None)
+            .await
     }
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
@@ -13660,34 +15658,24 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     }
 
     fn backtrace(&mut self) -> Option<Backtrace> {
-        use unwind::Accessors;
-        use unwind::AddressSpace;
-        use unwind::Byteorder;
-        use unwind::Cursor;
-        use unwind::PTraceState;
-        use unwind::RegNum;
+        crate::watch::unwind(self.tid())
+    }
 
-        let mut frames = Vec::new();
-
-        let space = AddressSpace::new(Accessors::ptrace(), Byteorder::DEFAULT).ok()?;
-        let state = PTraceState::new(self.tid.as_raw() as u32).ok()?;
-        let mut cursor = Cursor::remote(&space, &state).ok()?;
-
-        loop {
-            let ip = cursor.register(RegNum::IP).ok()?;
-            let is_signal = cursor.is_signal_frame().ok()?;
-
-            frames.push(Frame { ip, is_signal });
-
-            if !cursor.step().ok()? {
-                break;
-            }
+    fn set_watchpoints(&mut self, specs: &[reverie::WatchSpec]) -> Result<(), reverie::WatchError> {
+        let task = self.assume_stopped();
+        WatchSet::check::<WatchArch>(&task, specs)?;
+        if !specs.is_empty() {
+            self.refuse_watch_under_sigtrap_state(&task)?;
         }
+        // After a failed write, the set is what the thread still holds
+        // (`WatchSet::arm`), so that every hit it may report is read.
+        let (set, result) = self.watches.arm::<WatchArch>(&task, specs);
+        self.watches = set;
+        result
+    }
 
-        // TODO: Take a snapshot of `/proc/self/maps` so the backtrace can be
-        // processed offline?
-
-        Some(Backtrace::new(self.tid(), frames))
+    fn watch_hits_keep_timer_events(&self) -> bool {
+        self.timer.keeps_events_across_disregarded_stops()
     }
 
     fn has_cpuid_interception(&self) -> bool {
@@ -13696,6 +15684,44 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn injected_syscalls(&self) -> Option<u64> {
         Some(self.injected_syscalls)
+    }
+
+    /// The thread's own `/proc/<tid>/fdinfo/<fd>`, read by the tracer while
+    /// the thread is stopped (`crate::descriptor_status`).
+    fn descriptor_status(&self, fd: i32) -> Result<reverie::DescriptorStatus, reverie::FactError> {
+        crate::descriptor_status::read(self.tid, fd)
+    }
+
+    /// The signal lines of thread `tid`'s own `status`, read by the tracer
+    /// while this thread is stopped, for a live thread this session traces,
+    /// in any of its processes, through the `/proc/<tid>` directory the
+    /// session retained for it (`crate::signal_sets`).
+    fn signal_sets(&self, tid: Pid) -> Result<reverie::SignalSets, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::signal_sets::read(tid, |tid| session.traced_directories(tid))
+    }
+
+    /// The kernel's own `readlink` of thread `tid`'s `fd/<fd>`, `exe` or
+    /// `cwd` link, read by the tracer while this thread is stopped, for a
+    /// live thread this session traces, in any of its processes, through the
+    /// `/proc/<tid>` directory the session retained for it
+    /// (`crate::link_path`).
+    fn link_path(
+        &self,
+        tid: Pid,
+        link: reverie::PathLink,
+    ) -> Result<reverie::LinkPath, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::link_path::read(tid, link, |tid| session.traced_directories(tid))
+    }
+
+    /// The kernel's own `maps` of thread `tid`'s address space, read by the
+    /// tracer while this thread is stopped, for a live thread this session
+    /// traces, in any of its processes, through the `/proc/<tid>` directory
+    /// the session retained for it (`crate::memory_map`).
+    fn memory_map(&self, tid: Pid) -> Result<reverie::MemoryMap, reverie::FactError> {
+        let session = &self.global_state.fatal_session;
+        crate::memory_map::read(tid, |tid| session.traced_directories(tid))
     }
 }
 
@@ -13752,6 +15778,71 @@ fn breakpoint_inserted(word: u64) -> u64 {
 /// can hold breakpoints inserted or removed since `saved` was read.
 fn breakpoint_removed(current: u64, saved: u64) -> u64 {
     (current & !0xffu64) | (saved & 0xffu64)
+}
+
+#[cfg(test)]
+mod sender_coded_sigtrap_tests {
+    use super::is_sender_coded_sigtrap;
+    use super::sender_coded_sigtrap;
+
+    /// A siginfo for `signo` with `code` and, in its kill member, sender
+    /// `pid`.
+    fn siginfo(signo: i32, code: i32, pid: i32) -> libc::siginfo_t {
+        // SAFETY: an all-zero siginfo is valid.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        info.si_signo = signo;
+        info.si_code = code;
+        // The kill member's `si_pid` follows the three leading ints and their
+        // padding to the union's 8-byte alignment: the fifth int.
+        // SAFETY: within the 128-byte siginfo.
+        unsafe { (std::ptr::addr_of_mut!(info) as *mut i32).add(4).write(pid) };
+        // SAFETY: the kill member is filled in above.
+        assert_eq!(unsafe { info.si_pid() }, pid, "the kill member's layout");
+        info
+    }
+
+    #[test]
+    fn a_sender_coded_sigtrap_is_one_a_process_sent() {
+        for (code, pid) in [
+            (libc::SI_TKILL, 7),
+            (libc::SI_QUEUE, 7),
+            (libc::SI_USER, 4242),
+        ] {
+            assert!(
+                is_sender_coded_sigtrap(&siginfo(libc::SIGTRAP, code, pid)),
+                "code {code} pid {pid}"
+            );
+        }
+        // Reverie's own traps have positive codes.
+        for code in [libc::TRAP_TRACE, libc::TRAP_BRKPT, 0x80] {
+            assert!(!is_sender_coded_sigtrap(&siginfo(libc::SIGTRAP, code, 0)));
+        }
+        // Another signal is not a SIGTRAP.
+        assert!(!is_sender_coded_sigtrap(&siginfo(
+            libc::SIGUSR1,
+            libc::SI_USER,
+            4242
+        )));
+    }
+
+    /// A stepped syscall's report is `SI_USER` with pid 0 wherever the
+    /// architecture has no `user_single_step_report` of its own (aarch64);
+    /// on x86_64 that report is `TRAP_BRKPT`, and `SI_USER` with pid 0 is a
+    /// kill from a pid namespace the guest cannot see.
+    #[test]
+    fn si_user_with_pid_0_is_sent_only_where_no_step_report_carries_it() {
+        let report = siginfo(libc::SIGTRAP, libc::SI_USER, 0);
+        assert!(sender_coded_sigtrap(&report, false), "x86_64's rule");
+        assert!(!sender_coded_sigtrap(&report, true), "aarch64's rule");
+        // A sender's pid counts under both.
+        let kill = siginfo(libc::SIGTRAP, libc::SI_USER, 4242);
+        assert!(sender_coded_sigtrap(&kill, false) && sender_coded_sigtrap(&kill, true));
+        assert_eq!(
+            is_sender_coded_sigtrap(&report),
+            cfg!(target_arch = "x86_64"),
+            "this host's rule"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -13891,12 +15982,161 @@ mod restored_regs_tests {
         let regs = restored_regs(injected_clone3(), &guest_clone(), Some(CHILD_PID), true);
         assert_restored(&regs, CHILD_PID, GUEST_SP);
     }
+
+    #[cfg(target_arch = "x86_64")]
+    fn distinct_regs(seed: u64) -> libc::user_regs_struct {
+        libc::user_regs_struct {
+            r15: seed,
+            r14: seed + 1,
+            r13: seed + 2,
+            r12: seed + 3,
+            rbp: seed + 4,
+            rbx: seed + 5,
+            r11: seed + 6,
+            r10: seed + 7,
+            r9: seed + 8,
+            r8: seed + 9,
+            rax: seed + 10,
+            rcx: seed + 11,
+            rdx: seed + 12,
+            rsi: seed + 13,
+            rdi: seed + 14,
+            orig_rax: seed + 15,
+            rip: seed + 16,
+            cs: seed + 17,
+            eflags: seed + 18,
+            rsp: seed + 19,
+            ss: seed + 20,
+            fs_base: seed + 21,
+            gs_base: seed + 22,
+            ds: seed + 23,
+            es: seed + 24,
+            fs: seed + 25,
+            gs: seed + 26,
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn all_fields(regs: libc::user_regs_struct) -> [u64; 27] {
+        [
+            regs.r15,
+            regs.r14,
+            regs.r13,
+            regs.r12,
+            regs.rbp,
+            regs.rbx,
+            regs.r11,
+            regs.r10,
+            regs.r9,
+            regs.r8,
+            regs.rax,
+            regs.rcx,
+            regs.rdx,
+            regs.rsi,
+            regs.rdi,
+            regs.orig_rax,
+            regs.rip,
+            regs.cs,
+            regs.eflags,
+            regs.rsp,
+            regs.ss,
+            regs.fs_base,
+            regs.gs_base,
+            regs.ds,
+            regs.es,
+            regs.fs,
+            regs.gs,
+        ]
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn public_returning_disposition_restores_each_entry_frame() {
+        use reverie::syscalls::Errno;
+
+        use super::InjectionRestoration;
+        use super::public_returning_regs;
+
+        assert_eq!(
+            InjectionRestoration::for_public_returning(false, false, false, false),
+            InjectionRestoration::PublicReturning,
+        );
+        let mut entry = distinct_regs(0x100);
+        for (seed, expected_result) in [(0x1000, Ok(321)), (0x2000, Err(Errno::EBADF))] {
+            let mut post_call = distinct_regs(seed);
+            post_call.rax =
+                expected_result.unwrap_or_else(|errno| -i64::from(errno.into_raw())) as u64;
+            let result = Errno::from_ret(post_call.rax as usize).map(|value| value as i64);
+            let restored = public_returning_regs(post_call, &entry);
+            let mut expected = all_fields(entry);
+            let post = all_fields(post_call);
+            // All eight values deliberately differ. Restoring a whole saved
+            // user_regs_struct would incorrectly undo these syscall effects.
+            for field in [17, 20, 21, 22, 23, 24, 25, 26] {
+                assert_ne!(expected[field], post[field]);
+                expected[field] = post[field];
+            }
+            assert_eq!(all_fields(restored), expected);
+            assert_eq!(result, expected_result);
+            assert_eq!(restored.rax, entry.rax);
+            assert_ne!(restored.rax, post_call.rax);
+
+            // The second invocation starts after an explicit Tool write. Its
+            // saved frame must be that new entry, never the first call's frame.
+            entry = restored;
+            entry.rax = 0x5a5a_0101;
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn legacy_restoration_dispositions_keep_precedence() {
+        use super::InjectionRestoration;
+
+        for pending in [false, true] {
+            for frame in [false, true] {
+                for signal in [false, true] {
+                    for held in [false, true] {
+                        let expected = if pending || frame || signal || held {
+                            InjectionRestoration::PreserveResult
+                        } else {
+                            InjectionRestoration::PublicReturning
+                        };
+                        assert_eq!(
+                            InjectionRestoration::for_public_returning(
+                                pending, frame, signal, held
+                            ),
+                            expected,
+                        );
+                    }
+                }
+            }
+        }
+        let entry = distinct_regs(0x100);
+        let mut post_call = distinct_regs(0x1000);
+        for raw in [321, -9i64] {
+            post_call.rax = raw as u64;
+            // Direct-signal, pending, tail and private injections retain the
+            // common helper's raw result; held-signal callers can supply the
+            // existing guest-result override. Neither mode restores the stack.
+            for retval in [None, Some(entry.rax)] {
+                let restored = restored_regs(post_call, &entry, retval, false);
+                assert_eq!(restored.rax, retval.unwrap_or(post_call.rax));
+                assert_eq!(restored.rsp, post_call.rsp);
+                let fields = all_fields(restored);
+                let post = all_fields(post_call);
+                for field in [17, 20, 21, 22, 23, 24, 25, 26] {
+                    assert_eq!(fields[field], post[field]);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 #[path = "task_deliver_signal_tests.rs"]
 mod deliver_signal_tests;
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 #[path = "task_exec_owner_tests.rs"]
 mod exec_owner_tests;
 #[cfg(test)]
@@ -14145,6 +16385,7 @@ mod tests {
     /// The maps read reports a failure instead of returning no mappings
     /// (review finding F1 on
     /// <https://github.com/rrnewton/reverie/pull/818>).
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn reading_the_maps_of_a_missing_process_is_an_error() {
         // Linux caps pid_max at 2^22, so this pid never exists.
@@ -14156,6 +16397,7 @@ mod tests {
         assert!(own.iter().any(|map| map.executable && map.inode != 0));
     }
 
+    #[cfg(target_arch = "x86_64")]
     #[test]
     fn proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes() {
         let mapping = parse_guest_map(

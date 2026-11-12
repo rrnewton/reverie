@@ -306,7 +306,7 @@ mod shared_file_dispatch_tests {
         file.set_len(PAGE_SIZE).unwrap();
         let output = address + PAGE_SIZE - 2;
         let mut executor = f.take_executor();
-        let first_new_fd = (0..GUEST_NOFILE_LIMIT)
+        let first_new_fd = (0..guest_nofile_limit())
             .find(|fd| {
                 !is_open_standard(&executor.state, *fd) && !executor.state.files.contains_key(fd)
             })
@@ -992,14 +992,24 @@ mod shared_file_dispatch_tests {
         }
     }
 
+    /// A thread, or a CLONE_VM process its caller does not wait for, would run
+    /// beside the caller in the arena that holds the views; both stay refused,
+    /// a thread asking for CLONE_VFORK too.
     #[test]
     fn shared_file_vm_and_thread_clone_refuse_before_ids_copyout_or_process_action() {
         for (number, flags) in [
-            (libc::SYS_vfork, 0),
             (libc::SYS_clone, libc::CLONE_VM),
             (libc::SYS_clone, libc::CLONE_VM | libc::CLONE_THREAD | libc::CLONE_SIGHAND),
+            (
+                libc::SYS_clone,
+                libc::CLONE_VM | libc::CLONE_VFORK | libc::CLONE_THREAD | libc::CLONE_SIGHAND,
+            ),
             (libc::SYS_clone3, libc::CLONE_VM),
             (libc::SYS_clone3, libc::CLONE_VM | libc::CLONE_THREAD | libc::CLONE_SIGHAND),
+            (
+                libc::SYS_clone3,
+                libc::CLONE_VM | libc::CLONE_VFORK | libc::CLONE_THREAD | libc::CLONE_SIGHAND,
+            ),
         ] {
             let mut f = Fixture::new();
             let fd = f.open(true);
@@ -1027,6 +1037,539 @@ mod shared_file_dispatch_tests {
             assert_eq!(layout(&f.memory, &executor.state), before);
             assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
         }
+    }
+
+    #[test]
+    fn clone_runs_beside_caller_in_its_arena_names_threads_and_unwaited_clone_vm() {
+        let vm = libc::CLONE_VM as u64;
+        let vfork = libc::CLONE_VFORK as u64;
+        let thread = (libc::CLONE_THREAD | libc::CLONE_SIGHAND) as u64;
+        let signal = libc::SIGCHLD as u64;
+        assert!(!clone_runs_beside_caller_in_its_arena(signal));
+        assert!(!clone_runs_beside_caller_in_its_arena(vfork | signal));
+        assert!(!clone_runs_beside_caller_in_its_arena(vm | vfork | signal));
+        assert!(!clone_runs_beside_caller_in_its_arena(
+            vm | vfork | CLONE_CLEAR_SIGHAND
+        ));
+        assert!(clone_runs_beside_caller_in_its_arena(vm | signal));
+        assert!(clone_runs_beside_caller_in_its_arena(vm | thread));
+        assert!(clone_runs_beside_caller_in_its_arena(vm | vfork | thread));
+    }
+
+    /// A vfork-style child (vfork, and clone or clone3 with
+    /// CLONE_VM|CLONE_VFORK, as glibc's posix_spawn issues it, on a stack of
+    /// its own and with CLONE_CLEAR_SIGHAND) is admitted while the caller
+    /// holds a shared-file view: one task ID, one process action that shares
+    /// the address space, and no change to the caller's layout. The backend's
+    /// copy for it shares stores through the view at once, and its private
+    /// stores reach the parent when the window ends.
+    #[test]
+    fn shared_file_vfork_style_clones_admit_a_child_that_shares_the_address_space() {
+        let vm_vfork = (libc::CLONE_VM | libc::CLONE_VFORK) as u64;
+        for (number, flags, stack) in [
+            (libc::SYS_vfork, 0, None),
+            (libc::SYS_clone, vm_vfork | libc::SIGCHLD as u64, None),
+            (libc::SYS_clone3, vm_vfork, None),
+            (
+                libc::SYS_clone3,
+                vm_vfork | CLONE_CLEAR_SIGHAND,
+                Some((0x2000, 0x1000)),
+            ),
+        ] {
+            let mut f = Fixture::new();
+            let fd = f.open(true);
+            let shared = f.shared(fd, 0, PAGE_SIZE, true);
+            let private = f.private();
+            f.memory.write_raw(private, b"parent").unwrap();
+            let args = if number == libc::SYS_clone {
+                [flags, 0, 0, 0, 0, 0]
+            } else if number == libc::SYS_clone3 {
+                let mut raw = [0_u8; 88];
+                raw[..8].copy_from_slice(&flags.to_ne_bytes());
+                raw[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_ne_bytes());
+                if let Some((base, size)) = stack {
+                    raw[40..48].copy_from_slice(&(base as u64).to_ne_bytes());
+                    raw[48..56].copy_from_slice(&(size as u64).to_ne_bytes());
+                }
+                f.memory.write_raw(0x100, &raw).unwrap();
+                [0x100, 88, 0, 0, 0, 0]
+            } else {
+                [0; 6]
+            };
+            let label = format!("syscall={number} flags={flags:#x}");
+            let mut executor = f.take_executor();
+            let before = layout(&f.memory, &executor.state);
+            let next = executor.next_pid.load(Ordering::SeqCst);
+            assert_eq!(
+                executor
+                    .execute_checked(&SyscallRequest::new(number as u64, args), &f.memory)
+                    .unwrap(),
+                i64::from(next),
+                "{label}"
+            );
+            assert_eq!(
+                executor.next_pid.load(Ordering::SeqCst),
+                next + 1,
+                "{label}"
+            );
+            match executor.take_process_action() {
+                Some(ProcessAction::Fork {
+                    child_pid,
+                    child_stack,
+                    parent_tid,
+                    child_tid,
+                    clear_child_tid,
+                    clear_sighand,
+                    share_address_space,
+                }) => {
+                    assert_eq!(child_pid, next, "{label}");
+                    assert!(share_address_space, "{label}");
+                    assert_eq!(
+                        child_stack,
+                        stack.map(|(base, size)| (base + size) as u64),
+                        "{label}"
+                    );
+                    assert_eq!((parent_tid, child_tid, clear_child_tid), (None, None, None));
+                    assert_eq!(clear_sighand, flags & CLONE_CLEAR_SIGHAND != 0, "{label}");
+                }
+                _ => panic!("{label}: a vfork-style clone must publish one process action"),
+            }
+            assert_eq!(layout(&f.memory, &executor.state), before, "{label}");
+            let child = f.memory.snapshot_sharing_address_space().unwrap();
+            assert!(child.shares_parent_address_space(), "{label}");
+            child.write_raw(private, b"child!").unwrap();
+            child.write_raw(shared + 17, b"shared").unwrap();
+            let mut bytes = [0; 6];
+            f.memory.read_raw(private, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"parent", "{label}");
+            f.memory.read_raw(shared + 17, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"shared", "{label}");
+            let file = std::fs::read(&f.path).unwrap();
+            assert_eq!(
+                &file[PAGE_SIZE as usize + 17..PAGE_SIZE as usize + 23],
+                b"shared"
+            );
+            child.return_vfork_changes(BOOT_RESERVED_END).unwrap();
+            f.memory.read_raw(private, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"child!", "{label}");
+            assert!(f.memory.entry_gate().pending_failure().is_none(), "{label}");
+            assert!(child.entry_gate().pending_failure().is_none(), "{label}");
+        }
+    }
+
+    /// A vfork child's copy refuses the creation of a thread by name, with
+    /// clone and with clone3 (CLONE_THREAD), before it allocates a task ID or
+    /// publishes a process action: Linux ends the window at the creating
+    /// task's exec or exit, whatever threads remain, and the copy can go back
+    /// only once nothing else runs in it. A nested vfork-style clone goes on,
+    /// and so does a thread of a process that is not a vfork child.
+    #[test]
+    fn a_vfork_child_cannot_create_a_thread() {
+        let thread = (libc::CLONE_VM
+            | libc::CLONE_FS
+            | libc::CLONE_FILES
+            | libc::CLONE_SIGHAND
+            | libc::CLONE_THREAD
+            | libc::CLONE_SYSVSEM) as u64;
+        let vm_vfork = (libc::CLONE_VM | libc::CLONE_VFORK) as u64;
+        for (number, flags, refused) in [
+            (libc::SYS_clone, thread, true),
+            (libc::SYS_clone3, thread, true),
+            (libc::SYS_clone, vm_vfork | libc::SIGCHLD as u64, false),
+            (libc::SYS_clone3, vm_vfork, false),
+        ] {
+            let mut f = Fixture::new();
+            let child = f.memory.snapshot_sharing_address_space().unwrap();
+            let args = if number == libc::SYS_clone {
+                [flags, 0, 0, 0, 0, 0]
+            } else {
+                let mut raw = [0_u8; 88];
+                raw[..8].copy_from_slice(&flags.to_ne_bytes());
+                if flags & libc::CLONE_THREAD as u64 == 0 {
+                    raw[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_ne_bytes());
+                }
+                child.write_raw(0x100, &raw).unwrap();
+                [0x100, 88, 0, 0, 0, 0]
+            };
+            let label = format!("syscall={number} flags={flags:#x}");
+            let mut executor = f.take_executor();
+            let next = executor.next_pid.load(Ordering::SeqCst);
+            let result =
+                executor.execute_checked(&SyscallRequest::new(number as u64, args), &child);
+            if refused {
+                vfork_child_refusal(
+                    &result.unwrap_err(),
+                    "thread creation in a vfork child",
+                    super::dispatch::VFORK_CHILD_THREAD_REASON,
+                );
+                assert_eq!(executor.next_pid.load(Ordering::SeqCst), next, "{label}");
+                assert!(executor.take_process_action().is_none(), "{label}");
+            } else {
+                assert_eq!(result.unwrap(), i64::from(next), "{label}");
+                assert!(
+                    matches!(
+                        executor.take_process_action(),
+                        Some(ProcessAction::Fork {
+                            share_address_space: true,
+                            ..
+                        })
+                    ),
+                    "{label}"
+                );
+            }
+        }
+        // Not a vfork child: the same thread request is no refusal of this kind.
+        let mut f = Fixture::new();
+        let mut executor = f.take_executor();
+        let result = executor.execute_checked(
+            &SyscallRequest::new(libc::SYS_clone as u64, [thread, 0, 0, 0, 0, 0]),
+            &f.memory,
+        );
+        assert!(
+            !matches!(
+                result.as_ref().map_err(crate::Error::primary),
+                Err(crate::Error::VforkChildCapability { .. })
+            ),
+            "{result:?}"
+        );
+    }
+
+    /// The end of a vfork child's window makes Linux's mm_release() effects
+    /// (`ElfExecutor::release_vfork_mm`), in order: the store of zero to the
+    /// word the child registered as its clear_child_tid, in the copy, which
+    /// carries it back with the child's other changes, so the parent reads
+    /// zero; the write-back; and the wake of the parent's word. Without a
+    /// window nothing is taken or written. A parent that exec'd during the
+    /// window gets nothing back and no wake. Nor does a parent whose process
+    /// has committed its exit: the child is then the only user of the address
+    /// space, so nothing is stored, nothing goes back, and a change both made
+    /// is no longer refused.
+    #[test]
+    fn a_vfork_window_end_releases_the_childs_address_space_as_linux_does() {
+        use crate::memory::vfork_window_steps;
+        // A word above the backend's own pages, which never go back.
+        const WORD: u64 = BOOT_RESERVED_END + 0x208;
+        let fixture = || {
+            let f = Fixture::new();
+            f.memory
+                .map_user_permissions(BOOT_RESERVED_END, PAGE_SIZE, true, true)
+                .unwrap();
+            f
+        };
+        let word = |memory: &GuestMemory| {
+            let mut bytes = [0; 4];
+            memory.read_raw(WORD, &mut bytes).unwrap();
+            i32::from_ne_bytes(bytes)
+        };
+        let write_back = |copy: &GuestMemory| copy.return_vfork_changes(BOOT_RESERVED_END);
+        // The window ends while the parent still uses the address space.
+        let mut f = fixture();
+        let parent = f.take_executor();
+        f.memory.write_raw(WORD, &91_i32.to_ne_bytes()).unwrap();
+        let mut child = parent.fork_child(2, false, true).unwrap();
+        let copy = f.memory.snapshot_sharing_address_space().unwrap();
+        child.set_clear_child_tid(Some(WORD));
+        vfork_window_steps::record();
+        assert!(child.release_vfork_mm(&copy, write_back).unwrap());
+        assert_eq!(vfork_window_steps::take(), ["clear", "write-back", "wake"]);
+        assert!(!copy.has_vfork_parent());
+        assert_eq!(child.take_clear_child_tid(), None);
+        assert_eq!((word(&f.memory), word(&copy)), (0, 0));
+        // A fork's copy has no window: the registration stays for the
+        // child's own exit, and nothing is written.
+        f.memory.write_raw(WORD, &91_i32.to_ne_bytes()).unwrap();
+        let mut forked = parent.fork_child(3, false, false).unwrap();
+        let fork = f.memory.snapshot().unwrap();
+        forked.set_clear_child_tid(Some(WORD));
+        assert!(!forked.release_vfork_mm(&fork, write_back).unwrap());
+        assert_eq!(forked.take_clear_child_tid(), Some(WORD));
+        assert_eq!((word(&f.memory), word(&fork)), (91, 91));
+        // A parent that exec'd during the window has another address space,
+        // which gets neither the store nor the wake.
+        let mut child = parent.fork_child(4, false, true).unwrap();
+        let copy = f.memory.snapshot_sharing_address_space().unwrap();
+        child.set_clear_child_tid(Some(WORD));
+        f.memory.retire_shared_files_for_exec().unwrap();
+        vfork_window_steps::record();
+        assert!(child.release_vfork_mm(&copy, write_back).unwrap());
+        assert_eq!(vfork_window_steps::take(), ["clear"]);
+        assert_eq!(word(&f.memory), 91);
+        // A parent whose process committed its exit (here its only task's
+        // group exit) leaves the child the address space's only user. The
+        // child's change to a byte another thread of the parent also changed
+        // would otherwise be refused.
+        let mut f = fixture();
+        let mut parent = f.take_executor();
+        f.memory.write_raw(WORD, &91_i32.to_ne_bytes()).unwrap();
+        let mut child = parent.fork_child(2, false, true).unwrap();
+        let copy = f.memory.snapshot_sharing_address_space().unwrap();
+        copy.keep_vfork_baseline().unwrap();
+        child.set_clear_child_tid(Some(WORD));
+        copy.write_raw(WORD + 8, b"child").unwrap();
+        f.memory.write_raw(WORD + 8, b"other").unwrap();
+        parent.retire_current_thread(ExitStatus::Exited(3), true);
+        vfork_window_steps::record();
+        assert!(child.release_vfork_mm(&copy, write_back).unwrap());
+        assert_eq!(vfork_window_steps::take(), Vec::<&str>::new());
+        assert!(!copy.has_vfork_parent());
+        assert_eq!(child.take_clear_child_tid(), None);
+        assert_eq!((word(&f.memory), word(&copy)), (91, 91));
+        let mut bytes = [0; 5];
+        f.memory.read_raw(WORD + 8, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"other");
+    }
+
+    const VFORK_VIEW_REASON: &str = "a vfork child shares its parent's address space until it \
+        execs or exits, and runs on a copy here, so it cannot change a shared view it inherited \
+        or map a new one";
+
+    /// The refusal of a vfork child's change that a copy cannot carry back.
+    fn vfork_child_refusal(error: &crate::Error, operation: &str, reason_starts: &str) {
+        match error.primary() {
+            crate::Error::VforkChildCapability {
+                operation: actual,
+                reason,
+            } => {
+                assert_eq!(*actual, operation);
+                assert!(reason.starts_with(reason_starts), "{reason}");
+            }
+            other => panic!("expected the vfork child refusal of {operation}; got {other:?}"),
+        }
+    }
+
+    /// In a vfork child's copy, before its exec, every system call that would
+    /// change a shared view is refused by name before it changes anything:
+    /// munmap of an inherited view, a private MAP_FIXED mapping over one,
+    /// mprotect of one, and mmap of a new MAP_SHARED view; so is a brk that
+    /// moves the break. Linux applies each to the parent's address space too.
+    /// A change to a private mapping goes ahead in the copy, and the end of
+    /// the window refuses it by name if it is still in place: munmap,
+    /// mprotect, an anonymous mmap and mremap. One the child undoes first,
+    /// as a tool undoes the scratch mapping it makes for a call, is gone by
+    /// then, and the child's stores to a mapping it removed do not go back;
+    /// calls that change no mapping go on. After the exec the new image maps
+    /// files again. The parent's layout and file are unchanged throughout.
+    #[test]
+    fn shared_file_vfork_child_view_changes_refuse_before_any_effect() {
+        let mut f = Fixture::new();
+        let fd = f.open(true);
+        let shared = f.shared(fd, 0, PAGE_SIZE, true);
+        let private = f.private();
+        f.memory.write_raw(private, b"parent").unwrap();
+        let parent_before = layout(&f.memory, &f.state);
+        let rw = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let anonymous = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64;
+        // The child's own executor state, with the copy's allocation cursors
+        // (which dispatch loads into it) and a descriptor for the file.
+        let child_state = |f: &Fixture, child: &GuestMemory| {
+            let mut state = test_state(&f.root.0);
+            let cursors = child.allocation_cursors().unwrap();
+            state.program_break = cursors.program_break;
+            state.mmap_base = cursors.mmap_base;
+            state.mmap_next = cursors.mmap_next;
+            state.mmap_limit = cursors.mmap_limit;
+            let file = std::fs::File::open(&f.path).unwrap();
+            let fd = insert_file_with_flags(&mut state, file, false, None);
+            (state, fd as u64)
+        };
+        let cases: [(&str, i64, [u64; 6], &str); 5] = [
+            (
+                "munmap",
+                libc::SYS_munmap,
+                [shared, PAGE_SIZE, 0, 0, 0, 0],
+                "mapping change in a vfork child",
+            ),
+            (
+                "fixed",
+                libc::SYS_mmap,
+                [
+                    shared,
+                    PAGE_SIZE,
+                    rw,
+                    anonymous | libc::MAP_FIXED as u64,
+                    u64::MAX,
+                    0,
+                ],
+                "mapping change in a vfork child",
+            ),
+            (
+                "mprotect",
+                libc::SYS_mprotect,
+                [shared, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0],
+                "mprotect in a vfork child",
+            ),
+            (
+                "map",
+                libc::SYS_mmap,
+                [
+                    0,
+                    PAGE_SIZE,
+                    libc::PROT_READ as u64,
+                    libc::MAP_SHARED as u64,
+                    0,
+                    0,
+                ],
+                "mapping change in a vfork child",
+            ),
+            ("brk", libc::SYS_brk, [0, 0, 0, 0, 0, 0], "brk in a vfork child"),
+        ];
+        for (label, number, mut args, operation) in cases {
+            let mut child = f.memory.snapshot_sharing_address_space().unwrap();
+            let (mut state, fd) = child_state(&f, &child);
+            if label == "map" {
+                args[4] = fd;
+            }
+            if label == "brk" {
+                args[0] = state.program_break + PAGE_SIZE;
+            }
+            let before = layout(&child, &state);
+            let error = failure(execute_basic_syscall(
+                &mut child,
+                &mut state,
+                &SyscallRequest::new(number as u64, args),
+            ));
+            if label == "brk" {
+                vfork_child_refusal(&error, operation, super::dispatch::VFORK_CHILD_BREAK_REASON);
+            } else {
+                capability(&error, operation, VFORK_VIEW_REASON);
+            }
+            assert_eq!(layout(&child, &state), before, "{label}");
+            assert!(
+                child.range_contains_shared_file(shared, PAGE_SIZE as usize),
+                "{label}"
+            );
+        }
+        // A private mapping change goes ahead, and the window's end refuses
+        // it while it is still in place.
+        let lasting: [(&str, i64, [u64; 6]); 4] = [
+            ("private munmap", libc::SYS_munmap, [private, PAGE_SIZE, 0, 0, 0, 0]),
+            (
+                "private mprotect",
+                libc::SYS_mprotect,
+                [private, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0],
+            ),
+            (
+                "anonymous mmap",
+                libc::SYS_mmap,
+                [0, PAGE_SIZE, rw, anonymous, u64::MAX, 0],
+            ),
+            (
+                "mremap",
+                libc::SYS_mremap,
+                [private, PAGE_SIZE, 2 * PAGE_SIZE, libc::MREMAP_MAYMOVE as u64, 0, 0],
+            ),
+        ];
+        for (label, number, args) in lasting {
+            let mut child = f.memory.snapshot_sharing_address_space().unwrap();
+            let (mut state, _) = child_state(&f, &child);
+            let result = syscall_result(&mut child, &mut state, number, args);
+            assert!(result >= 0, "{label}: {result}");
+            let error = child.return_vfork_changes(BOOT_RESERVED_END).unwrap_err();
+            vfork_child_refusal(
+                &error,
+                "vfork write-back",
+                "the vfork child left a mapping changed",
+            );
+            let mut bytes = [0; 6];
+            f.memory.read_raw(private, &mut bytes).unwrap();
+            assert_eq!(&bytes, b"parent", "{label}");
+        }
+        // A mapping the child creates and removes, and a protection it
+        // changes and restores, are gone by the window's end. So are calls
+        // that change no mapping: the break asked for, an munmap of a hole,
+        // and MADV_DONTNEED, whose zeroed page goes back with the rest of the
+        // child's private memory.
+        let mut child = f.memory.snapshot_sharing_address_space().unwrap();
+        let (mut state, fd) = child_state(&f, &child);
+        let scratch = syscall_result(
+            &mut child,
+            &mut state,
+            libc::SYS_mmap,
+            [0, PAGE_SIZE, rw, anonymous, u64::MAX, 0],
+        );
+        assert!(scratch > 0, "{scratch}");
+        let scratch = scratch as u64;
+        child.write_raw(scratch, b"scratch").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut child,
+                &mut state,
+                libc::SYS_munmap,
+                [scratch, PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        for prot in [libc::PROT_READ as u64, rw] {
+            assert_eq!(
+                syscall_result(
+                    &mut child,
+                    &mut state,
+                    libc::SYS_mprotect,
+                    [private, PAGE_SIZE, prot, 0, 0, 0]
+                ),
+                0
+            );
+        }
+        let program_break = state.program_break;
+        assert_eq!(
+            syscall_result(&mut child, &mut state, libc::SYS_brk, [0, 0, 0, 0, 0, 0]),
+            program_break as i64
+        );
+        let hole = state.mmap_next;
+        assert_eq!(
+            syscall_result(
+                &mut child,
+                &mut state,
+                libc::SYS_munmap,
+                [hole, PAGE_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut child,
+                &mut state,
+                libc::SYS_madvise,
+                [private, PAGE_SIZE, libc::MADV_DONTNEED as u64, 0, 0, 0]
+            ),
+            0
+        );
+        let mut unmapped_before = [0; 7];
+        f.memory.read_raw(scratch, &mut unmapped_before).unwrap();
+        let returned = child.return_vfork_changes(BOOT_RESERVED_END).unwrap().unwrap();
+        // Only the zeroed page; the removed scratch mapping's stores stay
+        // behind.
+        assert_eq!(returned.bytes_written, PAGE_SIZE as usize);
+        let mut bytes = [0xff; 7];
+        f.memory.read_raw(private, &mut bytes[..6]).unwrap();
+        assert_eq!(bytes[..6], [0; 6]);
+        f.memory.read_raw(scratch, &mut bytes).unwrap();
+        assert_eq!(bytes, unmapped_before);
+        assert_ne!(&bytes, b"scratch");
+        // The parent's own bytes again, so that the check of the parent's
+        // layout below covers everything else.
+        f.memory.write_raw(private, b"parent").unwrap();
+        // The exec ends the window: the new image is another address space.
+        child.retire_shared_files_for_exec().unwrap();
+        assert!(!child.shares_parent_address_space());
+        let mapped = syscall_result(
+            &mut child,
+            &mut state,
+            libc::SYS_mmap,
+            [
+                0,
+                PAGE_SIZE,
+                libc::PROT_READ as u64,
+                libc::MAP_SHARED as u64,
+                fd,
+                0,
+            ],
+        );
+        assert!(mapped > 0, "{mapped}");
+        assert!(child.range_contains_shared_file(mapped as u64, PAGE_SIZE as usize));
+        assert_eq!(layout(&f.memory, &f.state), parent_before);
+        assert!(f.memory.entry_gate().pending_failure().is_none());
+        assert_eq!(std::fs::read(&f.path).unwrap(), f.expected);
     }
 
     #[test]

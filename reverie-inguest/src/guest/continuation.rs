@@ -1053,7 +1053,7 @@ unsafe extern "C" {
 
 global_asm!(
     r#"
-    .text
+    .pushsection .text.reverie_inguest_fallback_entry,"ax",@progbits
     .p2align 4
     .global fallback_entry
     .hidden fallback_entry
@@ -1081,6 +1081,7 @@ fallback_completion_return:
     // A correct completion resumes the saved guest, never this continuation.
     ud2
     .size fallback_entry, .-fallback_entry
+    .popsection
 "#,
     dispatch = sym dispatch,
     generation = sym completion_generation,

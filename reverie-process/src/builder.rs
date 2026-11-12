@@ -24,6 +24,7 @@ use super::Container;
 use super::Mount;
 use super::Namespace;
 use super::Pid;
+use super::PreparedStdio;
 use super::PtyChild;
 use super::Stdio;
 use super::seccomp;
@@ -373,6 +374,24 @@ impl Command {
     pub fn stderr<T: Into<Stdio>>(&mut self, cfg: T) -> &mut Self {
         self.container.stderr(cfg);
         self
+    }
+
+    /// Consumes and prepares this command's standard stream configurations.
+    ///
+    /// All three configurations are replaced with [`Stdio::inherit`], including
+    /// when preparation fails. The returned plan owns the materialized child
+    /// and parent descriptors without registering them with an async runtime.
+    ///
+    /// This handles only stdio. It does not apply PTY, container, or `pre_exec`
+    /// setup, or replace the caller's existing domain checks. A fork-based
+    /// launcher must perform its common child setup before installing the
+    /// prepared streams, so explicit streams override PTY descriptors.
+    pub fn take_prepared_stdio(&mut self) -> io::Result<PreparedStdio> {
+        PreparedStdio::new(
+            std::mem::take(&mut self.container.stdin),
+            std::mem::take(&mut self.container.stdout),
+            std::mem::take(&mut self.container.stderr),
+        )
     }
 
     /// Changes the root directory of the calling process to the specified path.

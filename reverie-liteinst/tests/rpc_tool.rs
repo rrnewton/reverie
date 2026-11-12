@@ -2212,3 +2212,57 @@ fn deferred_sigalrm_preserves_full_event_at_completion_and_before_syscall() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn public_installers_admit_the_typed_role_before_new_and_start() {
+    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+    for installer in ["shared", "liteinst", "quiescent", "bootstrap"] {
+        for (role, role_name) in [
+            ("unknown", "Unknown"),
+            ("record", "BinaryRecord"),
+            ("replay", "BinaryReplay"),
+            ("plain", "Plain"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("coordinator.sock");
+            let mut coordinator = KillOnDropChild::new(
+                Command::new(binary)
+                    .arg("facility-coordinator")
+                    .arg(&socket)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !socket.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(socket.exists(), "admission coordinator did not bind");
+            let mut command = Command::new(binary);
+            command
+                .arg("facility-admission")
+                .arg(&socket)
+                .arg(installer)
+                .arg(role)
+                .env(reverie_liteinst::SITE_PATCHING_ENV, "0");
+            let output = output_with_timeout(command, Duration::from_secs(20));
+            coordinator.kill_and_wait().unwrap();
+            assert!(output.stderr.is_empty(), "{installer}/{role}: {output:?}");
+            let expected = if role == "plain" {
+                assert!(output.status.success(), "{installer}/{role}: {output:?}");
+                "facility plain: modes=false,false admission=1 new=1 start=1 syscall=1\n".to_owned()
+            } else {
+                assert_eq!(
+                    output.status.code(),
+                    Some(78),
+                    "{installer}/{role}: {output:?}"
+                );
+                format!(
+                    "facility refused: role={role_name} modes=false,false admission=1 new=0 start=0\n"
+                )
+            };
+            assert_eq!(output.stdout, expected.as_bytes(), "{installer}/{role}");
+        }
+    }
+}

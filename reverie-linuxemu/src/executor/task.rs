@@ -19,7 +19,7 @@ pub(super) struct ParentDeathExecSnapshot {
     pub(super) original: SyscallRequest,
     pub(super) alias: Vec<u8>,
     pub(super) file: Arc<std::fs::File>,
-    pub(super) image: Arc<[u8]>,
+    pub(super) image: Arc<Vec<u8>>,
     pub(super) consumed: bool,
 }
 
@@ -271,7 +271,7 @@ impl ChildThread {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn spawn(run: impl FnOnce() -> crate::Result<()> + Send + 'static) -> Self {
-        match Self::spawn_owned(std::thread::Builder::new(), (), move |()| run()) {
+        match Self::spawn_owned(crate::supervisor_thread::builder(), (), move |()| run()) {
             Ok(thread) => thread,
             Err((error, ())) => panic!("failed to spawn KVM child test thread: {error}"),
         }
@@ -600,6 +600,15 @@ impl ChildCompletionSlot {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    /// Runs in `replace_after_exec` on this thread after the exec has
+    /// replaced the thread's signal state and before it rebinds the
+    /// process's: the window a reader of another process may find it in.
+    pub(super) static EXEC_WINDOW_TEST_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl ElfExecutor {
     /// Retain an unpolled child consumer. The outer owner must publish the
     /// parent failure before taking and polling these futures outside callbacks.
@@ -678,7 +687,6 @@ impl ElfExecutor {
         file_table = Arc::new(std::sync::Mutex::new(
             FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
         ));
-        state.fdinfo_table = Arc::downgrade(&file_table);
         let signal_registry = state.children.registry().unwrap_or_default();
         let signal_binding = signal_registry
             .register(&state, &file_table, process_generation, None)
@@ -728,6 +736,7 @@ impl ElfExecutor {
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            vfork_parent: None,
         }
     }
 
@@ -735,18 +744,18 @@ impl ElfExecutor {
         &mut self,
         request: &SyscallRequest,
         memory: &GuestMemory,
-    ) -> Option<i64> {
+    ) -> Option<crate::Result<i64>> {
         let _retirement = self.state.file_retirement.hold();
         let raw_flags = accept_flags(request)?;
         let flags = match raw_flags {
             Ok(flags) => flags,
-            Err(error) => return Some(error),
+            Err(error) => return Some(Ok(error)),
         };
         let file_table = self.file_table.clone();
         {
-            let shared_files = file_table.lock().expect("KVM file-table lock poisoned");
+            let mut shared_files = file_table.lock().expect("KVM file-table lock poisoned");
             if let Err(error) = shared_files.install(&mut self.state) {
-                return Some(io_error(error));
+                return Some(Ok(io_error(error)));
             }
         }
         self.state.file_retirement.drain_unlocked();
@@ -754,12 +763,12 @@ impl ElfExecutor {
         let mut memory = memory.clone();
         let accepted = match accept_socket(&mut memory, &self.state, request.args(), flags) {
             Ok(file) => self.state.file_retirement.stage(file),
-            Err(error) => return Some(error),
+            Err(error) => return Some(Ok(error)),
         };
 
         let mut shared_files = file_table.lock().expect("KVM file-table lock poisoned");
         if let Err(error) = shared_files.install(&mut self.state) {
-            return Some(io_error(error));
+            return Some(Ok(io_error(error)));
         }
         let result = insert_file_with_flags(
             &mut self.state,
@@ -767,12 +776,12 @@ impl ElfExecutor {
             flags & libc::SOCK_CLOEXEC != 0,
             None,
         );
-        if result >= 0 {
-            shared_files
-                .update_from_elf(&self.state)
-                .expect("clone updated KVM file table");
+        if result >= 0
+            && let Err(error) = shared_files.update_from_elf(&self.state)
+        {
+            return Some(Err(error));
         }
-        Some(result)
+        Some(Ok(result))
     }
 
     pub(super) fn execute_process_action(
@@ -811,13 +820,16 @@ impl ElfExecutor {
                             request.tls,
                         ),
                     Ok(request) => match validate_process_clone_flags(request.flags) {
-                        Err(error) => error,
+                        Err(refused) => self.refuse_clone_flags(refused),
                         Ok(())
                             if request.flags & PROCESS_CLONE_TID_FLAGS != 0
                                 || request.parent_tid.is_some()
                                 || request.child_tid.is_some() =>
                         {
-                            negative_errno(libc::ENOTSUP)
+                            self.refuse_clone_flags(CloneFlagsRefused::unsupported(
+                                libc::ENOTSUP,
+                                CLONE_FLAGS_REFUSAL,
+                            ))
                         }
                         Ok(()) => self.prepare_fork(
                             request.child_stack,
@@ -828,7 +840,7 @@ impl ElfExecutor {
                             request.flags & libc::CLONE_VM as u64 != 0,
                         ),
                     },
-                    Err(error) => error,
+                    Err(error) => self.refuse_clone3_fields(error),
                 },
             );
         }
@@ -857,8 +869,8 @@ impl ElfExecutor {
                 (flags & libc::CLONE_SETTLS as u64 != 0).then_some(tls),
             );
         }
-        if let Err(error) = validate_process_clone_flags(flags) {
-            return error;
+        if let Err(refused) = validate_process_clone_flags(flags) {
+            return self.refuse_clone_flags(refused);
         }
         let parent_tid =
             (flags & libc::CLONE_PARENT_SETTID as u64 != 0).then_some(parent_tid_address);
@@ -874,6 +886,30 @@ impl ElfExecutor {
             flags & CLONE_CLEAR_SIGHAND != 0,
             flags & libc::CLONE_VM as u64 != 0,
         )
+    }
+
+    /// The answer to a clone this backend refuses, recording the typed
+    /// refusal (`UnsupportedOperation::Clone`) unless the reason is a rule of
+    /// Linux's own.
+    pub(super) fn refuse_clone_flags(&mut self, refused: CloneFlagsRefused) -> i64 {
+        if let Some(refusal) = refused.refusal() {
+            self.unsupported_refusal = Some(refusal);
+        }
+        refused.result()
+    }
+
+    /// The answer to a `clone3` whose `struct clone_args` [`read_clone3`]
+    /// refused with `error`. ENOTSUP is its refusal of `set_tid` or `cgroup`,
+    /// which this backend does not implement, and carries the typed refusal;
+    /// its other errors are Linux's.
+    pub(super) fn refuse_clone3_fields(&mut self, error: i64) -> i64 {
+        if error != negative_errno(libc::ENOTSUP) {
+            return error;
+        }
+        self.refuse_clone_flags(CloneFlagsRefused::unsupported(
+            libc::ENOTSUP,
+            CLONE_FLAGS_REFUSAL,
+        ))
     }
 
     /// Reserve the next run-wide task ID without wrapping, spending the run's
@@ -903,11 +939,14 @@ impl ElfExecutor {
         child_tid_address: Option<u64>,
         tls: Option<u64>,
     ) -> i64 {
-        if let Err(error) = validate_thread_clone_flags(flags) {
-            return error;
+        if let Err(refused) = validate_thread_clone_flags(flags) {
+            return self.refuse_clone_flags(refused);
         }
         let Some(child_stack) = child_stack else {
-            return negative_errno(libc::EINVAL);
+            return self.refuse_clone_flags(CloneFlagsRefused::unsupported(
+                libc::EINVAL,
+                STACKLESS_THREAD_REFUSAL,
+            ));
         };
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
@@ -992,8 +1031,16 @@ impl ElfExecutor {
         request: &SyscallRequest,
         retained: Option<ResolvedExecutable>,
     ) -> i64 {
+        // The refusal describes this exec alone. A preparation step that
+        // finds a host resource of this process's own exhausted records the
+        // refusal that names it; any other ENOMEM is also the host's
+        // (`exec_host_memory_refusal`).
+        self.unsupported_refusal = None;
         let result = self.prepare_exec_image(memory, request, retained);
-        self.unsupported_refusal = nonleader_exec_refusal(result, self.state.tid, self.state.pid);
+        if self.unsupported_refusal.is_none() {
+            self.unsupported_refusal = exec_host_memory_refusal(result)
+                .or_else(|| nonleader_exec_refusal(result, self.state.tid, self.state.pid));
+        }
         result
     }
 
@@ -1059,7 +1106,12 @@ impl ElfExecutor {
                 }
                 executable
             }
-            None => match resolve_guest_exec_image(&self.state, path.clone(), &envp) {
+            None => match resolve_guest_exec_image(
+                &self.state,
+                path.clone(),
+                &envp,
+                &mut self.unsupported_refusal,
+            ) {
                 Ok(executable) => executable,
                 Err(error) => return error,
             },
@@ -1094,7 +1146,8 @@ impl ElfExecutor {
         } else {
             let script_name = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&execfn));
             match resolve_exec_shebang(script_name, image, argv, |interpreter| {
-                let resolved = read_executable_file(&self.state, interpreter)?;
+                let resolved =
+                    read_executable_file(&self.state, interpreter, &mut self.unsupported_refusal)?;
                 executable_file = resolved.file;
                 Ok(resolved.image)
             }) {
@@ -1105,23 +1158,45 @@ impl ElfExecutor {
         // TODO-HUMAN-REVIEW(PR-156): Review preflight validation before exec image replacement.
         // Loading the live image clears guest memory, so validate against an
         // isolated mapping before reporting exec success to the Reverie tool.
+        // The validation memory is this backend's own host reservation, as
+        // large as the live guest memory. A host that refuses it (address
+        // space under RLIMIT_AS, for one) refused nothing the guest asked
+        // for, so the guest's exec is refused by name rather than answered
+        // with an errno Linux would give for the guest's own reasons.
         let mut validation_memory = match GuestMemory::new(memory.guest_base(), memory.len()) {
             Ok(memory) => memory,
-            Err(_) => return negative_errno(libc::ENOMEM),
+            Err(error) => {
+                self.unsupported_refusal =
+                    Some(exec_validation_memory_refusal(memory.len(), &error));
+                return negative_errno(libc::ENOMEM);
+            }
         };
         let argv_refs = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp_refs = envp.iter().map(String::as_str).collect::<Vec<_>>();
-        if load_static_elf_with_execfn(
+        if let Err(error) = load_static_elf_with_execfn(
             &mut validation_memory,
             &image,
             Some(&execfn),
             &argv_refs,
             &envp_refs,
             &self.state.cwd,
-        )
-        .is_err()
-        {
-            return negative_errno(libc::ENOEXEC);
+        ) {
+            // A host resource this process ran out of while loading (memory
+            // for the image's copy or its PT_INTERP image, a descriptor to
+            // open the interpreter) says nothing about the image, so the exec
+            // is refused by name. Every other loader failure is an image that
+            // is malformed or that this loader cannot place: ENOEXEC.
+            return match error.host_resource_exhaustion() {
+                Some(exhaustion) => {
+                    self.unsupported_refusal = Some(exec_host_resource_refusal(
+                        "loading the new image into the validation memory",
+                        &error,
+                        &exhaustion,
+                    ));
+                    negative_errno(libc::ENOMEM)
+                }
+                None => negative_errno(libc::ENOEXEC),
+            };
         }
         // Linux makes a non-leader caller the new thread-group leader while it
         // tears down every sibling. The KVM backend does not yet implement that
@@ -1158,6 +1233,12 @@ impl ElfExecutor {
         let file_table;
         let _child_retirement;
         let _retirement = self.state.file_retirement.hold();
+        // The child copies the table as it is now, under its lock, which the
+        // lock order takes before the signal transaction: this task's private
+        // copies are as of its last install, and a sibling's close or dup2
+        // since may have replaced some (`FileTableState::fork_descriptors`).
+        let parent_table = self.file_table.clone();
+        let shared_files = parent_table.lock().expect("KVM file-table lock poisoned");
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         if !self
@@ -1172,10 +1253,15 @@ impl ElfExecutor {
                 "cannot fork a KVM process while a virtual signalfd is open".to_owned(),
             ));
         }
-        state = self.state.try_clone_for_fork_locked(child_pid)?;
+        state = self.state.try_clone_for_fork_locked(
+            child_pid,
+            shared_files.fork_descriptors(&self.state.file_retirement)?,
+        )?;
+        drop(shared_files);
         _child_retirement = state.file_retirement.hold();
         if share_address_space {
             state.thp_disabled = self.state.thp_disabled.clone();
+            state.pkey_zero_claimed = self.state.pkey_zero_claimed.clone();
         }
         state.dumpable = self.current_dumpable();
         if clear_sighand {
@@ -1188,7 +1274,6 @@ impl ElfExecutor {
         }
         let address_space = None;
         file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
-        state.fdinfo_table = Arc::downgrade(&file_table);
         let task_generation = {
             let mut lifecycle = state
                 .task_lifecycle
@@ -1288,6 +1373,10 @@ impl ElfExecutor {
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            vfork_parent: share_address_space.then_some(reverie::SignalProcessId {
+                tgid: reverie::Pid::from_raw(self.state.pid),
+                generation: self.process_generation,
+            }),
         };
         Ok(child)
     }
@@ -1326,7 +1415,9 @@ impl ElfExecutor {
                     .to_owned(),
             ));
         }
-        state = self.state.try_clone_for_fork_locked(child_tid)?;
+        state = self
+            .state
+            .try_clone_for_fork_locked(child_tid, ForkDescriptors::of_state(&self.state)?)?;
         _child_retirement = state.file_retirement.hold();
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
@@ -1337,6 +1428,7 @@ impl ElfExecutor {
         state.dumpable = self.current_dumpable();
         state.thread_group_leader_name = self.state.thread_group_leader_name.clone();
         state.thp_disabled = self.state.thp_disabled.clone();
+        state.pkey_zero_claimed = self.state.pkey_zero_claimed.clone();
         state.process_signals = self.state.process_signals.clone();
         state.pipe_owner_process = self.state.pipe_owner_process.clone();
         // The fork helper made private-table bindings. CLONE_FILES instead
@@ -1387,7 +1479,7 @@ impl ElfExecutor {
                 task_generation,
             },
         );
-        let child = Self {
+        let mut child = Self {
             state,
             task_generation,
             process_generation,
@@ -1420,7 +1512,19 @@ impl ElfExecutor {
             exit_status: None,
             exit_group: false,
             clear_child_tid: None,
+            vfork_parent: None,
         };
+        // The child's copies are copies of this task's. Install the table into
+        // them under its lock, which comes before the signal transaction, so
+        // they are current and registered before a sibling can retire an entry
+        // they copy (PrivateCopies): a thread that parks before its first call
+        // must not keep a closed pipe end open.
+        drop(_transaction);
+        let file_table = child.file_table.clone();
+        file_table
+            .lock()
+            .expect("KVM file-table lock poisoned")
+            .install(&mut child.state)?;
         Ok(child)
     }
 
@@ -1708,7 +1812,11 @@ impl ElfExecutor {
         // their original semantics, never be reclassified as task-exit closes.
         self.state.file_retirement.drain_unlocked();
         let stdin = self.state.take_stdin();
-        let retired = std::mem::take(&mut self.state.files);
+        let retired = self.state.files.take_map();
+        // From here no sibling's retirement replaces these copies, which the
+        // cleanup service closes with the task's other descriptors: it reads
+        // each one's description, so they keep theirs until it closes them.
+        self.state.private_copy_gate.close(std::iter::empty());
         self.state.fd_entry_ids.clear();
         self.state.native_poll_fds.clear();
         self.state.pipe_owners.clear();
@@ -1773,15 +1881,38 @@ impl ElfExecutor {
         // table is untouched, so waiting on its locks would add a dependency on
         // a peer's host syscall (and its interrupt) during terminal cleanup.
         let stdin = self.state.take_stdin();
-        let retired = std::mem::take(&mut self.state.files);
+        let retired = self.state.files.take_map();
+        // From here no sibling's retirement replaces these copies, and none of
+        // them holds a description for one to miss (PrivateCopies).
+        self.state
+            .private_copy_gate
+            .close(retired.values().chain(stdin.as_ref()));
         self.state.fd_entry_ids.clear();
         // Snapshot retirement is not a logical close in a surviving table.
         self.state.native_poll_fds.clear();
         self.state.pipe_owners.clear();
         self.state.poll_table_id = Default::default();
         self.state.epoll_domain = Default::default();
-        self.file_table = Arc::new(Mutex::new(FileTableState::default()));
-        drop(self.file_table_task_owner.take());
+        let table = std::mem::replace(
+            &mut self.file_table,
+            Arc::new(Mutex::new(FileTableState::default())),
+        );
+        // The last task closes the table's own descriptors in its exit, as
+        // Linux's exit_files does, rather than whenever a transient observer
+        // of the table lets it go. No peer remains to hold the lock.
+        let last_task = self
+            .file_table_task_owner
+            .take()
+            .is_some_and(|owner| Arc::into_inner(owner).is_some());
+        if last_task {
+            let mut table = table.lock().unwrap_or_else(|p| p.into_inner());
+            let stdin = table.stdin.take();
+            let files = std::mem::take(&mut table.files);
+            self.state
+                .file_retirement
+                .retire(stdin.into_iter().chain(files.into_values()));
+        }
+        drop(table);
         let action = self.process_action.take();
         self.state
             .file_retirement
@@ -2210,8 +2341,111 @@ impl ElfExecutor {
         })
     }
 
+    /// Whether another thread of this task's process is alive. A vfork
+    /// child of such a process runs while that thread may change the
+    /// parent's memory, so the backend keeps a baseline of the child's copy
+    /// to return only the child's own changes
+    /// (`GuestMemory::keep_vfork_baseline`).
+    pub fn has_live_sibling_thread(&self) -> bool {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .has_live_sibling(self.state.tid, self.state.pid)
+    }
+
     pub fn take_clear_child_tid(&mut self) -> Option<u64> {
         self.clear_child_tid.take()
+    }
+
+    /// Whether the end of a vfork window, not this task's own exit or death,
+    /// releases its `clear_child_tid` registration: the task leads a vfork
+    /// child whose copy, `memory`, still stands in for its parent's address
+    /// space. Linux's `mm_release()` clears and wakes the word whenever
+    /// another user of the mm exists, as the waiting parent is, and the copy
+    /// carries the store back only when the window ends
+    /// ([`ElfExecutor::release_vfork_mm`]).
+    pub fn vfork_window_holds_clear_child_tid(&self, memory: &GuestMemory) -> bool {
+        self.is_thread_group_leader() && memory.has_vfork_parent()
+    }
+
+    /// At the return from a fatal signal of this task's process: a process
+    /// killed by a signal drops its `clear_child_tid` registration unwritten,
+    /// as Linux's `mm_release()` does for the last user of an mm. A vfork
+    /// child's mm is its parent's too, so it keeps the registration for the
+    /// end of its window, which clears and wakes the word.
+    pub fn drop_clear_child_tid_at_fatal_signal(&mut self, memory: &GuestMemory) {
+        if !self.vfork_window_holds_clear_child_tid(memory) {
+            let _ = self.take_clear_child_tid();
+        }
+    }
+
+    /// Ends this task's vfork window, if one is open, as Linux's
+    /// `mm_release()` does for a vfork child at its successful exec
+    /// (`exec_mm_release()`) or its exit (`exit_mm_release()`), a death by a
+    /// signal included
+    /// (<https://github.com/gregkh/linux/blob/v7.1.3/kernel/fork.c#L1463-L1494>).
+    /// `child` is the copy the child ran on, and `write_back` the backend's
+    /// write-back of the child's changes into its parent
+    /// (`GuestMemory::return_vfork_changes`). Returns whether a window ended.
+    ///
+    /// While the parent's process still uses the address space,
+    /// `mm_release()` stores zero to the word the child registered as its
+    /// `clear_child_tid` and wakes one waiter on it, shared, before the vfork
+    /// completes. Here that is, in order: the store, to the copy, so that it
+    /// goes back with the child's other changes; the write-back; and the
+    /// wake, of the parent's word, which by then holds the store, and only
+    /// when the write-back reached the parent (a parent that exec'd has
+    /// another address space). The store is best effort, as Linux's
+    /// `put_user()`, and a word that is not accessible wakes nobody, as
+    /// Linux's wake then fails. The backend releases the parent afterwards,
+    /// as Linux completes the vfork after these effects.
+    ///
+    /// Once the parent's process has committed its exit, the child is the
+    /// address space's only user: `mm_release()` then stores nothing, and
+    /// nothing goes back (`GuestMemory::abandon_vfork_changes`). The decision
+    /// reads the commit in the run's task lifecycle
+    /// ([`TaskLifecycleTable::process_exit_committed`]), not whether the
+    /// parent's waiting thread has noticed it yet, so a tool that orders
+    /// the guest's tasks orders the commit with this window end, and the
+    /// decision with it.
+    ///
+    /// [`TaskLifecycleTable::process_exit_committed`]: crate::elf::TaskLifecycleTable
+    pub fn release_vfork_mm(
+        &mut self,
+        child: &GuestMemory,
+        write_back: impl FnOnce(&GuestMemory) -> crate::Result<Option<crate::memory::VforkWriteBack>>,
+    ) -> crate::Result<bool> {
+        if !self.vfork_window_holds_clear_child_tid(child) {
+            return Ok(false);
+        }
+        let clear_child_tid = self.take_clear_child_tid();
+        if self.vfork_parent.take().is_some_and(|parent| {
+            self.state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .process_exit_committed(parent)
+        }) {
+            child.abandon_vfork_changes();
+            return Ok(true);
+        }
+        let parent = child.vfork_parent();
+        if let Some(address) = clear_child_tid {
+            let _ = ProviderMemory(child).put_user_i32(address, 0);
+            #[cfg(any(test, feature = "test-support"))]
+            crate::memory::vfork_window_steps::note("clear");
+        }
+        let reached = write_back(child)?.is_some();
+        if let (Some(address), Some(parent), true) = (clear_child_tid, parent, reached) {
+            let _ = futex(
+                &ProviderMemory(&parent),
+                &[address, libc::FUTEX_WAKE as u64, 1, 0, 0, 0],
+            );
+            #[cfg(any(test, feature = "test-support"))]
+            crate::memory::vfork_window_steps::note("wake");
+        }
+        Ok(true)
     }
 
     pub fn take_process_action(&mut self) -> Option<ProcessAction> {
@@ -2242,13 +2476,27 @@ impl ElfExecutor {
         self.state.tid
     }
 
-    pub fn replace_after_exec(&mut self, state: LoadedStaticElf) {
+    /// Installs `state`, the image an exec loaded, in place of this task's,
+    /// which it inherits from. The exec is past its point of no return, so a
+    /// failure here ends the run.
+    pub fn replace_after_exec(&mut self, state: LoadedStaticElf) -> crate::Result<()> {
         let _retirement = self.state.file_retirement.hold();
         let file_table = self.file_table.clone();
         let mut files = file_table.lock().expect("KVM file-table lock poisoned");
+        // The new image inherits the table as it is now, under its lock: this
+        // task's private copies are as of its last install, and a sibling's
+        // close or dup2 since may have replaced some (`PrivateCopies`), whose
+        // placeholders the new image must neither inherit nor publish.
+        files.install(&mut self.state)?;
         let transaction = self.state.signal_transaction.clone();
         let _transaction = transaction.lock().unwrap_or_else(|p| p.into_inner());
         let previous = std::mem::replace(&mut self.state, state);
+        // The run's record of this process's signal state
+        // (`ParentDeathState::signals`) names the replaced image's state until
+        // the rebind below names the new one. Keep that state alive until
+        // then, so that a reader that finds this live thread through the
+        // record gets the process as the exec found it, never nothing.
+        let replaced_signals = previous.process_signals.clone();
         let retired = self.state.inherit_process_state_locked(previous);
         self.state.file_retirement.retire(retired);
         let identity = self
@@ -2263,10 +2511,15 @@ impl ElfExecutor {
         if let Some(memory) = &self.address_space {
             memory.set_allocation_cursors(AllocationCursors::from_elf(&self.state));
         }
-        files
-            .update_from_elf(&self.state)
-            .expect("clone post-exec KVM file table");
+        let published = files.update_from_elf(&self.state);
+        #[cfg(test)]
+        EXEC_WINDOW_TEST_HOOK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook();
+            }
+        });
         self.signal_binding.rebind(&self.state, &file_table);
+        drop(replaced_signals);
         self.state.children = ChildWaitContext::bind(
             self.signal_registry.clone(),
             self.admitted_signal_identity(),
@@ -2279,6 +2532,7 @@ impl ElfExecutor {
         self.clear_child_tid = None;
         drop(_transaction);
         drop(files);
+        published
     }
 
     pub fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
@@ -2703,7 +2957,7 @@ impl DroppedRunReaper {
         let shared = Arc::new(ReaperShared::default());
         shared.lock().handles = 1;
         let reaping = crate::failure::spawn_owned(
-            std::thread::Builder::new().name("reverie-kvm-reaper".into()),
+            crate::supervisor_thread::builder().name("reverie-kvm-reaper".into()),
             shared.clone(),
             Self::reap,
         )
@@ -2809,10 +3063,16 @@ impl Drop for ElfExecutor {
     }
 }
 
-pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
+/// Every refusal here is for want of support and carries the typed refusal
+/// (`CloneFlagsRefused::unsupported`). Linux accepts any exit signal for a
+/// process from `clone`. Some flag sets declined here Linux refuses too
+/// (`CLONE_SIGHAND` without `CLONE_VM`, say); a tool that answers those
+/// first sends only the ones Linux would perform.
+pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), CloneFlagsRefused> {
+    let unsupported = |errno| Err(CloneFlagsRefused::unsupported(errno, CLONE_FLAGS_REFUSAL));
     let signal = flags & 0xff;
     if signal != 0 && signal != libc::SIGCHLD as u64 {
-        return Err(negative_errno(libc::EINVAL));
+        return unsupported(libc::EINVAL);
     }
     let allowed = 0xff
         | libc::CLONE_VM as u64
@@ -2823,30 +3083,63 @@ pub(super) fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
         // The fork action clears caught handlers in the child snapshot.
         | CLONE_CLEAR_SIGHAND;
     if flags & !allowed != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return unsupported(libc::ENOTSUP);
     }
     let shared_address_space = flags & (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64);
+    if shared_address_space == libc::CLONE_VM as u64 {
+        // A process that goes on sharing its parent's memory after the call
+        // returns, which Linux allows and this backend cannot give the child.
+        return Err(CloneFlagsRefused::unsupported(
+            libc::ENOTSUP,
+            SHARED_MEMORY_PROCESS_REFUSAL,
+        ));
+    }
     if shared_address_space != 0
         && shared_address_space != (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64)
     {
-        return Err(negative_errno(libc::ENOTSUP));
+        return unsupported(libc::ENOTSUP);
     }
+    // reverie-kvm runs a vfork-style child on a copy whose changes go back to
+    // the parent when its window ends (`GuestMemory::return_vfork_changes`).
+    // That write-back is exact only while the parent gets no TID store after
+    // the copy is taken: a CLONE_PARENT_SETTID store there would be undone by
+    // the copy's stale page. Admitting these flags must store into the copy
+    // as well.
     if shared_address_space != 0 && flags & PROCESS_CLONE_TID_FLAGS != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return unsupported(libc::ENOTSUP);
     }
     Ok(())
 }
 
 // TODO-HUMAN-REVIEW(PR-132): Review the accepted glibc pthread clone flag profile.
-fn validate_thread_clone_flags(flags: u64) -> Result<(), i64> {
+fn validate_thread_clone_flags(flags: u64) -> Result<(), CloneFlagsRefused> {
+    // Linux ignores the exit signal of a thread from `clone`.
     if flags & 0xff != 0 {
-        return Err(negative_errno(libc::EINVAL));
+        return Err(CloneFlagsRefused::unsupported(
+            libc::EINVAL,
+            CLONE_FLAGS_REFUSAL,
+        ));
     }
     if flags & THREAD_CLONE_REQUIRED_FLAGS != THREAD_CLONE_REQUIRED_FLAGS {
-        return Err(negative_errno(libc::EINVAL));
+        // Linux requires CLONE_SIGHAND with CLONE_THREAD and CLONE_VM with
+        // CLONE_SIGHAND, and refuses anything less with EINVAL. A thread
+        // without CLONE_FS or CLONE_FILES is valid there: one with a working
+        // directory or descriptor table of its own, which this backend cannot
+        // give the child.
+        let linux_requires = (libc::CLONE_VM | libc::CLONE_SIGHAND | libc::CLONE_THREAD) as u64;
+        if flags & linux_requires == linux_requires {
+            return Err(CloneFlagsRefused::unsupported(
+                libc::EINVAL,
+                UNSHARED_THREAD_REFUSAL,
+            ));
+        }
+        return Err(CloneFlagsRefused::linux(libc::EINVAL));
     }
     if flags & !THREAD_CLONE_ALLOWED_FLAGS != 0 {
-        return Err(negative_errno(libc::ENOTSUP));
+        return Err(CloneFlagsRefused::unsupported(
+            libc::ENOTSUP,
+            CLONE_FLAGS_REFUSAL,
+        ));
     }
     Ok(())
 }

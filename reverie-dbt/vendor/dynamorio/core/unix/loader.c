@@ -148,6 +148,116 @@ stdfile_t **privmod_stdin;
 #define LIBC_STDIN_NAME "stdin"
 #define LIBC_EARLY_INIT_NAME "__libc_early_init"
 
+#if defined(LINUX) && !defined(ANDROID)
+/* Owner/candidate/hold are protected by privload_lock.  Only the published
+ * code pointer is read by an I/O adapter.  No thread's errno address is cached. */
+static privmod_t *private_errno_owner;
+static app_pc private_errno_candidate;
+static app_pc private_errno_accessor;
+static bool private_errno_owner_held;
+
+static void
+private_errno_unsupported(const char *reason)
+{
+    /* DR-owned diagnostics: never recurse through the private libc imports. */
+    SYSLOG_CUSTOM_NOTIFY(SYSLOG_ERROR, 0, 0,
+                         "private libc read/write errno unsupported: %s", reason);
+    os_terminate(NULL, TERMINATE_PROCESS);
+    ASSERT_NOT_REACHED();
+}
+
+static bool
+private_errno_select(os_privmod_data_t *importer)
+{
+    bool indirect;
+    private_export_t selected;
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+    app_pc accessor = module_lookup_export_by_name(
+        importer, "__errno_location", &indirect, &selected);
+    /* A libc-free or pre-libc importer may use read/write successfully.
+     * Absence is refused only if an actual I/O error needs an errno object. */
+    if (accessor == NULL)
+        return false;
+    if (indirect || selected.symbol == NULL ||
+        selected.symbol->st_shndx == SHN_UNDEF ||
+        ELF_ST_TYPE(selected.symbol->st_info) != STT_FUNC)
+        private_errno_unsupported("errno accessor is not a defined direct function");
+    privmod_t *owner = privload_lookup_by_pc(accessor);
+    if (owner == NULL || owner->externally_loaded ||
+        strstr(owner->name, "libc.so") != owner->name ||
+        owner->os_privmod_data != selected.defining_module ||
+        !privload_has_private_owner(owner))
+        private_errno_unsupported("errno provider is not the owned private libc");
+    bool executable = false;
+    os_module_data_t *image = &selected.defining_module->os_data;
+    for (uint i = 0; i < image->num_segments; ++i) {
+        module_segment_t *segment = &image->segments[i];
+        if (accessor >= segment->start && accessor < segment->end &&
+            TEST(MEMPROT_EXEC, segment->prot)) {
+            executable = true;
+            break;
+        }
+    }
+    if (!executable)
+        private_errno_unsupported("errno accessor is outside its executable segment");
+    if (private_errno_owner != NULL &&
+        (private_errno_owner != owner || private_errno_candidate != accessor))
+        private_errno_unsupported("conflicting private errno provider");
+    if (private_errno_owner == NULL) {
+        if (dynamo_initialized)
+            private_errno_unsupported("first errno provider loaded after initialization");
+        private_errno_owner = owner;
+        private_errno_candidate = accessor;
+    }
+    return true;
+}
+
+static void
+private_errno_publish(privmod_t *owner)
+{
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+    if (!private_errno_select((os_privmod_data_t *)owner->os_privmod_data))
+        return;
+    if (private_errno_owner != owner)
+        private_errno_unsupported("libc errno accessor belongs to another image");
+    if (!private_errno_owner_held) {
+        /* A real loader-owned reference, separate from paired auxiliary
+         * references.  loader_exit drains it only after thread quiescence. */
+        if (owner->ref_count == (uint)-1)
+            private_errno_unsupported("errno provider reference overflow");
+        owner->ref_count++;
+        private_errno_owner_held = true;
+        ATOMIC_PTRSZ_ALIGNED_WRITE(&private_errno_accessor,
+                                  (ptr_int_t)private_errno_candidate, false);
+    }
+}
+
+void
+privload_errno_prepare_exit(void)
+{
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+    if (private_errno_owner_held && !dynamo_exited_all_other_threads)
+        private_errno_unsupported("errno provider teardown before thread quiescence");
+    /* Transfer the final count to loader_exit's existing draining loop.  Keep
+     * the accessor usable through fini; withdraw at post-fini/pre-unmap. */
+    private_errno_owner_held = false;
+}
+
+static void
+private_errno_remove(privmod_t *owner)
+{
+    ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
+    if (owner != private_errno_owner)
+        return;
+    if (private_errno_accessor != NULL &&
+        (private_errno_owner_held || !dynamo_exited_all_other_threads))
+        private_errno_unsupported("live private errno provider unmap");
+    ATOMIC_PTRSZ_ALIGNED_WRITE(&private_errno_accessor, (ptr_int_t)0, false);
+    private_errno_owner = NULL;
+    private_errno_candidate = NULL;
+}
+#endif
+
 /* We save the original sp from the kernel, for use by TLS setup on Android */
 void *kernel_init_sp;
 
@@ -462,6 +572,9 @@ privload_remove_areas(privmod_t *privmod)
     uint i;
     os_privmod_data_t *opd = (os_privmod_data_t *)privmod->os_privmod_data;
 
+#if defined(LINUX) && !defined(ANDROID)
+    private_errno_remove(privmod);
+#endif
     /* walk the program header to remove areas */
     for (i = 0; i < opd->os_data.num_segments; i++) {
         vmvector_remove(modlist_areas, opd->os_data.segments[i].start,
@@ -905,6 +1018,11 @@ privload_os_finalize(privmod_t *privmod)
     if (strstr(privmod->name, "libc.so") != privmod->name)
         return;
     os_privmod_data_t *opd = (os_privmod_data_t *)privmod->os_privmod_data;
+#    ifndef ANDROID
+    /* Imports, relocations and primary private TLS copy have completed.  This
+     * must precede __libc_early_init and normal constructors. */
+    private_errno_publish(privmod);
+#    endif
     /* Special handling for standard I/O file descriptors. */
     privmod_stdout = (FILE **)get_proc_address_from_os_data(
         &opd->os_data, opd->load_delta, LIBC_STDOUT_NAME, NULL);
@@ -1862,6 +1980,45 @@ redirect___gnu_Unwind_Find_exidx(void *pc, int *count)
 #    endif /* ARM && !ANDROID */
 #endif     /* LINUX */
 
+#if defined(LINUX) && !defined(ANDROID)
+static ssize_t
+private_libc_io_result(ssize_t result)
+{
+    /* Linux raw syscall errors occupy only [-4095, -1].  Successful, zero and
+     * short results preserve errno and do not even invoke the accessor. */
+    if ((ptr_uint_t)result < (ptr_uint_t)-4095)
+        return result;
+    app_pc accessor;
+    ATOMIC_PTRSZ_ALIGNED_READ(&private_errno_accessor, &accessor);
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    if (accessor == NULL)
+        private_errno_unsupported("error without an initialized private errno provider");
+    if (dcontext == NULL || dcontext->os_field == NULL)
+        private_errno_unsupported("error without a private thread context");
+    void *private_base = os_get_priv_tls_base(dcontext, TLS_REG_LIB);
+    if (private_base == NULL || private_base == (void *)POINTER_MAX ||
+        get_segment_base(TLS_REG_LIB) != private_base)
+        private_errno_unsupported("error outside this thread's private TLS");
+    int *location = ((int *(*)(void))accessor)();
+    if (location == NULL)
+        private_errno_unsupported("private errno accessor returned null");
+    *location = (int)-result;
+    return -1;
+}
+
+static ssize_t
+redirect_libc_read(file_t fd, void *buffer, size_t count)
+{
+    return private_libc_io_result(os_read(fd, buffer, count));
+}
+
+static ssize_t
+redirect_libc_write(file_t fd, const void *buffer, size_t count)
+{
+    return private_libc_io_result(os_write(fd, buffer, count));
+}
+#endif
+
 typedef struct _redirect_import_t {
     const char *name;
     app_pc func;
@@ -1887,8 +2044,13 @@ static const redirect_import_t redirect_imports[] = {
     /* These libc routines can call pthread functions and cause hangs (i#4928) so
      * we use our syscall wrappers instead.
      */
+#if defined(LINUX) && !defined(ANDROID)
+    { "read", (app_pc)redirect_libc_read },
+    { "write", (app_pc)redirect_libc_write },
+#else
     { "read", (app_pc)os_read },
     { "write", (app_pc)os_write },
+#endif
 #if defined(LINUX) && !defined(ANDROID)
     { "__tls_get_addr", (app_pc)redirect___tls_get_addr },
     { "___tls_get_addr", (app_pc)redirect____tls_get_addr },
@@ -1946,6 +2108,10 @@ bool
 privload_redirect_sym(os_privmod_data_t *opd, ptr_uint_t *r_addr, const char *name)
 {
     int i;
+#if defined(LINUX) && !defined(ANDROID)
+    if (strcmp(name, "read") == 0 || strcmp(name, "write") == 0)
+        private_errno_select(opd);
+#endif
     /* iterate over all symbols and redirect syms when necessary, e.g. malloc */
 #ifdef DEBUG
     if (disallow_unsafe_static_calls) {

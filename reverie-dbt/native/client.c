@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/shm.h>
 #include <sys/socket.h>
@@ -78,6 +79,72 @@
 #ifndef FIOGETOWN
 #define FIOGETOWN 0x8903
 #endif
+
+/* ABI 16: immutable caller contract and native reservation, not kernel exit. */
+#define REVERIE_DBT_CALLER_CAPABILITIES UINT64_C(7)
+#ifdef REVERIE_DBT_CALLER_INPUT_IDENTITY
+#define REVERIE_DBT_CALLER_INITIAL_STACK_V1 1
+#endif
+#ifndef REVERIE_DBT_CALLER_INPUT_IDENTITY
+#define REVERIE_DBT_CALLER_INPUT_IDENTITY ""
+#endif
+typedef struct {
+  uint32_t size;
+  uint32_t abi;
+  uint64_t capabilities;
+  uint64_t image_generation;
+  unsigned char runtime_input_identity[32];
+} image_descriptor_t;
+typedef struct {
+  uint32_t size;
+  uint32_t selected_event_bits;
+  unsigned char raw_config_digest[32];
+  uint64_t owner_generation;
+} ready_snapshot_t;
+typedef struct {
+  uint32_t size;
+  uint32_t kind;
+  uint64_t image;
+  uint64_t context;
+  int32_t pid;
+  int32_t tid;
+  int64_t sysno;
+  uint64_t args[6];
+  uint64_t cookie;
+  uint32_t origin;
+  uint32_t reserved;
+} terminal_fact_t;
+typedef int32_t (*terminal_admission_t)(
+    uintptr_t, int64_t, const uint64_t*, terminal_fact_t*);
+_Static_assert(sizeof(image_descriptor_t) == 56, "image descriptor ABI size");
+_Static_assert(offsetof(image_descriptor_t, size) == 0, "image size offset");
+_Static_assert(offsetof(image_descriptor_t, abi) == 4, "image ABI offset");
+_Static_assert(offsetof(image_descriptor_t, capabilities) == 8, "image caps offset");
+_Static_assert(offsetof(image_descriptor_t, image_generation) == 16, "image generation offset");
+_Static_assert(offsetof(image_descriptor_t, runtime_input_identity) == 24, "image identity offset");
+_Static_assert(sizeof(ready_snapshot_t) == 48, "ready snapshot ABI size");
+_Static_assert(offsetof(ready_snapshot_t, size) == 0, "ready size offset");
+_Static_assert(offsetof(ready_snapshot_t, selected_event_bits) == 4, "ready events offset");
+_Static_assert(offsetof(ready_snapshot_t, raw_config_digest) == 8, "ready digest offset");
+_Static_assert(offsetof(ready_snapshot_t, owner_generation) == 40, "ready generation offset");
+_Static_assert(sizeof(terminal_fact_t) == 104, "terminal fact ABI size");
+_Static_assert(_Alignof(terminal_fact_t) == 8, "terminal fact ABI alignment");
+_Static_assert(offsetof(terminal_fact_t, size) == 0, "terminal size offset");
+_Static_assert(offsetof(terminal_fact_t, kind) == 4, "terminal kind offset");
+_Static_assert(offsetof(terminal_fact_t, image) == 8, "terminal image offset");
+_Static_assert(offsetof(terminal_fact_t, context) == 16, "terminal context offset");
+_Static_assert(offsetof(terminal_fact_t, pid) == 24, "terminal pid offset");
+_Static_assert(offsetof(terminal_fact_t, tid) == 28, "terminal tid offset");
+_Static_assert(offsetof(terminal_fact_t, sysno) == 32, "terminal syscall offset");
+_Static_assert(offsetof(terminal_fact_t, args) == 40, "terminal args offset");
+_Static_assert(offsetof(terminal_fact_t, cookie) == 88, "terminal cookie offset");
+_Static_assert(offsetof(terminal_fact_t, origin) == 96, "terminal origin offset");
+_Static_assert(offsetof(terminal_fact_t, reserved) == 100, "terminal reserved offset");
+
+enum {
+  CALLER_NOT_ENDING, CALLER_RESERVED, CALLER_CONSUMING,
+  CALLER_CONSUMED_FOR_FORWARD, CALLER_FAILED
+};
 #ifndef SIOCGPGRP
 #define SIOCGPGRP 0x8904
 #endif
@@ -143,6 +210,7 @@ _Static_assert(offsetof(mapping_capture_arguments_t, release_lease) == 248,
 static int32_t runtime_mapping_capture(uintptr_t, uint32_t, mapping_capture_arguments_t*);
 static bool mapping_capture_active(void);
 static void mapping_capture_terminal(void) __attribute__((noreturn));
+static void mapping_capture_terminal_with_status(int) __attribute__((noreturn));
 static void mapping_capture_withdraw_for_syscall(int sysnum);
 static void runtime_background_init(void* argument);
 
@@ -179,6 +247,57 @@ typedef struct {
   int32_t birth;
   int32_t mediated_pid;
 } capture_owner_t;
+
+typedef struct {
+  uintptr_t context;
+  int32_t pid;
+  int32_t tid;
+  uint64_t image;
+  uint64_t nonce;
+} mapping_capture_refusal_t;
+
+/* Private versioned caller admission record, independent of callback ABI16. */
+typedef struct {
+  uint32_t size;
+  uint32_t version;
+  uint32_t kind;
+  uint32_t reserved;
+  uint64_t context;
+  int32_t pid;
+  int32_t tid;
+  uint64_t image;
+  uint64_t pc;
+  uint64_t rsp;
+} initial_stack_fact_t;
+_Static_assert(sizeof(initial_stack_fact_t) == 56, "initial stack fact size");
+_Static_assert(_Alignof(initial_stack_fact_t) == 8, "initial stack fact alignment");
+_Static_assert(offsetof(initial_stack_fact_t, size) == 0, "initial stack size offset");
+_Static_assert(offsetof(initial_stack_fact_t, version) == 4, "initial stack version offset");
+_Static_assert(offsetof(initial_stack_fact_t, kind) == 8, "initial stack kind offset");
+_Static_assert(offsetof(initial_stack_fact_t, reserved) == 12, "initial stack reserved offset");
+_Static_assert(offsetof(initial_stack_fact_t, context) == 16, "initial stack context offset");
+_Static_assert(offsetof(initial_stack_fact_t, pid) == 24, "initial stack pid offset");
+_Static_assert(offsetof(initial_stack_fact_t, tid) == 28, "initial stack tid offset");
+_Static_assert(offsetof(initial_stack_fact_t, image) == 32, "initial stack image offset");
+_Static_assert(offsetof(initial_stack_fact_t, pc) == 40, "initial stack pc offset");
+_Static_assert(offsetof(initial_stack_fact_t, rsp) == 48, "initial stack rsp offset");
+
+typedef enum {
+  REGISTER_ORIG_UNKNOWN,
+  REGISTER_ORIG_IMAGE_START,
+  REGISTER_ORIG_SYSCALL,
+  REGISTER_ORIG_PREEMPT_SYSCALL,
+  REGISTER_ORIG_INSTRUCTION,
+} register_orig_kind_t;
+
+/* Native-private metadata: dr_mcontext_t has no independent orig_rax. */
+typedef struct {
+  uint64_t value;
+  uint64_t image;
+  process_id_t pid;
+  thread_id_t tid;
+  register_orig_kind_t kind;
+} register_orig_t;
 
 typedef struct {
   uint64_t branches;
@@ -256,7 +375,33 @@ typedef struct {
   // admission calls the Tool. Clean-call dr_get_mcontext does not supply it.
   // This is client-only state, outside the shared Rust scratch prefix.
   app_pc admission_pc;
+  /* Native-private caller state: the Rust scratch prefix is unchanged. */
+  uintptr_t caller_context;
+  uint64_t caller_image;
+  uint64_t caller_cookie_sequence;
+  uint32_t caller_terminal_state;
+  bool caller_admitted;
+  bool caller_syscall_callback;
+  terminal_fact_t caller_terminal;
+  // A withdrawn pre-park capture may make this exact Tool callback fatal.
+  // This is not park/read authority and never survives a callback return.
+  bool mapping_capture_callback_active;
+  mapping_capture_refusal_t mapping_capture_refusal;
+  register_orig_t register_orig;
+  register_orig_t preempt_register_orig;
+  bool initial_register_view_pending;
+  // Independent one-shot observation, after every existing scratch field.
+  bool initial_stack_pending;
+  bool initial_stack_attempted;
+  initial_stack_fact_t initial_stack_fact;
 } prototype_counters_t;
+static void mapping_capture_begin_callback(prototype_counters_t*);
+static bool mapping_capture_take_fatal_refusal(prototype_counters_t*, uintptr_t, int32_t);
+_Static_assert(offsetof(prototype_counters_t, branches) == 0, "stable branch prefix");
+_Static_assert(offsetof(prototype_counters_t, observed_syscalls) == 8, "stable observed prefix");
+_Static_assert(offsetof(prototype_counters_t, rewritten_syscalls) == 16, "stable rewritten prefix");
+_Static_assert(offsetof(prototype_counters_t, runtime_state) == 24,
+    "stable runtime scratch prefix");
 
 #define TASK_STATE_FD 197
 #define CLIENT_THREAD_START_FAILURE_EXIT_CODE 125
@@ -328,7 +473,11 @@ typedef struct {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char* buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 15u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 16u
+// The existing shared Tool-owner transport-failure policy. The Rust/native
+// ABI control binds this value to reverie_rpc_transport's named constant.
+#define REVERIE_TOOL_RPC_FAILURE_EXIT_CODE 123
+typedef void (*rpc_transport_fatal_t)(uintptr_t context);
 #define REVERIE_DBT_STARTUP_STANDALONE 1u
 #define REVERIE_DBT_STARTUP_COORDINATED 2u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback
@@ -358,8 +507,21 @@ typedef struct {
   runtime_private_memory_t runtime_private_memory;
   branch_fact_query_t branch_fact;
   mapping_capture_t mapping_capture;
+  terminal_admission_t admit_terminal;
+  rpc_transport_fatal_t rpc_transport_fatal;
 } runtime_callbacks_t;
-_Static_assert(sizeof(runtime_callbacks_t) == 88, "runtime callbacks ABI size");
+_Static_assert(sizeof(runtime_callbacks_t) == 104, "runtime callbacks ABI size");
+_Static_assert(offsetof(runtime_callbacks_t, emit) == 0, "emit callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, idle) == 8, "idle callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, panic_on_unsupported_syscalls) == 16,
+    "unsupported policy ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, unsupported_report_fd) == 20,
+    "unsupported report ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, emit_stdout) == 24, "stdout callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, emit_evidence) == 32, "evidence callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, evidence_log_level) == 40, "evidence level ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, compare_exchange_u32) == 48,
+    "compare exchange callback ABI offset");
 _Static_assert(offsetof(runtime_callbacks_t, controller_capture_control) == 56,
     "controller capture callback ABI offset");
 _Static_assert(offsetof(runtime_callbacks_t, runtime_private_memory) == 64,
@@ -368,6 +530,10 @@ _Static_assert(offsetof(runtime_callbacks_t, branch_fact) == 72,
     "branch fact callback ABI offset");
 _Static_assert(offsetof(runtime_callbacks_t, mapping_capture) == 80,
     "mapping capture callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, admit_terminal) == 88,
+    "terminal admission callback ABI offset");
+_Static_assert(offsetof(runtime_callbacks_t, rpc_transport_fatal) == 96,
+    "RPC transport failure callback ABI offset");
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
 // Inherited from the launcher so guest stderr redirections cannot capture it.
@@ -401,6 +567,12 @@ extern int32_t reverie_dbt_runtime_thread_init(
     syscall_invoker_t invoke_syscall,
     register_reader_t read_registers,
     register_writer_t write_registers);
+#ifdef REVERIE_DBT_CALLER_INITIAL_STACK_V1
+extern int32_t reverie_dbt_runtime_caller_thread_init_v1(
+    prototype_counters_t*, void*, int32_t, int32_t, int32_t, uint64_t, int32_t,
+    syscall_invoker_t, register_reader_t, register_writer_t,
+    const initial_stack_fact_t*);
+#endif
 extern uint32_t reverie_dbt_runtime_abi_version(void);
 extern size_t reverie_dbt_runtime_callbacks_size(void);
 extern int32_t reverie_dbt_runtime_thread_created_v2(
@@ -417,12 +589,13 @@ extern int32_t reverie_dbt_runtime_thread_created_v2(
     register_reader_t read_registers,
     register_writer_t write_registers);
 
-extern void reverie_dbt_runtime_thread_exit(
+extern int32_t reverie_dbt_runtime_thread_exit(
     prototype_counters_t* counters,
     void* context,
     int32_t tid,
-    syscall_invoker_t invoke_syscall);
-extern uint64_t reverie_dbt_runtime_image_init(void);
+    syscall_invoker_t invoke_syscall,
+    const terminal_fact_t* fact);
+extern image_descriptor_t reverie_dbt_runtime_image_init(void);
 extern void reverie_dbt_runtime_exec_failed(
     prototype_counters_t* counters,
     int32_t pid);
@@ -444,7 +617,7 @@ extern int32_t reverie_dbt_runtime_process_clone_result(
 extern int32_t reverie_dbt_runtime_background_init_v3(
     void* argument,
     uint32_t native_mode);
-extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
+extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation, ready_snapshot_t* snapshot);
 extern void reverie_dbt_runtime_process_exit(void);
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-219): Review copied-child argument and errno policy ABI.
@@ -520,8 +693,51 @@ extern void reverie_dbt_runtime_totals(
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
+// 0: unstarted, 1: starting, 2: running, 3: finished successfully.
+// Failed startup is terminal, but never readiness or successful helper completion.
+#define RUNTIME_BACKGROUND_FAILED 4
 static _Atomic int32_t runtime_background_state;
+static _Atomic bool runtime_readiness_observed;
 static _Atomic uint64_t image_generation;
+/* Written once before registering translation or application callbacks. */
+static image_descriptor_t runtime_image_descriptor;
+static bool caller_mode(void) {
+  return runtime_image_descriptor.capabilities == REVERIE_DBT_CALLER_CAPABILITIES;
+}
+static bool valid_runtime_image_descriptor(void) {
+  const image_descriptor_t* descriptor = &runtime_image_descriptor;
+  if (descriptor->size != sizeof(*descriptor) ||
+      descriptor->abi != REVERIE_DBT_RUNTIME_ABI_VERSION ||
+      descriptor->image_generation == 0 ||
+      (descriptor->capabilities != 0 &&
+       descriptor->capabilities != REVERIE_DBT_CALLER_CAPABILITIES))
+    return false;
+  if (!caller_mode())
+    return true;
+  const char* expected = REVERIE_DBT_CALLER_INPUT_IDENTITY;
+  if (strlen(expected) != 64)
+    return false;
+  for (size_t i = 0; i < 32; ++i) {
+    unsigned char byte = 0;
+    for (size_t n = 0; n < 2; ++n) {
+      char digit = expected[2 * i + n];
+      if (!((digit >= '0' && digit <= '9') ||
+            (digit >= 'a' && digit <= 'f')))
+        return false;
+      byte = (unsigned char)((byte << 4) |
+          (digit <= '9' ? digit - '0' : digit - 'a' + 10));
+    }
+    if (byte != descriptor->runtime_input_identity[i])
+      return false;
+  }
+  return true;
+}
+static bool runtime_ready_for_image(void);
+static bool caller_live_context(void*, const prototype_counters_t*, bool);
+static bool caller_unfiltered(void*);
+static bool caller_unsupported_operation(int64_t, const uint64_t*, bool);
+static int32_t runtime_admit_terminal(uintptr_t, int64_t, const uint64_t*, terminal_fact_t*);
+static void runtime_rpc_transport_fatal(uintptr_t) __attribute__((noreturn));
 static _Atomic bool runtime_backend_failure;
 static int thread_state_index;
 static reg_id_t admission_state_tls_register;
@@ -2830,6 +3046,97 @@ static int32_t known_task_identity(int32_t identity) {
 static bool read_app(const void* address, void* value, size_t size);
 static bool write_app(void* address, const void* value, size_t size);
 
+/* The descriptor is immutable before any translation callback is registered.
+ * Config is queried only on execution-side boundaries, never under a code-cache
+ * translation lock. A zeroed output is not a default selected configuration. */
+typedef enum {
+  RUNTIME_READINESS_PENDING,
+  RUNTIME_READINESS_READY,
+  RUNTIME_READINESS_FAILED,
+  RUNTIME_READINESS_INVALID,
+} runtime_readiness_t;
+
+// The signal pending-list selector also reads this result. No diagnostic,
+// teardown, wait or admission publication may run under that DR lock.
+static runtime_readiness_t inspect_runtime_readiness(void) {
+  int32_t background =
+      atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+  if (background == RUNTIME_BACKGROUND_FAILED)
+    return RUNTIME_READINESS_FAILED;
+  ready_snapshot_t snapshot = {0};
+  uint64_t image = atomic_load_explicit(&image_generation, memory_order_acquire);
+  int32_t status = reverie_dbt_runtime_ready(image, &snapshot);
+  background =
+      atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+  if (background == RUNTIME_BACKGROUND_FAILED)
+    return RUNTIME_READINESS_FAILED;
+  if (status == 0)
+    return RUNTIME_READINESS_PENDING;
+  // Initial Rust refusal may precede its diagnostic and helper FINAL. Only a
+  // never-admitted image waits for the helper's terminal publication. A runtime
+  // can remain in background state2 throughout an already-admitted execution.
+  if (status < 0 && (background == 1 || background == 2) &&
+      !atomic_load_explicit(&runtime_readiness_observed, memory_order_acquire))
+    return RUNTIME_READINESS_PENDING;
+  if (status != 1 || (caller_mode() &&
+      (snapshot.size != sizeof(snapshot) || snapshot.owner_generation != image ||
+       snapshot.selected_event_bits != 0)))
+    return RUNTIME_READINESS_INVALID;
+  return RUNTIME_READINESS_READY;
+}
+
+// Execution-side waiting/admission owns failure handling, never the pending
+// signal selector. Successful helper completion cannot replace a valid snapshot.
+static bool runtime_ready_for_image(void) {
+  runtime_readiness_t readiness = inspect_runtime_readiness();
+  if (readiness == RUNTIME_READINESS_FAILED) {
+    dr_fprintf(diagnostic_file,
+        "reverie-dbt: runtime background initialization failed\n");
+    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    return false;
+  }
+  if (readiness == RUNTIME_READINESS_INVALID) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller readiness/configuration refused\n");
+    exit_runtime_tree(101);
+    return false;
+  }
+  if (readiness != RUNTIME_READINESS_READY)
+    return false;
+  atomic_store_explicit(&runtime_readiness_observed, true, memory_order_release);
+  return true;
+}
+
+static bool wait_for_runtime_ready(bool require_background_finished) {
+  for (;;) {
+    bool ready = runtime_ready_for_image();
+    if (ready && (!require_background_finished ||
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire) == 3))
+      return true;
+    dr_sleep(1);
+  }
+}
+
+static bool caller_live_context(
+    void* drcontext, const prototype_counters_t* counters, bool admitted) {
+  return counters != NULL && drcontext != NULL &&
+      drcontext == dr_get_current_drcontext() &&
+      counters->caller_context == (uintptr_t)drcontext &&
+      counters->caller_image == runtime_image_descriptor.image_generation &&
+      counters->caller_image ==
+          atomic_load_explicit(&image_generation, memory_order_acquire) &&
+      task_state != NULL && dr_get_process_id() == task_state->root_pid &&
+      dr_get_process_id() == runtime_owner_pid &&
+      dr_get_thread_id(drcontext) == dr_get_process_id() &&
+      counters->kernel_pid == dr_get_process_id() &&
+      counters->kernel_ppid == dr_get_parent_id() &&
+      counters->kernel_tid == dr_get_thread_id(drcontext) &&
+      !has_copied_runtime() && counters->pending_birth_token == 0 &&
+      counters->pending_thread_clone == 0 &&
+      counters->pending_process_clone_result == 0 &&
+      (!admitted || (counters->caller_admitted &&
+                    counters->pending_thread_start == 0));
+}
+
 static dr_emit_flags_t rewrite_cpuid(
     void* drcontext,
     void* tag,
@@ -2838,6 +3145,9 @@ static dr_emit_flags_t rewrite_cpuid(
     bool translating) {
   instr_t* instruction;
   instr_t* next;
+
+  if (caller_mode())
+    return DR_EMIT_DEFAULT;
 
   for (instruction = instrlist_first_app(bb); instruction != NULL;
        instruction = next) {
@@ -2875,6 +3185,96 @@ static int32_t write_registers(
     uintptr_t context,
     const struct user_regs_struct* in);
 
+static void clear_register_orig(prototype_counters_t* counters) {
+  memset(&counters->register_orig, 0, sizeof(counters->register_orig));
+}
+
+static void save_preempt_register_orig(prototype_counters_t* counters) {
+  counters->preempt_register_orig = counters->register_orig;
+  clear_register_orig(counters);
+}
+
+static void restore_preempt_register_orig(prototype_counters_t* counters) {
+  counters->register_orig = counters->preempt_register_orig;
+  memset(&counters->preempt_register_orig, 0,
+      sizeof(counters->preempt_register_orig));
+}
+
+static void bind_register_orig(
+    prototype_counters_t* counters,
+    void* drcontext,
+    register_orig_kind_t kind,
+    uint64_t value) {
+  counters->register_orig = (register_orig_t){
+      .value = value,
+      .image = atomic_load_explicit(&image_generation, memory_order_acquire),
+      .pid = dr_get_process_id(),
+      .tid = dr_get_thread_id(drcontext),
+      .kind = kind,
+  };
+}
+
+/* Ptrace's armed CPUID/RDTSC/RDTSCP instructions fault with #GP. Linux sets
+ * ORIG_RAX=-1 on that exception entry, before ptrace's optional signal repair:
+ * https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/tree/arch/x86/entry/entry_64.S?h=v6.9#n307
+ * This is the reference instruction-event view, not a claimed physical DR
+ * exception or a rule for arbitrary SIGSEGV/saved-signal contexts. Own it only
+ * during the actual translated instruction callback, then restore its caller's
+ * metadata. In particular, neither image-start59 nor a previous syscall is the
+ * instruction's origin. */
+static register_orig_t enter_instruction_register_orig(
+    prototype_counters_t* counters, void* drcontext) {
+  register_orig_t previous = counters->register_orig;
+  clear_register_orig(counters);
+  /* Only successful external-global, non-vfork rebasing in pre_syscall
+   * publishes this PID. Admit the child's current instruction, never inherited
+   * startup/saved metadata or an unrebound nested copy. */
+  if (drcontext != NULL && drcontext == dr_get_current_drcontext() &&
+      (!has_copied_runtime() ||
+       (runtime_uses_external_global() && !is_copied_vfork_process() &&
+        copied_process_runtime_pid == dr_get_process_id())) &&
+      counters->signal_token == 0 && counters->preempt_pending == 0 &&
+      !counters->in_syscall_event && counters->pending_thread_start == 0)
+    bind_register_orig(
+        counters, drcontext, REGISTER_ORIG_INSTRUCTION, UINT64_MAX);
+  return previous;
+}
+
+static bool register_orig_available(
+    const prototype_counters_t* counters, void* drcontext) {
+  if (counters == NULL || drcontext != dr_get_current_drcontext() ||
+      counters->signal_token != 0 ||
+      counters->register_orig.pid != dr_get_process_id() ||
+      counters->register_orig.tid != dr_get_thread_id(drcontext) ||
+      counters->register_orig.image !=
+          atomic_load_explicit(&image_generation, memory_order_acquire))
+    return false;
+  switch (counters->register_orig.kind) {
+    case REGISTER_ORIG_IMAGE_START:
+      return counters->preempt_pending == 0 && counters->admission_pc != NULL &&
+          counters->pending_thread_start != 0;
+    case REGISTER_ORIG_SYSCALL:
+      /* A late thread-start callback is not the intercepted syscall callback. */
+      return counters->preempt_pending == 0 && counters->in_syscall_event &&
+          counters->pending_thread_start == 0;
+    case REGISTER_ORIG_PREEMPT_SYSCALL:
+      return counters->preempt_pending != 0 && counters->in_syscall_event &&
+          counters->pending_thread_start == 0;
+    case REGISTER_ORIG_INSTRUCTION:
+      return counters->preempt_pending == 0 && !counters->in_syscall_event &&
+          counters->pending_thread_start == 0;
+    case REGISTER_ORIG_UNKNOWN:
+      return false;
+  }
+  return false;
+}
+
+static int32_t refuse_register_orig(const char* operation) {
+  dr_fprintf(diagnostic_file,
+      "reverie-dbt: register-view-orig-rax-unavailable (%s)\n", operation);
+  return 0;
+}
+
 static void ensure_runtime_background(void);
 // The TSC an rdtsc or rdtscp returns. A runtime whose tool answers it is asked
 // first: under Detcore that is Detcore's virtual clock, charged and logged as
@@ -2896,9 +3296,10 @@ static uint64_t guest_tsc(void* drcontext, bool with_aux, uint32_t* aux) {
     // fallback for paths whose runtime has not been started there.
     if (!has_copied_runtime())
       ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!wait_for_runtime_ready(false))
+      return 0;
+    register_orig_t previous_orig =
+        enter_instruction_register_orig(counters, drcontext);
     evidence_callback_enter();
     answered = reverie_dbt_runtime_rdtsc(
         drcontext,
@@ -2914,6 +3315,7 @@ static uint64_t guest_tsc(void* drcontext, bool with_aux, uint32_t* aux) {
         &tsc,
         &runtime_aux);
     evidence_callback_leave();
+    counters->register_orig = previous_orig;
     if (answered == 1) {
       *aux = runtime_aux;
       return tsc;
@@ -2944,9 +3346,10 @@ static void emulate_cpuid(void) {
     DR_ASSERT(counters != NULL);
     if (!has_copied_runtime())
       ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!wait_for_runtime_ready(false))
+      return;
+    register_orig_t previous_orig =
+        enter_instruction_register_orig(counters, drcontext);
     evidence_callback_enter();
     answered = reverie_dbt_runtime_cpuid(
         drcontext,
@@ -2962,6 +3365,7 @@ static void emulate_cpuid(void) {
         reverie_dbt_emit,
         result);
     evidence_callback_leave();
+    counters->register_orig = previous_orig;
   } else {
     dr_fprintf(
         diagnostic_file,
@@ -3019,6 +3423,9 @@ static dr_emit_flags_t rewrite_rdtsc(
     bool translating) {
   instr_t* instruction;
   instr_t* next;
+
+  if (caller_mode())
+    return DR_EMIT_DEFAULT;
 
   for (instruction = instrlist_first_app(bb); instruction != NULL;
        instruction = next) {
@@ -3093,6 +3500,48 @@ static void set_pending_thread_start(
   slots[0] = pending;
 }
 
+static void capture_initial_stack_fact(
+    void* drcontext, prototype_counters_t* counters, app_pc first_pc) {
+  if (counters->initial_stack_attempted)
+    return;
+  counters->initial_stack_attempted = true;
+  bool eligible = counters->initial_stack_pending;
+  counters->initial_stack_pending = false;
+  counters->initial_stack_fact = (initial_stack_fact_t){
+      .size = sizeof(initial_stack_fact_t), .version = 1};
+  // Only the actual first-block clean call may provide this observation.
+  // The pre-syscall NULL fallback consumes eligibility without resampling.
+  if (!eligible || first_pc == NULL || !caller_mode() ||
+      !caller_live_context(drcontext, counters, false) ||
+      drmgr_get_tls_field(drcontext, thread_state_index) != counters ||
+      counters->in_syscall_event || counters->signal_token != 0 ||
+      counters->preempt_pending != 0)
+    return;
+  dr_mcontext_t application = {.size = sizeof(application),
+      .flags = DR_MC_INTEGER | DR_MC_CONTROL};
+  if (!dr_get_mcontext(drcontext, &application))
+    return;
+  counters->initial_stack_fact = (initial_stack_fact_t){
+      .size = sizeof(initial_stack_fact_t), .version = 1, .kind = 1,
+      .context = (uintptr_t)drcontext,
+      .pid = (int32_t)dr_get_process_id(),
+      .tid = (int32_t)dr_get_thread_id(drcontext),
+      .image = counters->caller_image,
+      .pc = (uintptr_t)first_pc, .rsp = application.xsp};
+}
+
+#ifdef REVERIE_DBT_CALLER_INITIAL_STACK_V1
+static int32_t caller_thread_init_with_stack(
+    prototype_counters_t* counters, void* drcontext) {
+  return reverie_dbt_runtime_caller_thread_init_v1(
+      counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+      (int32_t)dr_get_process_id(), in_tree_parent_pid(),
+      atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
+      invoke_syscall, read_registers, write_registers,
+      &counters->initial_stack_fact);
+}
+#endif
+
 static void try_start_pending_thread(void) {
   void* drcontext = dr_get_current_drcontext();
   prototype_counters_t* counters =
@@ -3102,6 +3551,23 @@ static void try_start_pending_thread(void) {
   bool mapping_found = false;
   if (counters == NULL || counters->pending_thread_start == 0)
     return;
+
+  if (caller_mode()) {
+    if (!caller_live_context(drcontext, counters, false)) {
+      dr_fprintf(diagnostic_file, "reverie-dbt: caller initial task domain refused\n");
+      exit_runtime_tree(101);
+      return;
+    }
+    if (!runtime_ready_for_image()) {
+      set_pending_thread_start(counters, 2);
+      return;
+    }
+    if (!caller_unfiltered(drcontext)) {
+      dr_fprintf(diagnostic_file, "reverie-dbt: caller application seccomp refused\n");
+      exit_runtime_tree(101);
+      return;
+    }
+  }
 
   /* The clone parent overwrites the host mapping before decrementing the
    * shared count. While any thread clone is pending, a retained entry can
@@ -3176,6 +3642,9 @@ static void try_start_pending_thread(void) {
       (runtime_uses_external_global() && !is_copied_vfork_process())) {
     bind_capture_owner(counters);
     evidence_callback_enter();
+#ifdef REVERIE_DBT_CALLER_INITIAL_STACK_V1
+    init_result = caller_thread_init_with_stack(counters, drcontext);
+#else
     init_result = reverie_dbt_runtime_thread_init(
         counters,
         drcontext,
@@ -3187,6 +3656,7 @@ static void try_start_pending_thread(void) {
         invoke_syscall,
         read_registers,
         write_registers);
+#endif
     evidence_callback_leave();
   }
   // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
@@ -3207,6 +3677,8 @@ static void try_start_pending_thread(void) {
     test_owner_wait(4);
     test_owner_observe("sibling-published", 0, 0);
   }
+  if (caller_mode())
+    counters->caller_admitted = true;
   set_pending_thread_start(counters, 0);
 }
 
@@ -3273,19 +3745,33 @@ static void start_pending_thread(app_pc pc) {
       dr_get_current_drcontext(), thread_state_index);
   if (counters == NULL || counters->pending_thread_start == 0)
     return;
-  // Preserve the runtime's existing readiness wait independently of the
-  // thread-birth admission deadline. This runs after DynamoRIO thread-init,
-  // when starting the helper is allowed; copied runtimes keep their prior
-  // readiness policy.
+  capture_initial_stack_fact(dr_get_current_drcontext(), counters, pc);
+  // Legacy keeps its existing readiness wait. Caller readiness is retried by
+  // admit_pending_thread under the existing admission deadline. This runs
+  // after DynamoRIO thread-init, when starting the helper is allowed; copied
+  // runtimes keep their prior readiness policy.
   if (!has_copied_runtime()) {
     ensure_runtime_background();
-    while (!reverie_dbt_runtime_ready(
-        atomic_load_explicit(&image_generation, memory_order_acquire)))
-      dr_sleep(1);
+    if (!caller_mode() && !wait_for_runtime_ready(false))
+      return;
   }
   app_pc previous = counters->admission_pc;
   counters->admission_pc = pc;
+  if (counters->initial_register_view_pending) {
+    counters->initial_register_view_pending = false;
+    if (pc != NULL && !counters->in_syscall_event && !has_copied_runtime()) {
+      /* Linux native-ELF post_exec normalizes orig_ax to execve, including
+       * execveat (arch/x86/kernel/process_64.c:set_personality_64bit). This is
+       * the reference image-start view: DR privately maps the ELF instead of
+       * observing that application exec syscall. Delayed/saved continuations
+       * remain unresolved: https://github.com/rrnewton/reverie/issues/1226. */
+      bind_register_orig(counters, dr_get_current_drcontext(),
+          REGISTER_ORIG_IMAGE_START, SYS_execve);
+    }
+  }
   admit_pending_thread();
+  if (counters->register_orig.kind == REGISTER_ORIG_IMAGE_START)
+    clear_register_orig(counters);
   counters->admission_pc = previous;
 }
 
@@ -3737,6 +4223,71 @@ static int64_t
 invoke_raw_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args) {
   return invoke_raw_syscall_with_purpose(
       context, sysnum, args, DR_SYSCALL_INJECTION_APPLICATION);
+}
+
+/* This probe executes on the actual application task using the existing
+ * trusted native injection path. A helper's filter state says nothing about
+ * this task. No procfs tracer heuristic participates in exit admission. */
+static bool caller_unfiltered(void* drcontext) {
+  const uint64_t args[6] = {PR_GET_SECCOMP, 0, 0, 0, 0, 0};
+  return invoke_raw_syscall((uintptr_t)drcontext, SYS_prctl, args) == 0;
+}
+
+/* These are scope refusals, not native syscall implementations. Keep this
+ * finite list paired with caller_effects.rs; normal capability-clear paths do
+ * not enter it. prctl's option is a Linux int, not a full-width register. */
+static bool caller_unsupported_operation(
+    int64_t sysnum, const uint64_t* args, bool returning) {
+  if (sysnum < 0 || sysnum != (int)sysnum ||
+      ((uint64_t)sysnum & UINT64_C(0x40000000)) != 0)
+    return true;
+  if (returning && (sysnum == SYS_exit || sysnum == SYS_exit_group))
+    return true;
+  switch (sysnum) {
+    case SYS_clone:
+#ifdef SYS_clone3
+    case SYS_clone3:
+#endif
+    case SYS_fork:
+    case SYS_vfork:
+    case SYS_execve:
+#ifdef SYS_execveat
+    case SYS_execveat:
+#endif
+#ifdef SYS_seccomp
+    case SYS_seccomp:
+#endif
+    case SYS_ptrace:
+    case SYS_kill:
+    case SYS_tkill:
+    case SYS_tgkill:
+    case SYS_rt_sigqueueinfo:
+    case SYS_rt_tgsigqueueinfo:
+#ifdef SYS_pidfd_send_signal
+    case SYS_pidfd_send_signal:
+#endif
+    case SYS_unshare:
+    case SYS_setns:
+    case SYS_setsid:
+    case SYS_setpgid:
+    case SYS_setuid:
+    case SYS_setgid:
+    case SYS_setreuid:
+    case SYS_setregid:
+    case SYS_setresuid:
+    case SYS_setresgid:
+    case SYS_setfsuid:
+    case SYS_setfsgid:
+    case SYS_setgroups:
+    case SYS_capset:
+      return true;
+    case SYS_prctl:
+      return (int32_t)args[0] == PR_SET_SECCOMP ||
+          (int32_t)args[0] == PR_SET_PTRACER ||
+          (int32_t)args[0] == PR_SET_NO_NEW_PRIVS;
+    default:
+      return false;
+  }
 }
 
 static bool is_exec_syscall(int sysnum);
@@ -4645,6 +5196,24 @@ invoke_syscall(uintptr_t context, int64_t sysnum, const uint64_t* args, uint32_t
   int64_t result;
   bool is_clone;
   DR_ASSERT(counters != NULL);
+  /* Consuming hooks have GlobalRPC but no Guest. Its already-owned primary
+   * uses this same invoker for read/write; it cannot reconnect or fall back.
+   * The Guest effect latch remains sealed from terminal reservation onward. */
+  bool caller_consuming_transport =
+      counters->caller_terminal_state == CALLER_CONSUMING &&
+      !counters->caller_syscall_callback && native_runtime_entries == 1 &&
+      (sysnum == SYS_read || sysnum == SYS_write);
+  if (caller_mode() &&
+      (!caller_live_context((void*)context, counters, false) ||
+       native_runtime_entries == 0 ||
+       (counters->caller_terminal_state != CALLER_NOT_ENDING &&
+        !caller_consuming_transport) ||
+       caller_unsupported_operation(sysnum, args, true))) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: caller returning injection refused before effect\n");
+    exit_runtime_tree(101);
+    return -EIO;
+  }
   if (purpose != DR_SYSCALL_INJECTION_APPLICATION &&
       purpose != DR_SYSCALL_INJECTION_PSELECT6_WRAPPER_VALIDATION) {
     dr_fprintf(diagnostic_file, "reverie-dbt: unknown returning injection purpose\n");
@@ -4691,6 +5260,8 @@ static int32_t read_registers(uintptr_t context, struct user_regs_struct* out) {
   dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
   prototype_counters_t* counters =
       drmgr_get_tls_field((void*)context, thread_state_index);
+  if (!register_orig_available(counters, (void*)context))
+    return refuse_register_orig("read");
   memset(out, 0, sizeof(*out));
   if (counters != NULL && counters->signal_token != 0)
     registers = *counters->signal_mcontext;
@@ -4712,7 +5283,7 @@ static int32_t read_registers(uintptr_t context, struct user_regs_struct* out) {
   out->rdx = registers.xdx;
   out->rsi = registers.xsi;
   out->rdi = registers.xdi;
-  out->orig_rax = registers.xax;
+  out->orig_rax = counters->register_orig.value;
   out->rip = (uint64_t)(counters != NULL && counters->signal_token == 0 &&
                                counters->admission_pc != NULL
                            ? counters->admission_pc
@@ -4737,6 +5308,18 @@ static int32_t write_registers(
   dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
   prototype_counters_t* counters =
       drmgr_get_tls_field((void*)context, thread_state_index);
+  if (!register_orig_available(counters, (void*)context))
+    return refuse_register_orig("write");
+  /* A changed orig_rax at an application/private syscall stop would require
+   * dispatch rewriting. Do not pretend that a view-only write executed it.
+   * Refuse before changing either the machine context or stored metadata. */
+  if ((counters->register_orig.kind == REGISTER_ORIG_SYSCALL ||
+       counters->register_orig.kind == REGISTER_ORIG_PREEMPT_SYSCALL) &&
+      in->orig_rax != counters->register_orig.value) {
+    dr_fprintf(diagnostic_file,
+        "reverie-dbt: register-view-orig-rax-write-unsupported\n");
+    return 0;
+  }
   bool signal_owned = counters != NULL && counters->signal_token != 0;
   if (signal_owned)
     registers = *counters->signal_mcontext;
@@ -4767,6 +5350,7 @@ static int32_t write_registers(
     counters->signal_registers_changed = true;
   } else if (!dr_set_mcontext((void*)context, &registers))
     return 0;
+  counters->register_orig.value = in->orig_rax;
   return 1;
 }
 
@@ -5150,8 +5734,10 @@ static bool fd_matches_stdin(void* drcontext, int fd) {
   uint64_t stat_args[6] = {(uint64_t)fd, (uint64_t)(uintptr_t)&candidate_stat};
   if (!task_state->initial_stdin_valid)
     return false;
-  if (invoke_syscall((uintptr_t)drcontext, SYS_fstat, stat_args,
-                     DR_SYSCALL_INJECTION_APPLICATION) < 0)
+  /* Native stdin accounting precedes the Tool callback. Keep this fixed
+   * metadata probe on the existing DR injection path, outside the guarded
+   * runtime callback entry used by Tool requests. */
+  if (invoke_raw_syscall((uintptr_t)drcontext, SYS_fstat, stat_args) < 0)
     return false;
   return task_state->initial_stdin.st_dev ==
       candidate_stat.st_dev &&
@@ -5288,6 +5874,157 @@ static bool prepare_original_task_syscall(
   if (is_exec_syscall(sysnum))
     retire_private_memory_for_exec();
   (void)prepare_clone_birth(counters, sysnum, admitted, CLONE_SYSCALL_ORIGINAL);
+  return true;
+}
+
+static bool caller_terminal_boundary(
+    void* drcontext, const prototype_counters_t* counters) {
+  return caller_live_context(drcontext, counters, true) &&
+      counters->in_syscall_event && counters->runtime_state != NULL &&
+      counters->runtime_thread_exit_called == 0 &&
+      counters->preempt_pending == 0 && counters->signal_token == 0;
+}
+
+static bool caller_terminal_matches(
+    void* drcontext, const prototype_counters_t* counters,
+    int64_t sysnum, const uint64_t* args, uint32_t origin) {
+  const terminal_fact_t* fact = &counters->caller_terminal;
+  return fact->size == sizeof(*fact) && fact->kind == 1 &&
+      fact->image == counters->caller_image &&
+      fact->context == (uintptr_t)drcontext &&
+      fact->pid == dr_get_process_id() &&
+      fact->tid == dr_get_thread_id(drcontext) &&
+      fact->sysno == sysnum &&
+      (sysnum == SYS_exit || sysnum == SYS_exit_group) &&
+      memcmp(fact->args, args, sizeof(fact->args)) == 0 &&
+      fact->cookie != 0 && fact->cookie == counters->caller_cookie_sequence &&
+      fact->origin == origin && fact->reserved == 0;
+}
+
+static bool reserve_caller_terminal(
+    void* drcontext, prototype_counters_t* counters,
+    int64_t sysnum, const uint64_t* args, uint32_t origin) {
+  if (!caller_terminal_boundary(drcontext, counters) ||
+      counters->caller_terminal_state != CALLER_NOT_ENDING ||
+      (sysnum != SYS_exit && sysnum != SYS_exit_group) ||
+      counters->caller_cookie_sequence == UINT64_MAX ||
+      !caller_unfiltered(drcontext))
+    return false;
+  terminal_fact_t fact = {
+      .size = sizeof(fact), .kind = 1,
+      .image = counters->caller_image, .context = (uintptr_t)drcontext,
+      .pid = dr_get_process_id(), .tid = dr_get_thread_id(drcontext),
+      .sysno = sysnum, .cookie = ++counters->caller_cookie_sequence,
+      .origin = origin, .reserved = 0};
+  memcpy(fact.args, args, sizeof(fact.args));
+  counters->caller_terminal = fact;
+  counters->caller_terminal_state = CALLER_RESERVED;
+  return true;
+}
+
+/* Reservation only: the native syscall callback is still holding the Rust
+ * future. No state removal, Tool hook, Finished message or Linux exit here. */
+static int32_t runtime_admit_terminal(
+    uintptr_t context, int64_t sysnum, const uint64_t* args,
+    terminal_fact_t* out) {
+  if (!caller_mode() || context == 0 || args == NULL || out == NULL ||
+      (void*)context != dr_get_current_drcontext())
+    return -EINVAL;
+  prototype_counters_t* counters =
+      drmgr_get_tls_field((void*)context, thread_state_index);
+  if (counters == NULL || !counters->caller_syscall_callback ||
+      native_runtime_entries != 1 ||
+      !reserve_caller_terminal((void*)context, counters, sysnum, args, 2))
+    return -EPERM;
+  *out = counters->caller_terminal;
+  return 1;
+}
+
+/* An infallible Tool RPC surface cannot manufacture a response after its
+ * transport fails. The Rust owner has released the primary lease and marked
+ * readiness failed before entering this native cleanup owner. This is not a
+ * guest exit request and never publishes a successful consuming lifecycle. */
+static void runtime_rpc_transport_fatal(uintptr_t context) {
+  void* drcontext = (void*)context;
+  prototype_counters_t* counters = NULL;
+  if (caller_mode() && drcontext != NULL &&
+      drcontext == dr_get_current_drcontext())
+    counters = drmgr_get_tls_field(drcontext, thread_state_index);
+  if (!caller_live_context(drcontext, counters, false) ||
+      native_runtime_entries == 0 ||
+      (counters->caller_terminal_state != CALLER_NOT_ENDING &&
+       counters->caller_terminal_state != CALLER_CONSUMING)) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller RPC failure owner refused\n");
+    exit_runtime_tree(101);
+    __builtin_unreachable();
+  }
+  counters->caller_terminal_state = CALLER_FAILED;
+  dr_fprintf(diagnostic_file, "reverie-dbt: caller Tool RPC transport failure\n");
+  exit_runtime_tree(REVERIE_TOOL_RPC_FAILURE_EXIT_CODE);
+  __builtin_unreachable();
+}
+
+static bool caller_terminal_preparation_failure(
+    void* drcontext, prototype_counters_t* counters, const char* reason) {
+  /* An established deferred exit cannot resume its stopped Guest. Preserve
+   * the preparation's actual diagnostic/result and fail before consuming it.
+   * A failed native reservation is sticky; cleanup must not invent a status. */
+  counters->caller_terminal_state = CALLER_FAILED;
+  dr_fprintf(diagnostic_file,
+      "reverie-dbt: caller terminal pre-forward failure: %s (native result %lld)\n",
+      reason, (long long)(ptr_int_t)dr_syscall_get_result(drcontext));
+  exit_runtime_tree(101);
+  return false;
+}
+
+/* The sole caller cleanup boundary. Return true hands the prepared exit to
+ * the existing pre-syscall forward; it is not evidence of kernel acceptance.
+ * DynamoRIO can tear down this runtime before that exit returns. */
+static bool prepare_caller_terminal_forward(
+    void* drcontext, prototype_counters_t* counters,
+    int sysnum, const uint64_t* args, uint32_t origin) {
+  if (!caller_terminal_boundary(drcontext, counters) ||
+      native_runtime_entries != 0 || counters->caller_syscall_callback ||
+      (origin != 1 && origin != 2))
+    return caller_terminal_preparation_failure(drcontext, counters, "invalid owner/phase");
+  if (origin == 1 &&
+      !reserve_caller_terminal(drcontext, counters, sysnum, args, origin))
+    return caller_terminal_preparation_failure(drcontext, counters, "original exit reservation");
+  if (counters->caller_terminal_state != CALLER_RESERVED ||
+      !caller_terminal_matches(drcontext, counters, sysnum, args, origin) ||
+      !caller_unfiltered(drcontext))
+    return caller_terminal_preparation_failure(drcontext, counters, "final reservation mismatch/filter");
+
+  int64_t result = 0;
+  if (protect_evidence_socket_syscall((uintptr_t)drcontext, sysnum, args, &result) ||
+      preserve_internal_descriptors((uintptr_t)drcontext, sysnum, args, &result)) {
+    dr_syscall_set_result(drcontext, (reg_t)result);
+    return caller_terminal_preparation_failure(drcontext, counters, "protected native descriptor");
+  }
+  if (!prepare_original_task_syscall(drcontext, counters, sysnum, args, origin == 2))
+    return caller_terminal_preparation_failure(drcontext, counters, "native preparation suppressed exit");
+  /* Preparation may rewrite operands. Check the actual registers again; never
+   * authenticate one request and then consume for a different final request. */
+  dr_mcontext_t prepared = {sizeof(prepared), DR_MC_INTEGER};
+  if (!dr_get_mcontext(drcontext, &prepared) || (int64_t)prepared.xax != sysnum)
+    return caller_terminal_preparation_failure(drcontext, counters, "native preparation replaced syscall");
+  for (int i = 0; i < 6; ++i)
+    if ((uint64_t)dr_syscall_get_param(drcontext, i) != args[i])
+      return caller_terminal_preparation_failure(drcontext, counters, "native preparation replaced operands");
+  if (!caller_terminal_boundary(drcontext, counters) ||
+      !caller_terminal_matches(drcontext, counters, sysnum, args, origin))
+    return caller_terminal_preparation_failure(drcontext, counters, "prepared exit owner changed");
+
+  counters->caller_terminal_state = CALLER_CONSUMING;
+  counters->runtime_thread_exit_called = 1;
+  evidence_callback_enter();
+  int32_t status = reverie_dbt_runtime_thread_exit(
+      counters, drcontext, dr_get_thread_id(drcontext), invoke_syscall,
+      &counters->caller_terminal);
+  evidence_callback_leave();
+  if (status != 0)
+    return caller_terminal_preparation_failure(drcontext, counters, "runtime exit consumption failed");
+  counters->caller_terminal_state = CALLER_CONSUMED_FOR_FORWARD;
   return true;
 }
 
@@ -5595,8 +6332,7 @@ static void maybe_preempt(app_pc pc) {
   // be ready, and a copied child only runs the tool when it is an
   // external-global (RPC-connected) non-vfork process. A copied child under a
   // prototype runtime, or a vfork stand-in, runs no scheduler turn, so skip it.
-  if (!reverie_dbt_runtime_ready(
-          atomic_load_explicit(&image_generation, memory_order_acquire)))
+  if (!runtime_ready_for_image())
     return;
   if (has_copied_runtime() &&
       (!runtime_uses_external_global() || is_copied_vfork_process()))
@@ -5621,6 +6357,7 @@ static void maybe_preempt(app_pc pc) {
   if (!dr_get_mcontext(drcontext, saved))
     return;
   saved->pc = pc;
+  save_preempt_register_orig(counters);
   counters->preempt_pending = 1;
   // Redirect into the stub with rax set to the sched_yield syscall number; the
   // rest of the machine state is the guest's own captured state.
@@ -5647,6 +6384,7 @@ static void preempt_return(void) {
       counters->preempt_pending == 0)
     return; // unreachable in normal flow; the stub's ud2 traps if we fall
             // through
+  restore_preempt_register_orig(counters);
   counters->preempt_pending = 0;
   dr_redirect_execution(counters->preempt_mcontext);
   // dr_redirect_execution does not return on success.
@@ -5923,6 +6661,15 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   prototype_counters_t* counters =
       (prototype_counters_t*)drmgr_get_tls_field(drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
+  if (caller_mode() &&
+      (!caller_live_context(drcontext, counters, false) ||
+       native_runtime_entries != 0 || counters->preempt_pending != 0 ||
+       counters->signal_token != 0 ||
+       counters->caller_terminal_state != CALLER_NOT_ENDING)) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller syscall owner/phase refused\n");
+    exit_runtime_tree(101);
+    return false;
+  }
   /* A vfork child can reach its first syscall without thread_init or a child
    * post-event. Its copied birth latch is still live; the parent cannot reach
    * another application syscall until vfork completion clears that latch. */
@@ -6044,7 +6791,7 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   // namespace's init (Hermit's container) it contains the run by the
   // namespace, so a guest's setsid and setpgid go to the Tool like any other
   // call (slice B3a-4c of https://github.com/rrnewton/hermit/issues/4266).
-  if (contain_by_process_group &&
+  if (!caller_mode() && contain_by_process_group &&
       (sysnum == SYS_setsid || sysnum == SYS_setpgid ||
        (has_copied_runtime() &&
         (sysnum == X86_32_SYS_SETPGID || sysnum == X86_32_SYS_SETSID)))) {
@@ -6058,11 +6805,9 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   // TODO-HUMAN-REVIEW(PR-134): Review post-application runtime bootstrap.
   if (!has_copied_runtime())
     ensure_runtime_background();
-  if (test_wait_for_background && !has_copied_runtime()) {
-    while (atomic_load_explicit(
-               &runtime_background_state, memory_order_acquire) != 3)
-      dr_sleep(1);
-  }
+  if (test_wait_for_background && !has_copied_runtime() &&
+      !wait_for_runtime_ready(true))
+    return false;
 
   /* A delayed entry-block flush is not synchronous.  If a native child reaches
    * a syscall through an inherited fragment, start it here after the
@@ -6076,6 +6821,18 @@ static bool pre_syscall(void* drcontext, int sysnum) {
   for (i = 0; i != 6; ++i)
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
 
+  /* Only a selected Tool may answer Tgkill. Native execution remains refused
+   * at the returning bridge and the final action boundaries below. */
+  if (caller_mode() &&
+      (!caller_live_context(drcontext, counters, true) ||
+       (sysnum != SYS_tgkill &&
+        caller_unsupported_operation(sysnum, args, false)))) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: caller application operation refused before effect (%d)\n",
+               sysnum);
+    exit_runtime_tree(101);
+    return false;
+  }
   capture_observe_lifecycle(sysnum, args);
 
   uint64_t copied_clone_flags = 0;
@@ -6110,6 +6867,10 @@ static bool pre_syscall(void* drcontext, int sysnum) {
       !copied_vfork_clone && !is_copied_vfork_process() &&
       copied_process_runtime_pid != dr_get_process_id()) {
     bind_capture_owner(counters);
+    /* The current syscall entry is known, but it is not an image-start or
+     * copied-startup register observation. Suspend it around that callback. */
+    register_orig_t syscall_orig = counters->register_orig;
+    clear_register_orig(counters);
     evidence_callback_enter();
     int32_t initialized = reverie_dbt_runtime_thread_init(
         counters,
@@ -6123,6 +6884,7 @@ static bool pre_syscall(void* drcontext, int sysnum) {
         read_registers,
         write_registers);
     evidence_callback_leave();
+    counters->register_orig = syscall_orig;
     if (initialized != 0) {
       dr_fprintf(
           diagnostic_file,
@@ -6196,9 +6958,16 @@ static bool pre_syscall(void* drcontext, int sysnum) {
     }
     return execute;
   }
-  while (!reverie_dbt_runtime_ready(
-      atomic_load_explicit(&image_generation, memory_order_acquire)))
-    dr_sleep(1);
+  if (caller_mode()) {
+    if (!runtime_ready_for_image()) {
+      dr_fprintf(diagnostic_file, "reverie-dbt: admitted caller configuration lost\n");
+      exit_runtime_tree(101);
+      return false;
+    }
+  } else {
+    if (!wait_for_runtime_ready(false))
+      return false;
+  }
   if (test_backend_failure) {
     dr_fprintf(
         diagnostic_file,
@@ -6220,6 +6989,8 @@ static bool pre_syscall(void* drcontext, int sysnum) {
 
   int64_t deferred_sysnum = sysnum;
   uint64_t deferred_args[6] = {0};
+  counters->caller_syscall_callback = caller_mode();
+  mapping_capture_begin_callback(counters);
   evidence_callback_enter();
   int32_t action = reverie_dbt_runtime_pre_syscall(
       drcontext,
@@ -6240,6 +7011,9 @@ static bool pre_syscall(void* drcontext, int sysnum) {
       write_memory,
       reverie_dbt_emit);
   evidence_callback_leave();
+  counters->caller_syscall_callback = false;
+  if (mapping_capture_take_fatal_refusal(counters, (uintptr_t)drcontext, action))
+    mapping_capture_terminal_with_status(101);
   DR_ASSERT(evidence_callback_depth == 0);
   if (counters->syscall_interruption != 0) {
     uint64_t token = counters->syscall_interruption;
@@ -6269,6 +7043,10 @@ static bool pre_syscall(void* drcontext, int sysnum) {
     exit_runtime_tree(101);
     return false;
   }
+  if (caller_mode() && counters->caller_terminal_state != CALLER_NOT_ENDING &&
+      action != 2)
+    return caller_terminal_preparation_failure(
+        drcontext, counters, "runtime discarded an established terminal reservation");
   if (action == 1) {
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(#77): Confirm pipe EAGAIN retry preserves signal and
@@ -6284,12 +7062,35 @@ static bool pre_syscall(void* drcontext, int sysnum) {
     uint64_t clone_flags = 0;
     uint64_t clone_ctid = 0;
     int i;
+    /* Check the original operation before replacing sysnum/args or protecting
+     * descriptors. An existing terminal owner still requires the exact match
+     * and once-only preparation below. */
+    if (caller_mode() && sysnum == SYS_tgkill &&
+        counters->caller_terminal_state == CALLER_NOT_ENDING) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: caller suppression-only forwarding refused before effect\n");
+      exit_runtime_tree(101);
+      return false;
+    }
+    if (caller_mode() &&
+        caller_unsupported_operation(deferred_sysnum, deferred_args, false)) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: caller deferred operation refused before effect\n");
+      exit_runtime_tree(101);
+      return false;
+    }
     sysnum = (int)deferred_sysnum;
     memcpy(args, deferred_args, sizeof(args));
+    if (caller_mode() && counters->caller_terminal_state != CALLER_NOT_ENDING &&
+        !caller_terminal_matches(drcontext, counters, deferred_sysnum, args, 2))
+      return caller_terminal_preparation_failure(
+          drcontext, counters, "runtime replaced an established terminal reservation");
     capture_observe_lifecycle(sysnum, args);
     dr_syscall_set_sysnum(drcontext, sysnum);
     for (i = 0; i != 6; ++i)
       dr_syscall_set_param(drcontext, i, (reg_t)args[i]);
+    if (caller_mode() && (sysnum == SYS_exit || sysnum == SYS_exit_group))
+      return prepare_caller_terminal_forward(drcontext, counters, sysnum, args, 2);
     if (protect_evidence_socket_syscall(
             (uintptr_t)drcontext, sysnum, args, &result)) {
       dr_syscall_set_result(drcontext, (reg_t)result);
@@ -6316,9 +7117,21 @@ static bool pre_syscall(void* drcontext, int sysnum) {
     return execute;
   }
 
+  /* A declined call is not permission to execute an operation admitted only
+   * for Tool suppression. Refuse before terminal/task preparation or Linux. */
+  if (caller_mode() && caller_unsupported_operation(sysnum, args, false)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: caller application operation refused before effect (%d)\n",
+               sysnum);
+    exit_runtime_tree(101);
+    return false;
+  }
+
   /* A runtime that declines a call leaves it to the host. The client keeps
    * no clock or resource-limit table: under Hermit, Detcore owns the
    * complete syscall policy and answers these above. */
+  if (caller_mode() && (sysnum == SYS_exit || sysnum == SYS_exit_group))
+    return prepare_caller_terminal_forward(drcontext, counters, sysnum, args, 1);
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(
         counters, drcontext, sysnum == SYS_exit, sysnum == SYS_exit_group);
@@ -6682,27 +7495,61 @@ static void set_in_syscall_event(void* drcontext, bool value) {
  * harmlessly: its return restores the whole interrupted context.
  */
 static void canonicalize_syscall_clobbers(void* drcontext, int sysnum) {
-  struct user_regs_struct registers;
+  dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
   prototype_counters_t* counters =
       drmgr_get_tls_field(drcontext, thread_state_index);
   if (sysnum == SYS_rt_sigreturn)
     return;
   if (counters != NULL && counters->signal_token != 0)
     return;
-  DR_ASSERT(read_registers((uintptr_t)drcontext, &registers));
-  if (registers.rcx == registers.rip && registers.r11 == registers.eflags)
+  /* This internal physical-context repair needs no orig_rax view. In
+   * particular it must not invent provenance for a signal continuation. */
+  DR_ASSERT(dr_get_mcontext(drcontext, &registers));
+  if (registers.xcx == (reg_t)registers.xip && registers.r11 == registers.xflags)
     return;
-  registers.rcx = registers.rip;
-  registers.r11 = registers.eflags;
-  DR_ASSERT(write_registers((uintptr_t)drcontext, &registers));
+  registers.xcx = (reg_t)registers.xip;
+  registers.r11 = registers.xflags;
+  DR_ASSERT(dr_set_mcontext(drcontext, &registers));
+}
+
+static void capture_syscall_register_orig(void* drcontext, int sysnum) {
+  prototype_counters_t* counters =
+      drmgr_get_tls_field(drcontext, thread_state_index);
+  if (counters == NULL)
+    return;
+  counters->initial_register_view_pending = false;
+  clear_register_orig(counters);
+  /* The private Gettid enters a saved signal callback, whose orig_rax is not
+   * supplied by DR. It must never become the interrupted register view. */
+  if (counters->signal_token != 0)
+    return;
+  dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
+  if (!dr_get_mcontext(drcontext, &registers))
+    return;
+  register_orig_kind_t kind = REGISTER_ORIG_SYSCALL;
+  if (counters->preempt_pending != 0) {
+    /* This is the temporary private SchedYield execution, not the saved
+     * interrupted context. A genuine application SchedYield stays ordinary. */
+    if (sysnum != SYS_sched_yield)
+      return;
+    kind = REGISTER_ORIG_PREEMPT_SYSCALL;
+  }
+  bind_register_orig(counters, drcontext, kind, (uint64_t)registers.xax);
 }
 
 static bool pre_syscall_event(void* drcontext, int sysnum) {
+  capture_syscall_register_orig(drcontext, sysnum);
   set_in_syscall_event(drcontext, true);
   bool execute = pre_syscall(drcontext, sysnum);
   if (!execute)
     canonicalize_syscall_clobbers(drcontext, sysnum);
   set_in_syscall_event(drcontext, false);
+  if (!execute) {
+    prototype_counters_t* counters =
+        drmgr_get_tls_field(drcontext, thread_state_index);
+    if (counters != NULL)
+      clear_register_orig(counters);
+  }
   return execute;
 }
 
@@ -6711,9 +7558,27 @@ static void post_syscall_event(void* drcontext, int sysnum) {
   post_syscall(drcontext, sysnum);
   canonicalize_syscall_clobbers(drcontext, sysnum);
   set_in_syscall_event(drcontext, false);
+  prototype_counters_t* counters =
+      drmgr_get_tls_field(drcontext, thread_state_index);
+  if (counters != NULL)
+    clear_register_orig(counters);
 }
 
 static void thread_init(void* drcontext) {
+  /* DR calls this event for application threads, not dr_create_client_thread
+   * helpers. Check before native child publication or Rust defer1 entry. */
+  if (caller_mode() &&
+      (drcontext != dr_get_current_drcontext() ||
+       dr_get_process_id() != runtime_owner_pid ||
+       dr_get_process_id() != task_state->root_pid ||
+       dr_get_thread_id(drcontext) != dr_get_process_id() ||
+       has_copied_runtime() ||
+       atomic_load_explicit(&pending_clone_birth_token, memory_order_acquire) != 0 ||
+       drmgr_get_tls_field(drcontext, thread_state_index) != NULL)) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller additional application task refused\n");
+    exit_runtime_tree(101);
+    return;
+  }
   prototype_counters_t* counters =
       (prototype_counters_t*)dr_thread_alloc(drcontext, sizeof(*counters));
   int32_t host_tid = (int32_t)dr_get_thread_id(drcontext);
@@ -6738,6 +7603,8 @@ static void thread_init(void* drcontext) {
   }
   DR_ASSERT(counters != NULL);
   memset(counters, 0, sizeof(*counters));
+  counters->caller_context = (uintptr_t)drcontext;
+  counters->caller_image = runtime_image_descriptor.image_generation;
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
 
   // AUTONOMOUS-BOT-IMPLEMENTED
@@ -6757,8 +7624,7 @@ static void thread_init(void* drcontext) {
   int32_t pending_thread_start =
       dr_get_thread_id(drcontext) != dr_get_process_id() &&
       (has_copied_runtime() ||
-       reverie_dbt_runtime_ready(
-           atomic_load_explicit(&image_generation, memory_order_acquire)));
+       runtime_ready_for_image());
 
   // Publish kernel IDs before Rust. A new thread's ID remains zero until
   // its parent publishes admission for this incarnation.
@@ -6772,6 +7638,10 @@ static void thread_init(void* drcontext) {
   // neither a fork nor vfork is a new-image/post-exec admission.
   bool pending_image_start =
       host_tid == dr_get_process_id() && !has_copied_runtime();
+  counters->initial_register_view_pending = pending_image_start &&
+      pending_child == 0 && dr_get_process_id() == runtime_owner_pid;
+  counters->initial_stack_pending = pending_image_start &&
+      pending_child == 0 && dr_get_process_id() == runtime_owner_pid;
   counters->pending_birth_token = 0;
   counters->pending_clone_flags = pending_child != 0 ? clone_flags : 0;
 
@@ -6902,6 +7772,31 @@ static void complete_runtime_thread_exit(
   bool owns_runtime;
   if (namespace_admission_refused)
     return;
+  if (caller_mode()) {
+    /* A later DR notification has no final syscall operands. A consumed owner
+     * has no further hook/RPC work, and a failed preparation cannot be repaired
+     * by treating the notification as an explicit exit. */
+    if (counters->caller_terminal_state == CALLER_CONSUMED_FOR_FORWARD ||
+        counters->caller_terminal_state == CALLER_FAILED ||
+        counters->runtime_thread_exit_called != 0)
+      return;
+    counters->runtime_thread_exit_called = 1;
+    counters->caller_terminal_state = CALLER_FAILED;
+    terminal_fact_t unknown = {
+        .size = sizeof(unknown), .kind = 2,
+        .image = counters->caller_image, .context = (uintptr_t)drcontext,
+        .pid = dr_get_process_id(), .tid = dr_get_thread_id(drcontext),
+        .origin = 3};
+    /* This statusless fact must refuse without taking Tool/thread state.
+     * There is no promise that this Rust call survives destructive DR exit. */
+    mark_backend_failure();
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller unobserved terminal notification\n");
+    evidence_callback_enter();
+    (void)reverie_dbt_runtime_thread_exit(
+        counters, drcontext, dr_get_thread_id(drcontext), invoke_syscall, &unknown);
+    evidence_callback_leave();
+    return;
+  }
   if (counters->runtime_thread_exit_called != 0)
     return;
   counters->runtime_thread_exit_called = 1;
@@ -6910,7 +7805,7 @@ static void complete_runtime_thread_exit(
   if (owns_runtime) {
     evidence_callback_enter();
     reverie_dbt_runtime_thread_exit(
-        counters, drcontext, dr_get_thread_id(drcontext), invoke_syscall);
+        counters, drcontext, dr_get_thread_id(drcontext), invoke_syscall, NULL);
     evidence_callback_leave();
     if (test_thread_exit_evidence && explicit_exit && evidence_is_enabled() &&
         counters->evidence_thread_process == dr_get_process_id()) {
@@ -7179,8 +8074,23 @@ static void event_exit(void) {
 }
 
 static dr_signal_action_t event_signal(void* drcontext, dr_siginfo_t* info) {
-  (void)drcontext;
-  (void)info;
+  if (caller_mode()) {
+    prototype_counters_t* counters =
+        drmgr_get_tls_field(drcontext, thread_state_index);
+    /* DR's ordinary callback covers immediate application faults as well as
+     * delayed delivery. Do not classify runtime/helper activity or client code
+     * outside the code cache as an unsupported application event. */
+    if (caller_live_context(drcontext, counters, false) &&
+        native_runtime_entries == 0 && !info->blocked &&
+        (info->raw_mcontext == NULL ||
+         info->fault_fragment_info.cache_start_pc != NULL)) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: caller application signal delivery unsupported (%d)\n",
+                 info->sig);
+      exit_runtime_tree(101);
+      return DR_SIGNAL_SUPPRESS;
+    }
+  }
   return DR_SIGNAL_DELIVER;
 }
 
@@ -7188,10 +8098,30 @@ static dr_signal_admission_status_t signal_admission_event(
     void* drcontext, const dr_signal_admission_t* event, dr_mcontext_t* redirect) {
   prototype_counters_t* counters =
       drmgr_get_tls_field(drcontext, thread_state_index);
+  if (caller_mode()) {
+    if (!caller_live_context(drcontext, counters, false))
+      return DR_SIGNAL_ADMISSION_BYPASS;
+    if (event == NULL) {
+      /* Nonblocking selector under DR's pending-list lock: admission or a
+       * Rust callback already owns this continuation. Never query/wait on
+       * configuration or call a Tool while holding that lock. */
+      if (!counters->caller_admitted || native_runtime_entries != 0 ||
+          counters->pending_thread_start != 0 ||
+          counters->caller_terminal_state != CALLER_NOT_ENDING)
+        return DR_SIGNAL_ADMISSION_WAIT;
+      return DR_SIGNAL_ADMISSION_START;
+    }
+    /* The non-NULL callback supplies an actual detached pending application
+     * signal outside DR's list lock, before handler/default-action delivery. */
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: caller pending application signal unsupported (%d)\n",
+               event->sig);
+    exit_runtime_tree(101);
+    return DR_SIGNAL_ADMISSION_WAIT;
+  }
   if (event == NULL) {
     if (counters == NULL ||
-        !reverie_dbt_runtime_ready(
-            atomic_load_explicit(&image_generation, memory_order_acquire)) ||
+        inspect_runtime_readiness() != RUNTIME_READINESS_READY ||
         (has_copied_runtime() &&
          (!runtime_uses_external_global() || is_copied_vfork_process())))
       return DR_SIGNAL_ADMISSION_BYPASS;
@@ -7267,6 +8197,35 @@ static void runtime_idle(void) {
   dr_sleep(1);
 }
 
+// A startup waiter owns application teardown. Retire only this helper's sender
+// before releasing FAILED; entering DR teardown here can wait on that waiter.
+// A known distinct launch root already has a terminating owner. Preserve it,
+// as well as the established immediate owner after READY publication/admission.
+static void finish_failed_runtime_background(int exit_code) {
+  runtime_readiness_t readiness = inspect_runtime_readiness();
+  if ((runtime_process_group != 0 &&
+       runtime_process_group != dr_get_process_id()) ||
+      atomic_load_explicit(&runtime_readiness_observed, memory_order_acquire) ||
+      readiness == RUNTIME_READINESS_READY ||
+      readiness == RUNTIME_READINESS_INVALID) {
+    exit_runtime_tree(exit_code);
+    return;
+  }
+  mark_backend_failure();
+  bool finalized = evidence_flush(EVIDENCE_FRAME_FINAL);
+  if (!finalized)
+    dr_fprintf(diagnostic_file, "reverie-dbt: protected evidence transport failed\n");
+  if (finalized)
+    atomic_store_explicit(
+        &runtime_process_control->finished_helper_epoch,
+        runtime_process_epoch,
+        memory_order_release);
+  // Diagnostic, sticky failure and FINAL attempt precede application cleanup.
+  // An acknowledged FINAL is sender completion, not READY or kernel exit.
+  atomic_store_explicit(
+      &runtime_background_state, RUNTIME_BACKGROUND_FAILED, memory_order_release);
+}
+
 static void runtime_background_init(void* argument) {
   (void)argument;
   mapping_capture_helper_enter();
@@ -7277,7 +8236,7 @@ static void runtime_background_init(void* argument) {
           &runtime_process_control->helper_start_time)) {
     dr_fprintf(
         diagnostic_file, "reverie-dbt: could not identify runtime helper\n");
-    exit_runtime_tree(101);
+    finish_failed_runtime_background(101);
     return;
   }
   atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
@@ -7289,7 +8248,7 @@ static void runtime_background_init(void* argument) {
       task_state->magic != TASK_STATE_MAGIC) {
     evidence_callback_leave();
     dr_fprintf(diagnostic_file, "reverie-dbt: native startup mode is uninitialized\n");
-    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    finish_failed_runtime_background(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
     return;
   }
   uint32_t native_mode = runtime_uses_external_global()
@@ -7300,7 +8259,7 @@ static void runtime_background_init(void* argument) {
   evidence_callback_leave();
   if (startup_status != 0) {
     dr_fprintf(diagnostic_file, "reverie-dbt: runtime startup was refused\n");
-    exit_runtime_tree(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    finish_failed_runtime_background(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
     return;
   }
   // DynamoRIO implements a client thread as a distinct process sharing the
@@ -7542,6 +8501,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
   if (!evidence_is_enabled())
     runtime_callbacks_page.value.evidence_log_level = 0;
   atomic_store_explicit(&runtime_background_state, 0, memory_order_release);
+  atomic_store_explicit(&runtime_readiness_observed, false, memory_order_release);
   atomic_store_explicit(
       &test_reused_tid_exercised, false, memory_order_relaxed);
   atomic_store_explicit(&test_reused_tid_waited, false, memory_order_relaxed);
@@ -7563,10 +8523,20 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
     return;
   atomic_store_explicit(
       pending_thread_clones_for(runtime_process_id), 0, memory_order_release);
-  atomic_store_explicit(
-      &image_generation,
-      reverie_dbt_runtime_image_init(),
-      memory_order_release);
+  runtime_image_descriptor = reverie_dbt_runtime_image_init();
+  if (!valid_runtime_image_descriptor()) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: runtime image/caller input identity refused\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  if (caller_mode() && !external_global) {
+    dr_fprintf(diagnostic_file,
+        "reverie-dbt: caller Tool requires coordinated native startup\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  atomic_store_explicit(&image_generation,
+      runtime_image_descriptor.image_generation, memory_order_release);
 
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "-branch-facts") == 0)
@@ -7636,6 +8606,12 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
     }
   }
 
+  if (caller_mode() && preemption_enabled) {
+    dr_fprintf(diagnostic_file, "reverie-dbt: caller preemption events are unsupported\n");
+    exit_runtime_tree(101);
+    return;
+  }
+
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the injected-syscall stub
   // allocation. When preemption is enabled, allocate the tiny redirect stub
@@ -7667,6 +8643,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char* argv[]) {
   runtime_callbacks_page.value.branch_fact = query_branch_fact;
   mapping_capture_initialize();
   runtime_callbacks_page.value.mapping_capture = runtime_mapping_capture;
+  runtime_callbacks_page.value.admit_terminal = runtime_admit_terminal;
+  runtime_callbacks_page.value.rpc_transport_fatal = runtime_rpc_transport_fatal;
   if (!run_private_memory_self_test())
     return;
 

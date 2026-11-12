@@ -117,6 +117,12 @@ impl<T: Tool, R: HostRuntime> GlobalRPC<T::GlobalState> for SuccessorImageGuest<
 
 #[reverie::tool]
 impl<'a, T: Tool, R: HostRuntime> Guest<T> for SuccessorImageGuest<'a, T, R> {
+    // This backend has no stopped-generation private input implementation.
+    // The typed default injection methods refuse without issuing a native call.
+    fn reserved_input_control(&self) -> Option<reverie::reserved_input::ReservedInputControl> {
+        None
+    }
+
     type Memory = GuestMemory<'a>;
     type Stack = LocalStack;
 
@@ -131,6 +137,13 @@ impl<'a, T: Tool, R: HostRuntime> Guest<T> for SuccessorImageGuest<'a, T, R> {
 
     fn ppid(&self) -> Option<Pid> {
         None
+    }
+
+    /// The runtime's own descriptors in this process: the coordinator
+    /// connection, the Tool output socket, the performance counters and any
+    /// native-exec lease ([`crate::guest::protect::is_runtime_owned_fd`]).
+    fn is_runtime_owned_fd(&self, fd: i32) -> bool {
+        crate::guest::protect::is_runtime_owned_fd(fd)
     }
 
     // Guest::auxv's ordinary implementation reads this actual process's

@@ -59,7 +59,41 @@ static int on_stack(const void *address) {
   return found;
 }
 
+/* Used only by the explicit launch-identity mode. Other fixture modes are
+ * unchanged. Two builds use different tags to make image choice observable.
+ */
+#ifndef LAUNCH_IMAGE_TAG
+#define LAUNCH_IMAGE_TAG 17
+#endif
+
+static void launch_bytes(const char *kind, int index, const char *value) {
+  size_t size = strlen(value);
+  printf("launch %s %d %zu ", kind, index, size);
+  for (size_t at = 0; at < size; ++at)
+    printf("%02x", (unsigned char)value[at]);
+  putchar('\n');
+}
+
+static int launch_identity(int argc, char **argv) {
+  printf("launch image %d\nlaunch argc %d\n", LAUNCH_IMAGE_TAG, argc);
+  for (int i = 0; i < argc; ++i)
+    launch_bytes("argv", i, argv[i]);
+  const char *execfn = (const char *)getauxval(AT_EXECFN);
+  if (execfn == NULL) {
+    fputs("missing AT_EXECFN\n", stderr);
+    return 2;
+  }
+  launch_bytes("execfn", 0, execfn);
+  if (fflush(stdout) != 0) {
+    perror("flush launch identity");
+    return 2;
+  }
+  return LAUNCH_IMAGE_TAG;
+}
+
 int main(int argc, char **argv) {
+  if (argc > 1 && strcmp(argv[1], "--launch-identity") == 0)
+    return launch_identity(argc, argv);
   /* Linux gives an image exec'd with a NULL argv either no arguments or one
    * empty argument, depending on its version.
    */

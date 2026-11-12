@@ -142,6 +142,17 @@ fn main() {
         );
     }
 
+    // Bind the public launcher's frontend compatibility check to the actual
+    // selected payload, after the complete install attestation has succeeded.
+    assert!(
+        install_is_usable(&install_dir, &source_key),
+        "selected DynamoRIO install failed final attestation"
+    );
+    let drrun_digest = Sha256::digest(
+        fs::read(&drrun).expect("cannot read the selected attested DynamoRIO launcher"),
+    );
+    println!("cargo:rustc-env=REVERIE_DBT_DRRUN_SHA256={drrun_digest:x}");
+
     println!(
         "cargo:rustc-env=REVERIE_DBT_DYNAMORIO_HOME={}",
         install_dir.display()

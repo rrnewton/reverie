@@ -34,4 +34,31 @@ members = [
     "reverie-util",
     "safeptrace",
 ]
-exclude = ["public_autocargo/experimental"]
+# The caller cdylib has an independent lock and mandatory explicit producer.
+# Workspace all-features must not unify its dependency with prototype exports.
+# Keep the separate caller target/gates synchronized in internal exports.
+exclude = [
+    "public_autocargo/experimental",
+    "reverie-examples/strace-dbt-runtime",
+    "reverie-examples/strace-minimal-dbt-runtime",
+    "reverie-examples/chaos-dbt-runtime",
+    "reverie-examples/recorder-dbt-runtime",
+    "reverie-examples/chrome-trace-dbt-runtime",
+    "reverie-examples/chunky-print-dbt-runtime",
+    "reverie-examples/counter1-dbt-runtime",
+    "reverie-examples/counter2-dbt-runtime",
+    "reverie-dbt/tests/fixtures/caller-lifecycle-runtime",
+    "tests/fixtures/basics-noop-dbt-runtime",
+    "tests/fixtures/basics-counter-dbt-runtime",
+    "tests/fixtures/exit-dbt-runtime",
+    "tests/fixtures/stat-dbt-runtime",
+    "tests/fixtures/vdso-dbt-runtime",
+    "tests/fixtures/inject-then-tail-dbt-runtime",
+    "tests/fixtures/at-random-dbt-runtime",
+    "tests/fixtures/initial-stack-dbt-runtime",
+    "tests/fixtures/thread-start-dbt-runtime",
+    "tests/fixtures/thread-start-tail-dbt-runtime",
+    "tests/fixtures/thread-start-tail-witness-dbt-runtime",
+    "tests/fixtures/stack-dbt-runtime",
+    "tests/fixtures/suppression-dbt-runtime",
+]

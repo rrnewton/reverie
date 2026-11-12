@@ -40,6 +40,10 @@ pub use ordinary_gate::OrdinaryGateObservations;
 pub(crate) use ordinary_gate::composition_test_fixture;
 pub use ordinary_gate::ordinary_gate_implementation_sha256;
 
+mod package_roles;
+pub use package_roles::PackageRoleObservation;
+pub use package_roles::package_role_implementation_sha256;
+
 mod native_leaves;
 pub use native_leaves::NativeLeafInputs;
 pub use native_leaves::NativeLeafObservations;
@@ -657,6 +661,9 @@ enum InitializerRole {
     RustFreeAlias,
     MuslSsp,
     MuslFail,
+    PackageFallback,
+    PackageLibc,
+    PackageTp,
     MappedRoot,
     MappedTerminal,
     InitializationFailed,
@@ -671,6 +678,9 @@ impl InitializerRole {
             Self::RustFreeAlias => "__libc_free",
             Self::MuslSsp => "__init_ssp",
             Self::MuslFail => "__stack_chk_fail",
+            Self::PackageFallback => "fallback_entry",
+            Self::PackageLibc => "__init_libc",
+            Self::PackageTp => "__init_tp",
             Self::MappedRoot => "detcore_liteinst_mapped_entry",
             Self::MappedTerminal => {
                 "_RNvNtNtCs2FQ3I8A8V8D_16detcore_liteinst12exec_initial12mapped_entry8terminal"
@@ -718,7 +728,11 @@ impl InitializerRole {
             Self::MappedTerminal => {
                 symbol.st_bind() == sym::STB_LOCAL && symbol.st_visibility() == sym::STV_DEFAULT
             }
-            Self::MappedObserver | Self::InitialTerminal => {
+            Self::MappedObserver
+            | Self::InitialTerminal
+            | Self::PackageFallback
+            | Self::PackageLibc
+            | Self::PackageTp => {
                 symbol.st_visibility() == sym::STV_HIDDEN
                     && symbol.st_bind()
                         == if input {
@@ -1186,6 +1200,12 @@ fn join_selected_initializer_named(
             && selected.elf.little_endian,
         "initializer input is not actual x86-64 ELF64LE relocatable object",
     )?;
+    if matches!(
+        role,
+        InitializerRole::PackageLibc | InitializerRole::PackageTp
+    ) {
+        package_roles::validate_native_input(role, selected)?;
+    }
     let definitions = selected
         .elf
         .syms
@@ -1294,14 +1314,25 @@ fn join_selected_initializer_named(
                 offset: usize::try_from(r.r_offset).map_err(|_| "initializer relocation offset")?,
                 kind: r.r_type,
                 addend: r.r_addend.ok_or("initializer relocation addend absent")?,
-                target: resolve_input_target(
-                    map,
-                    selected,
-                    r.r_sym,
-                    all_objects,
-                    final_elf,
-                    final_bytes,
-                )?,
+                target: if matches!(role, InitializerRole::PackageLibc) {
+                    package_roles::resolve_libc_target(
+                        map,
+                        selected,
+                        r.r_sym,
+                        all_objects,
+                        final_elf,
+                        final_bytes,
+                    )?
+                } else {
+                    resolve_input_target(
+                        map,
+                        selected,
+                        r.r_sym,
+                        all_objects,
+                        final_elf,
+                        final_bytes,
+                    )?
+                },
             });
         }
     }
@@ -1339,6 +1370,16 @@ fn join_selected_initializer_named(
                 .syms
                 .get(r.r_sym)
                 .ok_or("initializer final relocation symbol")?;
+            if matches!(role, InitializerRole::PackageLibc) {
+                package_roles::validate_literal_relocation(
+                    selected,
+                    map,
+                    final_elf,
+                    final_bytes,
+                    r.r_offset - address,
+                    r.r_sym,
+                )?;
+            }
             linked_relocs.push(FinalRelocation {
                 offset: usize::try_from(r.r_offset - address)
                     .map_err(|_| "initializer final offset")?,
@@ -1479,8 +1520,16 @@ pub struct SelectedInitializerDefinitions {
     malloc_alias: RelocatedDefinition,
     free_alias: RelocatedDefinition,
     files: Vec<FileIdentity>,
+    package_roles: Option<PackageRoleObservation>,
 }
 impl SelectedInitializerDefinitions {
+    /// Source/member/full-relocation DATA only, available on the explicit sibling.
+    pub fn package_role_observation(&self) -> Result<&PackageRoleObservation> {
+        self.verify()?;
+        self.package_roles
+            .as_ref()
+            .ok_or_else(|| "package roles were not requested".into())
+    }
     pub fn addresses(&self) -> (u64, u64) {
         (self.tls.address, self.ssp.address)
     }
@@ -1661,7 +1710,8 @@ fn select_role_named<'o>(
                 | InitializerRole::RustMallocAlias
                 | InitializerRole::RustFreeAlias
                 | InitializerRole::InitializationFailed
-                | InitializerRole::InitialTerminal => {
+                | InitializerRole::InitialTerminal
+                | InitializerRole::PackageFallback => {
                     object.member_name.starts_with("reverie_inguest-")
                         && object.archive_path == runtime_path
                 }
@@ -1670,6 +1720,13 @@ fn select_role_named<'o>(
                 | InitializerRole::MappedObserver => {
                     object.member_name.starts_with("detcore_liteinst-")
                         && object.archive_path == runtime_path
+                }
+                InitializerRole::PackageLibc => {
+                    object.member_name == "__libc_start_main.lo"
+                        && object.archive_path != runtime_path
+                }
+                InitializerRole::PackageTp => {
+                    object.member_name == "__init_tls.lo" && object.archive_path != runtime_path
                 }
                 InitializerRole::MuslSsp | InitializerRole::MuslFail => {
                     object.member_name == "__stack_chk_fail.lo"
@@ -1761,6 +1818,7 @@ fn join_from_files(
         malloc_alias,
         free_alias,
         files,
+        package_roles: None,
     })
 }
 
@@ -1774,6 +1832,26 @@ impl VerifiedStaticSource {
         archive: &StaticArchive,
         input: &InitializerLinkInputs<'_>,
         runner: &mut Runner,
+    ) -> Result<SelectedInitializerDefinitions> {
+        self.link_and_join_initializer_definitions_inner(archive, input, runner, false)
+    }
+
+    /// Same single owned link with three additional source-owned package DATA joins.
+    pub fn link_and_join_initializer_definitions_with_package_roles(
+        &self,
+        archive: &StaticArchive,
+        input: &InitializerLinkInputs<'_>,
+        runner: &mut Runner,
+    ) -> Result<SelectedInitializerDefinitions> {
+        self.link_and_join_initializer_definitions_inner(archive, input, runner, true)
+    }
+
+    fn link_and_join_initializer_definitions_inner(
+        &self,
+        archive: &StaticArchive,
+        input: &InitializerLinkInputs<'_>,
+        runner: &mut Runner,
+        package_roles_requested: bool,
     ) -> Result<SelectedInitializerDefinitions> {
         let mut files = Vec::new();
         let mut bind = |path: &Path| -> Result<FileIdentity> {
@@ -1881,6 +1959,23 @@ impl VerifiedStaticSource {
                 bind(&file.path)?;
             }
             tls_variant?;
+            let package_sources = if package_roles_requested {
+                vec![
+                    bind(&roots[0].join("reverie-inguest/src/guest/continuation.rs"))?,
+                    bind(
+                        &input
+                            .musl_source_authority
+                            .join("musl-1.2.5-selected/src/env/__libc_start_main.c"),
+                    )?,
+                    bind(
+                        &input
+                            .musl_source_authority
+                            .join("musl-1.2.5-selected/src/env/__init_tls.c"),
+                    )?,
+                ]
+            } else {
+                Vec::new()
+            };
             let output = input.output_directory;
             require(
                 output.is_absolute()
@@ -2010,7 +2105,7 @@ impl VerifiedStaticSource {
                 &native,
                 &artifact,
                 |memcpy| {
-                    let proof = join_from_files(
+                    let mut proof = join_from_files(
                         &self.archive_owner,
                         &archive.file,
                         &libc,
@@ -2021,6 +2116,10 @@ impl VerifiedStaticSource {
                         proof.ssp.memcpy_target == Some(memcpy.definition_address()),
                         "SSP memcpy edge is not the source/member/final verified native role",
                     )?;
+                    if package_roles_requested {
+                        let observed = package_roles::observe(&proof, &package_sources)?;
+                        proof.package_roles = Some(observed);
+                    }
                     Ok(proof)
                 },
             )

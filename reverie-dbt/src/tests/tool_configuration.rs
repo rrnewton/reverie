@@ -191,6 +191,14 @@ fn exact_configuration_is_retained_before_background_ready() {
     unsafe extern "C" fn mapping(_: usize, _: u32, _: *mut NativeMappingCapture) -> i32 {
         panic!("no capture")
     }
+    unsafe extern "C" fn terminal(
+        _: usize,
+        _: i64,
+        _: *const u64,
+        _: *mut caller_abi::TerminalFact,
+    ) -> i32 {
+        panic!("no terminal admission")
+    }
     let mut callbacks = DbtRuntimeCallbacks {
         emit,
         idle,
@@ -204,8 +212,10 @@ fn exact_configuration_is_retained_before_background_ready() {
         runtime_private_memory: private,
         branch_fact: branches,
         mapping_capture: mapping,
+        admit_terminal: terminal,
+        rpc_transport_fatal: None,
     };
-    let generation = reverie_dbt_runtime_image_init();
+    let generation = reverie_dbt_runtime_image_init().image_generation;
     assert_eq!(READY_IMAGE_GENERATION.load(Ordering::Acquire), 0);
     assert!(tools::counter1_exact_configuration().is_err());
     let argument = (&mut callbacks as *mut DbtRuntimeCallbacks).cast();

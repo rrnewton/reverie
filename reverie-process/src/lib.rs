@@ -42,6 +42,7 @@ use std::io;
 
 pub use child::Child;
 pub use child::Output;
+pub use clone::CHILD_STACK_SIZE;
 pub use container::ChildCleanupObservation;
 pub use container::ChildParentResourceStartContext;
 pub use container::ChildStartContext;
@@ -83,6 +84,8 @@ pub use pty::PtyChild;
 pub use stdio::ChildStderr;
 pub use stdio::ChildStdin;
 pub use stdio::ChildStdout;
+pub use stdio::ParentStdio;
+pub use stdio::PreparedStdio;
 pub use stdio::Stdio;
 use syscalls::Errno;
 

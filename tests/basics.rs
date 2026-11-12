@@ -8,6 +8,10 @@
 
 //! Basic tests that don't fall into some other category.
 
+#[path = "support/basics_commands.rs"]
+mod commands;
+#[path = "support/basics_rust_guest.rs"]
+mod rust_guest;
 #[path = "tool_fixtures/basics.rs"]
 mod tools;
 
@@ -42,41 +46,22 @@ use tools::NoopTool;
 
 #[test]
 fn noop_tool_test() {
-    let (output, _) = test_cmd::<NoopTool>("/bin/pwd", &[]).unwrap();
-    // pwd should succeed & print some characters:
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert!(!output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    commands::noop_tool_test(test_cmd::<NoopTool>);
 }
 
 #[test]
 fn counter_tool_test() {
-    let (output, state) = test_cmd::<CounterLocal>("ls", &[]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    // ls should print some characters and perform some syscalls:
-    assert!(!output.stdout.is_empty());
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 30);
+    commands::counter_tool_test(test_cmd::<CounterLocal>);
 }
 
 #[test]
 fn error_exit_test() {
-    let (output, state) = test_cmd::<CounterLocal>("/bin/bash", &["-c", "exit 42"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(42));
-    assert_eq!(output.stdout.len(), 0);
-    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 0);
+    commands::error_exit_test(test_cmd::<CounterLocal>);
 }
 
 #[allow(dead_code)]
 fn fn_test() {
-    let (output, state) = test_fn::<CounterLocal, _>(|| {
-        let pid = nix::unistd::getpid();
-        println!("Hello world1!  Pid = {:?}", pid);
-        unsafe {
-            libc::syscall(libc::SYS_write, 1, "Hello world2!\n", 14);
-        }
-        let _gid = nix::unistd::getgid();
-    })
-    .unwrap();
+    let (output, state) = test_fn::<CounterLocal, _>(rust_guest::run_fn_body).unwrap();
 
     println!(
         " >>> Command complete, stdout len {}, stderr len {}",
@@ -92,49 +77,217 @@ fn fn_test() {
 #[test]
 fn run_fn_test() {
     fn_test();
+    #[cfg(feature = "dbt")]
+    rust_command_test();
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn assert_rust_marker(stdout: &[u8]) {
+    const MARKER: &[u8] = b"basics-rust-body-complete\n";
+    assert_eq!(
+        stdout
+            .windows(MARKER.len())
+            .filter(|part| *part == MARKER)
+            .count(),
+        1,
+    );
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn assert_rust_counter(output: &reverie::process::Output, state: &tools::CounterGlobal) {
+    // The original fn_test predicates, applied to the actual returned state.
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert!(AtomicU64::load(&state.num_syscalls, Ordering::SeqCst) > 1);
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn record_rust_command(
+    label: &str,
+    output: &reverie::process::Output,
+    state: &tools::CounterGlobal,
+) {
+    eprintln!(
+        "basics Rust command {label}: status={:?} syscalls={} stdout={:02x?} stderr={:02x?}",
+        output.status,
+        state.num_syscalls.load(Ordering::SeqCst),
+        output.stdout,
+        output.stderr,
+    );
+    // The command and controller have completed before this snapshot or output.
+    let (count, sequence) = {
+        let sequence = state.syscall_sequence.lock().unwrap();
+        (state.num_syscalls.load(Ordering::SeqCst), sequence.clone())
+    };
+    let entries: Vec<_> = sequence
+        .iter()
+        .enumerate()
+        .map(|(ordinal, (sender, sysno))| (ordinal, sender, *sysno as usize, sysno))
+        .collect();
+    eprintln!("basics Rust syscall sequence {label}: count={count} entries={entries:?}");
+    assert_eq!(count, u64::try_from(sequence.len()).unwrap());
+    assert_eq!(output.status, ExitStatus::Exited(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert_rust_marker(&output.stdout);
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn rust_command_test() {
+    let executable = std::env::current_exe().unwrap();
+    let callers = executable
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("reverie-dbt-callers");
+    let counter = callers.join("basics-counter/manifest.json");
+    let noop = callers.join("basics-noop/manifest.json");
+    for manifest in [&counter, &noop] {
+        reverie_dbt::CallerArtifact::load(manifest).unwrap();
+    }
+    let program = env!("CARGO_BIN_EXE_basics-rust-command-guest");
+    eprintln!("basics Rust command image={program}");
+    let output = std::process::Command::new(program).output().unwrap();
+    eprintln!(
+        "basics Rust command native: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.stderr.len(), 0);
+    assert_rust_marker(&output.stdout);
+
+    let (output, state) = test_cmd::<CounterLocal>(program, &[]).unwrap();
+    record_rust_command("ptrace", &output, &state);
+    assert_rust_counter(&output, &state);
+
+    let (output, state) =
+        reverie_test_support::test_dbt_cmd_with_config::<CounterLocal>(program, &[], (), &counter)
+            .unwrap();
+    record_rust_command("dbt", &output, &state);
+    assert_rust_counter(&output, &state);
+
+    // Actual Noop Tool, with the same unit Config and the real controller's
+    // CounterGlobal. Successful execution, not setup refusal, is the control.
+    let (output, state) =
+        reverie_test_support::test_dbt_cmd_with_config::<CounterLocal>(program, &[], (), &noop)
+            .unwrap();
+    record_rust_command("noop", &output, &state);
+    assert_eq!(state.num_syscalls.load(Ordering::SeqCst), 0);
+    assert!(std::panic::catch_unwind(|| assert_rust_counter(&output, &state)).is_err());
 }
 
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_command_test() {
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", "abcd"]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), b"abcd");
+    commands::run_guest_command_test(test_cmd::<CounterLocal>);
 }
 
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_command_test_closure() {
-    let msg = "abcd";
-    let (output, _state) = test_cmd::<CounterLocal>("/bin/echo", &["-n", msg]).unwrap();
-    assert_eq!(output.status, ExitStatus::Exited(0));
-    assert_eq!(output.stdout.as_slice(), msg.as_bytes());
+    commands::run_guest_command_test_closure(test_cmd::<CounterLocal>);
 }
 
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_func_write_test() {
     let msg = "abcd";
-    let (output, _state) = test_fn::<CounterLocal, _>(move || {
-        std::io::stdout().write_all(msg.as_bytes()).unwrap();
-        std::io::stdout().flush().unwrap();
-    })
-    .unwrap();
+    let (output, _state) = test_fn::<CounterLocal, _>(move || rust_guest::write_body(msg)).unwrap();
     assert_eq!(output.status, ExitStatus::Exited(0));
     assert_eq!(output.stdout.as_slice(), msg.as_bytes());
+    #[cfg(feature = "dbt")]
+    rust_output_command_test("write");
 }
 
 #[cfg(not(sanitized))]
 #[test]
 fn run_guest_func_print_test() {
     let msg = "abcd";
-    let (output, _state) = test_fn::<CounterLocal, _>(move || {
-        println!("{}", msg);
-    })
-    .unwrap();
+    let (output, _state) = test_fn::<CounterLocal, _>(move || rust_guest::print_body(msg)).unwrap();
 
     assert_eq!(output.status, ExitStatus::Exited(0));
     assert_eq!(output.stdout.as_slice(), b"abcd\n");
+    #[cfg(feature = "dbt")]
+    rust_output_command_test("print");
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn rust_output_matches(mode: &str, exited_zero: bool, stdout: &[u8], stderr: &[u8]) -> bool {
+    let expected: &[u8] = match mode {
+        "write" => b"abcd",
+        "print" => b"abcd\n",
+        _ => panic!("unknown Rust output mode: {mode}"),
+    };
+    exited_zero && stdout == expected && stderr.is_empty()
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+fn rust_output_command_test(mode: &str) {
+    let opposite = match mode {
+        "write" => "print",
+        "print" => "write",
+        _ => panic!("unknown Rust output mode: {mode}"),
+    };
+    let program = env!("CARGO_BIN_EXE_basics-rust-command-guest");
+    eprintln!("basics Rust output mode={mode} image={program}");
+
+    let output = std::process::Command::new(program)
+        .arg(mode)
+        .output()
+        .unwrap();
+    eprintln!(
+        "basics Rust output mode={mode} role=native selector={mode}: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert!(rust_output_matches(
+        mode,
+        output.status.code() == Some(0),
+        &output.stdout,
+        &output.stderr,
+    ));
+
+    let (output, _state) = test_cmd::<CounterLocal>(program, &[mode]).unwrap();
+    eprintln!(
+        "basics Rust output mode={mode} role=ptrace selector={mode}: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert!(rust_output_matches(
+        mode,
+        output.status == ExitStatus::Exited(0),
+        &output.stdout,
+        &output.stderr,
+    ));
+
+    let (output, _state) = commands::counter_command(program, &[mode]).unwrap();
+    eprintln!(
+        "basics Rust output mode={mode} role=dbt selector={mode}: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert!(rust_output_matches(
+        mode,
+        output.status == ExitStatus::Exited(0),
+        &output.stdout,
+        &output.stderr,
+    ));
+
+    let (output, _state) = commands::counter_command(program, &[opposite]).unwrap();
+    eprintln!(
+        "basics Rust output mode={mode} role=opposite-dbt selector={opposite}: status={:?} stdout={:02x?} stderr={:02x?}",
+        output.status, output.stdout, output.stderr,
+    );
+    assert!(rust_output_matches(
+        opposite,
+        output.status == ExitStatus::Exited(0),
+        &output.stdout,
+        &output.stderr,
+    ));
+    assert!(!rust_output_matches(
+        mode,
+        output.status == ExitStatus::Exited(0),
+        &output.stdout,
+        &output.stderr,
+    ));
+    eprintln!("basics Rust output mode={mode} opposite={opposite} rejected=true");
 }
 
 #[cfg(not(sanitized))]
@@ -236,4 +389,34 @@ fn child_should_inherit_fds() {
             }
         }
     });
+}
+
+#[cfg(feature = "dbt")]
+#[test]
+fn dbt_noop_tool_test() {
+    commands::noop_tool_test(commands::noop_command);
+}
+
+#[cfg(feature = "dbt")]
+#[test]
+fn dbt_counter_tool_test() {
+    commands::counter_tool_test(commands::counter_command);
+}
+
+#[cfg(feature = "dbt")]
+#[test]
+fn dbt_error_exit_test() {
+    commands::error_exit_test(commands::counter_command);
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+#[test]
+fn dbt_run_guest_command_test() {
+    commands::run_guest_command_test(commands::counter_command);
+}
+
+#[cfg(all(feature = "dbt", not(sanitized)))]
+#[test]
+fn dbt_run_guest_command_test_closure() {
+    commands::run_guest_command_test_closure(commands::counter_command);
 }

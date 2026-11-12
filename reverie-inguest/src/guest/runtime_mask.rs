@@ -207,7 +207,7 @@ pub fn refuse(reason: &str) -> ! {
 ///   signals are dropped from a new mask as the forwarded call dropped them
 ///   (<https://github.com/rrnewton/reverie/issues/915>). Before a change, the
 ///   ignored instances pending outside the old mask are discarded
-///   ([`discard_ignored_outside`]).
+///   (`discard_ignored_outside`).
 /// - `rt_sigpending` (`:3274-3288`, `do_sigpending` `:3257-3266`): a size
 ///   over 8 is `EINVAL`; the answer is the pending set (the thread's and its
 ///   process's) within the saved mask; `size` bytes of it are copied out, so a
@@ -413,7 +413,7 @@ const IORING_ENTER_GETEVENTS: u64 = 1 << 0;
 /// an `rt_sigtimedwait` see only the instances Linux would have kept. Before
 /// such a call, which dequeues straight from the kernel's queue, the ignored
 /// instances pending outside the guest's saved mask are discarded
-/// ([`discard_ignored_outside`]): they arrived while the runtime ran, under
+/// (`discard_ignored_outside`): they arrived while the runtime ran, under
 /// the runtime mask, and Linux discarded them at send (`sig_ignored`,
 /// kernel/signal.c:104-120 at v6.12), so the call must not return one. The
 /// kernel's pending set is then read again, once, for the refusal's decision.

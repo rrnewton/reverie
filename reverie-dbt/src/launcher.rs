@@ -8,6 +8,8 @@
 
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::CStr;
+use std::ffi::CString;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::fmt;
@@ -18,7 +20,6 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -35,6 +36,8 @@ use std::sync::atomic::Ordering;
 use reverie::BackendStatsRequest;
 use reverie::GlobalTool;
 use reverie_rpc_transport::RpcServer;
+use sha2::Digest;
+use sha2::Sha256;
 
 use crate::backend_stats::DbtBackendStatsSource;
 use crate::backend_stats::DbtStatsCapture;
@@ -86,7 +89,12 @@ pub enum DbtPrivatePlacement {
 /// `reverie-dbt/scripts/build-client.sh`. Set [`REVERIE_DBT_CLIENT`] to that
 /// script's output, or build it in this Reverie workspace's default target
 /// directory. [`DYNAMORIO_HOME`] must identify a built DynamoRIO source tree,
-/// build directory, or install directory. Set `REVERIE_DBT_SUMMARY=1` to print
+/// build directory, or install directory containing the frontend selected when
+/// this crate was built. The constructor checks frontend bytes, not SDK layout.
+/// Relocated identical bytes are accepted by that check, but execution requires
+/// an intact SDK layout. Independently built frontends require a matching
+/// consuming-crate build.
+/// Set `REVERIE_DBT_SUMMARY=1` to print
 /// instrumentation totals after the guest exits.
 ///
 /// [`REVERIE_DBT_CLIENT`]: https://github.com/rrnewton/reverie/tree/main/reverie-dbt
@@ -106,6 +114,10 @@ pub struct DbtRunner {
     terminate_process_group_on_exit: bool,
     defer_evidence_finish: bool,
     tool_answers_brk: bool,
+    caller_tool: bool,
+    // Only the captured-environment caller entrypoint sets this. Legacy
+    // methods retain prepare_program's existing lookup contract.
+    selected_caller_program: Option<PathBuf>,
 }
 
 // A blocking socket-to-pipe splice can hold the child's stdin pipe mutex
@@ -151,6 +163,11 @@ impl DbtRunner {
     }
 
     /// Resolves DynamoRIO and the Reverie DBT client from the environment.
+    ///
+    /// The selected frontend must match this crate's attested build, as for
+    /// [`Self::new`]; discovery does not permit an older or independent frontend.
+    /// Execution still requires an intact SDK layout; frontend validation does
+    /// not verify that layout.
     pub fn from_env() -> io::Result<Self> {
         let dynamorio_home = env::var_os(DYNAMORIO_ENV)
             .or_else(|| env::var_os(DYNAMORIO_DIR_ENV))
@@ -170,10 +187,34 @@ impl DbtRunner {
     }
 
     /// Creates a runner from explicit `drrun` and native-client paths.
+    ///
+    /// The frontend must have the exact bytes selected and attested when this
+    /// crate was built. This validates frontend bytes, not SDK layout. Relocated
+    /// identical bytes pass this check, but execution requires an intact SDK
+    /// layout. Independently built frontends require rebuilding the consuming
+    /// crate against that maintained SDK.
+    /// A relative frontend is bound to the constructor's current directory.
+    /// This is a compatibility preflight, not an inode pin: the caller must keep
+    /// the selected SDK immutable until execution, including its shared libraries.
     pub fn new(drrun: impl Into<PathBuf>, client: impl Into<PathBuf>) -> io::Result<Self> {
         let drrun = drrun.into();
+        let drrun = if drrun.is_absolute() {
+            drrun
+        } else {
+            env::current_dir()?.join(drrun)
+        };
         let client = client.into();
         require_file(&drrun, "DynamoRIO launcher")?;
+        let expected = option_env!("REVERIE_DBT_DRRUN_SHA256").unwrap_or_default();
+        let actual = format!("{:x}", Sha256::digest(std::fs::read(&drrun)?));
+        if expected.is_empty() || actual != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "incompatible DynamoRIO frontend: use the SDK selected by this crate, \
+                 or rebuild the consuming crate against the matching maintained SDK; \
+                 only relocated byte-identical frontends are supported",
+            ));
+        }
         require_file(&client, "Reverie DBT client")?;
         Ok(Self {
             drrun,
@@ -189,6 +230,8 @@ impl DbtRunner {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            caller_tool: false,
+            selected_caller_program: None,
         })
     }
 
@@ -324,6 +367,7 @@ impl DbtRunner {
     ///
     /// One configured collector is valid for exactly one run. Clones share that
     /// same run; a later run requires a new runner and a new empty file.
+    /// A preparation refusal also consumes that attempt without publication.
     pub fn evidence_file(self, file: &File) -> io::Result<Self> {
         self.configure_evidence_file(file, None)
     }
@@ -423,7 +467,7 @@ impl DbtRunner {
 
     /// Runs `guest` with inherited standard streams and waits for it to exit.
     pub fn status(&self, guest: &Command) -> io::Result<ExitStatus> {
-        let child = self.spawn_command(&mut self.command(guest, None))?;
+        let child = self.spawn_command(&mut self.command(guest, None)?)?;
         self.wait_for_status(child, None)
     }
 
@@ -433,14 +477,14 @@ impl DbtRunner {
         guest: &Command,
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<ExitStatus> {
-        let child = self.spawn_command(&mut self.command(guest, Some(environment)))?;
+        let child = self.spawn_command(&mut self.command(guest, Some(environment))?)?;
         self.wait_for_status(child, None)
     }
 
     /// Runs `guest` and captures its standard output and standard error.
     pub fn output(&self, guest: &Command) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -451,7 +495,7 @@ impl DbtRunner {
     /// Captures guest output while preserving an inherited terminal stdin.
     pub fn output_with_inherited_stdin(&self, guest: &Command) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -470,7 +514,7 @@ impl DbtRunner {
         R: Read + Send,
     {
         let mut child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -512,7 +556,7 @@ impl DbtRunner {
         R: Read + Send + 'static,
     {
         let child = self.spawn_command(
-            self.command(guest, None)
+            self.command(guest, None)?
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -527,7 +571,7 @@ impl DbtRunner {
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<Output> {
         let child = self.spawn_command(
-            self.command(guest, Some(environment))
+            self.command(guest, Some(environment))?
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped()),
@@ -566,6 +610,51 @@ impl DbtRunner {
                 unreachable!("output launch returned only status")
             }
         }
+    }
+
+    /// Run a paired caller Tool runtime whose actual root acknowledges its
+    /// installed owner and consuming exit through the shared RPC protocol.
+    ///
+    /// A Config-only connection or application RPC is not activation. The
+    /// final receipt must match the real child's exit code. Legacy launch
+    /// methods keep their existing application-request guard.
+    ///
+    /// The initial caller domain requires an unfiltered application root. The
+    /// controller verifies its owned child's proc status before serving Config;
+    /// missing, malformed, or restricted status refuses before constructing the
+    /// Tool. A query issued by the child alone cannot establish this condition.
+    pub async fn output_with_caller_tool<G>(
+        &self,
+        guest: &Command,
+        config: G::Config,
+    ) -> io::Result<(Output, G)>
+    where
+        G: GlobalTool + 'static,
+    {
+        let mut runner = self.clone();
+        runner.caller_tool = true;
+        runner.output_with_global::<G>(guest, config).await
+    }
+
+    /// Runs a paired caller Tool with inherited stdin and captured output.
+    ///
+    /// This has the same authenticated activation, consuming completion, and
+    /// initial-process domain as [`Self::output_with_caller_tool`]. It only
+    /// changes stdin from null to inherited; signal termination remains a
+    /// caller launch error rather than a returned signal status.
+    pub async fn output_with_inherited_stdin_and_caller_tool<G>(
+        &self,
+        guest: &Command,
+        config: G::Config,
+    ) -> io::Result<(Output, G)>
+    where
+        G: GlobalTool + 'static,
+    {
+        let mut runner = self.clone();
+        runner.caller_tool = true;
+        runner
+            .output_with_inherited_stdin_and_global::<G>(guest, config)
+            .await
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -683,6 +772,79 @@ impl DbtRunner {
             CoordinatedWait::Status(status, global, _) => Ok((status, global)),
             CoordinatedWait::Output(_, _, _) => unreachable!("status launch captured output"),
         }
+    }
+
+    /// Runs a paired caller Tool with inherited stdin, stdout and stderr.
+    ///
+    /// Activation, consuming completion and the initial-process domain are
+    /// the same as [`Self::output_with_caller_tool`]. Guest writes reach the
+    /// inherited streams as issued, alongside writes from the coordinator global
+    /// state. Signal termination remains a caller launch error.
+    ///
+    /// A protocol failure after waiting retains the real child status through
+    /// [`failed_run_output`], with empty buffers because output was inherited.
+    pub async fn status_with_caller_tool<G>(
+        &self,
+        guest: &Command,
+        config: G::Config,
+    ) -> io::Result<(ExitStatus, G)>
+    where
+        G: GlobalTool + 'static,
+    {
+        let mut runner = self.clone();
+        runner.caller_tool = true;
+        runner.status_with_global::<G>(guest, config).await
+    }
+
+    /// Runs a paired caller Tool with a complete captured environment and
+    /// inherited stdin, stdout and stderr.
+    ///
+    /// Capture [`reverie::process::Command::get_captured_envs`] before converting
+    /// the shared command with [`reverie::process::Command::try_into_std`]. The
+    /// supplied map is authoritative, including absent and removed entries;
+    /// this method does not merge the standard command's environment deltas.
+    /// Program selection uses [`reverie::process::Command::find_program`], as
+    /// the ptrace frontend does, while retaining the original ELF argv0, args
+    /// and configured guest cwd. In particular, absent PATH stays absent and
+    /// bare-name relative PATH entries are resolved in the controller's cwd.
+    ///
+    /// Caller activation, completion and failures have the same ownership as
+    /// [`Self::status_with_caller_tool`]. Preparation errors are launch errors.
+    /// This does not recover an opaque standard command's inheritance flag,
+    /// custom argv0, pre-exec callbacks or stdio configuration; the streams are
+    /// inherited. Other standard-command entrypoints keep their existing
+    /// environment and program-lookup behavior.
+    pub async fn status_with_captured_environment_and_caller_tool<G>(
+        &self,
+        guest: &Command,
+        environment: &BTreeMap<OsString, OsString>,
+        config: G::Config,
+    ) -> io::Result<(ExitStatus, G)>
+    where
+        G: GlobalTool + 'static,
+    {
+        self.with_captured_caller_program(guest, environment)
+            .map_err(|error| self.refuse_preparation(error))?
+            .status_with_environment_and_global::<G>(guest, environment, config)
+            .await
+    }
+
+    fn with_captured_caller_program(
+        &self,
+        guest: &Command,
+        environment: &BTreeMap<OsString, OsString>,
+    ) -> io::Result<Self> {
+        check_guest_directory(guest)?;
+        let mut shared = reverie::process::Command::new(guest.get_program());
+        shared.env_clear().envs(environment);
+        if let Some(directory) = guest.get_current_dir() {
+            shared.current_dir(directory);
+        }
+        let selected = shared.find_program()?;
+        let mut runner = self.clone();
+        runner.caller_tool = true;
+        runner.selected_caller_program = Some(selected);
+        Ok(runner)
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -819,6 +981,9 @@ impl DbtRunner {
         }
         let mut global = Arc::new(global);
         let requested = Arc::new(AtomicBool::new(false));
+        let activation = self
+            .caller_tool
+            .then(reverie_rpc_transport::tool_activation::ActivationRun::new);
         let mut server = RpcServer::bind_with_readiness(
             &socket,
             Arc::clone(&global),
@@ -828,6 +993,9 @@ impl DbtRunner {
         .map_err(|error| io::Error::other(error.to_string()))?;
         if containment_enabled {
             server = server.mapping_capture(mapping_capture_control);
+        }
+        if let Some(run) = &activation {
+            server = server.tool_activation(run.clone());
         }
 
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -843,7 +1011,7 @@ impl DbtRunner {
         } else {
             None
         };
-        let mut command = runner.command(guest, environment);
+        let mut command = runner.command(guest, environment)?;
         command.env(crate::sync_rpc::RPC_SOCKET_ENV, &socket);
         let mut input_writer = None;
         match &input {
@@ -865,9 +1033,20 @@ impl DbtRunner {
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
         let mut child = runner.spawn_command(&mut command)?;
+        if activation.is_some()
+            && let Err(error) = require_unfiltered_caller_root(&child)
+        {
+            return Err(runner.refuse_caller_admission(child, capture_output, error));
+        }
         if let Err(error) = mapping_capture_owner.bind_root(&child) {
             runner.terminate_and_reap(&mut child);
             return Err(error);
+        }
+        if let Some(run) = &activation
+            && let Err(error) = run.bind_root(child.id() as i32)
+        {
+            runner.terminate_and_reap(&mut child);
+            return Err(io::Error::other(error.to_string()));
         }
         // A reusable Command retains a caller-supplied Stdio owner after spawn.
         // Keep no parent reader beyond the Tool's temporary initial-image lease.
@@ -908,7 +1087,23 @@ impl DbtRunner {
         // The wait owns real child/tree cleanup. Only then may a complete
         // capture become an ordinary guest status, including verify-allow.
         mapping_capture_owner.finish()?;
-        if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
+        if let Some(run) = &activation {
+            let receipt = match run.completed() {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    return Err(DbtFailedRunOutput::attach_wait(
+                        io::Error::other(error.to_string()),
+                        wait,
+                    ));
+                }
+            };
+            if wait.status().code() != Some(i32::from(receipt.exit_code())) {
+                return Err(DbtFailedRunOutput::attach_wait(
+                    io::Error::other("caller Finished receipt does not match actual child exit"),
+                    wait,
+                ));
+            }
+        } else if missing_coordinator_request_is_error(requested.load(Ordering::Acquire), &wait) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
                 "DBT guest exited successfully without sending a request to the global-state coordinator",
@@ -956,7 +1151,15 @@ impl DbtRunner {
             Ok(child) => child,
             Err(error) => {
                 let _ = self.finish_evidence(false);
-                return Err(error);
+                return Err(if error.raw_os_error() == Some(libc::EOPNOTSUPP) {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "required execute-access query/launch operation unavailable; \
+                         check kernel and sandbox support",
+                    )
+                } else {
+                    error
+                });
             }
         };
         if let Some(evidence) = &self.evidence
@@ -1200,6 +1403,45 @@ impl DbtRunner {
         let _ = self.finish_evidence(false);
     }
 
+    /// Refuse before serving Config, retaining the actual cleanup status and
+    /// already-written bytes without starting evidence or admitting the Tool.
+    fn refuse_caller_admission(
+        &self,
+        mut child: Child,
+        capture_output: bool,
+        error: io::Error,
+    ) -> io::Error {
+        self.terminate_and_reap(&mut child);
+        let captured: io::Result<ChildWait> = (|| {
+            // Child caches its reaped status; this does not wait for another
+            // process or replace a native status with a fabricated exit code.
+            let status = child.wait()?;
+            if !capture_output {
+                return Ok(ChildWait::Status(status));
+            }
+            let mut stdout = child.stdout.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "missing refused caller stdout")
+            })?;
+            let mut stderr = child.stderr.take().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "missing refused caller stderr")
+            })?;
+            set_nonblocking(&stdout)?;
+            set_nonblocking(&stderr)?;
+            let stop = AtomicU8::new(READ_KEEP);
+            Ok(ChildWait::Output(Output {
+                status,
+                stdout: read_cancellable(&mut stdout, &stop)?,
+                stderr: read_cancellable(&mut stderr, &stop)?,
+            }))
+        })();
+        match captured {
+            Ok(wait) => DbtFailedRunOutput::attach_wait(error, wait),
+            Err(capture) => io::Error::other(format!(
+                "{error}; refused caller cleanup/output capture failed: {capture}"
+            )),
+        }
+    }
+
     fn manages_process_group(&self) -> bool {
         self.evidence.is_some()
             || self.isolated_process_group
@@ -1217,9 +1459,44 @@ impl DbtRunner {
         &self,
         guest: &Command,
         environment: Option<&BTreeMap<OsString, OsString>>,
-    ) -> Command {
+    ) -> io::Result<Command> {
+        self.prepare_command(guest, environment)
+            .map_err(|error| self.refuse_preparation(error))
+    }
+
+    fn refuse_preparation(&self, error: io::Error) -> io::Error {
+        if let Some(evidence) = &self.evidence {
+            if let Err(claim) = evidence.claim_run() {
+                return io::Error::new(
+                    claim.kind(),
+                    format!("{claim}; launch preparation failed: {error}"),
+                );
+            }
+            // A refused preparation consumes its own one-shot attempt,
+            // closes pending evidence resources and cannot publish success.
+            let _ = evidence.finish(false);
+        }
+        error
+    }
+
+    fn prepare_command(
+        &self,
+        guest: &Command,
+        environment: Option<&BTreeMap<OsString, OsString>>,
+    ) -> io::Result<Command> {
+        let prepared = match &self.selected_caller_program {
+            Some(selected) => {
+                check_guest_directory(guest)?;
+                prepare_candidate(guest, selected.clone())?
+            }
+            None => prepare_program(guest, environment)?,
+        };
         let mut command = Command::new(&self.drrun);
-        command.arg("-quiet").arg("-disable_rseq");
+        command
+            .arg("-quiet")
+            .arg("-app_path")
+            .arg(&prepared.image)
+            .arg("-disable_rseq");
         if self.private_placement == DbtPrivatePlacement::NoRandomOffset {
             // DynamoRIO parses address options as hexadecimal.
             command.args(["-vm_max_offset", "0x0"]);
@@ -1256,18 +1533,7 @@ impl DbtRunner {
         }
         command.arg("--");
 
-        let resolved_program = resolve_program(guest, environment);
-        let inspected_program = resolved_program
-            .as_deref()
-            .unwrap_or_else(|| Path::new(guest.get_program()));
-        if let Some((interpreter, interpreter_args)) = shebang(inspected_program.as_os_str()) {
-            command
-                .arg(interpreter)
-                .args(interpreter_args)
-                .arg(inspected_program);
-        } else {
-            command.arg(guest.get_program());
-        }
+        command.args(&prepared.arguments);
         command.args(guest.get_args());
 
         if let Some(directory) = guest.get_current_dir() {
@@ -1303,11 +1569,19 @@ impl DbtRunner {
         }
 
         let diagnostic_file = self.diagnostic_file.clone();
-        // SAFETY: personality(2), dup2(2), and fcntl(2) are async-signal-safe.
+        let execute_paths = prepared.execute_paths;
+        // SAFETY: the access paths were allocated in the parent. The child only
+        // issues raw faccessat2, personality, dup2 and fcntl operations; it does
+        // not allocate, search PATH or inspect environment state.
         // Process-group isolation is configured above through
         // CommandExt::process_group; all settings survive drrun and guest execs.
         unsafe {
             command.pre_exec(move || {
+                for path in &execute_paths {
+                    if let Err(error) = query_execute_access(path) {
+                        return Err(child_execute_access_error(error));
+                    }
+                }
                 let diagnostic_source = diagnostic_file
                     .as_ref()
                     .map_or(libc::STDERR_FILENO, |file| file.as_raw_fd());
@@ -1324,7 +1598,7 @@ impl DbtRunner {
                 Ok(())
             });
         }
-        command
+        Ok(command)
     }
 }
 
@@ -1371,9 +1645,12 @@ impl DbtRunner {
 /// then stop after a bounded drain, and the streams end there.
 #[derive(Debug)]
 pub struct DbtFailedRunOutput {
-    /// Everything the guest tree wrote to stdout.
+    /// Actual reaped child status, when failure followed a completed wait.
+    /// Earlier wait/evidence failures may not retain a status.
+    pub status: Option<ExitStatus>,
+    /// Captured stdout; empty for inherited-output status runs.
     pub stdout: Vec<u8>,
-    /// Everything the guest tree wrote to stderr.
+    /// Captured stderr; empty for inherited-output status runs.
     pub stderr: Vec<u8>,
     error: io::Error,
 }
@@ -1383,6 +1660,24 @@ impl DbtFailedRunOutput {
         io::Error::new(
             error.kind(),
             Self {
+                status: None,
+                stdout,
+                stderr,
+                error,
+            },
+        )
+    }
+
+    fn attach_wait(error: io::Error, wait: ChildWait) -> io::Error {
+        let status = wait.status();
+        let (stdout, stderr) = match wait {
+            ChildWait::Output(output) => (output.stdout, output.stderr),
+            ChildWait::Status(_) => (Vec::new(), Vec::new()),
+        };
+        io::Error::new(
+            error.kind(),
+            Self {
+                status: Some(status),
                 stdout,
                 stderr,
                 error,
@@ -1393,7 +1688,11 @@ impl DbtFailedRunOutput {
 
 impl fmt::Display for DbtFailedRunOutput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error.fmt(formatter)
+        self.error.fmt(formatter)?;
+        if let Some(status) = self.status {
+            write!(formatter, " (native child status: {status})")?;
+        }
+        Ok(())
     }
 }
 
@@ -1581,49 +1880,268 @@ where
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#57): Confirm PATH lookup matches Command/execvp semantics.
-fn resolve_program(
+#[derive(Debug)]
+struct PreparedProgram {
+    image: PathBuf,
+    arguments: Vec<OsString>,
+    execute_paths: Vec<CString>,
+}
+
+fn check_guest_directory(guest: &Command) -> io::Result<()> {
+    if let Some(directory) = guest.get_current_dir() {
+        // Command applies chdir before attempting exec. Preserve that ordering
+        // before our parent-side image inspection, without changing parent cwd.
+        // The child chdir remains authoritative if the directory changes later.
+        if !directory.metadata()?.is_dir() {
+            return Err(io::Error::from_raw_os_error(libc::ENOTDIR));
+        }
+        query_execute_access(&execute_path(directory)?).map_err(parent_execute_access_error)?;
+    }
+    Ok(())
+}
+
+fn prepare_program(
     guest: &Command,
     environment: Option<&BTreeMap<OsString, OsString>>,
-) -> Option<PathBuf> {
+) -> io::Result<PreparedProgram> {
+    check_guest_directory(guest)?;
     let program = guest.get_program();
+    if program.is_empty() {
+        return Err(io::Error::from_raw_os_error(libc::ENOENT));
+    }
     if program.as_bytes().contains(&b'/') {
-        return None;
+        return prepare_candidate(guest, PathBuf::from(program));
     }
 
     let path = if let Some(environment) = environment {
         environment.get(OsStr::new(PATH_ENV)).cloned()
     } else {
-        let mut command_path = None;
-        let mut path_overridden = false;
-        for (key, value) in guest.get_envs() {
-            if key == OsStr::new(PATH_ENV) {
-                path_overridden = true;
-                command_path = value.map(OsStr::to_os_string);
-                break;
-            }
+        guest
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new(PATH_ENV))
+            .map_or_else(
+                || env::var_os(PATH_ENV),
+                |(_, value)| value.map(OsStr::to_os_string),
+            )
+    };
+    let path = match path {
+        Some(path) => path,
+        None => default_search_path()?,
+    };
+    let mut denied = false;
+    let mut last = io::Error::from_raw_os_error(libc::ENOENT);
+    // Path::join normalizes empty/trailing components. Keep the exact spelling
+    // execvp selects, including bare names and a component's trailing slash.
+    for directory in path.as_bytes().split(|byte| *byte == b':') {
+        let mut spelling = directory.to_vec();
+        if !directory.is_empty() {
+            spelling.push(b'/');
         }
-        if path_overridden {
-            command_path
-        } else {
-            env::var_os(PATH_ENV)
+        spelling.extend_from_slice(program.as_bytes());
+        let candidate = PathBuf::from(OsStr::from_bytes(&spelling));
+        match prepare_candidate(guest, candidate) {
+            Ok(prepared) => return Ok(prepared),
+            Err(error) => match error.raw_os_error() {
+                Some(libc::EACCES) => {
+                    denied = true;
+                    last = error;
+                }
+                Some(
+                    libc::ENOENT | libc::ENOTDIR | libc::ESTALE | libc::ENODEV | libc::ETIMEDOUT,
+                ) => {
+                    last = error;
+                }
+                _ => return Err(error),
+            },
         }
-    }?;
-
-    let current_dir = guest.get_current_dir();
-    env::split_paths(&path)
-        .map(|directory| {
-            let directory = match current_dir {
-                Some(current_dir) if directory.is_relative() => current_dir.join(directory),
-                _ => directory,
-            };
-            directory.join(program)
-        })
-        .find(|candidate| is_executable_file(candidate))
+    }
+    Err(if denied {
+        io::Error::from_raw_os_error(libc::EACCES)
+    } else {
+        last
+    })
 }
 
-fn is_executable_file(path: &Path) -> bool {
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+fn default_search_path() -> io::Result<OsString> {
+    // confstr includes the terminating NUL in the required size.
+    let size = unsafe { libc::confstr(libc::_CS_PATH, std::ptr::null_mut(), 0) };
+    if size == 0 {
+        return Err(io::Error::other(
+            "cannot obtain the system executable search path",
+        ));
+    }
+    let mut bytes = vec![0u8; size];
+    let written = unsafe { libc::confstr(libc::_CS_PATH, bytes.as_mut_ptr().cast(), bytes.len()) };
+    if written != size || bytes.last() != Some(&0) {
+        return Err(io::Error::other(
+            "system executable search path changed while reading",
+        ));
+    }
+    bytes.pop();
+    Ok(OsString::from(OsStr::from_bytes(&bytes)))
+}
+
+fn inspection_path(guest: &Command, selected: &Path) -> PathBuf {
+    match guest.get_current_dir() {
+        Some(directory) if selected.is_relative() => directory.join(selected),
+        _ => selected.to_path_buf(),
+    }
+}
+
+fn execute_path(path: &Path) -> io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "executable path contains a NUL byte",
+        )
+    })
+}
+
+fn require_executable_file(path: &Path) -> io::Result<()> {
+    if !path.metadata()?.is_file() {
+        return Err(io::Error::from_raw_os_error(libc::EACCES));
+    }
+    query_execute_access(&execute_path(path)?).map_err(parent_execute_access_error)
+}
+
+fn prepare_candidate(guest: &Command, selected: PathBuf) -> io::Result<PreparedProgram> {
+    let inspected = inspection_path(guest, &selected);
+    require_executable_file(&inspected)?;
+    let mut execute_paths = vec![execute_path(&selected)?];
+    let header = shebang(inspected.as_os_str()).map_err(|error| {
+        // Execute access succeeded. A read failure is an unsupported image,
+        // not an execvp EACCES that permits trying a different PATH candidate.
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "DBT requires a readable executable image; cannot inspect {}: {error}",
+                inspected.display()
+            ),
+        )
+    })?;
+    let (image, arguments) = match header {
+        Some((interpreter, optional_arguments)) => {
+            require_executable_file(&inspection_path(guest, &interpreter))?;
+            execute_paths.push(execute_path(&interpreter)?);
+            let mut arguments = vec![interpreter.as_os_str().to_os_string()];
+            arguments.extend(optional_arguments);
+            arguments.push(selected.into_os_string());
+            (interpreter, arguments)
+        }
+        None => (selected, vec![guest.get_program().to_os_string()]),
+    };
+    Ok(PreparedProgram {
+        image,
+        arguments,
+        execute_paths,
+    })
+}
+
+/// Ask the kernel with the effective IDs; never substitute mode-bit policy.
+fn query_execute_access(path: &CStr) -> io::Result<()> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_faccessat2,
+            libc::AT_FDCWD,
+            path.as_ptr(),
+            libc::X_OK,
+            libc::AT_EACCESS,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+fn execute_access_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EPERM | libc::ENOSYS | libc::EINVAL)
+    )
+}
+
+fn parent_execute_access_error(error: io::Error) -> io::Error {
+    if execute_access_unavailable(&error) {
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "kernel execute-access query unavailable ({error}); check kernel and sandbox support"
+            ),
+        )
+    } else {
+        error
+    }
+}
+
+fn child_execute_access_error(error: io::Error) -> io::Error {
+    // Command's child error channel carries only errno. This sentinel does not
+    // claim the lost original errno or distinguish every possible spawn failure.
+    if execute_access_unavailable(&error) {
+        io::Error::from_raw_os_error(libc::EOPNOTSUPP)
+    } else {
+        error
+    }
+}
+
+/// Caller mode currently requires no inherited seccomp restriction. A prctl
+/// query executed by the application is not authoritative: an inherited filter
+/// can return ERRNO|0 for that query. Read the still-owned root task from the
+/// controller instead, before binding admission or serving any Config frame.
+/// The server is only bound at this point, so the child cannot publish READY,
+/// complete Claim, construct T, or enter application code while this runs.
+fn require_unfiltered_caller_root(child: &Child) -> io::Result<()> {
+    let pid = child.id();
+    let status =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/status")).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("caller-inherited-seccomp-unsupported: cannot read root status: {error}"),
+            )
+        })?;
+    // read_to_string reaches EOF and closes its temporary descriptor before
+    // returning. Root ownership keeps this PID from being recycled meanwhile.
+    if !caller_root_status_is_unfiltered(&status, pid) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "caller-inherited-seccomp-unsupported: root identity or unfiltered status not established",
+        ));
+    }
+    Ok(())
+}
+
+fn caller_root_status_is_unfiltered(status: &str, pid: u32) -> bool {
+    if pid == 0 || !status.ends_with('\n') || status.contains('\0') {
+        return false;
+    }
+    let mut fields = [None; 4];
+    for line in status.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            return false;
+        };
+        let index = match name {
+            "Pid" => 0,
+            "Tgid" => 1,
+            "Seccomp" => 2,
+            "Seccomp_filters" => 3,
+            _ => continue,
+        };
+        let value = value.trim();
+        if fields[index].is_some()
+            || value.is_empty()
+            || !value.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return false;
+        }
+        let Ok(value) = value.parse::<u64>() else {
+            return false;
+        };
+        fields[index] = Some(value);
+    }
+    // Both mode and count are required: strict mode can have zero filters.
+    fields == [Some(u64::from(pid)), Some(u64::from(pid)), Some(0), Some(0)]
+        && reverie::pidfd_self::status_has_exactly_seccomp_filters(status, 0)
 }
 
 fn set_nonblocking(stream: &impl AsRawFd) -> io::Result<()> {
@@ -1939,19 +2457,19 @@ fn wait_for_process_group_no_live_members_until(
     }
 }
 
-fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
+fn shebang(program: &OsStr) -> io::Result<Option<(PathBuf, Vec<OsString>)>> {
     let mut bytes = Vec::new();
-    File::open(Path::new(program))
-        .ok()?
+    File::open(Path::new(program))?
         .take(BINPRM_BUF_SIZE as u64)
-        .read_to_end(&mut bytes)
-        .ok()?;
+        .read_to_end(&mut bytes)?;
     if !bytes.starts_with(b"#!") {
-        return None;
+        return Ok(None);
     }
 
     let body = &bytes[2..];
-    let start = body.iter().position(|byte| !matches!(byte, b' ' | b'\t'))?;
+    let Some(start) = body.iter().position(|byte| !matches!(byte, b' ' | b'\t')) else {
+        return Ok(None);
+    };
     let end = body[start..]
         .iter()
         .position(|byte| *byte == b'\n')
@@ -1959,11 +2477,14 @@ fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
     let mut fields = body[start..end]
         .split(|byte| matches!(byte, b' ' | b'\t' | b'\r'))
         .filter(|field| !field.is_empty());
-    let interpreter = PathBuf::from(OsStr::from_bytes(fields.next()?));
+    let Some(interpreter) = fields.next() else {
+        return Ok(None);
+    };
+    let interpreter = PathBuf::from(OsStr::from_bytes(interpreter));
     let arguments = fields
         .map(|field| OsString::from(OsStr::from_bytes(field)))
         .collect();
-    Some((interpreter, arguments))
+    Ok(Some((interpreter, arguments)))
 }
 
 fn resolve_drrun(home: &Path) -> io::Result<PathBuf> {
@@ -2079,16 +2600,67 @@ fn duplicate_to_diagnostic_fd(source: libc::c_int) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    mod caller_transport_failure;
+    mod fcntl_owner_identity_live;
     mod inherited_input;
     mod namespace_cleanup;
+    mod pidfd_identity_live;
+    mod queued_signal_identity_live;
+    mod startup_failure;
     mod stats_capture;
+    mod thread_start_live;
     use std::io::Seek as _;
+    use std::os::unix::fs::PermissionsExt as _;
     use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
 
     const TEST_DRRUN_STDERR: &str = "REVERIE_DBT_TEST_DRRUN_STDERR";
     const TEST_DRRUN_DIAGNOSTIC: &str = "REVERIE_DBT_TEST_DRRUN_DIAGNOSTIC";
+
+    #[test]
+    fn caller_root_status_requires_exact_identity_and_unfiltered_mode() {
+        let valid = "Name:\tguest\nTgid:\t123\nPid:\t123\nSeccomp:\t0\nSeccomp_filters:\t0\n";
+        assert!(caller_root_status_is_unfiltered(valid, 123));
+        assert!(!caller_root_status_is_unfiltered(valid, 0));
+        assert!(!caller_root_status_is_unfiltered(valid, 124));
+        assert!(!caller_root_status_is_unfiltered(valid.trim_end(), 123));
+        for invalid in [
+            valid.replace("Tgid:\t123", "Tgid:\t124"),
+            valid.replace("Pid:\t123", "Pid:\t124"),
+            // Strict mode has no BPF filters but is still restricted.
+            valid.replace("Seccomp:\t0", "Seccomp:\t1"),
+            valid.replace("Seccomp:\t0", "Seccomp:\t2"),
+            valid.replace("Seccomp_filters:\t0", "Seccomp_filters:\t1"),
+            valid.replace("Pid:\t123", "Pid:\t+123"),
+            valid.replace("Pid:\t123", "Pid:\t123 123"),
+            valid.replace("Pid:\t123", "Pid:\t18446744073709551616"),
+            valid.replace("Seccomp:\t0", "Seccomp:\t"),
+            valid.replace("Seccomp:\t0", "Seccomp:\tinvalid"),
+            valid.replace("Seccomp:\t0", "Seccomp 0"),
+            format!("{valid}\0\n"),
+        ] {
+            assert!(
+                !caller_root_status_is_unfiltered(&invalid, 123),
+                "{invalid:?}"
+            );
+        }
+        for field in [
+            "Tgid:\t123\n",
+            "Pid:\t123\n",
+            "Seccomp:\t0\n",
+            "Seccomp_filters:\t0\n",
+        ] {
+            assert!(!caller_root_status_is_unfiltered(
+                &valid.replace(field, ""),
+                123
+            ));
+            assert!(!caller_root_status_is_unfiltered(
+                &format!("{valid}{field}"),
+                123
+            ));
+        }
+    }
 
     #[test]
     fn failed_guest_status_is_preserved_before_coordinator_request() {
@@ -2171,7 +2743,36 @@ mod tests {
             terminate_process_group_on_exit: false,
             defer_evidence_finish: false,
             tool_answers_brk: false,
+            caller_tool: false,
+            selected_caller_program: None,
         }
+    }
+
+    // These stand-ins exercise I/O/lifecycle behavior, not public frontend
+    // compatibility. The public constructor is never relaxed under cfg(test).
+    fn fixture_runner(drrun: PathBuf, client: PathBuf) -> io::Result<DbtRunner> {
+        require_file(&drrun, "fixture launcher")?;
+        require_file(&client, "fixture client")?;
+        Ok(DbtRunner {
+            drrun,
+            client,
+            ..runner()
+        })
+    }
+
+    // Live fixture wrappers retain their original timeout/session/PID-namespace
+    // topology and output lifecycle. Validate the real maintained frontend first,
+    // then substitute only the fixed wrapper created by the calling private test.
+    // This gives no public-constructor wrapper-support or selection credit.
+    fn bounded_fixture_runner(
+        wrapper: impl Into<PathBuf>,
+        client: impl Into<PathBuf>,
+    ) -> io::Result<DbtRunner> {
+        let mut runner = DbtRunner::new(crate::bundled_drrun_path(), client)?;
+        let wrapper = wrapper.into();
+        require_file(&wrapper, "owned fixture supervisor")?;
+        runner.drrun = wrapper;
+        Ok(runner)
     }
 
     #[test]
@@ -2231,7 +2832,7 @@ mod tests {
         guest
             .arg("application-started")
             .env("HERMIT_DBT_COUNTER2", "1");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .env(crate::sync_rpc::RPC_SOCKET_ENV, &socket)
             .stdin(Stdio::null())
@@ -2354,7 +2955,8 @@ mod tests {
 
         let cleanup_only = runner()
             .terminate_process_group_on_exit(true)
-            .command(&Command::new("/bin/true"), None);
+            .command(&Command::new("/bin/true"), None)
+            .unwrap();
         assert!(
             !cleanup_only
                 .get_args()
@@ -2377,6 +2979,8 @@ mod tests {
         let guest = Command::new("/bin/true");
         let expected = [
             "-quiet",
+            "-app_path",
+            "/bin/true",
             "-disable_rseq",
             "-vm_max_offset",
             "0x0",
@@ -2393,6 +2997,7 @@ mod tests {
         assert_eq!(
             configured
                 .command(&guest, None)
+                .unwrap()
                 .get_args()
                 .collect::<Vec<_>>(),
             expected
@@ -2401,14 +3006,19 @@ mod tests {
             configured
                 .clone()
                 .command(&guest, None)
+                .unwrap()
                 .get_args()
                 .collect::<Vec<_>>(),
             expected
         );
         let reset = configured.private_placement(DbtPrivatePlacement::SdkDefault);
-        let default = runner().command(&guest, None);
+        let default = runner().command(&guest, None).unwrap();
         assert_eq!(
-            reset.command(&guest, None).get_args().collect::<Vec<_>>(),
+            reset
+                .command(&guest, None)
+                .unwrap()
+                .get_args()
+                .collect::<Vec<_>>(),
             default.get_args().collect::<Vec<_>>()
         );
     }
@@ -2418,11 +3028,14 @@ mod tests {
         let wrapped = runner()
             .client_argument("-panic-on-unsupported-syscalls")
             .isolated_process_group(true)
-            .command(&Command::new("/bin/true"), None);
+            .command(&Command::new("/bin/true"), None)
+            .unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-quiet",
+                "-app_path",
+                "/bin/true",
                 "-disable_rseq",
                 "-stack_size",
                 "2M",
@@ -2449,7 +3062,7 @@ mod tests {
             .env("EXPLICIT", "value")
             .env_remove("REMOVED");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_program(),
             OsStr::new("/opt/dynamorio/bin64/drrun")
@@ -2458,6 +3071,8 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-quiet",
+                "-app_path",
+                "/bin/echo",
                 "-disable_rseq",
                 "-stack_size",
                 "2M",
@@ -2484,18 +3099,382 @@ mod tests {
     }
 
     #[test]
+    fn rejects_nonexecutable_shebang_before_starting_launcher() {
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("guest-script");
+        std::fs::write(&script, b"#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = directory.path().join("guest-link");
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let marker = directory.path().join("launcher-started");
+        let drrun = directory.path().join("drrun");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nprintf started > \"$DBT_LAUNCH_WITNESS\"\nexit 0\n",
+        );
+        let runner = DbtRunner { drrun, ..runner() };
+
+        for program in [
+            script.as_os_str(),
+            OsStr::new("./guest-script"),
+            OsStr::new("guest-script"),
+            link.as_os_str(),
+        ] {
+            let mut guest = Command::new(program);
+            guest
+                .current_dir(directory.path())
+                .env(PATH_ENV, directory.path())
+                .env("DBT_LAUNCH_WITNESS", &marker);
+            let error = runner
+                .output(&guest)
+                .expect_err("a non-executable script must refuse before starting the launcher");
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(
+                !marker.exists(),
+                "the launcher ran before permission refusal"
+            );
+
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = runner.output(&guest).unwrap();
+            assert!(output.status.success(), "{output:?}");
+            assert_eq!(std::fs::read(&marker).unwrap(), b"started");
+            std::fs::remove_file(&marker).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    fn marker_runner(directory: &Path) -> (DbtRunner, PathBuf) {
+        let marker = directory.join("launcher-started");
+        let drrun = directory.join("marker-drrun");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nprintf started > \"$DBT_LAUNCH_WITNESS\"\nexit 0\n",
+        );
+        (DbtRunner { drrun, ..runner() }, marker)
+    }
+
+    #[test]
+    fn child_execute_access_recheck_refuses_permission_change() {
+        for deny_interpreter in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let interpreter = directory.path().join("interpreter");
+            write_executable_script(&interpreter, b"#!/bin/sh\nexit 0\n");
+            let script = directory.path().join("script");
+            write_executable_script(
+                &script,
+                format!("#!{}\nexit 0\n", interpreter.display()).as_bytes(),
+            );
+            let (runner, marker) = marker_runner(directory.path());
+            let mut guest = Command::new("./script");
+            guest
+                .current_dir(directory.path())
+                .env("DBT_LAUNCH_WITNESS", &marker);
+            let mut prepared = runner.command(&guest, None).unwrap();
+            let denied = if deny_interpreter {
+                &interpreter
+            } else {
+                &script
+            };
+            std::fs::set_permissions(denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let error = runner.spawn_command(&mut prepared).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied, "{error}");
+            assert!(!marker.exists());
+            std::fs::set_permissions(denied, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(runner.output(&guest).unwrap().status.success());
+            assert_eq!(std::fs::read(&marker).unwrap(), b"started");
+        }
+    }
+
+    #[test]
+    fn preparation_refusal_finishes_evidence_without_publication() {
+        for cwd_case in ["unchanged", "missing", "non-directory"] {
+            let directory = tempfile::tempdir().unwrap();
+            let denied = directory.path().join("denied");
+            std::fs::write(&denied, b"#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&denied, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let (runner, marker) = marker_runner(directory.path());
+            let output = tempfile::tempfile().unwrap();
+            let runner = runner.evidence_file(&output).unwrap();
+            let mut guest = Command::new(&denied);
+            guest.env("DBT_LAUNCH_WITNESS", &marker);
+            let expected_errno = match cwd_case {
+                "missing" => {
+                    guest.current_dir(directory.path().join("missing"));
+                    libc::ENOENT
+                }
+                "non-directory" => {
+                    guest.current_dir(&denied);
+                    libc::ENOTDIR
+                }
+                _ => libc::EACCES,
+            };
+            let error = runner.output(&guest).unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(expected_errno));
+            assert!(!marker.exists());
+            assert_eq!(output.metadata().unwrap().len(), 0);
+            let evidence = runner.evidence.as_ref().unwrap();
+            assert_eq!(
+                evidence.claim_run().unwrap_err().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            let first = evidence.finish(false).unwrap_err().to_string();
+            assert!(first.contains("never started"), "{first}");
+            assert_eq!(evidence.finish(false).unwrap_err().to_string(), first);
+        }
+    }
+
+    #[test]
+    fn refused_preparation_preserves_an_already_claimed_evidence_attempt() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing");
+        let file = tempfile::tempfile().unwrap();
+        let runner = runner().evidence_file(&file).unwrap();
+        let evidence = runner.evidence.as_ref().unwrap();
+        evidence.claim_run().unwrap();
+        let primary = std::fs::metadata(&missing).unwrap_err().to_string();
+        let error = runner.command(&Command::new(&missing), None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains(&primary), "{error}");
+        assert!(error.to_string().contains("one-shot"), "{error}");
+        // Publication still requires RUNNING: the refused second attempt did
+        // not finalize the first one's state or consume its root slot.
+        evidence.publish_root(std::process::id()).unwrap();
+        assert!(
+            evidence
+                .finish(false)
+                .unwrap_err()
+                .to_string()
+                .contains("never started")
+        );
+        assert_eq!(file.metadata().unwrap().len(), 0);
+    }
+
+    async fn assert_captured_caller_preparation_refusal(already_claimed: bool) {
+        for cwd_case in ["unchanged", "missing", "non-directory"] {
+            let directory = tempfile::tempdir().unwrap();
+            let non_directory = directory.path().join("not-a-directory");
+            std::fs::write(&non_directory, b"public fixture").unwrap();
+            let (base_runner, marker) = marker_runner(directory.path());
+            let file = tempfile::tempfile().unwrap();
+            let selected = base_runner.evidence_file(&file).unwrap();
+            let mut guest = Command::new(directory.path().join("missing-program"));
+            match cwd_case {
+                "missing" => {
+                    guest.current_dir(directory.path().join("missing-directory"));
+                }
+                "non-directory" => {
+                    guest.current_dir(&non_directory);
+                }
+                _ => {}
+            }
+            let environment = BTreeMap::from([(
+                OsString::from("DBT_LAUNCH_WITNESS"),
+                marker.as_os_str().to_os_string(),
+            )]);
+            let primary = runner()
+                .with_captured_caller_program(&guest, &environment)
+                .unwrap_err();
+            let evidence = selected.evidence.as_ref().unwrap();
+            if already_claimed {
+                evidence.claim_run().unwrap();
+            }
+            let error = selected
+                .status_with_captured_environment_and_caller_tool::<()>(&guest, &environment, ())
+                .await
+                .unwrap_err();
+            assert!(!marker.exists());
+            assert_eq!(file.metadata().unwrap().len(), 0);
+            if already_claimed {
+                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+                assert!(error.to_string().contains("one-shot"), "{error}");
+                assert!(error.to_string().contains(&primary.to_string()), "{error}");
+                // The refused second attempt must leave the first RUNNING,
+                // including its still-unused root publication slot.
+                evidence.publish_root(std::process::id()).unwrap();
+            } else {
+                assert_eq!(error.kind(), primary.kind());
+                assert_eq!(error.raw_os_error(), primary.raw_os_error());
+                assert_eq!(error.to_string(), primary.to_string());
+                assert_eq!(
+                    evidence.claim_run().unwrap_err().kind(),
+                    io::ErrorKind::AlreadyExists
+                );
+            }
+            let first = evidence.finish(false).unwrap_err().to_string();
+            assert!(first.contains("never started"), "{first}");
+            assert_eq!(evidence.finish(false).unwrap_err().to_string(), first);
+            assert_eq!(file.metadata().unwrap().len(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn captured_caller_preparation_refusal_finishes_evidence_without_publication() {
+        assert_captured_caller_preparation_refusal(false).await;
+    }
+
+    #[tokio::test]
+    async fn captured_caller_refused_preparation_preserves_an_already_claimed_evidence_attempt() {
+        assert_captured_caller_preparation_refusal(true).await;
+    }
+
+    #[test]
+    fn execute_access_query_unavailable_is_not_guest_permission_denial() {
+        for errno in [libc::EPERM, libc::ENOSYS, libc::EINVAL] {
+            let error = parent_execute_access_error(io::Error::from_raw_os_error(errno));
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("kernel execute-access query unavailable")
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains(&io::Error::from_raw_os_error(errno).to_string())
+            );
+            assert_eq!(
+                child_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(libc::EOPNOTSUPP),
+            );
+        }
+        for errno in [libc::EACCES, libc::ENOENT] {
+            assert_eq!(
+                parent_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(errno),
+            );
+            assert_eq!(
+                child_execute_access_error(io::Error::from_raw_os_error(errno)).raw_os_error(),
+                Some(errno),
+            );
+        }
+        let mut command = runner().command(&Command::new("/bin/true"), None).unwrap();
+        // This independent operation runs after the access query. A raw EPERM
+        // here must not be attributed to the query or normalized.
+        unsafe {
+            command.pre_exec(|| Err(io::Error::from_raw_os_error(libc::EPERM)));
+        }
+        let error = runner().spawn_command(&mut command).unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        assert!(!error.to_string().contains("query"));
+    }
+
+    #[test]
+    fn path_candidates_preserve_execvp_failure_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let bad = directory.path().join("bad");
+        let good = directory.path().join("good");
+        let missing = directory.path().join("missing");
+        std::fs::create_dir(&bad).unwrap();
+        std::fs::create_dir(&good).unwrap();
+        let candidate = bad.join("probe");
+        let valid = good.join("probe");
+        std::fs::copy("/bin/true", &valid).unwrap();
+        std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let denied_interpreter = directory.path().join("denied-interpreter");
+        std::fs::write(&denied_interpreter, b"\x7fELF").unwrap();
+        std::fs::set_permissions(&denied_interpreter, std::fs::Permissions::from_mode(0o600))
+            .unwrap();
+        for (name, bytes, errno) in [
+            ("directory", None, libc::EACCES),
+            ("denied", Some(b"\x7fELF".to_vec()), libc::EACCES),
+            (
+                "missing-interpreter",
+                Some(format!("#!{}\n", missing.display()).into_bytes()),
+                libc::ENOENT,
+            ),
+            (
+                "denied-interpreter",
+                Some(format!("#!{}\n", denied_interpreter.display()).into_bytes()),
+                libc::EACCES,
+            ),
+        ] {
+            match bytes {
+                None => std::fs::create_dir(&candidate).unwrap(),
+                Some(bytes) => {
+                    std::fs::write(&candidate, bytes).unwrap();
+                    let mode = if name == "denied" { 0o600 } else { 0o700 };
+                    std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(mode))
+                        .unwrap();
+                }
+            }
+            let mut guest = Command::new("probe");
+            guest.env(PATH_ENV, env::join_paths([&bad, &good]).unwrap());
+            assert_eq!(prepare_program(&guest, None).unwrap().image, valid);
+            assert!(guest.output().unwrap().status.success(), "native {name}");
+            guest.env(PATH_ENV, env::join_paths([&bad, &missing]).unwrap());
+            assert_eq!(
+                prepare_program(&guest, None).unwrap_err().raw_os_error(),
+                Some(errno),
+                "{name}"
+            );
+            assert_eq!(
+                guest.output().unwrap_err().raw_os_error(),
+                Some(errno),
+                "native {name}"
+            );
+            if candidate.is_dir() {
+                std::fs::remove_dir(&candidate).unwrap();
+            } else {
+                std::fs::remove_file(&candidate).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn public_constructor_requires_attested_frontend() {
+        let selected = crate::bundled_drrun_path();
+        assert!(DbtRunner::new(selected, fake_client()).is_ok());
+        let directory = tempfile::tempdir().unwrap();
+        let copied = directory.path().join("relocated-drrun");
+        std::fs::copy(selected, &copied).unwrap();
+        assert!(DbtRunner::new(&copied, fake_client()).is_ok());
+        let mut bytes = std::fs::read(&copied).unwrap();
+        let at = bytes.len() - 1;
+        bytes[at] ^= 1;
+        std::fs::write(&copied, bytes).unwrap();
+        for frontend in [&copied, &fake_drrun(directory.path())] {
+            let error = DbtRunner::new(frontend, fake_client()).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("incompatible DynamoRIO frontend")
+            );
+            assert!(error.to_string().contains("rebuild the consuming crate"));
+        }
+        let cwd = env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(selected.strip_prefix("/").unwrap());
+        let runner = DbtRunner::new(&relative, fake_client()).unwrap();
+        let mut guest = Command::new("/bin/true");
+        guest.current_dir(directory.path());
+        let command = runner.command(&guest, None).unwrap();
+        assert_eq!(command.get_program(), cwd.join(relative).as_os_str());
+        assert!(Path::new(command.get_program()).is_absolute());
+        assert_eq!(
+            Sha256::digest(std::fs::read(command.get_program()).unwrap()),
+            Sha256::digest(std::fs::read(selected).unwrap()),
+        );
+    }
+
+    #[test]
     fn wraps_shebang_program_with_its_interpreter() {
         let root = tempfile::tempdir().unwrap();
         let script = root.path().join("guest-script");
-        std::fs::write(&script, b"#!/usr/bin/env bash\necho guest\n").unwrap();
+        write_executable_script(&script, b"#!/usr/bin/env bash\necho guest\n");
         let mut guest = Command::new(&script);
         guest.arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/usr/bin/env"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2523,11 +3502,13 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.env(PATH_ENV, &bin).arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/bin/sh"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2555,11 +3536,13 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.arg("argument");
 
-        let wrapped = runner().command(&guest, Some(&environment));
+        let wrapped = runner().command(&guest, Some(&environment)).unwrap();
         assert_eq!(
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-quiet"),
+                OsStr::new("-app_path"),
+                OsStr::new("/usr/bin/env"),
                 OsStr::new("-disable_rseq"),
                 OsStr::new("-stack_size"),
                 OsStr::new("2M"),
@@ -2587,10 +3570,12 @@ mod tests {
         let mut guest = Command::new("guest-script");
         guest.current_dir(root.path()).env(PATH_ENV, "bin");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("/bin/sh"));
-        assert_eq!(args[10], script.as_os_str());
+        assert_eq!(args[11], OsStr::new("/bin/sh"));
+        assert_eq!(args[12], OsStr::new("bin/guest-script"));
+        assert_eq!(args[1], OsStr::new("-app_path"));
+        assert_eq!(args[2], OsStr::new("/bin/sh"));
         assert_eq!(wrapped.get_current_dir(), Some(root.path()));
     }
 
@@ -2607,10 +3592,10 @@ mod tests {
         let mut guest = Command::new("guest-wrapper");
         guest.env(PATH_ENV, &bin);
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("/bin/sh"));
-        assert_eq!(args[10], wrapper.as_os_str());
+        assert_eq!(args[11], OsStr::new("/bin/sh"));
+        assert_eq!(args[12], wrapper.as_os_str());
     }
 
     #[test]
@@ -2624,10 +3609,190 @@ mod tests {
         let mut guest = Command::new("guest-elf");
         guest.env(PATH_ENV, &bin).arg("argument");
 
-        let wrapped = runner().command(&guest, None);
+        let wrapped = runner().command(&guest, None).unwrap();
         let args = wrapped.get_args().collect::<Vec<_>>();
-        assert_eq!(args[9], OsStr::new("guest-elf"));
-        assert_eq!(args[10], OsStr::new("argument"));
+        assert_eq!(args[1], OsStr::new("-app_path"));
+        assert_eq!(args[2], executable.as_os_str());
+        assert_eq!(args[11], OsStr::new("guest-elf"));
+        assert_eq!(args[12], OsStr::new("argument"));
+    }
+
+    #[test]
+    fn captured_caller_environment_preserves_removed_and_non_utf8_entries() {
+        let mut shared = reverie::process::Command::new("/usr/bin/env");
+        shared
+            .env_clear()
+            .env("REMOVED", "public-controller-value")
+            .env_remove("REMOVED")
+            .env("VALUE", "captured")
+            .env("BYTES", OsStr::from_bytes(b"public-\xff-value"));
+        let environment = shared.get_captured_envs();
+        assert_eq!(
+            environment,
+            BTreeMap::from([
+                (OsString::from("VALUE"), OsString::from("captured")),
+                (
+                    OsString::from("BYTES"),
+                    OsStr::from_bytes(b"public-\xff-value").to_os_string(),
+                ),
+            ])
+        );
+        let mut guest = shared.try_into_std().unwrap();
+        // A supplied snapshot is authoritative even if the std command has
+        // subsequently acquired different deltas.
+        guest
+            .env("VALUE", "must-not-override-snapshot")
+            .env("REMOVED", "must-not-reappear");
+        let selected = runner()
+            .with_captured_caller_program(&guest, &environment)
+            .unwrap();
+        assert!(selected.caller_tool);
+        let wrapped = selected.command(&guest, Some(&environment)).unwrap();
+        let mut expected = environment.clone();
+        expected.insert(
+            HIDE_ENV_PREFIXES_ENV.into(),
+            selected.encoded_private_environment(),
+        );
+        assert_eq!(
+            wrapped
+                .get_envs()
+                .map(|(key, value)| (key.to_os_string(), value.unwrap().to_os_string()))
+                .collect::<BTreeMap<_, _>>(),
+            expected
+        );
+        assert!(!environment.contains_key(OsStr::new(PATH_ENV)));
+        assert!(!environment.contains_key(OsStr::new("REMOVED")));
+    }
+
+    #[test]
+    fn captured_caller_program_uses_shared_path_resolution() {
+        const CHILD: &str = "REVERIE_TEST_CAPTURED_CALLER_PATH_CHILD";
+        if env::var_os(CHILD).is_none() {
+            let directory = tempfile::tempdir().unwrap();
+            // Only this owned subprocess gets a different cwd/environment;
+            // parallel tests in this process never observe a global mutation.
+            let output = Command::new(env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "launcher::tests::captured_caller_program_uses_shared_path_resolution",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("LC_ALL", "C")
+                .env(PATH_ENV, directory.path().join("host"))
+                .current_dir(directory.path())
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            eprintln!("captured caller path subprocess: {output:?}");
+            assert!(output.status.success(), "{output:?}");
+            assert!(
+                output
+                    .stdout
+                    .windows(b"captured-caller-path-controls-complete".len())
+                    .any(|bytes| bytes == b"captured-caller-path-controls-complete"),
+                "{output:?}"
+            );
+            return;
+        }
+        assert_eq!(env::var_os(CHILD).unwrap(), "1");
+        let root = env::current_dir().unwrap();
+        let host = root.join("host");
+        let desired = root.join("desired");
+        let guest_directory = root.join("guest");
+        let relative = root.join("relative");
+        let non_utf8 = root.join(OsStr::from_bytes(b"bin-\xff"));
+        for directory in [&host, &desired, &guest_directory, &relative, &non_utf8] {
+            std::fs::create_dir(directory).unwrap();
+            write_executable_script(&directory.join("probe"), b"\x7fELFplaceholder");
+        }
+        std::fs::create_dir(guest_directory.join("relative")).unwrap();
+        write_executable_script(
+            &guest_directory.join("relative/probe"),
+            b"\x7fELFguest-cwd-trap",
+        );
+        write_executable_script(&root.join("probe"), b"\x7fELFcontroller-cwd");
+        assert_eq!(env::var_os(PATH_ENV).unwrap().as_os_str(), host.as_os_str());
+
+        let check = |program: &str, environment: &BTreeMap<OsString, OsString>, expected: &Path| {
+            let mut guest = Command::new(program);
+            guest
+                .arg("argument")
+                .current_dir(&guest_directory)
+                .env(PATH_ENV, &host);
+            let mut shared = reverie::process::Command::new(program);
+            shared
+                .env_clear()
+                .envs(environment)
+                .current_dir(&guest_directory);
+            let selected = shared.find_program().unwrap();
+            assert_eq!(selected, expected);
+            let runner = runner()
+                .with_captured_caller_program(&guest, environment)
+                .unwrap();
+            assert!(runner.caller_tool);
+            assert_eq!(
+                runner.selected_caller_program.as_deref(),
+                Some(selected.as_path())
+            );
+            let wrapped = runner.command(&guest, Some(environment)).unwrap();
+            let args = wrapped.get_args().collect::<Vec<_>>();
+            assert_eq!(args[1], OsStr::new("-app_path"));
+            assert_eq!(args[2], selected.as_os_str());
+            let separator = args
+                .iter()
+                .position(|argument| *argument == OsStr::new("--"))
+                .unwrap();
+            assert_eq!(
+                &args[separator + 1..],
+                [OsStr::new(program), OsStr::new("argument")]
+            );
+            assert_eq!(wrapped.get_current_dir(), Some(guest_directory.as_path()));
+            let actual_path = wrapped
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new(PATH_ENV));
+            assert_eq!(
+                actual_path.map(|(_, value)| value.unwrap()),
+                environment
+                    .get(OsStr::new(PATH_ENV))
+                    .map(OsString::as_os_str)
+            );
+        };
+        for (path, selected) in [
+            (desired.as_os_str(), desired.join("probe")),
+            (non_utf8.as_os_str(), non_utf8.join("probe")),
+            (OsStr::new("relative"), relative.join("probe")),
+            (OsStr::new(""), root.join("probe")),
+        ] {
+            check(
+                "probe",
+                &BTreeMap::from([(PATH_ENV.into(), path.to_os_string())]),
+                &selected,
+            );
+        }
+        check("probe", &BTreeMap::new(), &root.join("probe"));
+        check("./probe", &BTreeMap::new(), &guest_directory.join("probe"));
+        for environment in [
+            BTreeMap::new(),
+            BTreeMap::from([(PATH_ENV.into(), OsString::new())]),
+        ] {
+            let mut guest = Command::new("missing-captured-caller-probe");
+            guest.current_dir(&guest_directory);
+            let mut shared = reverie::process::Command::new(guest.get_program());
+            shared
+                .env_clear()
+                .envs(&environment)
+                .current_dir(&guest_directory);
+            let expected = shared.find_program().unwrap_err();
+            let actual = runner()
+                .with_captured_caller_program(&guest, &environment)
+                .unwrap_err();
+            assert_eq!(actual.kind(), expected.kind());
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+        println!("captured-caller-path-controls-complete");
     }
 
     #[test]
@@ -2635,7 +3800,7 @@ mod tests {
         let guest = Command::new("/usr/bin/env");
         let environment = BTreeMap::from([(OsString::from("ONLY"), OsString::from("guest"))]);
 
-        let wrapped = runner().command(&guest, Some(&environment));
+        let wrapped = runner().command(&guest, Some(&environment)).unwrap();
         // drrun also receives the bundled DynamoRIO's prefix list, a
         // `DYNAMORIO_*` variable DynamoRIO removes from the guest's environment
         // with the prefixed ones (tests/guest_environment_live.rs).
@@ -2721,6 +3886,7 @@ mod tests {
                 assert_eq!(
                     selected
                         .command(guest, environment)
+                        .unwrap()
                         .get_envs()
                         .find(|(key, _)| *key == HIDE_ENV_PREFIXES_ENV)
                         .unwrap()
@@ -2789,7 +3955,7 @@ mod tests {
         // for a moment after it is written (ETXTBSY).
         let mut attempts = 0;
         let output = loop {
-            match runner.command(guest, environment).output() {
+            match runner.command(guest, environment).unwrap().output() {
                 Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempts < 50 => {
                     attempts += 1;
                     std::thread::sleep(std::time::Duration::from_millis(20));
@@ -2975,7 +4141,7 @@ mod tests {
     #[test]
     fn supplies_captured_standard_input() {
         let root = tempfile::tempdir().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client()).unwrap();
         let output = runner
             .output_with_input(&Command::new("/bin/cat"), b"hello from stdin\n")
             .unwrap();
@@ -3090,7 +4256,7 @@ mod tests {
         let mut guest = Command::new("/bin/bash");
         guest.args(["-c", &script]);
 
-        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let output = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .output(&guest)
             .unwrap();
@@ -3113,7 +4279,7 @@ mod tests {
             .env(TEST_DRRUN_STDERR, "drrun-stderr")
             .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
 
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .diagnostic_file(&diagnostics)
             .unwrap();
@@ -3146,7 +4312,7 @@ mod tests {
             .env(TEST_DRRUN_STDERR, "drrun-stderr")
             .env(TEST_DRRUN_DIAGNOSTIC, "drrun-diagnostic");
 
-        let output = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let output = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .output(&guest)
             .unwrap();
@@ -3222,7 +4388,7 @@ mod tests {
     fn diagnostic_file_preserves_process_group_cleanup_and_exit_status() {
         let root = tempfile::tempdir().unwrap();
         let mut diagnostics = tempfile::tempfile().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client())
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client())
             .unwrap()
             .diagnostic_file(&diagnostics)
             .unwrap()
@@ -3603,6 +4769,231 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn caller_activation_failure_retains_the_reaped_child_output() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("child-pid");
+        let runner = fixture_runner(fake_drrun(directory.path()), fake_client())
+            .unwrap()
+            .terminate_process_group_on_exit(true);
+        let mut guest = Command::new("/bin/bash");
+        guest.args([
+            "-c",
+            "printf '%s' \"$$\" > \"$1\"; printf 'native-out\\n'; printf 'native-diagnostic\\n' >&198; exit 7",
+            "caller-capture-fixture",
+        ]);
+        guest.arg(&pid_file);
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runner.output_with_caller_tool::<crate::Counter2Global>(&guest, ()),
+        )
+        .await
+        .expect("caller capture fixture timed out")
+        .unwrap_err();
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        // The real wait and existing containment finish before a protocol error
+        // returns; this fixture does not execute a DynamoRIO/native Tool host.
+        let waited = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(waited, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(error.to_string().contains("Tool"), "{error}");
+        let output = failed_run_output(&error)
+            .unwrap_or_else(|| panic!("caller protocol error dropped reaped output: {error}"));
+        assert_eq!(output.status.unwrap().code(), Some(7));
+        assert_eq!(output.stdout, b"native-out\n");
+        assert_eq!(output.stderr, b"native-diagnostic\n");
+    }
+
+    #[tokio::test]
+    async fn caller_status_requires_activation_and_reaps_child() {
+        const CHILD: &str = "REVERIE_DBT_TEST_CALLER_STATUS_CHILD";
+        const DIRECTORY: &str = "REVERIE_DBT_TEST_CALLER_STATUS_DIRECTORY";
+        let mode = std::env::var_os(CHILD);
+        if mode.is_none() {
+            // Capture only an owned subprocess. Redirecting this libtest
+            // process's descriptors would race unrelated parallel tests.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            for mode in ["normal", "pipe-holder"] {
+                let directory = tempfile::tempdir().unwrap();
+                let pid_file = directory.path().join("child-pid");
+                let mut child = Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "launcher::tests::caller_status_requires_activation_and_reaps_child",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, mode)
+                    .env(DIRECTORY, directory.path())
+                    .process_group(0)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                let group = child.id() as i32;
+                let mut descendant = None;
+                let mut ready_deadline = None;
+                // Errors return into unconditional cleanup below, not out of
+                // the test. WNOWAIT keeps the group leader's identity owned.
+                let observed = (|| -> io::Result<bool> {
+                    loop {
+                        if std::time::Instant::now() >= ready_deadline.unwrap_or(deadline) {
+                            return Ok(true);
+                        }
+                        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                        // SAFETY: writable storage and our unreaped child PID.
+                        let waited = unsafe {
+                            libc::waitid(
+                                libc::P_PID,
+                                child.id() as libc::id_t,
+                                info.as_mut_ptr(),
+                                libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+                            )
+                        };
+                        if waited == -1 {
+                            let error = io::Error::last_os_error();
+                            if error.kind() == io::ErrorKind::Interrupted {
+                                continue;
+                            }
+                            return Err(error);
+                        }
+                        // SAFETY: waitid succeeded; zero si_pid means running.
+                        if unsafe { info.assume_init().si_pid() } != 0 {
+                            return Ok(false);
+                        }
+                        if mode == "pipe-holder" && descendant.is_none() {
+                            match std::fs::read_to_string(&pid_file) {
+                                Ok(pid) if pid.ends_with('\n') => {
+                                    let pid = pid.trim().parse::<i32>().map_err(|error| {
+                                        io::Error::new(io::ErrorKind::InvalidData, error)
+                                    })?;
+                                    // SAFETY: getpgid only observes this PID.
+                                    if pid <= 1 || unsafe { libc::getpgid(pid) } != group {
+                                        return Err(io::Error::other(
+                                            "pipe-holding descendant escaped the owned group",
+                                        ));
+                                    }
+                                    descendant = Some(pid);
+                                    ready_deadline = Some(
+                                        (std::time::Instant::now()
+                                            + std::time::Duration::from_millis(100))
+                                        .min(deadline),
+                                    );
+                                }
+                                Ok(_) => {}
+                                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                })();
+                // The negative case must still have a live descendant when
+                // cleanup starts, rather than merely observe a normal exit.
+                let live_descendant = (|| -> io::Result<bool> {
+                    let Some(pid) = descendant else {
+                        return Ok(false);
+                    };
+                    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))?;
+                    let (_, fields) = stat
+                        .rsplit_once(')')
+                        .ok_or_else(|| io::Error::other("malformed descendant process stat"))?;
+                    let state = fields.split_ascii_whitespace().next();
+                    // SAFETY: getpgid only observes the published child PID.
+                    Ok(matches!(state, Some(state) if state != "Z" && state != "X")
+                        && unsafe { libc::getpgid(pid) == group })
+                })();
+                let killed = terminate_process_group(group);
+                let _ = child.kill();
+                let emptied = wait_for_process_group_no_live_members_until(group, deadline);
+                if emptied.is_err() {
+                    // A cleanup error must not turn into an unbounded pipe
+                    // drain. The worker has also received its own kill attempt.
+                    drop(child.stdout.take());
+                    drop(child.stderr.take());
+                }
+                let output = child.wait_with_output();
+                // SAFETY: query the worker only after its owned wait.
+                let waited = unsafe { libc::waitpid(group, std::ptr::null_mut(), libc::WNOHANG) };
+                let wait_error = io::Error::last_os_error().raw_os_error();
+                // All assertions and error propagation follow cleanup/reap.
+                let output = output.unwrap();
+                eprintln!(
+                    "isolated caller status {mode}: {output:?}; live descendant={live_descendant:?}"
+                );
+                killed.unwrap();
+                emptied.unwrap();
+                let timed_out = observed.unwrap();
+                let live_descendant = live_descendant.unwrap();
+                assert_eq!(timed_out, mode == "pipe-holder", "{output:?}");
+                if mode == "pipe-holder" {
+                    use std::os::unix::process::ExitStatusExt as _;
+                    assert!(live_descendant);
+                    assert_eq!(output.status.signal(), Some(libc::SIGKILL));
+                } else {
+                    assert!(output.status.success(), "{output:?}");
+                }
+                assert_eq!(waited, -1);
+                assert_eq!(wait_error, Some(libc::ECHILD));
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout)
+                        .matches("status-out\n")
+                        .count(),
+                    1,
+                    "{output:?}"
+                );
+                assert_eq!(output.stderr, b"status-diagnostic\n", "{output:?}");
+            }
+            return;
+        }
+
+        let mode = mode.unwrap();
+        assert!(mode == "normal" || mode == "pipe-holder");
+        let directory = PathBuf::from(std::env::var_os(DIRECTORY).unwrap());
+        let pid_file = directory.join("child-pid");
+        // Keep the stand-in in its supervising worker's group. It never changes
+        // groups or sessions, and the parent owns both cleanup and the deadline.
+        let runner = fixture_runner(fake_drrun(&directory), fake_client()).unwrap();
+        let mut guest = Command::new("/bin/bash");
+        guest.args([
+            "-c",
+            "printf 'status-out\\n'; printf 'status-diagnostic\\n' >&198; printf '%s\\n' \"$$\" > \"$1\"; if [ \"$2\" = pipe-holder ]; then exec /bin/sleep 60; fi; exit 7",
+            "caller-status-fixture",
+        ]);
+        guest.arg(&pid_file).arg(mode);
+        let error = runner
+            .status_with_caller_tool::<crate::Counter2Global>(&guest, ())
+            .await
+            .unwrap_err();
+        let pid: i32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // This stand-in sends no activation/Finished receipt. It exercises
+        // the real wait and inherited streams, not a native Tool host.
+        let waited = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(waited, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("Tool activation lacks committed Started and Finished acknowledgements"),
+            "{error}"
+        );
+        let output = failed_run_output(&error)
+            .unwrap_or_else(|| panic!("caller protocol error dropped reaped status: {error}"));
+        assert_eq!(output.status.unwrap().code(), Some(7));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+
     #[test]
     fn a_failed_run_keeps_its_error_and_carries_its_output() {
         let original = io::Error::new(io::ErrorKind::InvalidData, "evidence failed");
@@ -3610,6 +5001,7 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(error.to_string(), "evidence failed");
         let output = failed_run_output(&error).expect("captured output");
+        assert_eq!(output.status, None);
         assert_eq!(output.stdout, b"out");
         assert_eq!(output.stderr, b"why\n");
         assert!(failed_run_output(&io::Error::other("plain")).is_none());
@@ -3670,7 +5062,7 @@ mod tests {
     #[test]
     fn returns_when_child_exits_while_input_source_is_blocked() {
         let root = tempfile::tempdir().unwrap();
-        let runner = DbtRunner::new(fake_drrun(root.path()), fake_client()).unwrap();
+        let runner = fixture_runner(fake_drrun(root.path()), fake_client()).unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();
 
@@ -3902,7 +5294,7 @@ mod tests {
         let mut guest = Command::new(fixture);
         disclose_evidence_credentials(&runner, &mut guest);
 
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -3954,7 +5346,7 @@ mod tests {
             .client_argument("-test-wait-for-background");
         let mut guest = Command::new("/bin/sleep");
         guest.arg("30");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4006,7 +5398,7 @@ mod tests {
             .unwrap()
             .drop_next_acknowledgement();
         let guest = Command::new("/bin/true");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4052,7 +5444,7 @@ mod tests {
             .client_argument("-test-kill-announced-child");
         let mut guest = Command::new(fixture);
         guest.env("EVIDENCE_FORGE_MODE", "killed-child");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4094,7 +5486,7 @@ mod tests {
             .unwrap()
             .client_argument("-test-direct-evidence-entry");
         let guest = Command::new("/bin/true");
-        let mut command = runner.command(&guest, None);
+        let mut command = runner.command(&guest, None).unwrap();
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -4136,7 +5528,7 @@ mod tests {
                 .unwrap()
                 .client_argument(argument);
             let guest = Command::new("/bin/true");
-            let mut command = runner.command(&guest, None);
+            let mut command = runner.command(&guest, None).unwrap();
             command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())

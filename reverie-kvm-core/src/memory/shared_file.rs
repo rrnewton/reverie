@@ -482,6 +482,20 @@ impl GuestMemory {
         source: InstallSource,
     ) -> Result<()> {
         self.check_copy_failure()?;
+        // A vfork child's copy may not change its shared views: on Linux the
+        // change would reach its parent's address space too. Only a guest's
+        // own mapping change is a Fresh publication; a fork's inheritance and
+        // the sharing of anonymous memory before a fork change no mapping the
+        // guest can see. The allocation guard excludes a concurrent change.
+        if matches!(source, InstallSource::Fresh)
+            && self.shares_parent_address_space()
+            && (slice.backing.kind.retained_shared()
+                || self.range_contains_retained_shared(address, slice.length))
+        {
+            return Err(Self::vfork_shared_view_change(
+                "mapping change in a vfork child",
+            ));
+        }
         if self.mapping.sync_mmu.lock().unwrap().as_ref() == Some(&false) {
             return Err(Error::SynchronousMmuUnsupported);
         }
@@ -528,19 +542,15 @@ impl GuestMemory {
             );
             match permissions {
                 Some((readable, writable)) => {
-                    prepared.pages.insert(
-                        page,
-                        if readable {
-                            UserPageState::Accessible { writable }
-                        } else {
-                            UserPageState::NoAccess
-                        },
-                    );
+                    prepared
+                        .pages
+                        .insert(page, UserPageState::undeclared(readable, writable));
                 }
                 None => {
                     prepared.pages.remove(&page);
                     prepared.file_pages.edit().remove(&page);
                     prepared.shared_anonymous_pages.edit().remove(&page);
+                    prepared.set_mapping_incarnation(page, None);
                     if !prepared
                         .reservations
                         .get(&page)
@@ -780,8 +790,8 @@ impl GuestMemory {
                 Arc::new(Backing::new_shared_anonymous(length).map_err(Error::MemoryMapping)?);
             let slice = BackingSlice::new(backing, 0, length).map_err(Error::MemoryMapping)?;
             let permissions = match permission {
-                UserPageState::Accessible { writable } => (true, writable),
-                UserPageState::NoAccess => (false, false),
+                UserPageState::Accessible { writable, .. } => (true, writable),
+                UserPageState::NoAccess { .. } => (false, false),
             };
             match self.publish_range_from(
                 allocation,
@@ -818,6 +828,7 @@ impl GuestMemory {
     pub(super) fn snapshot_with_shared_files(
         &self,
         allocation: AllocationGuard<'_>,
+        share_record: bool,
     ) -> Result<Self> {
         if !Arc::ptr_eq(&allocation.memory.mapping, &self.mapping) {
             return Err(Error::MappingPublicationGateMismatch);
@@ -856,6 +867,7 @@ impl GuestMemory {
             self.copy_private_snapshot_interval(
                 authority.closed.as_ref().unwrap(),
                 &child,
+                &parent_state.backing_pages,
                 cursor,
                 address,
                 &mut buffer,
@@ -866,18 +878,25 @@ impl GuestMemory {
         self.copy_private_snapshot_interval(
             authority.closed.as_ref().unwrap(),
             &child,
+            &parent_state.backing_pages,
             cursor,
             self.guest_end(),
             &mut buffer,
         )?;
         let mut child_state = parent_state.clone();
+        // A fork's child is another address space: it starts with the
+        // parent's stack-window record, and the two record their own changes,
+        // those the publications below make in the child included.
+        if !share_record {
+            child_state.pages.detach_watch();
+        }
         // All private extents now belong to the child's base backing. Shared
         // installed pointers are recreated only from actual child syscall results.
         child_state.backing_pages.clear();
         *child.mapping.address_space.lock().unwrap() = child_state;
         let permissions = |page: u64| match parent_state.pages.get(&page) {
-            Some(UserPageState::Accessible { writable }) => Some((true, *writable)),
-            Some(UserPageState::NoAccess) => Some((false, false)),
+            Some(UserPageState::Accessible { writable, .. }) => Some((true, *writable)),
+            Some(UserPageState::NoAccess { .. }) => Some((false, false)),
             None => None,
         };
         let mut inherited = inherited.into_iter().peekable();
@@ -922,6 +941,9 @@ impl GuestMemory {
         self.check_copy_failure()?;
         child.check_copy_failure()?;
         drop(authority);
+        // Only now, after the inherited views above are published: a vfork
+        // child's copy refuses later changes to them until its exec.
+        child.mark_shares_parent_address_space(share_record);
         Ok(child)
     }
 
@@ -932,17 +954,87 @@ impl GuestMemory {
         }));
     }
 
+    /// Copies the private bytes of `[address, end)`, which holds no retained
+    /// shared page, into `child`, a new arena of the same size and base. The
+    /// child's base backing is new, so it holds no data, and only data
+    /// extents are copied: of each run of pages that live in this arena's base
+    /// backing (`copy_base_snapshot_run`), and of each page with a private
+    /// backing of its own, from that backing's descriptor
+    /// (`GuestMemory::copy_sparse_separate_run`). So a page the guest never
+    /// wrote costs the child nothing and is not read, which would commit it.
+    /// A run or page the sparse copy cannot finish is copied byte for byte,
+    /// which overwrites whatever part of it the sparse copy wrote.
     fn copy_private_snapshot_interval(
         &self,
         closed: &Closed,
         child: &GuestMemory,
-        mut address: u64,
+        backing_pages: &BTreeMap<u64, InstalledBackingPage>,
+        address: u64,
         end: u64,
         buffer: &mut [u8],
     ) -> Result<()> {
         if !closed.belongs_to(&self.entry_gate()) {
             return Err(Error::MappingPublicationGateMismatch);
         }
+        let page_size = PAGE_SIZE as u64;
+        let mut cursor = address;
+        if address < end {
+            for (&page, installed) in
+                backing_pages.range(address / page_size..end.div_ceil(page_size))
+            {
+                let separate = page * page_size;
+                self.copy_base_snapshot_run(child, cursor, separate, buffer)?;
+                let copied = self.copy_sparse_separate_run(child, separate, installed, 1);
+                #[cfg(test)]
+                let copied = copied.and_then(|()| tests::injected_sparse_copy_failure());
+                if copied.is_err() {
+                    self.copy_private_snapshot_bytes(
+                        child,
+                        separate,
+                        separate + page_size,
+                        buffer,
+                    )?;
+                }
+                cursor = separate + page_size;
+            }
+        }
+        self.copy_base_snapshot_run(child, cursor, end, buffer)
+    }
+
+    /// Copies `[start, end)`, pages of this arena's base backing, into the
+    /// same range of `child`'s new base backing: its data extents only, or, if
+    /// that cannot finish, every byte.
+    fn copy_base_snapshot_run(
+        &self,
+        child: &GuestMemory,
+        start: u64,
+        end: u64,
+        buffer: &mut [u8],
+    ) -> Result<()> {
+        if start >= end {
+            return Ok(());
+        }
+        let length = usize::try_from(end - start).expect("guest range must fit usize");
+        self.checked_offset(start, length)?;
+        child.checked_offset(start, length)?;
+        let sparse = self.copy_sparse_base_run(child, start, end);
+        #[cfg(test)]
+        let sparse = sparse.and_then(|()| tests::injected_sparse_copy_failure());
+        match sparse {
+            Ok(()) => Ok(()),
+            Err(_) => self.copy_private_snapshot_bytes(child, start, end, buffer),
+        }
+    }
+
+    /// Copies every byte of `[address, end)`, which holds no retained shared
+    /// page, into `child`.
+    fn copy_private_snapshot_bytes(
+        &self,
+        child: &GuestMemory,
+        mut address: u64,
+        end: u64,
+        buffer: &mut [u8],
+    ) -> Result<()> {
         while address < end {
             let length = usize::try_from(end - address).unwrap().min(buffer.len());
             let offset = self.checked_offset(address, length)?;
@@ -967,6 +1059,15 @@ impl GuestMemory {
     }
 
     pub fn retire_shared_files_for_exec(&self) -> Result<()> {
+        // The new image is a new address space: a vfork child that execs no
+        // longer shares its parent's (its changes to private memory went back
+        // first, `return_vfork_changes`, and none of the new image's may),
+        // and its outgoing views retire below.
+        self.mark_shares_parent_address_space(false);
+        self.mapping.vfork_parent.lock().unwrap().take();
+        self.mapping
+            .exec_count
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         loop {
             let allocation = self.allocation_guard();
             let range = {
@@ -1400,6 +1501,20 @@ mod tests {
 
     use super::*;
     use crate::error_ext::ErrorExt;
+
+    thread_local! {
+        /// Makes this thread's shared-file snapshot copies report a failure
+        /// after their sparse copy, so a test sees the byte-for-byte fallback.
+        static FAIL_SPARSE_COPY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(super) fn injected_sparse_copy_failure() -> io::Result<()> {
+        if FAIL_SPARSE_COPY.with(std::cell::Cell::get) {
+            Err(io::Error::other("injected sparse copy failure"))
+        } else {
+            Ok(())
+        }
+    }
 
     const BASE: u64 = 0x10000;
     const P: u64 = PAGE_SIZE as u64;
@@ -2159,6 +2274,174 @@ mod tests {
         child.write_raw(BASE + 2 * P, b"alive").unwrap();
         assert_eq!(read(&second, BASE + 2 * P, 5), b"alive");
         assert_eq!(bytes(&original, 2 * P, 5), b"alive");
+    }
+
+    /// A memory of six pages whose top three are a stack window, the top two
+    /// reachable and mapped read-write as one mapping, watched; and the
+    /// window's user start.
+    fn watched_window_fixture() -> (GuestMemory, u64) {
+        let memory = fixture(6);
+        let window = memory.establish_user_stack_window(3 * P).unwrap();
+        memory
+            .reserve_region(BASE + 3 * P, 3 * P, RegionKind::Stack)
+            .unwrap()
+            .commit();
+        memory
+            .map_user_protection(
+                BASE + 3 * P,
+                3 * P,
+                (libc::PROT_READ | libc::PROT_WRITE) as u8,
+            )
+            .unwrap();
+        memory.watch_user_stack_window();
+        (memory, window)
+    }
+
+    /// The stack window's pages as extents of equal declared mapping.
+    type WindowList = Option<Vec<(u64, u64, DeclaredMapping)>>;
+
+    /// `memory`'s stack window pages as extents of equal declared mapping,
+    /// `(user start, user end, declared)`; `None` while its record is not
+    /// certain. Every page of these fixtures is declared.
+    fn window_list(memory: &GuestMemory) -> WindowList {
+        let mut extents: Vec<(u64, u64, DeclaredMapping)> = Vec::new();
+        for page in memory.user_stack_window_pages()? {
+            let declared = page.declared.unwrap();
+            match extents.last_mut() {
+                Some((_, end, last)) if *end == page.user_address && *last == declared => *end += P,
+                _ => extents.push((page.user_address, page.user_address + P, declared)),
+            }
+        }
+        Some(extents)
+    }
+
+    /// The window's one mapping, and its two once its top page is read-only.
+    fn window_lists(window: u64) -> (WindowList, WindowList) {
+        let mapping = |prot: libc::c_int| DeclaredMapping {
+            prot: prot as u8,
+            flags: 0,
+            lineage: 0,
+        };
+        let read_write = mapping(libc::PROT_READ | libc::PROT_WRITE);
+        (
+            Some(vec![(window, USER_STACK_TOP, read_write)]),
+            Some(vec![
+                (window, window + P, read_write),
+                (window + P, USER_STACK_TOP, mapping(libc::PROT_READ)),
+            ]),
+        )
+    }
+
+    /// A fork's copy of a memory that holds a shared file view is another
+    /// address space: it starts with the stack window's pages and keeps a
+    /// record of its own, so a change either side makes afterwards shows in
+    /// its own list only.
+    #[test]
+    fn a_shared_file_snapshot_keeps_its_own_stack_window_record() {
+        for child_changes in [true, false] {
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
+            install(&memory, &file(1), BASE + P, 1, 0);
+            assert_eq!(window_list(&memory), whole);
+            let child = memory.snapshot().unwrap();
+            assert!(child.contains_shared_file());
+            assert_eq!(window_list(&child), whole);
+            let (changing, other) = if child_changes {
+                (&child, &memory)
+            } else {
+                (&memory, &child)
+            };
+            changing
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
+                .unwrap();
+            assert_eq!(window_list(changing), split);
+            assert_eq!(window_list(other), whole, "child changes: {child_changes}");
+        }
+    }
+
+    /// A fork's copy of a memory that holds a shared file view keeps the
+    /// lineages its source's window pages were given, as any copy does.
+    #[test]
+    fn a_shared_file_snapshot_keeps_the_lineages_it_is_given() {
+        let (memory, window) = watched_window_fixture();
+        install(&memory, &file(1), BASE + P, 1, 0);
+        memory.set_user_stack_window_lineage(window + P, P, 3);
+        let child = memory.snapshot().unwrap();
+        assert!(child.contains_shared_file());
+        let read_write = DeclaredMapping {
+            prot: (libc::PROT_READ | libc::PROT_WRITE) as u8,
+            flags: 0,
+            lineage: 0,
+        };
+        let given = Some(vec![
+            (window, window + P, read_write),
+            (
+                window + P,
+                USER_STACK_TOP,
+                DeclaredMapping {
+                    lineage: 3,
+                    ..read_write
+                },
+            ),
+        ]);
+        assert_eq!(window_list(&memory), given);
+        assert_eq!(window_list(&child), given);
+    }
+
+    /// A copy of a memory that holds a shared file view, for a child that
+    /// shares the address space (`snapshot_sharing_address_space`), shares
+    /// the stack window's record as the copy of any other memory does: a
+    /// change either side makes afterwards leaves the other's list unknown.
+    #[test]
+    fn a_shared_file_sharing_snapshot_shares_the_stack_window_record() {
+        for copy_changes in [true, false] {
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
+            install(&memory, &file(1), BASE + P, 1, 0);
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            assert!(copy.contains_shared_file());
+            assert_eq!(window_list(&copy), whole);
+            let (changing, other) = if copy_changes {
+                (&copy, &memory)
+            } else {
+                (&memory, &copy)
+            };
+            changing
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
+                .unwrap();
+            assert_eq!(window_list(changing), split);
+            assert_eq!(window_list(other), None, "copy changes: {copy_changes}");
+        }
+    }
+
+    /// A copy that shares the stack window's record with its source, as a
+    /// vfork child's does, keeps sharing it across a publication, which
+    /// installs a prepared copy of the address-space state in place of the
+    /// old one: a change either side makes afterwards still leaves the
+    /// other's list unknown.
+    #[test]
+    fn a_publication_keeps_a_shared_stack_window_record() {
+        for copy_publishes in [true, false] {
+            let (memory, window) = watched_window_fixture();
+            let (whole, split) = window_lists(window);
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            let (publisher, other) = if copy_publishes {
+                (&copy, &memory)
+            } else {
+                (&memory, &copy)
+            };
+            replace(publisher, BASE, 1, Some(b"published"), true);
+            assert_eq!(
+                window_list(other),
+                whole,
+                "copy publishes: {copy_publishes}"
+            );
+            publisher
+                .protect_user_range(BASE + 4 * P, P, libc::PROT_READ as u8)
+                .unwrap();
+            assert_eq!(window_list(publisher), split);
+            assert_eq!(window_list(other), None, "copy publishes: {copy_publishes}");
+        }
     }
 
     #[test]
@@ -3105,5 +3388,732 @@ mod tests {
         assert!(!memory.contains_shared_file());
         assert!(!memory.entry_gate().single_member_domain_active());
         drop(member);
+    }
+
+    fn vfork_refusal(result: Result<()>) {
+        match result {
+            Err(Error::SharedFileCapability { operation, reason }) => {
+                assert_eq!(operation, "mapping change in a vfork child");
+                assert!(reason.starts_with("a vfork child shares its parent's address space"));
+            }
+            other => panic!("expected the vfork child's shared-view refusal, got {other:?}"),
+        }
+    }
+
+    /// A vfork child's copy of a memory that holds shared views has an arena
+    /// and an entry gate of its own, so the parent's gate keeps its one
+    /// stopped participant. The copy inherits the views, so a store through
+    /// one reaches the other side and the file at once, and copies private
+    /// memory, whose changes reach the parent when the child's window ends,
+    /// a nested vfork's through its own parent. It is marked until its exec;
+    /// a fork of it is another address space and is not, and a vfork of it
+    /// is.
+    #[test]
+    fn vfork_copy_inherits_shared_views_on_a_gate_of_its_own() {
+        let memory = fixture(4);
+        let original = file(2);
+        install(&memory, &original, BASE + P, 2, 0);
+        memory.write_raw(BASE, b"parent").unwrap();
+        let participant = memory.entry_gate().register().unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        assert!(child.shares_parent_address_space());
+        assert!(!memory.shares_parent_address_space());
+        assert!(!Arc::ptr_eq(&memory.mapping, &child.mapping));
+        assert!(!Arc::ptr_eq(&memory.entry_gate(), &child.entry_gate()));
+        assert!(memory.entry_gate().single_member_domain_active());
+        assert!(child.entry_gate().single_member_domain_active());
+        assert_eq!(memory.entry_gate().test_state().members.len(), 1);
+        assert!(child.entry_gate().test_state().members.is_empty());
+        assert_eq!(child.separately_backed_pages(), 2);
+        child.write_raw(BASE + P + 3, b"child").unwrap();
+        assert_eq!(read(&memory, BASE + P + 3, 5), b"child");
+        assert_eq!(bytes(&original, 3, 5), b"child");
+        memory.write_raw(BASE + 2 * P + 5, b"parent").unwrap();
+        assert_eq!(read(&child, BASE + 2 * P + 5, 6), b"parent");
+        child.write_raw(BASE, b"child!").unwrap();
+        // The parent waits in its call while the child runs; the child's
+        // private stores are the parent's once the window ends, as on Linux,
+        // where the two share one address space.
+        assert_eq!(read(&memory, BASE, 6), b"parent");
+        assert!(!child.snapshot().unwrap().shares_parent_address_space());
+        let grandchild = child.snapshot_sharing_address_space().unwrap();
+        assert!(grandchild.shares_parent_address_space());
+        assert!(child.shares_parent_address_space());
+        grandchild.write_raw(BASE + P, b"grand").unwrap();
+        assert_eq!(read(&memory, BASE + P, 5), b"grand");
+        grandchild.write_raw(BASE + 3 * P, b"grandchild").unwrap();
+        grandchild.return_vfork_changes(BASE).unwrap();
+        assert_eq!(read(&child, BASE + 3 * P, 10), b"grandchild");
+        assert_eq!(read(&memory, BASE + 3 * P, 10), [0; 10]);
+        let returned = child.return_vfork_changes(BASE).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE, 6), b"child!");
+        assert_eq!(read(&memory, BASE + 3 * P, 10), b"grandchild");
+        // Pages 0 and 3; the views are the same object and are not written.
+        assert_eq!(returned.bytes_written, 2 * PAGE_SIZE);
+        assert!(memory.entry_gate().pending_failure().is_none());
+        drop(participant);
+    }
+
+    /// Every vfork copy is marked, whether or not its source holds a view,
+    /// and no fork copy is.
+    #[test]
+    fn vfork_copies_are_marked_and_fork_copies_are_not() {
+        let memory = fixture(2);
+        assert!(!memory.shares_parent_address_space());
+        assert!(
+            memory
+                .snapshot_sharing_address_space()
+                .unwrap()
+                .shares_parent_address_space()
+        );
+        assert!(!memory.snapshot().unwrap().shares_parent_address_space());
+    }
+
+    /// Until its exec, a vfork child's copy refuses every change to a shared
+    /// view before it changes anything: withdrawing part of an inherited
+    /// view, a private mapping over part of one, and a new view elsewhere.
+    /// A private publication that touches no view goes ahead. The exec ends
+    /// the window: the copy's views retire, the new image may map files, and
+    /// the parent's views and file are unchanged throughout.
+    #[test]
+    fn vfork_copy_refuses_shared_view_changes_until_exec() {
+        let memory = fixture(5);
+        let original = file(2);
+        install(&memory, &original, BASE + P, 2, 0);
+        let participant = memory.entry_gate().register().unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        let before = (access_maps(&child), child.separately_backed_pages());
+        let parent_before = (access_maps(&memory), memory.separately_backed_pages());
+        let other = file(1);
+        vfork_refusal(child.publish_private_range(
+            child.allocation_guard(),
+            PrivateRangePlan {
+                address: BASE + P,
+                length: PAGE_SIZE,
+                contents: None,
+                permissions: None,
+                cursors: None,
+            },
+        ));
+        vfork_refusal(child.publish_private_range(
+            child.allocation_guard(),
+            PrivateRangePlan {
+                address: BASE + 2 * P,
+                length: PAGE_SIZE,
+                contents: Some(b"private"),
+                permissions: Some((true, true)),
+                cursors: None,
+            },
+        ));
+        vfork_refusal(child.publish_shared_file_range(
+            child.allocation_guard(),
+            SharedFileRangePlan {
+                address: BASE + 3 * P,
+                length: PAGE_SIZE,
+                file: other.try_clone().unwrap().into(),
+                offset: 0,
+                readable: true,
+                writable: true,
+                max_writable: true,
+                cursors: None,
+            },
+        ));
+        assert_eq!(
+            (access_maps(&child), child.separately_backed_pages()),
+            before
+        );
+        assert!(child.entry_gate().pending_failure().is_none());
+        // A private publication over private memory changes no view.
+        replace(&child, BASE + 4 * P, 1, Some(b"private"), true);
+        assert_eq!(read(&child, BASE + 4 * P, 7), b"private");
+        assert!(child.range_contains_shared_file(BASE + P, 2 * PAGE_SIZE));
+        // The exec: the new image is another address space.
+        child.retire_shared_files_for_exec().unwrap();
+        assert!(!child.shares_parent_address_space());
+        assert!(!child.contains_shared_file());
+        install(&child, &other, BASE + 3 * P, 1, 0);
+        assert!(child.range_contains_shared_file(BASE + 3 * P, PAGE_SIZE));
+        assert_eq!(
+            (access_maps(&memory), memory.separately_backed_pages()),
+            parent_before
+        );
+        memory.write_raw(BASE + P, b"parent").unwrap();
+        assert_eq!(bytes(&original, 0, 6), b"parent");
+        assert!(memory.entry_gate().pending_failure().is_none());
+        drop(participant);
+    }
+
+    /// A vfork child's copy of shared views needs what a fork's does: the
+    /// source's one participant stopped and no host copy in flight. A second
+    /// participant cannot join a memory that holds a view, and a memory with
+    /// two participants cannot publish one, so the source of such a copy
+    /// never has a second vCPU running in its address space.
+    #[test]
+    fn vfork_copy_needs_the_sources_one_participant_quiescent() {
+        let memory = fixture(2);
+        let original = file(1);
+        install(&memory, &original, BASE, 1, 0);
+        let participant = memory.entry_gate().register().unwrap();
+        let gate = memory.entry_gate();
+        let copy = gate.try_copy(None).unwrap().unwrap();
+        assert!(matches!(
+            memory.snapshot_sharing_address_space().unwrap_err(),
+            Error::SharedFileCapability {
+                operation: "shared-file fork snapshot",
+                ..
+            }
+        ));
+        drop(copy);
+        assert!(
+            memory
+                .snapshot_sharing_address_space()
+                .unwrap()
+                .shares_parent_address_space()
+        );
+        assert!(gate.pending_failure().is_none());
+        // A second vCPU cannot join the view's address space.
+        let joined = fixture(2);
+        install(&joined, &original, BASE, 1, 0);
+        let first = joined.entry_gate().register().unwrap();
+        assert!(joined.entry_gate().register().is_err());
+        drop(first);
+        // Two vCPUs cannot take a view.
+        let threaded = fixture(2);
+        let one = threaded.entry_gate().register().unwrap();
+        let two = threaded.entry_gate().register().unwrap();
+        assert!(matches!(
+            threaded.publish_shared_file_range(
+                threaded.allocation_guard(),
+                SharedFileRangePlan {
+                    address: BASE,
+                    length: PAGE_SIZE,
+                    file: original.try_clone().unwrap().into(),
+                    offset: 0,
+                    readable: true,
+                    writable: false,
+                    max_writable: true,
+                    cursors: None,
+                },
+            ),
+            Err(Error::SharedFileCapability {
+                operation: "mapping publication",
+                ..
+            })
+        ));
+        assert!(!threaded.contains_shared_file());
+        drop((one, two, participant));
+    }
+
+    /// The bytes the host has allocated for the base backing of `memory`.
+    fn allocated_bytes(memory: &GuestMemory) -> u64 {
+        let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: the descriptor is live and metadata is valid for a stat.
+        let rc = unsafe {
+            libc::fstat(
+                memory.mapping.slice.backing.fd.as_raw_fd(),
+                metadata.as_mut_ptr(),
+            )
+        };
+        assert_eq!(rc, 0, "{}", io::Error::last_os_error());
+        // SAFETY: fstat succeeded.
+        unsafe { metadata.assume_init() }.st_blocks as u64 * 512
+    }
+
+    /// 16 MiB, eight 2 MiB regions: a host that backs shared memory with
+    /// huge pages allocates a written region whole.
+    const SPARSE_PAGES: usize = 4096;
+
+    /// A memory of `SPARSE_PAGES` pages that holds a two-page shared view at
+    /// page 10, a private page with a backing of its own at page 20, and
+    /// private bytes the guest wrote at pages 3 and 40, in its first 2 MiB,
+    /// and at each edge of the three runs of base pages a copy copies
+    /// (`[0, 10)`, `[12, 20)` and `[21, SPARSE_PAGES)`): pages 9, 12, 19, 21
+    /// and the last page. Every other page was never written.
+    fn sparse_snapshot_fixture() -> (GuestMemory, File) {
+        let memory = fixture(SPARSE_PAGES);
+        let original = file(2);
+        install(&memory, &original, BASE + 10 * P, 2, 0);
+        replace(&memory, BASE + 20 * P, 1, Some(b"own-backing"), true);
+        memory.write_raw(BASE + 3 * P + 7, b"early").unwrap();
+        memory.write_raw(BASE + 40 * P, b"late").unwrap();
+        for page in SPARSE_EDGE_PAGES {
+            memory
+                .write_raw(BASE + page * P + P - 8, &page.to_ne_bytes())
+                .unwrap();
+        }
+        (memory, original)
+    }
+
+    /// The first and last page of each run of base pages in
+    /// [`sparse_snapshot_fixture`].
+    const SPARSE_EDGE_PAGES: [u64; 5] = [9, 12, 19, 21, SPARSE_PAGES as u64 - 1];
+
+    fn assert_private_pages_match(memory: &GuestMemory, child: &GuestMemory) {
+        let mut source = vec![0; PAGE_SIZE];
+        let mut copy = vec![0; PAGE_SIZE];
+        for page in (0..SPARSE_PAGES as u64).filter(|page| !(10..12).contains(page)) {
+            memory.read_raw(BASE + page * P, &mut source).unwrap();
+            child.read_raw(BASE + page * P, &mut copy).unwrap();
+            assert!(source == copy, "page {page}");
+        }
+        assert_eq!(read(child, BASE + 3 * P + 7, 5), b"early");
+        assert_eq!(read(child, BASE + 20 * P, 11), b"own-backing");
+        assert_eq!(read(child, BASE + 40 * P, 4), b"late");
+        for page in SPARSE_EDGE_PAGES {
+            assert_eq!(
+                read(child, BASE + page * P + P - 8, 8),
+                page.to_ne_bytes(),
+                "page {page}"
+            );
+        }
+    }
+
+    /// A copy of a memory that holds shared views, a fork's or a vfork
+    /// child's, copies only the private pages the guest wrote into its new
+    /// base backing, so the 2 MiB regions it never wrote stay unallocated,
+    /// and every private page reads as the source's, a page with a backing
+    /// of its own included.
+    #[test]
+    fn shared_file_snapshots_copy_only_written_private_pages() {
+        let (memory, original) = sparse_snapshot_fixture();
+        for child in [
+            memory.snapshot().unwrap(),
+            memory.snapshot_sharing_address_space().unwrap(),
+        ] {
+            // Before any read of the copy: at most the first region and the
+            // last of the eight.
+            let allocated = allocated_bytes(&child);
+            assert!(allocated <= 4 << 20, "{allocated} bytes allocated");
+            assert_private_pages_match(&memory, &child);
+            child.write_raw(BASE + 10 * P + 1, b"view").unwrap();
+            assert_eq!(bytes(&original, 1, 4), b"view");
+        }
+    }
+
+    /// A fork of a memory that holds a shared file view inherits the view as
+    /// the same file and copies its private pages by data extents, reading
+    /// no hole: a private page with a backing of its own that holds no data
+    /// leaves that backing as unallocated as before, and reads as zeros in
+    /// the copy. After the fork, a store through the view by the parent, one
+    /// by the child, and one by another holder of the file (a write to the
+    /// file itself) are all seen through both views, while each side's
+    /// private pages stay as they were at the fork.
+    #[test]
+    fn a_fork_shares_a_view_changed_after_it_and_keeps_private_pages_apart() {
+        let separate_allocated = |memory: &GuestMemory, page: u64| {
+            let state = memory.mapping.address_space.lock().unwrap();
+            let fd = state.backing_pages[&page]._slice.backing.fd.as_raw_fd();
+            let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: the descriptor is live and metadata is valid for a stat.
+            assert_eq!(unsafe { libc::fstat(fd, metadata.as_mut_ptr()) }, 0);
+            // SAFETY: fstat succeeded.
+            unsafe { metadata.assume_init() }.st_blocks as u64 * 512
+        };
+        let memory = fixture(SPARSE_PAGES);
+        // A memfd, so that this test writes no file outside its own memory.
+        // SAFETY: the name is a NUL-terminated string.
+        let fd = unsafe { libc::memfd_create(c"view".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(fd >= 0, "memfd_create: {}", io::Error::last_os_error());
+        // SAFETY: fd is a new descriptor that nothing else owns.
+        let original = unsafe { File::from_raw_fd(fd) };
+        original.set_len(2 * P).unwrap();
+        original.write_all_at(&[0x11; 2 * PAGE_SIZE], 0).unwrap();
+        install(&memory, &original, BASE + 10 * P, 2, 0);
+        memory
+            .write_raw(BASE + 3 * P, b"private before the fork")
+            .unwrap();
+        replace(&memory, BASE + 20 * P, 1, Some(b"own backing"), true);
+        // Alone in its 2 MiB region, so that copying its zeros would show.
+        replace(&memory, BASE + 3000 * P, 1, None, true);
+        let hole_page = (BASE + 3000 * P) / P;
+        let before = separate_allocated(&memory, hole_page);
+        let child = memory.snapshot().unwrap();
+        assert_eq!(separate_allocated(&memory, hole_page), before);
+        // Before any read of the copy: the first 2 MiB region only.
+        let allocated = allocated_bytes(&child);
+        assert!(allocated <= 2 << 20, "{allocated} bytes allocated");
+        assert_eq!(read(&child, BASE + 3000 * P, PAGE_SIZE), vec![0; PAGE_SIZE]);
+        assert_eq!(read(&child, BASE + 20 * P, 11), b"own backing");
+        assert_user_pages_match(&memory, &child, BASE);
+        // After the fork: the parent, the child, and another holder of the
+        // file each store one byte of the view's first page.
+        memory.write_raw(BASE + 10 * P, b"P").unwrap();
+        child.write_raw(BASE + 10 * P + 1, b"C").unwrap();
+        original.write_all_at(b"O", 2).unwrap();
+        assert_eq!(read(&memory, BASE + 10 * P, 3), b"PCO");
+        assert_eq!(read(&child, BASE + 10 * P, 3), b"PCO");
+        assert_eq!(bytes(&original, 0, 3), b"PCO");
+        // Private pages stay as they were at the fork on the other side.
+        memory
+            .write_raw(BASE + 3 * P, b"parent after the fork..")
+            .unwrap();
+        child.write_raw(BASE + 20 * P, b"child after").unwrap();
+        assert_eq!(read(&child, BASE + 3 * P, 23), b"private before the fork");
+        assert_eq!(read(&memory, BASE + 20 * P, 11), b"own backing");
+    }
+
+    /// When the sparse copy reports a failure, the run is copied byte for
+    /// byte instead, and the copy still reads as its source.
+    #[test]
+    fn a_failed_sparse_snapshot_copy_falls_back_to_every_byte() {
+        let (memory, _original) = sparse_snapshot_fixture();
+        FAIL_SPARSE_COPY.with(|fail| fail.set(true));
+        let copies = [memory.snapshot(), memory.snapshot_sharing_address_space()];
+        FAIL_SPARSE_COPY.with(|fail| fail.set(false));
+        for child in copies {
+            let child = child.unwrap();
+            // Every private page was written, zeros included.
+            let allocated = allocated_bytes(&child);
+            assert!(allocated >= 14 << 20, "{allocated} bytes allocated");
+            assert_private_pages_match(&memory, &child);
+        }
+    }
+
+    /// Every user page of `parent` from `user` on reads as `child`'s.
+    fn assert_user_pages_match(parent: &GuestMemory, child: &GuestMemory, user: u64) {
+        let mut left = vec![0; PAGE_SIZE];
+        let mut right = vec![0; PAGE_SIZE];
+        let mut address = user;
+        while address < parent.guest_end() {
+            parent.read_raw(address, &mut left).unwrap();
+            child.read_raw(address, &mut right).unwrap();
+            assert!(left == right, "page {:#x}", address);
+            address += P;
+        }
+    }
+
+    /// A vfork child's stores to private memory, and the pages it zeroes, go
+    /// back to its parent when its window ends, as on Linux, where the two
+    /// share one address space; until then the parent, which waits in its
+    /// call, reads its own bytes. Pages below the user range (the backend's
+    /// own), and pages the child left alone, are not written; the pages
+    /// compared are those either base holds data in. It happens once.
+    #[test]
+    fn vfork_child_private_changes_go_back_when_the_window_ends() {
+        let memory = fixture(SPARSE_PAGES);
+        let user = BASE + 2 * P;
+        memory.write_raw(BASE, b"reserved").unwrap();
+        memory.write_raw(user + 3 * P, b"parent-3").unwrap();
+        memory.write_raw(user + 9 * P, b"parent-9").unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.write_raw(BASE, b"RESERVED").unwrap();
+        child.write_raw(user + 3 * P + 1, b"CHILD").unwrap();
+        child.write_raw(user + 40 * P, b"new page").unwrap();
+        child.discard_pages(user + 9 * P, PAGE_SIZE).unwrap();
+        let last = BASE + (SPARSE_PAGES as u64 - 1) * P;
+        child.write_raw(last, b"last").unwrap();
+        assert_eq!(read(&memory, user + 3 * P, 8), b"parent-3");
+        let returned = child.return_vfork_changes(user).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE, 8), b"reserved");
+        assert_eq!(read(&memory, user + 3 * P, 8), b"pCHILD-3");
+        assert_eq!(read(&memory, user + 9 * P, 8), [0; 8]);
+        assert_eq!(read(&memory, user + 40 * P, 8), b"new page");
+        assert_eq!(read(&memory, last, 4), b"last");
+        assert_user_pages_match(&memory, &child, user);
+        // Pages 3, 9, 40 and the last one, whole.
+        assert_eq!(returned.bytes_written, 4 * PAGE_SIZE);
+        // At most the first and the last 2 MiB, on a host whose shared
+        // memory uses huge pages.
+        assert!(returned.pages_compared <= 1024, "{returned:?}");
+        child.write_raw(user + 3 * P, b"again").unwrap();
+        assert_eq!(child.return_vfork_changes(user).unwrap(), None);
+        assert_eq!(read(&memory, user + 3 * P, 8), b"pCHILD-3");
+        // A fork's copy has no parent to return to.
+        let fork = memory.snapshot().unwrap();
+        fork.write_raw(user + 3 * P, b"fork").unwrap();
+        assert_eq!(fork.return_vfork_changes(user).unwrap(), None);
+        assert_eq!(read(&memory, user + 3 * P, 8), b"pCHILD-3");
+    }
+
+    /// Parent pages with a private backing of their own, and a page of a
+    /// shared view, as the child left them: a private page's change goes
+    /// into the parent's own backing, including a page the child zeroed,
+    /// which neither base holds data for (the copy's hole and the parent's
+    /// backing of its own), and the view, the same object, is not written.
+    #[test]
+    fn vfork_write_back_reaches_separately_backed_pages_and_skips_views() {
+        let memory = fixture(8);
+        let original = file(1);
+        install(&memory, &original, BASE + 2 * P, 1, 0);
+        replace(&memory, BASE + 5 * P, 1, Some(b"own-backing"), true);
+        replace(&memory, BASE + 6 * P, 1, Some(b"own-six"), true);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.write_raw(BASE + 5 * P, b"OWN").unwrap();
+        child.discard_pages(BASE + 6 * P, PAGE_SIZE).unwrap();
+        child.write_raw(BASE + 2 * P, b"view").unwrap();
+        assert_eq!(bytes(&original, 0, 4), b"view");
+        let returned = child.return_vfork_changes(BASE).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE + 5 * P, 11), b"OWN-backing");
+        assert_eq!(read(&memory, BASE + 6 * P, 7), [0; 7]);
+        assert_eq!(read(&memory, BASE + 2 * P, 4), b"view");
+        assert_eq!(returned.bytes_written, 2 * PAGE_SIZE);
+        assert_user_pages_match(&memory, &child, BASE);
+    }
+
+    /// Maps a new private anonymous mapping over `[address, address +
+    /// pages)` as the provider's `mmap(MAP_FIXED)` does: zeroed, with the
+    /// declared protection read-write, and recorded as a new mapping.
+    fn map_anonymous_again(memory: &GuestMemory, address: u64, pages: u64) {
+        memory.zero_lazily(address, (pages * P) as usize).unwrap();
+        memory
+            .map_user_protection(
+                address,
+                pages * P,
+                (libc::PROT_READ | libc::PROT_WRITE) as u8,
+            )
+            .unwrap();
+        memory.record_page_backing(address, pages * P, None, false);
+    }
+
+    /// The child may change a mapping only for a while. A mapping it removes,
+    /// one it adds, a page it maps again with other access, or one it maps
+    /// again as it was (a new mapping with the same protection), still so
+    /// when the window ends, is refused by name before anything goes back,
+    /// since on Linux the change would be the parent's too. A mapping it
+    /// adds, stores into and removes again, as a tool's scratch page is, is
+    /// gone by then, and its stores do not go back: Linux discards them with
+    /// it; a protection it changes and restores is no change.
+    #[test]
+    fn a_vfork_child_may_change_a_mapping_only_until_its_window_ends() {
+        let lasting = |change: &dyn Fn(&GuestMemory)| {
+            let memory = fixture(8);
+            memory.unmap_user_range(BASE + 6 * P, P).unwrap();
+            let child = memory.snapshot_sharing_address_space().unwrap();
+            child.write_raw(BASE + 3 * P, b"child").unwrap();
+            change(&child);
+            match child.return_vfork_changes(BASE) {
+                Err(Error::VforkChildCapability {
+                    operation: "vfork write-back",
+                    reason,
+                }) => assert!(reason.starts_with("the vfork child left a mapping changed")),
+                other => panic!("expected the write-back refusal, got {other:?}"),
+            }
+            assert_eq!(read(&memory, BASE + 3 * P, 5), [0; 5]);
+        };
+        lasting(&|child| child.unmap_user_range(BASE + 4 * P, P).unwrap());
+        lasting(&|child| child.map_user_range(BASE + 6 * P, P, false).unwrap());
+        lasting(&|child| {
+            child
+                .map_user_protection(BASE + 4 * P, P, libc::PROT_READ as u8)
+                .unwrap()
+        });
+        // A page mapped again as it was: the same pages, protection and
+        // provenance, but another mapping.
+        let as_it_was = |memory: &GuestMemory| {
+            map_anonymous_again(memory, BASE + 4 * P, 1);
+        };
+        let memory = fixture(8);
+        as_it_was(&memory);
+        memory.unmap_user_range(BASE + 6 * P, P).unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.write_raw(BASE + 3 * P, b"child").unwrap();
+        child.unmap_user_range(BASE + 4 * P, P).unwrap();
+        as_it_was(&child);
+        assert!(
+            matches!(
+                child.return_vfork_changes(BASE),
+                Err(Error::VforkChildCapability {
+                    operation: "vfork write-back",
+                    ..
+                })
+            ),
+            "a page mapped again as it was"
+        );
+        assert_eq!(read(&memory, BASE + 3 * P, 5), [0; 5]);
+        let memory = fixture(8);
+        memory.unmap_user_range(BASE + 6 * P, P).unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.write_raw(BASE + 3 * P, b"child").unwrap();
+        child.map_user_range(BASE + 6 * P, P, false).unwrap();
+        child.write_raw(BASE + 6 * P, b"scratch").unwrap();
+        child.unmap_user_range(BASE + 6 * P, P).unwrap();
+        child
+            .protect_user_range(BASE + 5 * P, P, libc::PROT_READ as u8)
+            .unwrap();
+        child
+            .protect_user_range(BASE + 5 * P, P, (libc::PROT_READ | libc::PROT_WRITE) as u8)
+            .unwrap();
+        let returned = child.return_vfork_changes(BASE).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE + 3 * P, 5), b"child");
+        assert_eq!(read(&memory, BASE + 6 * P, 7), [0; 7]);
+        assert_eq!(returned.bytes_written, PAGE_SIZE);
+    }
+
+    /// With a baseline, kept when another thread of the parent may run during
+    /// the window, only the bytes the child changed go back: that thread's
+    /// stores to the same pages stay, and a byte both set to the same value
+    /// is no conflict.
+    #[test]
+    fn a_vfork_baseline_returns_only_the_bytes_the_child_changed() {
+        let memory = fixture(8);
+        memory.write_raw(BASE + 2 * P, &[1; 64]).unwrap();
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.keep_vfork_baseline().unwrap();
+        // Another thread of the parent, during the window.
+        memory.write_raw(BASE + 2 * P, b"thread").unwrap();
+        memory.write_raw(BASE + 5 * P + 10, &[7]).unwrap();
+        // The child.
+        child.write_raw(BASE + 2 * P + 32, b"child").unwrap();
+        child.write_raw(BASE + 5 * P + 10, &[7]).unwrap();
+        child.write_raw(BASE + 6 * P, b"page six").unwrap();
+        let returned = child.return_vfork_changes(BASE).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE + 2 * P, 6), b"thread");
+        assert_eq!(read(&memory, BASE + 2 * P + 6, 26), [1; 26]);
+        assert_eq!(read(&memory, BASE + 2 * P + 32, 5), b"child");
+        assert_eq!(read(&memory, BASE + 5 * P + 10, 1), [7]);
+        assert_eq!(read(&memory, BASE + 6 * P, 8), b"page six");
+        assert_eq!(returned.bytes_written, 5 + 8);
+    }
+
+    /// A byte that the child and another thread of the parent both changed
+    /// to different values during the window cannot be ordered by a copy and
+    /// is refused by name before anything of its run is written; so is a
+    /// page the child changed whose mapping the other thread replaced or
+    /// removed: by a separately backed publication, by a new anonymous
+    /// mapping over it with the protection it had (the provider's
+    /// `mmap(MAP_FIXED)`), whose zeros the child's bytes would otherwise land
+    /// in, or by an unmap and such a mapping, whether or not the page's
+    /// mapping had been recorded before the window, or by a remap that shrank
+    /// the mapping off the page and grew it back (the provider's in-place
+    /// `mremap`), which leaves a fresh page there on Linux. A shrink that
+    /// keeps the page keeps its mapping.
+    #[test]
+    fn a_vfork_baseline_refuses_what_a_copy_cannot_order() {
+        for (case, recorded) in [
+            ("same byte", false),
+            ("replaced", false),
+            ("unmapped", false),
+            ("mapped over", false),
+            ("mapped over", true),
+            ("unmapped and mapped", true),
+            ("shrunk and grown back", true),
+        ] {
+            let memory = fixture(8);
+            if recorded {
+                map_anonymous_again(&memory, BASE + 2 * P, 3);
+            }
+            let child = memory.snapshot_sharing_address_space().unwrap();
+            child.keep_vfork_baseline().unwrap();
+            child.write_raw(BASE + 3 * P + 1, b"child").unwrap();
+            child.write_raw(BASE + 3 * P + 100, b"also").unwrap();
+            match case {
+                "same byte" => memory.write_raw(BASE + 3 * P + 2, b"T").unwrap(),
+                "replaced" => replace(&memory, BASE + 3 * P, 1, Some(b"new mapping"), true),
+                "mapped over" => map_anonymous_again(&memory, BASE + 3 * P, 1),
+                "unmapped and mapped" => {
+                    memory.unmap_user_range(BASE + 3 * P, P).unwrap();
+                    map_anonymous_again(&memory, BASE + 3 * P, 1);
+                }
+                "shrunk and grown back" => {
+                    // As the provider's mremap: the tail goes to zero, the
+                    // mapping shrinks to one page, and then grows back.
+                    memory.zero_raw(BASE + 3 * P, 2 * PAGE_SIZE).unwrap();
+                    memory
+                        .remap_user_range(BASE + 2 * P, 3 * P, BASE + 2 * P, P)
+                        .unwrap();
+                    memory
+                        .remap_user_range(BASE + 2 * P, P, BASE + 2 * P, 3 * P)
+                        .unwrap();
+                }
+                _ => memory.unmap_user_range(BASE + 3 * P, P).unwrap(),
+            }
+            let before = read(&memory, BASE + 3 * P, 128);
+            match child.return_vfork_changes(BASE) {
+                Err(Error::VforkChildCapability {
+                    operation: "vfork write-back",
+                    ..
+                }) => {}
+                other => panic!("{case}: expected the write-back refusal, got {other:?}"),
+            }
+            assert_eq!(read(&memory, BASE + 3 * P, 128), before, "{case}");
+        }
+        // A shrink that keeps the page the child changed keeps its mapping,
+        // so the child's bytes go back.
+        let memory = fixture(8);
+        map_anonymous_again(&memory, BASE + 2 * P, 3);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.keep_vfork_baseline().unwrap();
+        child.write_raw(BASE + 3 * P + 1, b"child").unwrap();
+        memory.zero_raw(BASE + 4 * P, PAGE_SIZE).unwrap();
+        memory
+            .remap_user_range(BASE + 2 * P, 3 * P, BASE + 2 * P, 2 * P)
+            .unwrap();
+        child.return_vfork_changes(BASE).unwrap().unwrap();
+        assert_eq!(read(&memory, BASE + 3 * P + 1, 5), b"child");
+        // A protection change, by the other thread, of a page the child
+        // changed keeps the mapping, so the child's bytes go back.
+        let memory = fixture(8);
+        map_anonymous_again(&memory, BASE + 3 * P, 1);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.keep_vfork_baseline().unwrap();
+        child.write_raw(BASE + 3 * P + 1, b"child").unwrap();
+        memory
+            .protect_user_range(BASE + 3 * P, P, libc::PROT_READ as u8)
+            .unwrap();
+        memory
+            .protect_user_range(BASE + 3 * P, P, (libc::PROT_READ | libc::PROT_WRITE) as u8)
+            .unwrap();
+        child.return_vfork_changes(BASE).unwrap();
+        assert_eq!(read(&memory, BASE + 3 * P + 1, 5), b"child");
+    }
+
+    /// Copies of an address space share the mapping-incarnation map until one
+    /// of them changes it: a fork's copy shares its parent's, an edit that
+    /// changes no page's incarnation (an unmap of pages that have none, as a
+    /// fork child's hidden Tool-scratch pages are) copies nothing, and the
+    /// first real change copies the map into that copy alone, so the other
+    /// keeps its own values.
+    #[test]
+    fn copies_share_the_incarnation_map_until_one_changes_it() {
+        let incarnations = |memory: &GuestMemory| {
+            memory
+                .mapping
+                .address_space
+                .lock()
+                .unwrap()
+                .mapping_incarnations
+                .clone()
+        };
+        let memory = fixture(8);
+        map_anonymous_again(&memory, BASE + 2 * P, 3);
+        let fork = memory.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&incarnations(&memory), &incarnations(&fork)));
+        assert_eq!(incarnations(&memory).get(&((BASE + 6 * P) / P)), None);
+        fork.unmap_user_range(BASE + 6 * P, P).unwrap();
+        assert!(Arc::ptr_eq(&incarnations(&memory), &incarnations(&fork)));
+        let page = (BASE + 3 * P) / P;
+        let before = incarnations(&memory).get(&page).copied();
+        assert!(before.is_some());
+        fork.unmap_user_range(BASE + 3 * P, P).unwrap();
+        assert!(!Arc::ptr_eq(&incarnations(&memory), &incarnations(&fork)));
+        assert_eq!(incarnations(&fork).get(&page), None);
+        assert_eq!(incarnations(&memory).get(&page).copied(), before);
+        // The parent's own change, after the copy, is the parent's alone too.
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        map_anonymous_again(&memory, BASE + 4 * P, 1);
+        let page = (BASE + 4 * P) / P;
+        assert_ne!(
+            incarnations(&memory).get(&page),
+            incarnations(&child).get(&page)
+        );
+    }
+
+    /// The window also ends at the child's exec, after which nothing of the
+    /// new image goes back; and a parent whose image another of its threads
+    /// replaced by an exec during the window receives nothing, as on Linux,
+    /// where the child's stores reach only the old address space.
+    #[test]
+    fn exec_ends_a_vfork_window_on_either_side() {
+        let memory = fixture(4);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.retire_shared_files_for_exec().unwrap();
+        child.write_raw(BASE + P, b"new image").unwrap();
+        assert_eq!(child.return_vfork_changes(BASE).unwrap(), None);
+        assert_eq!(read(&memory, BASE + P, 9), [0; 9]);
+        let child = memory.snapshot_sharing_address_space().unwrap();
+        child.write_raw(BASE + P, b"old image").unwrap();
+        memory.retire_shared_files_for_exec().unwrap();
+        assert_eq!(child.return_vfork_changes(BASE).unwrap(), None);
+        assert_eq!(read(&memory, BASE + P, 9), [0; 9]);
     }
 }

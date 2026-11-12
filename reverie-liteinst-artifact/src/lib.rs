@@ -739,12 +739,12 @@ fn content_manifest_relative(image_kind: FixedImageKind) -> &'static str {
 }
 // Reviewed literal expectations, not hashes generated from the current checkout
 // or bytes embedded after a runtime edit. The qualifier self-hash is separate.
-const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
+const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 82] = [
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
         "reverie-inguest/src/guest/continuation.rs",
-        53099,
-        "719b247049963a3a2f2c9eaf730cb7058d308b10cb002e0278f2c46e31207f60",
+        53174,
+        "e44feb7ac38976340ebef89433e24bf8303bdbc967e55c68408686ef1351fbeb",
     ),
     (
         "reverie-inguest/src/guest/instruction.rs",
@@ -753,8 +753,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/runtime_mask.rs",
-        31563,
-        "026853e4e0138a143b110475002dec0e99bf0d1a50b09d89a8f7731d570828f3",
+        31559,
+        "1b155030b0440bf0b7a89283aebe925a67cd9c58896c2356d89859ac51457441",
     ),
     (
         "reverie-inguest/src/guest/sigalrm.rs",
@@ -763,13 +763,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/signal.rs",
-        40509,
-        "3a084c31b5d38110c1692da8b545f0d2d0153c3887b5b1b429a6d12e5e67ddc5",
+        40726,
+        "be85ab5df679525272409d50ec20c90a6fbf474621e8b7e79a9a8fee66b41353",
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        21485,
-        "d0463fe0b7c1144e38f4668585347e1df4c9a3f961081772b4c8329002bd0448",
+        21776,
+        "667035ae4658d12fa1cbdb47df284a0d9b3fe8002c102d97fc14412fb4a3e838",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -808,8 +808,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "Cargo.toml",
-        971,
-        "484f5411a5cddc3b8338b2a71393b0de43ef8caf21c4fb31eca61e7d155ea783",
+        2236,
+        "329be568fa7e882bfda1af0f68edf2517a6acdfe6e00cb73e5bc153eedc44a8c",
     ),
     (
         "reverie-liteinst-artifact/Cargo.toml",
@@ -833,8 +833,28 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers.rs",
-        237052,
-        "7de6b421cd20b9be86ebac8adfcc52e827e968aabed455257b0506b956bc6dfc",
+        240921,
+        "b8eb0c81e1cf232bbae3acd98a533483c55c40b704ab167dae3099de9248ad13",
+    ),
+    (
+        "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
+        81170,
+        "148d46702286ef359c7613c490083877d4bbc134972b2ae509760b2bb51bb55e",
+    ),
+    (
+        "reverie-liteinst-artifact/tests/fixtures/package_roles_fallback_member.rs",
+        807404,
+        "04ff07ffea256146614bdc1a91b6b0bbadadaf2ad907416173d38095393de724",
+    ),
+    (
+        "reverie-liteinst-artifact/tests/fixtures/package_roles_libc_member.rs",
+        55656,
+        "3bab7521b595ec2000429a78f28f9aa068d1e99e39d89c0f2723474accd79c92",
+    ),
+    (
+        "reverie-liteinst-artifact/tests/fixtures/package_roles_tp_member.rs",
+        45656,
+        "947830c8caee21ca600939d2c13c719eda58f88175fff1c64e89eb7b6cddf3b0",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/native_leaves.rs",
@@ -878,8 +898,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/ordinary_gate.rs",
-        63386,
-        "a9229d250646b370024ce9f14f060b371b68cc33614099d408b02166545ea09d",
+        73521,
+        "93482ce58a17a14e93c0adeade3502fab3bad31f849c779e1e9bbd590582a847",
     ),
     (
         "reverie-liteinst-artifact/src/private_static/selected_initializers/terminal_observation.rs",
@@ -958,23 +978,23 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/alloc.rs",
-        35989,
-        "5b3826b9e2dc9158f903e6989356e1f412395d9f86b3c7e736c2b3ed7d24b447",
+        35416,
+        "478f8a7e6d857b39af51ea58f0c337c663a13e928994fa5736ced0da51311f7d",
     ),
     (
         "reverie-inguest/src/guest/tool_region_constructor.rs",
-        34690,
-        "c519cdb088ba730ed3a11de6571be1a78e79b30aef032abcc59ada42c6eeec7e",
+        45836,
+        "dafb7519e9af3440270b926ef03cdb2d07f4b78b74250910e3764b664cd9cf51",
     ),
     (
         "reverie-inguest/src/guest/tool_region_arena.rs",
-        11715,
-        "5f4c7a0fb84241f2acea3f93315878d8f0b7649373f39131ef20f9a2890fee99",
+        16277,
+        "1a1b10e054a8b887fd90a6acab09040ab7faa8c9ed23782f064147d7bed0061e",
     ),
     (
         "reverie-inguest/src/guest/tool_region.rs",
-        48037,
-        "e75061d51660197b7642edd5e9d5623dd0009e272ef2dd7d9843a6de7887e178",
+        51153,
+        "65a11a98e19d34d1655cba4e24ec8ecb6688140ebe94637c0f28264a3ab30ca7",
     ),
     (
         "reverie-inguest/src/guest/tool_region_keyed.rs",
@@ -983,8 +1003,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/installed_tool.rs",
-        25354,
-        "c57b6f61d8243dd797b215e310399a4364a920883303c71293b83c3fbdc0e033",
+        26000,
+        "d99f927be139a87df1ea5b5fc018ffc9b4b77cce03b50271d4f6fb22693a4fc3",
     ),
     (
         "reverie-inguest/src/guest/mod.rs",
@@ -993,13 +1013,13 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/rpc.rs",
-        11362,
-        "b4309aa1eca247659e043ddb8bf01e0df93f6bfddde9eef26e77fcc5141f713d",
+        16538,
+        "d8a69c65ff9a2504c2a737b8fda86a5ef4a252446fea77bf1379ccfe6dc2d98d",
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        189700,
-        "5c772647fee0ad8a5677008ae91e8a8921659856fa0f5f3cc323e25e79607e11",
+        204540,
+        "6a520d8b59d47925e83ebc2a11f8d0167b894dc4c9f2a8f4ff9c17a1a0cc8ad7",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
@@ -1008,8 +1028,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        50362,
-        "ab33f9d70b7e5d3dad34bb3b14e1f78b45b36527eae9e8ca30f900c054869626",
+        50524,
+        "68b8581430b895fd3a1ef8f3b9846e4daa6ca0efc9de5b8df737668ea6d6df2e",
     ),
     (
         "reverie/Cargo.toml",
@@ -1023,23 +1043,23 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie/src/lib.rs",
-        6840,
-        "d598695a0c5bab650a980bc278101bff67e8ea3054c75668602051ac74c87213",
+        7132,
+        "2a10fcc829d2ef3027ace66c46cc488c4acd8f933f80b5245c1700843656f9da",
     ),
     (
         "reverie/src/perf.rs",
-        76893,
-        "ffb2b8a902a27abc8a347eb0d608fe3e4c418702299bcfbd96578eb25bf934ef",
+        78868,
+        "e5b7abe18f25241fbcfdf5cf9328e6f7f561d4df566c849070ade53e91837a57",
     ),
     (
         "reverie/src/pmu_config.rs",
-        31790,
-        "c9d60cf36f6c006dc7c7771b425d0397c8ad5ed451ecbdc93deba017e9ad67ad",
+        36433,
+        "abbbd3e01ed11ea87cadea9ae2fe7832d07e1ce7972e9ac1c607f80e51ecd9fc",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
-        7381,
-        "c579c482a1c42901231cc931f55e299167a71cf20e1a8fc4ba8ae764e8698840",
+        8240,
+        "62eac925b053b3c21e3292e0ae7c4bd469b4259e9cdec87b2b1f019d7b2a4837",
     ),
     (
         "reverie/src/pmu.rs",
@@ -1048,8 +1068,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
-        16615,
-        "919998f36ce0267448284333f75da6d380a4f284ba11539e71c9c10cf5a7b91d",
+        25871,
+        "d353ba4ec2ea2225de34e5e6fceed12ff864183fa35ba004a7e63bcfa0125907",
     ),
     (
         "reverie-inguest/src/lifecycle.rs",
@@ -1063,13 +1083,75 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 66] = [
     ),
     (
         "reverie/src/guest.rs",
-        66645,
-        "db816c25e97df066ce521ba6e32ac85ef5261c1881f7ef4367aac99164df5421",
+        109625,
+        "2c63259b9f669aebab8931d02598ef25d066184c3e9af57328eece6eef81e9c5",
     ),
     (
         "reverie/src/pidfd_self.rs",
         21903,
         "dd5e46c1ae38714c99dc146a95099787b6f9b92f1dfeac0d5f1c8e385a76b764",
+    ),
+    // Shared process ownership, callback outcomes and the reserved RPC protocol.
+    (
+        "reverie/src/tool_process.rs",
+        12833,
+        "2c45ce4db577d912a668c883bd0a2c6fa5b6a369a2a8b0460c643cfdbd1eb525",
+    ),
+    (
+        "reverie/src/tool_outcome.rs",
+        13455,
+        "09904e7dcaf30866b7a4b64871a18efbaa586cf2fe43c5601e068c5c1a3778b3",
+    ),
+    (
+        "reverie-inguest/src/tool_host.rs",
+        24974,
+        "0d89164860a668c9f9a9ce153b439ade155927a03ba435748bf0000cebbd78cf",
+    ),
+    (
+        "reverie-rpc-transport/src/lib.rs",
+        4843,
+        "f85ee8b473b9c072de1268a806e036665b3df94d021a26601876a6e0cb2c5adc",
+    ),
+    (
+        "reverie-rpc-transport/src/server.rs",
+        118074,
+        "c1f4c4e013db4dbe1677b715ea215612cf15c9c1a8054cab4d42086c5dc07629",
+    ),
+    (
+        "reverie-rpc-transport/src/blocking_client.rs",
+        41752,
+        "231274923759cb4351f265409b9c23370fe5b7ee8cc88b8b324bfd07b5e8b456",
+    ),
+    (
+        "reverie-rpc-transport/src/tool_activation.rs",
+        17031,
+        "3195980ecdb940374c21fe38ccb98839798d078aed929b69edb179283b87536c",
+    ),
+    // Bind the added input-ownership and facility-admission source premises.
+    (
+        "reverie-inguest/src/launcher/mod.rs",
+        90473,
+        "339116b362c7d4ffe92921d6b4660788f86d8f297431aa6939d44c15c25174bb",
+    ),
+    (
+        "reverie/src/native_syscall.rs",
+        18119,
+        "8fa204c9dae0c51519dba7d5fcf21f680fb358e04624d97e572f84f3afb5ad0e",
+    ),
+    (
+        "reverie/src/reserved_input/mod.rs",
+        17622,
+        "bc5ccc57598ce3fb9ed9752433960f68c120f36c70c8e449659c2421a7849476",
+    ),
+    (
+        "reverie/src/reserved_input/registry.rs",
+        112423,
+        "a345a0f79ff904aa032b16753ec7260b5448e92ca53f1b0af7e572ef70db10b3",
+    ),
+    (
+        "reverie/src/tool.rs",
+        76374,
+        "198142e31c9ac311a1de51d22ef1d576a1c4cc28fb4c74d4cfeee4a3072aeff9",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -1156,6 +1238,15 @@ fn content_reverie_inventory_for_image(
             require(
                 entry.sha256 == private_static::selected_initializers::implementation_sha256(),
                 "declared selected-initializer source differs from compiled host module",
+            )?;
+        } else if entry.relative
+            == "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs"
+        {
+            content_catalog_matches(&entry.relative, entry.size, &entry.sha256)?;
+            require(
+                entry.sha256
+                    == private_static::selected_initializers::package_role_implementation_sha256(),
+                "declared package-role source differs from compiled host module",
             )?;
         } else if entry.relative
             == "reverie-liteinst-artifact/src/private_static/selected_initializers/native_leaves.rs"
@@ -2776,6 +2867,34 @@ const FIXED_REQUIRED_ROLES: [&str; 5] = [
 // metadata operand evidence must first be derived from complete emission;
 // owned_setup_transfers below does not stand in for that separate proof.
 const FIXED_EMITTED_ROLE_SYMBOLS: &[(&str, &str)] = &[
+    (
+        "fixed_native_from_native",
+        "_RNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner18from_native_opaque",
+    ),
+    (
+        "fixed_arena_setup",
+        "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena30initialize_fixed_arenas_opaque",
+    ),
+    (
+        "fixed_native_owner_gettid",
+        "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region11constructor19native_owner_gettid",
+    ),
+    (
+        "fixed_arena_mprotect",
+        "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena20fixed_arena_mprotect",
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        "_RNvMs_NtNtCs_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10get_opaque",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "_RNvMs_NtNtCs_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10set_opaque",
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena24fixed_tool_heap_metadata",
+    ),
     (
         "fixed_arena_backing",
         "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena19fixed_arena_backing",
@@ -17338,6 +17457,13 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
         !FIXED_EMITTED_ROLE_SYMBOLS.is_empty(),
         "fixed allocator/setup emitted-role census is pending actual release/dev ELF evidence",
     )?;
+    // Resolve the dynamic symbol names once, instead of rescanning the
+    // dynamic symbol table for every matched Fixed role below.
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|dynamic| elf.dynstrtab.get_at(dynamic.st_name))
+        .collect();
     let mut result = BTreeMap::new();
     for symbol in elf
         .syms
@@ -17362,11 +17488,7 @@ fn fixed_role_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
             continue;
         }
         require(
-            symbol.st_bind() == sym::STB_LOCAL
-                && !elf
-                    .dynsyms
-                    .iter()
-                    .any(|dynamic| elf.dynstrtab.get_at(dynamic.st_name) == Some(name)),
+            symbol.st_bind() == sym::STB_LOCAL && !dynamic_names.contains(name),
             format!("Fixed emitted function {name} is dynamically visible/preemptible"),
         )?;
         for role in aliases {
@@ -17554,43 +17676,43 @@ fn fixed_select_heap_equal_cohort(
 }
 
 fn compiler_shim_symbols(elf: &Elf<'_>) -> Result<BTreeMap<String, sym::Sym>> {
+    // Resolve the named executable symbols, the dynamic symbol names and the
+    // relocation-target names once, instead of rescanning the symbol, dynamic
+    // symbol and relocation tables for every shim.
+    let executable: Vec<(&str, sym::Sym)> = elf
+        .syms
+        .iter()
+        .filter(|s| executable_symbol(elf, s))
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
+    let relocated_names: BTreeSet<&str> = elf
+        .dynrelas
+        .iter()
+        .chain(elf.dynrels.iter())
+        .chain(elf.pltrelocs.iter())
+        .filter_map(|r| elf.dynsyms.get(r.r_sym))
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
     let mut result = BTreeMap::new();
     for shim in SHIMS {
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = executable
             .iter()
-            .filter(|s| executable_symbol(elf, s))
-            .filter(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .is_some_and(|name| name == shim || name.ends_with(shim))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        let symbol = candidates[0];
-        let name = elf
-            .strtab
-            .get_at(symbol.st_name)
-            .ok_or("allocation shim name absent")?;
+        let &(name, symbol) = candidates[0];
         require(
             symbol.st_bind() == sym::STB_LOCAL
-                && !elf
-                    .dynsyms
-                    .iter()
-                    .any(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                && !elf
-                    .dynrelas
-                    .iter()
-                    .chain(elf.dynrels.iter())
-                    .chain(elf.pltrelocs.iter())
-                    .any(|r| {
-                        elf.dynsyms
-                            .get(r.r_sym)
-                            .is_some_and(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                    }),
+                && !dynamic_names.contains(name)
+                && !relocated_names.contains(name),
             format!("compiler allocation shim {shim} is dynamically visible/preemptible"),
         )?;
         result.insert(shim.to_owned(), symbol);
@@ -17631,6 +17753,8 @@ fn owned_fixed_setup_role(role: &str) -> bool {
     matches!(
         role,
         "fixed_arena_setup"
+            | "fixed_native_owner_gettid"
+            | "fixed_arena_mprotect"
             | "fixed_heap_metadata_initialize"
             | "fixed_setup_bitmap_range"
             | "fixed_setup_shift_guard"
@@ -17639,6 +17763,8 @@ fn owned_fixed_setup_role(role: &str) -> bool {
             | "fixed_scalar_syscall"
             | "fixed_region_publication_get"
             | "fixed_region_publication_set"
+            | "fixed_region_publication_get_opaque"
+            | "fixed_region_publication_set_opaque"
             | "fixed_native_bitmap_range"
     )
 }
@@ -17681,6 +17807,8 @@ const PUBLICATION_PREPARATION_ROLES: &[&str] = &[
     "fixed_publication_result_ref",
     "fixed_region_publication_get",
     "fixed_region_publication_set",
+    "fixed_region_publication_get_opaque",
+    "fixed_region_publication_set_opaque",
 ];
 fn resolved_preparation_role(name: &str) -> Option<&'static str> {
     preparation_role(name).or_else(|| {
@@ -17690,6 +17818,45 @@ fn resolved_preparation_role(name: &str) -> Option<&'static str> {
                 || PUBLICATION_PREPARATION_ROLES.contains(role)
         })
     })
+}
+
+const FIXED_SCALAR_PUBLICATION_HELPERS: &[&str] = &[
+    "fixed_region_publication_get_opaque",
+    "fixed_region_publication_set_opaque",
+    "fixed_tool_heap_metadata",
+];
+const FIXED_SCALAR_PUBLICATION_REQUIRED_ROLES: &[&str] = &[
+    "fixed_native_from_native",
+    "fixed_region_publication_get_opaque",
+    "fixed_region_publication_set_opaque",
+    "fixed_tool_heap_metadata",
+    "fixed_arena_backing",
+    "fixed_tool_require_owned",
+    "fixed_tool_alloc",
+    "fixed_tool_dealloc",
+    "fixed_tool_realloc",
+    "fixed_constructor_prepare",
+    "fixed_generic_prepare",
+];
+const FIXED_SCALAR_TEMPLATE_START: usize = 55;
+fn fixed_scalar_publication_present<'a>(mut roles: impl Iterator<Item = &'a str>) -> bool {
+    roles.any(|role| FIXED_SCALAR_PUBLICATION_HELPERS.contains(&role))
+}
+fn fixed_required_publication_roles<'a>(
+    roles: impl Iterator<Item = &'a str>,
+) -> &'static [&'static str] {
+    if fixed_scalar_publication_present(roles) {
+        FIXED_SCALAR_PUBLICATION_REQUIRED_ROLES
+    } else {
+        FIXED_PUBLICATION_REQUIRED_ROLES
+    }
+}
+fn fixed_scalar_recipe_role(role: &str) -> bool {
+    role == "fixed_arena_setup"
+        || (role != "fixed_setup_bitmap_range"
+            && DETCORE_VALIDATE_TEMPLATES[FIXED_SCALAR_TEMPLATE_START..]
+                .iter()
+                .any(|t| t.role == role))
 }
 
 const FIXED_PUBLICATION_REQUIRED_ROLES: &[&str] = &[
@@ -17709,6 +17876,18 @@ fn validate_fixed_backing_evidence_in_source_context(
     image_kind: FixedImageKind,
 ) -> Result<()> {
     validate_fixed_native_syscall_evidence(backing, image_kind)?;
+    if fixed_scalar_publication_present(backing.functions.keys().map(String::as_str)) {
+        require(
+            [
+                "fixed_region_publication_get",
+                "fixed_region_publication_set",
+                "fixed_tool_heap",
+            ]
+            .iter()
+            .all(|role| !backing.functions.contains_key(*role)),
+            "scalar backing mixes historical receiver/result ABI roles",
+        )?;
+    }
     require(
         backing.fixed_arena_version == FIXED_ARENA_VERSION
             && backing.descriptor.version == 1
@@ -18004,10 +18183,12 @@ fn validate_fixed_backing_evidence_in_source_context(
         FIXED_REQUIRED_ROLES
             .iter()
             .all(|role| backing.functions.contains_key(*role))
-            && FIXED_PUBLICATION_REQUIRED_ROLES.iter().all(|role| {
-                backing.functions.contains_key(*role)
-                    && backing.allocator_transfers.contains_key(*role)
-            })
+            && fixed_required_publication_roles(backing.functions.keys().map(String::as_str))
+                .iter()
+                .all(|role| {
+                    backing.functions.contains_key(*role)
+                        && backing.allocator_transfers.contains_key(*role)
+                })
             && backing.functions.keys().eq(backing.function_sha256.keys())
             && backing
                 .function_sha256
@@ -18304,6 +18485,36 @@ fn qualify_fixed_allocator_in_source_context(
 }
 
 const FIXED_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
+    (
+        "fixed_native_owner_gettid",
+        "fixed_publication_cannot_unwind",
+        "native_complete_fresh_owner_no_unwind",
+    ),
+    (
+        "fixed_arena_mprotect",
+        "fixed_publication_cannot_unwind",
+        "native_complete_fresh_owner_no_unwind",
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_heap_panic_misaligned",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_panic_null_reference",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_heap_panic_misaligned",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_panic_null_reference",
+        "scalar_publication_actual_aligned_live_region",
+    ),
     (
         "fixed_native_from_native",
         "fixed_heap_panic_misaligned",
@@ -18744,12 +18955,111 @@ struct DetcoreValidateDataSpec {
 }
 const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
     DetcoreValidateDataSpec {
+        key: "fixed_naked_constructor_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 803,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_generic_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 820,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_publish_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 785,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_208_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_226_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_native_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 587,
+        column: 35,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_publish_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 634,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_constructor_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 652,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_generic_record_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 669,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_publication_get_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 89,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_scalar_publication_set_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 138,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_tool_span_end_data",
         location: true,
-        hex: "00000000000000005f000000000000002201000010000000",
+        hex: "00000000000000005f000000000000001701000010000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 290,
+        line: 279,
         column: 16,
     },
     DetcoreValidateDataSpec {
@@ -18800,64 +19110,64 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_537_data",
         location: true,
-        hex: "00000000000000005f00000000000000b10000002a000000",
+        hex: "00000000000000005f00000000000000a60000002a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 177,
+        line: 166,
         column: 42,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_550_data",
         location: true,
-        hex: "00000000000000005f00000000000000b10000002a000000",
+        hex: "00000000000000005f00000000000000a60000002a000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 177,
+        line: 166,
         column: 42,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_571_data",
         location: true,
-        hex: "00000000000000005f00000000000000a000000022000000",
+        hex: "00000000000000005f000000000000009500000022000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 160,
+        line: 149,
         column: 34,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_586_data",
         location: true,
-        hex: "00000000000000005f00000000000000cb00000019000000",
+        hex: "00000000000000005f00000000000000c000000019000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 203,
+        line: 192,
         column: 25,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_607_data",
         location: true,
-        hex: "00000000000000005f00000000000000cb00000019000000",
+        hex: "00000000000000005f00000000000000c000000019000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 203,
+        line: 192,
         column: 25,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_620_data",
         location: true,
-        hex: "00000000000000005f00000000000000c100000029000000",
+        hex: "00000000000000005f00000000000000b600000029000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 193,
+        line: 182,
         column: 41,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_allocate_629_data",
         location: true,
-        hex: "00000000000000005f00000000000000e800000017000000",
+        hex: "00000000000000005f00000000000000dd00000017000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 232,
+        line: 221,
         column: 23,
     },
     DetcoreValidateDataSpec {
@@ -18917,91 +19227,91 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_308_data",
         location: true,
-        hex: "00000000000000005f000000000000000001000018000000",
+        hex: "00000000000000005f00000000000000f500000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 256,
+        line: 245,
         column: 24,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_321_data",
         location: true,
-        hex: "00000000000000005f000000000000000001000018000000",
+        hex: "00000000000000005f00000000000000f500000018000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 256,
+        line: 245,
         column: 24,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_342_data",
         location: true,
-        hex: "00000000000000005f00000000000000030100000d000000",
+        hex: "00000000000000005f00000000000000f80000000d000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 259,
+        line: 248,
         column: 13,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_363_data",
         location: true,
-        hex: "00000000000000005f00000000000000030100000d000000",
+        hex: "00000000000000005f00000000000000f80000000d000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 259,
+        line: 248,
         column: 13,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_376_data",
         location: true,
-        hex: "00000000000000005f000000000000000701000011000000",
+        hex: "00000000000000005f00000000000000fc00000011000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 263,
+        line: 252,
         column: 17,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_397_data",
         location: true,
-        hex: "00000000000000005f000000000000000701000011000000",
+        hex: "00000000000000005f00000000000000fc00000011000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 263,
+        line: 252,
         column: 17,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_410_data",
         location: true,
-        hex: "00000000000000005f000000000000001601000043000000",
+        hex: "00000000000000005f000000000000000b01000043000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 278,
+        line: 267,
         column: 67,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_431_data",
         location: true,
-        hex: "00000000000000005f000000000000001601000043000000",
+        hex: "00000000000000005f000000000000000b01000043000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 278,
+        line: 267,
         column: 67,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_444_data",
         location: true,
-        hex: "00000000000000005f000000000000001801000040000000",
+        hex: "00000000000000005f000000000000000d01000040000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 280,
+        line: 269,
         column: 64,
     },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_fixed_heap_deallocate_462_data",
         location: true,
-        hex: "00000000000000005f000000000000001801000040000000",
+        hex: "00000000000000005f000000000000000d01000040000000",
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
-        line: 280,
+        line: 269,
         column: 64,
     },
     DetcoreValidateDataSpec {
@@ -19254,7 +19564,10 @@ fn detcore_validate_bind_readonly(
     let actual = fixed_readonly_range(elf, bytes, address, expected.len())?;
     require(
         actual == expected,
-        "whole physical Detcore readonly data differs",
+        format!(
+            "whole physical Detcore readonly data differs: key={} expected={}:{} address={address:#x}",
+            spec.key, spec.line, spec.column
+        ),
     )?;
     let mut file_address = None;
     let mut file_hash = None;
@@ -21895,6 +22208,1757 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
             (249, 12),
         ],
     },
+    // 55: cc234bb1 native scalar boundary, complete 71B; SHA256 cec7ee98f23de38360af905d8f1f70530e6d07b702bbac1ac4f15aae5fb0f202.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get_opaque",
+        hex: "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1569192200bf08000000ff15ae6a2300488d3d57192200ff1531a22300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 43,
+                next: 47,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 54,
+                next: 58,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 61,
+                next: 65,
+                key: "fixed_scalar_publication_get_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 67,
+                next: 71,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(52, 1), (65, 3)],
+    },
+    // 56: cc234bb1 native scalar boundary, complete 86B; SHA256 deef6b5a4e5eed46d6b653e5b8f5c5d77b57950d73691094350ded679023c661.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "5040f6c707752d4885ff743d0fb6471884c0740784c00f94c059c30f1006488b4e1048894f100f1107c647180184c00f94c059c3488d15251922004889febf08000000ff154f6a2300488d3d10192200ff15d2a12300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 55,
+                next: 59,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 69,
+                next: 73,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 76,
+                next: 80,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 82,
+                next: 86,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(67, 1), (80, 3)],
+    },
+    // 57: cc234bb1 native scalar boundary, complete 87B; SHA256 b9fde3113a4b732760112052c32bd091c2000d1c493b93e93f65ac450570ce9e.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "4883ec180fb605b661240484c0741631c04889442408488d442408488b4424084883c418c3488d059c6124044889442410488d442410488b7c2410e8c0daffff4885c074ca807810ff74c448b80030020000600000ebba",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 40,
+                next: 44,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 60,
+                next: 64,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(59, 2)],
+    },
+    // 58: cc234bb1 native scalar boundary, complete 84B; SHA256 49fabfca5acc3095c16750df40b3945c431d2ff511f8626b0276d48fec067e00.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "4883ec180fb6054663240484c0741631c04889442408488d442408488b4424084883c418c3488d052c6324044889442410488d442410488b7c2410e850dcffff4885c074ca807810ff74c4488d05ee202dffebbd",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 40,
+                next: 44,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 60,
+                next: 64,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 78,
+                next: 82,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(59, 2)],
+    },
+    // 59: cc234bb1 native scalar boundary, complete 34B; SHA256 339cc24a9dc8d654bf7a8aed9551d7c00191dd984060915a3996ed940c55a808.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_require_owned",
+        hex: "534889fbe807a000004885c0740f48c1eb194881fb0800300075025bc3e8ce280000",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 5,
+                next: 9,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 30,
+                next: 34,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(4, 0), (29, 1)],
+    },
+    // 60: cc234bb1 native scalar boundary, complete 83B; SHA256 2d8e3e5b75c4ea3f9c0403384a2f8ef354f97ae12c9b8621580d364c97e47096.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_alloc",
+        hex: "4156534883ec184889d34989f6e89e6a00004885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae8bfc7ffff4883c4185b415ec331c04883c4185b415ec3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 14,
+                next: 18,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 61,
+                next: 65,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+        ],
+        transfers: &[(13, 0), (60, 1)],
+    },
+    // 61: cc234bb1 native scalar boundary, complete 58B; SHA256 3f3574336ad3a58514a2a601acaf9a113af30099970f4ee23a6c58d34c7c257a.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_dealloc",
+        hex: "534889f3e8476a00004885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be98bc5ffffe8f6f2ffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 5,
+                next: 9,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 49,
+                next: 53,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 54,
+                next: 58,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(4, 0), (48, 1), (53, 2)],
+    },
+    // 62: cc234bb1 native scalar boundary, complete 205B; SHA256 ada6b3ff34ee19316b1779f992b011c38cff27d5483f6c0e2f9c235a9fa17ef4.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_realloc",
+        hex: "554157415641554154534883ec184d89c44989ce4889d54889f3e8f16900004885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e8dbc6ffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff15fdf02300488b53f84c89ff4c89eee8cec4ffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e823f2ffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 27,
+                next: 31,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 129,
+                next: 133,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 159,
+                next: 163,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 174,
+                next: 178,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 201,
+                next: 205,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(26, 0), (128, 1), (157, 2), (173, 3), (200, 4)],
+    },
+    // 63: 987e72b0 native image31ffdc35, complete 344B; SHA256 cc639655f1691a802f5aa9b09a8d686dcf9d34fa49140769eaadba069066dec7.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b80000000fb60528fb220449b800f0efffff9fffff4c01c24881faffff7f000f879700000084c00f848f00000089cd4989febfba0000004989f731f631d231c9e89d75feff4c89fe40f6c6070f85c60000004885c04c89f77e6248394640755c48837e5001755548837e3800744e8b0683e00f83f8087544488d05bbfa22044889442408488d442408488b7c2408e85f70feff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8f3ddffff84c0740c4c89f741c70616000000ebc34889dfe8bb93feff4c89f7a8017405418916ebaf4d893eebac488d1533a32000bf08000000ff1530db2100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 169,
+                next: 173,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 189,
+                next: 193,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 281,
+                next: 285,
+                key: "fixed_native_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 305,
+                next: 309,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 329,
+                next: 333,
+                key: "fixed_scalar_native_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 340,
+                next: 344,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+        ],
+        transfers: &[(110, 1), (188, 3), (280, 4), (304, 5), (338, 7)],
+    },
+    // 64: 987e72b0 native image31ffdc35, complete 307B; SHA256 ee06a5b3e6b3dbead37ef347d5c91bf105b0c8dbdce4a4466a25a467f416a6f8.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e885ceffff0fb644243084c00f84a300000041f6c7070f85a70000004d85ff0f84b30000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3da5c922044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8893ffeffa801744041f6c607756a4d85f6747a49c7464803000000c6055cc92204004c897c2410488d442410488b7c2410e8073ffeff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3488d1528752000bf080000004c89feff153aaa2100488d3d13752000ff15bde12100488d1536722000bf080000004c89f6ff1518aa2100488d3d21722000ff159be12100ff1515df2100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 236,
+                next: 240,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 250,
+                next: 254,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 257,
+                next: 261,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 263,
+                next: 267,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 270,
+                next: 274,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 284,
+                next: 288,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 291,
+                next: 295,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 297,
+                next: 301,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (38, 0),
+            (146, 2),
+            (196, 4),
+            (248, 6),
+            (261, 8),
+            (282, 10),
+            (295, 12),
+            (301, 13),
+        ],
+    },
+    // 65: 987e72b0 native image31ffdc35, complete 307B; SHA256 34b042b2b884accaa2225d08cf809ebb6991f5520deb022c67589119e8a5a346.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e84acdffff0fb6442430bb0100000084c00f84a300000041f6c7070f85a70000004d85ff0f84b30000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d65c822044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8493efeffa801744041f6c607756a4d85f6747a49c7464803000000c6051cc82204004c897c2410488d442410488b7c2410e8c73dfeff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3488d1500742000bf080000004c89feff15faa82100488d3deb732000ff157de02100488d15f6702000bf080000004c89f6ff15d8a82100488d3de1702000ff155be02100ff15d5dd2100",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 236,
+                next: 240,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 250,
+                next: 254,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 257,
+                next: 261,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 263,
+                next: 267,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 270,
+                next: 274,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 284,
+                next: 288,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 291,
+                next: 295,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 297,
+                next: 301,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (33, 0),
+            (146, 2),
+            (196, 4),
+            (248, 6),
+            (261, 8),
+            (282, 10),
+            (295, 12),
+            (301, 13),
+        ],
+    }, // Observed H7c310/R987 ordinary Detcore; complete 345B, template66.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b80000000fb605df9b130249b800f0efffff9fffff4c01c24881faffff7f000f879700000084c00f848f00000089cd4989febfba0000004989f731f631d231c9e8dd7bffff4c89fe40f6c6070f85c70000004885c04c89f77e6248394640755c48837e5001755548837e3800744e8b0683e00f83f8087544488d05739b13024889442408488d442408488b7c2408e88f0dffff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8a3f4ffff84c0740c4c89f741c70616000000ebc34889dfe80b0a00004c89f783f8017505418916ebae4d893eebab488d155ae81100bf08000000ff15ffc21200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 169,
+                next: 173,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 189,
+                next: 193,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 281,
+                next: 285,
+                key: "fixed_native_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 305,
+                next: 309,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 330,
+                next: 334,
+                key: "fixed_scalar_native_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 341,
+                next: 345,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+        ],
+        transfers: &[(110, 1), (188, 3), (280, 4), (304, 5), (339, 7)],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 28B, template67.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get_opaque",
+        hex: "0fb6471831c984c0480f45cf48894c24f8488d4424f8488b4424f8c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 38B, template68.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "0fb6471884c0740684c00f94c0c30f1006488b4e1048894f100f1107c647180184c00f94c0c3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 322B, template69.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b40000000fb605f7c1040249b800f0efffff9fffff4c01c24881faffff7f000f879300000084c00f848b00000089cd4989febfba0000004989f731f631d231c9e8ddabffff4885c00f8e920000004c89f9493947400f85850000004883795001757e488379380074778b0183e00f83f808756d488d0590c104024889442408488d442408488b7c2408e8e48bffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e856f3ffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8dfe4ffff4c89f7a8017405418916ebdb4d893eebd8",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 53,
+                next: 57,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 164,
+                next: 168,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 184,
+                next: 188,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 262,
+                next: 266,
+                key: "fixed_native_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 301,
+                next: 305,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+        ],
+        transfers: &[(110, 1), (183, 3), (261, 4), (300, 5)],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 210B, template70.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384989fe4989e7488d7c2428bb010000004c89f64c89fab901000000e895f3ffff0fb644243084c00f84860000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d3598b504024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e8fc7fffffa801743649c744244803000000c60558b50402004c89742410488d442410488b7c2410e8b47fffff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3ff152e520400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 92,
+                next: 96,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 128,
+                next: 132,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 152,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 168,
+                next: 172,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 206,
+                next: 210,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(38, 0), (127, 2), (167, 4), (204, 5)],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 210B, template71.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384989fe4989e7488d7c24284c89f64c89fab902000000e8baf2ffff0fb6442430bb0100000084c00f84860000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35b8b404024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e81c7fffffa801743649c744244803000000c60578b40402004c89742410488d442410488b7c2410e8d47effff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3ff154e510400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 92,
+                next: 96,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 128,
+                next: 132,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 152,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 168,
+                next: 172,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 206,
+                next: 210,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(33, 0), (127, 2), (167, 4), (204, 5)],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 236B, template72.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_dealloc",
+        hex: "534889f3e8c7deffff4885c00f84d50000004889c14889d848c1e819483d080030000f85bf000000488b53f840b60131c0f0400fb0711074130f1f8000000000f39031c0f0400fb0711075f448b80000001000600000488b71084885f6400f94c74839d6410f93c04108f875400f1f004889f7488b7430084885f674054839d672ee488974100848895438084c8b04384d8d0c384939d1751d4c03041072174c89043848897438084889faeb094889741008488951084885f67426488b3c104c8d04174939d072194939f0751448033c30720e48893c10488b7430084889741008c64110005bc3e844feffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 5,
+                next: 9,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(4, 0), (231, 1)],
+    },
+    // Observed H7c310/R987 ordinary standalone; complete 409B, template73.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_realloc",
+        hex: "554157415641554154534883ec184d89c44989cf4989d54989f6e8c1ddffff4885c00f846c0100004889c348bd00000010006000004889042448896c240848c7442410000000024c89f048c1e819483d080030000f853a010000498d45ff4985c50f94c048b900000000000000804c29e94939cc0f96c120c180f9010f85c10000004889e74c89ee4c89e2e840f4ffff4885c00f84aa0000004d39fc4d0f42fc4c89f74989c44889c64c89faff1556560400498b4ef8b20131c0f00fb05310741a6666666666662e0f1f840000000000f39031c0f00fb0531075f5488b53084885d20f94c04839ca400f93c64008c675566666666666662e0f1f8400000000004889d6488b5415084885d274054839ca72ee4889540d0848894c3508488b7c3500488d04374839c84c89e0752648037c0d00721f48897c350048895435084889f1eb1031c0eb3e4889540d0848894b084c89e04885d27429488b740d00488d3c0e4839cf721b4839d775164803741500720f4889740d00488b5415084889540d08c64310004883c4185b415c415d415e415f5dc3e8a7fcffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 27,
+                next: 31,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 140,
+                next: 144,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 174,
+                next: 178,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 405,
+                next: 409,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(26, 0), (139, 1), (172, 2), (404, 3)],
+    },
+    // 74: observed HOST be8e82435 native image7568cb1f, complete 88B.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "4883ec180fb6055ebe230484c0740431c9eb31488d0556be23044889442410488d442410488b7c2410e862dcffff31c94885c0740f807810ff488d05787244ff480f45c848894c2408488d442408488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 22,
+                next: 26,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 60,
+                next: 64,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(41, 2)],
+    },
+    // 75: observed HOST be8e82435 native image7568cb1f, complete 91B.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "4883ec180fb605cebc230484c0740431c0eb34488d05c6bc23044889442410488d442410488b7c2410e8d2daffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 22,
+                next: 26,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(41, 2)],
+    },
+    // 76: observed HOST be8e82435 native image7568cb1f, complete 303B.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e895d6ffff0fb644243084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d7dfb24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8c919010084c0743c41f6c60775664d85f6747649c7464803000000c60534fb2404004c897c2410488d442410488b7c2410e8471901004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d155c812200bf080000004c89feff15d6d82300488d3d47812200ff15f90b2400488d15fa7e2200bf080000004c89f6ff15b4d82300488d3de57e2200ff15d70b2400ff15b90b2400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 39,
+                next: 43,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 253,
+                next: 257,
+                key: "fixed_scalar_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 259,
+                next: 263,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 266,
+                next: 270,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 280,
+                next: 284,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 287,
+                next: 291,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 293,
+                next: 297,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 299,
+                next: 303,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (38, 0),
+            (146, 2),
+            (196, 4),
+            (244, 6),
+            (257, 8),
+            (278, 10),
+            (291, 12),
+            (297, 13),
+        ],
+    },
+    // 77: observed HOST be8e82435 native image7568cb1f, complete 303B.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e86ad5ffff0fb6442430bb0100000084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d4dfa24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e89918010084c0743c41f6c60775664d85f6747649c7464803000000c60504fa2404004c897c2410488d442410488b7c2410e8171801004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d1544802200bf080000004c89feff15a6d72300488d3d2f802200ff15c90a2400488d15ca7d2200bf080000004c89f6ff1584d72300488d3db57d2200ff15a70a2400ff15890a2400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 34,
+                next: 38,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 111,
+                next: 115,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 176,
+                next: 181,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 197,
+                next: 201,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 232,
+                next: 236,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 246,
+                next: 250,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 253,
+                next: 257,
+                key: "fixed_scalar_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 259,
+                next: 263,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 266,
+                next: 270,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 280,
+                next: 284,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 287,
+                next: 291,
+                key: "fixed_scalar_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 293,
+                next: 297,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 299,
+                next: 303,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (33, 0),
+            (146, 2),
+            (196, 4),
+            (244, 6),
+            (257, 8),
+            (278, 10),
+            (291, 12),
+            (297, 13),
+        ],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete301B SHA2560b4bd8f874823d0e77b64be96b4008944805742f0a226ad5ade883de660fffd5.
+    DetcoreValidateTemplate {
+        role: "fixed_native_from_native",
+        hex: "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d40e00404000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8f70a00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3de0df0404e82bf1ffff4885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8caf4ffff85c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 67,
+                next: 72,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 117,
+                next: 121,
+                key: "fixed_native_owner_gettid",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 172,
+                next: 176,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 177,
+                next: 181,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 258,
+                next: 262,
+                key: "fixed_arena_setup",
+                got: false,
+            },
+        ],
+        transfers: &[(116, 1), (176, 3), (257, 4)],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete25B SHA2563935e2419c55e116853d25e1aef3857dcd0561517cd2f1e44191c07d71f9476f.
+    DetcoreValidateTemplate {
+        role: "fixed_native_owner_gettid",
+        hex: "50bfba00000031f631d231c9e8bfcaffff59c3ff15175e0400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 13,
+                next: 17,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 21,
+                next: 25,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(12, 0), (19, 1)],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete62B SHA256551d6e443b44647abb68244bb4d1a4ab4d7111708f6c36240f4da554cc32c263.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "0fb6471884c07412c74424fc0b000000488d4424fc8b4424fcc30f1006488b4610488947100f1107c6471801c74424fc00000000488d4424fc8b4424fcc3",
+        operands: &[],
+        transfers: &[],
+    },
+    // Closed actual host-native: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee; complete110B SHA256ec76c6ba82da71fd6ed4ac0ad3e4ac960a671763d591d6e3a49b37c7decd5940.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d153da820004889febf08000000ff15bfdf2100488d3d28a82000ff1532182200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 79,
+                next: 83,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 93,
+                next: 97,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 100,
+                next: 104,
+                key: "fixed_scalar_publication_set_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 106,
+                next: 110,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(91, 1), (104, 3)],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete250B SHA256347ca9b5a32cdbf98fbb83575e138482b1f84bffb8a3517b309dc0f36b34c635.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_setup",
+        hex: "534889fbbeffff0000ba0120010031c9e82b02000084c00f84d20000004889dfbeff3f0100ba0160010031c9e80f02000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e8f301000084c00f849a00000048bf0000001000600000e8ec0200004885c00f888900000048bf0000001400600000e8d40200004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e8830100004889dfbeff3f0100ba01600100b901000000e86c0100004889dfbeffff0d00ba01f00f00b901000000e85501000031c0eb09b816000000eb02f7d85bc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 17,
+                next: 21,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 45,
+                next: 49,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 73,
+                next: 77,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 96,
+                next: 100,
+                key: "fixed_arena_mprotect",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 120,
+                next: 124,
+                key: "fixed_arena_mprotect",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 185,
+                next: 189,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 208,
+                next: 212,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 231,
+                next: 235,
+                key: "fixed_setup_bitmap_range",
+                got: false,
+            },
+        ],
+        transfers: &[
+            (16, 0),
+            (44, 1),
+            (72, 2),
+            (95, 3),
+            (119, 4),
+            (184, 5),
+            (207, 6),
+            (230, 7),
+        ],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete32B SHA256fd3891a1ab4c57db339bddce8ce0521e781d23d91dc0448a6d8a8e6dfad0bada.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_mprotect",
+        hex: "504889febf0a000000ba00000002b903000000e808ddffff59c3ff1560700400",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 20,
+                next: 24,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(19, 0), (26, 1)],
+    },
+    // Closed actual host-native: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee; complete23B SHA256ef3651a93d370f09b78bb7500ca04360ad14118e427f362d26a3ba140ac95e7b.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_mprotect",
+        hex: "4889febf0a000000ba00000002b903000000e939f2ffff",
+        operands: &[DetcoreValidateOperand {
+            displacement: 19,
+            next: 23,
+            key: "fixed_scalar_syscall",
+            got: false,
+        }],
+        transfers: &[(18, 0)],
+    },
+    // Closed actual host-native: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee; complete239B SHA2562411f5e7675e497146529f73f33929e5c2a180ef76b8d6b990b7e9f641153a47.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15c1e82100bf08000000ff150e352300488d3dafe82100ff15816d2300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 211,
+                next: 215,
+                key: "fixed_naked_bitmap_208_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 222,
+                next: 226,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_naked_bitmap_226_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 235,
+                next: 239,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(220, 1), (233, 3)],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete258B SHA25625e0bff74e6d22d7225d8f8ca8e7448cd66c59f3a75edebda70770809ed1221e.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424010000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e8f9f3ffff85c0740ab801000000e9910000004c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d4ed4040448891c244889e04c897c2408488d442408488b3c24488b742408e89fe5ffff89c1b80100000085c9753a49c744244803000000c6050cd404040048895c2420488d442420488b7c2420e850e5ffff4889c1b8010000004885c9740931c0807910ff0f94c04883c4385b415c415e415fc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 142,
+                next: 146,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 173,
+                next: 177,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 199,
+                next: 204,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 220,
+                next: 224,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(82, 0), (172, 2), (219, 4)],
+    },
+    // Closed actual host-native: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee; complete354B SHA2561c327ecd1f30a72068f643e0af966a878bc72f759462f4cf62807225b4562265.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e859aeffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d24d0240448891c244889e04c89642408488d442408488b3c24488b742408e84dd3010089c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c605d9cf24040048895c2420488d442420488b7c2420e8c4d201004889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d15fb5e2200bf080000004889deff15fdb22300488d3de65e2200ff1570eb2300488d15995c2200bf080000004c89f6ff15dbb22300488d3d845c2200ff154eeb2300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 160,
+                next: 164,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 191,
+                next: 195,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 227,
+                next: 232,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 248,
+                next: 252,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 316,
+                next: 320,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 323,
+                next: 327,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 337,
+                next: 341,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 350,
+                next: 354,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (82, 0),
+            (190, 2),
+            (247, 4),
+            (301, 6),
+            (314, 8),
+            (335, 10),
+            (348, 12),
+        ],
+    },
+    // Closed actual pinned-standalone: 699842f359579ebde639229ed7fc6f97d1fc1a628b1724faad2e77913aaf10f8; complete258B SHA25689341104811229ff4f71579df49e588ebfefe2fc2010e669fe018c69430453ef.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424010000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e82decffff85c07407b801000000eb574c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d910c050248891c244889e04c897c2408488d442408488b3c24488b742408e8d2f9ffff89c1b80100000085c9740c4883c4385b415c415e415fc349c744244803000000c605430c05020048895c2420488d442420488b7c2420e877f9ffff4885c00f8469ffffff4889c131c0807910ff75bce959ffffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 139,
+                next: 143,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 170,
+                next: 174,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 208,
+                next: 213,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(82, 0), (169, 2), (228, 4)],
+    },
+    // Closed actual pinned-native: 7ee10fde3cefbd71c44c9843381232ad9d8c54122bfb9cb541b91ee097e0075d; complete354B SHA25639111d665f0ca68860cf2ba60a760d2c6f78a0d1f4a03291c3b490ad90621440.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e8d1d6ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1ddf67230248891c244889e04c89642408488d442408488b3c24488b742408e8c080feff89c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c605886723020048895c2420488d442420488b7c2420e82b80feff4885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d152b2b2100bf080000004889deff156d6d2200488d3d162b2100ff1528a42200488d15312a2100bf080000004c89f6ff154b6d2200488d3d1c2a2100ff1506a42200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 157,
+                next: 161,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 188,
+                next: 192,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 236,
+                next: 241,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 257,
+                next: 261,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_naked_constructor_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 316,
+                next: 320,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 323,
+                next: 327,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 337,
+                next: 341,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 350,
+                next: 354,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (82, 0),
+            (187, 2),
+            (256, 4),
+            (301, 6),
+            (314, 8),
+            (335, 10),
+            (348, 12),
+        ],
+    },
+    // Closed actual host-standalone: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f; complete258B SHA25658c5f8c2a0967f1e1d621eda8e87550de304a80199edf867b1a89533ac353e97.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424020000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e8e9f2ffff85c0740ab801000000e9910000004c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d3ed3040448891c244889e04c897c2408488d442408488b3c24488b742408e88fe4ffff89c1b80100000085c9753a49c744244803000000c605fcd204040048895c2420488d442420488b7c2420e840e4ffff4889c1b8010000004885c9740931c0807910ff0f94c04883c4385b415c415e415fc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 142,
+                next: 146,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 173,
+                next: 177,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 199,
+                next: 204,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 220,
+                next: 224,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(82, 0), (172, 2), (219, 4)],
+    },
+    // Closed actual host-native: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee; complete354B SHA256204dc60e7fb07a9ac8c8d5085884fb9219463d30ab4b618f4d87e79f695455c6.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e8e9acffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1db4ce240448891c244889e04c89642408488d442408488b3c24488b742408e8ddd1010089c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c60569ce24040048895c2420488d442420488b7c2420e854d101004889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d15a35d2200bf080000004889deff158db12300488d3d8e5d2200ff1500ea2300488d15295b2200bf080000004c89f6ff156bb12300488d3d145b2200ff15dee92300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 160,
+                next: 164,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 191,
+                next: 195,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 227,
+                next: 232,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 248,
+                next: 252,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 316,
+                next: 320,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 323,
+                next: 327,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 337,
+                next: 341,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 350,
+                next: 354,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (82, 0),
+            (190, 2),
+            (247, 4),
+            (301, 6),
+            (314, 8),
+            (335, 10),
+            (348, 12),
+        ],
+    },
+    // Closed actual pinned-standalone: 699842f359579ebde639229ed7fc6f97d1fc1a628b1724faad2e77913aaf10f8; complete258B SHA2563e4309a64e271750a2b1118ff9b0994175cb96bc9575457149f19c2050105d52.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424020000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e81debffff85c07407b801000000eb574c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d810b050248891c244889e04c897c2408488d442408488b3c24488b742408e8c2f8ffff89c1b80100000085c9740c4883c4385b415c415e415fc349c744244803000000c605330b05020048895c2420488d442420488b7c2420e867f8ffff4885c00f8469ffffff4889c131c0807910ff75bce959ffffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 139,
+                next: 143,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 170,
+                next: 174,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 208,
+                next: 213,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 229,
+                next: 233,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(82, 0), (169, 2), (228, 4)],
+    },
+    // Closed actual pinned-native: 7ee10fde3cefbd71c44c9843381232ad9d8c54122bfb9cb541b91ee097e0075d; complete354B SHA2567af9c136d495aa62a89f1713a24b8af99b8fe7ee0f890b28799c531e3b6265f0.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e861d5ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d6f66230248891c244889e04c89642408488d442408488b3c24488b742408e8507ffeff89c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c605186623020048895c2420488d442420488b7c2420e8bb7efeff4885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d15d3292100bf080000004889deff15fd6b2200488d3dbe292100ff15b8a22200488d15c1282100bf080000004c89f6ff15db6b2200488d3dac282100ff1596a22200",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 83,
+                next: 87,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 157,
+                next: 161,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 188,
+                next: 192,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 236,
+                next: 241,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 257,
+                next: 261,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 289,
+                next: 293,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 303,
+                next: 307,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 310,
+                next: 314,
+                key: "fixed_naked_generic_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 316,
+                next: 320,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 323,
+                next: 327,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 337,
+                next: 341,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_naked_publish_record_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 350,
+                next: 354,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (82, 0),
+            (187, 2),
+            (256, 4),
+            (301, 6),
+            (314, 8),
+            (335, 10),
+            (348, 12),
+        ],
+    },
 ];
 struct DetcoreRecipeBindings<'a> {
     targets: &'a BTreeMap<String, u64>,
@@ -21921,6 +23985,37 @@ fn fixed_detcore_validate_recipe(
     )
 }
 
+// These two bitmap recipes share exact code but have disjoint complete panic
+// Location profiles: historical128:27 and source-owned setup143:27. No other
+// duplicate-code family is accepted. The selected recipe still undergoes the
+// original full filename/RELATIVE-writer/data/census proof. Its private identity
+// joins the complete source-owned owner/setup tuple; it is not a line tolerance.
+fn fixed_detcore_unique_template<'a>(
+    role: &str,
+    candidates: &[(usize, &'a DetcoreValidateTemplate)],
+    why: &str,
+    mut exact_data_matches: impl FnMut(&DetcoreValidateTemplate) -> Result<bool>,
+) -> Result<(usize, &'a DetcoreValidateTemplate)> {
+    if candidates.len() == 1 {
+        return Ok(candidates[0]);
+    }
+    require(
+        role == "fixed_setup_bitmap_range"
+            && candidates.iter().map(|(i, _)| *i).collect::<BTreeSet<_>>()
+                == BTreeSet::from([25, 85])
+            && candidates.len() == 2,
+        why,
+    )?;
+    let mut matched = None;
+    for &(index, template) in candidates {
+        if exact_data_matches(template)? {
+            require(matched.is_none(), why)?;
+            matched = Some((index, template));
+        }
+    }
+    matched.ok_or_else(|| why.into())
+}
+
 fn fixed_detcore_validate_recipe_identity(
     role: &str,
     address: u64,
@@ -21945,11 +24040,37 @@ fn fixed_detcore_validate_recipe_identity(
                 )
         })
         .collect();
-    require(
-        candidates.len() == 1,
+    let (template_index, t) = fixed_detcore_unique_template(
+        role,
+        &candidates,
         "unknown or ambiguous whole Detcore validate recipe",
+        |template| {
+            let mut count = 0;
+            let mut matches = true;
+            for op in template.operands {
+                let Some(spec) = DETCORE_VALIDATE_DATA.iter().find(|s| s.key == op.key) else {
+                    continue;
+                };
+                count += 1;
+                require(!op.got, "bitmap readonly profile classified as GOT")?;
+                let Some(address) = targets.get(op.key) else {
+                    matches = false;
+                    continue;
+                };
+                let Some(actual) = readonly.get(address) else {
+                    matches = false;
+                    continue;
+                };
+                let (expected, _) = detcore_validate_expected_data(spec, context)?;
+                require(
+                    spec.location && expected.len() == 24,
+                    "bitmap profile is not a complete24B Location",
+                )?;
+                matches &= actual.get(..24) == Some(expected.as_slice());
+            }
+            Ok(count == 2 && matches)
+        },
     )?;
-    let (template_index, t) = candidates[0];
     let mut fields = Vec::new();
     let mut resolved = Vec::new();
     if role == "fixed_patch_alloc" || role == "fixed_tls_fn_once" {
@@ -22102,6 +24223,36 @@ fn fixed_detcore_marker(elf: &Elf<'_>, bytes: &[u8], expected_root: &str) -> Res
 // and the corresponding argument/invariant proof in FIXED_ALLOCATOR_PROOF.md. They do not
 // admit a terminal into preparation or any unsupported caller/profile.
 const DETCORE_VALIDATE_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
+    (
+        "fixed_native_owner_gettid",
+        "fixed_publication_cannot_unwind",
+        "native_complete_fresh_owner_no_unwind",
+    ),
+    (
+        "fixed_arena_mprotect",
+        "fixed_publication_cannot_unwind",
+        "native_complete_fresh_owner_no_unwind",
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_heap_panic_misaligned",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_get_opaque",
+        "fixed_panic_null_reference",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_heap_panic_misaligned",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_panic_null_reference",
+        "scalar_publication_actual_aligned_live_region",
+    ),
     // Complete specialized fixed_tool_heap returns literal base 0x600010000000
     // and length 0x2000000; their sum cannot carry. The family join is mandatory.
     (
@@ -22282,16 +24433,19 @@ fn fixed_guarded_terminal_pairs(
 fn fixed_detcore_compiled_filenames(
     kind: FixedImageKind,
     sources: Option<&VerifiedCompiledSources>,
+    scalar_publication: bool,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let mut context = BTreeMap::new();
-    if kind == FixedImageKind::Detcore {
-        let sources = sources.ok_or("Detcore requires verified compiled filenames")?;
-        sources.require_image(DETCORE_ROOT)?;
+    if kind == FixedImageKind::Detcore || scalar_publication {
+        let sources =
+            sources.ok_or("physical publication recipes require verified compiled filenames")?;
+        sources.require_image(kind.initializer())?;
         for relative in [
             "reverie-liteinst/src/patch_alloc.rs",
             "reverie-inguest/src/guest/alloc.rs",
             "reverie-inguest/src/guest/tool_region_constructor.rs",
             "reverie-inguest/src/guest/tool_region_arena.rs",
+            "reverie-inguest/src/guest/tool_region.rs",
         ] {
             context.insert(
                 format!("rv:{relative}"),
@@ -22455,7 +24609,9 @@ fn fixed_machine_context(
     } else {
         None
     };
-    let compiled_filenames = fixed_detcore_compiled_filenames(image_kind, sources)?;
+    let scalar_publication = fixed_scalar_publication_present(roles.keys().map(String::as_str));
+    let compiled_filenames =
+        fixed_detcore_compiled_filenames(image_kind, sources, scalar_publication)?;
     let mut targets: BTreeMap<_, _> = roles
         .iter()
         .map(|(role, s)| (role.clone(), s.st_value))
@@ -22515,7 +24671,7 @@ fn fixed_machine_context(
         "fixed_compiler_global_marker".into(),
         symbol_evidence(elf.strtab.get_at(marker.st_name).unwrap(), &marker),
     );
-    if image_kind == FixedImageKind::Detcore {
+    if image_kind == FixedImageKind::Detcore || scalar_publication {
         let writers = LoaderWriterIndex::new(elf)?;
         for (role, symbol) in roles {
             let actual = code
@@ -22529,12 +24685,16 @@ fn fixed_machine_context(
                 // operands. It cannot masquerade as an old template index.
                 continue;
             }
+            if image_kind == FixedImageKind::Standalone && !fixed_scalar_recipe_role(role) {
+                continue;
+            }
             if !DETCORE_VALIDATE_TEMPLATES.iter().any(|t| t.role == role) {
                 continue;
             }
             let templates: Vec<_> = DETCORE_VALIDATE_TEMPLATES
                 .iter()
-                .filter(|t| {
+                .enumerate()
+                .filter(|(_, t)| {
                     t.role == role
                         && fixed_template_shape(
                             actual,
@@ -22543,11 +24703,35 @@ fn fixed_machine_context(
                         )
                 })
                 .collect();
-            require(
-                templates.len() == 1,
-                format!("Detcore {role} has no unique complete validate template"),
+            let (_, template) = fixed_detcore_unique_template(
+                role,
+                &templates,
+                &format!("Detcore {role} has no unique complete validate template"),
+                |candidate| {
+                    let mut count = 0;
+                    let mut matches = true;
+                    for op in candidate.operands {
+                        let Some(spec) = DETCORE_VALIDATE_DATA.iter().find(|s| s.key == op.key)
+                        else {
+                            continue;
+                        };
+                        count += 1;
+                        require(!op.got, "bitmap readonly profile classified as GOT")?;
+                        let address =
+                            fixed_rip_target(symbol.st_value, actual, op.displacement, op.next)?;
+                        let (expected, _) =
+                            detcore_validate_expected_data(spec, &compiled_filenames)?;
+                        require(
+                            spec.location && expected.len() == 24,
+                            "bitmap profile is not a complete24B Location",
+                        )?;
+                        let actual_data = fixed_readonly_range(elf, bytes, address, 24)?;
+                        matches &= actual_data == expected;
+                    }
+                    Ok(count == 2 && matches)
+                },
             )?;
-            for op in templates[0].operands {
+            for op in template.operands {
                 if let Some(spec) = DETCORE_VALIDATE_DATA.iter().find(|spec| spec.key == op.key) {
                     require(
                         !op.got,
@@ -22567,7 +24751,8 @@ fn fixed_machine_context(
                 }
             }
         }
-    } else {
+    }
+    if image_kind == FixedImageKind::Standalone {
         for (role, symbol) in roles {
             let actual = code
                 .get(&symbol.st_value)
@@ -22872,6 +25057,10 @@ struct AuthenticatedDetcoreOperation {
     address: u64,
     kind: AuthenticatedDetcoreOperationKind,
     edges: Vec<ConstructorTransfer>,
+    // New scalar witnesses retain the exact authenticated context used by
+    // their whole recipe. A later coherent join cannot substitute a different
+    // publication/gate address even when the two public maps agree.
+    scalar_storage: Option<(u64, u64)>,
 }
 
 fn fixed_detcore_qualified_operation(
@@ -22883,8 +25072,21 @@ fn fixed_detcore_qualified_operation(
     internal_switch: bool,
 ) -> Result<AuthenticatedDetcoreOperation> {
     let got = bindings.got;
+    let targets = bindings.targets;
     let recipe =
         fixed_detcore_validate_recipe_identity(role, address, bytes, bindings, tls_cell_offset)?;
+    let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START {
+        Some((
+            *targets
+                .get("fixed_region")
+                .ok_or("scalar recipe lacks authenticated REGION")?,
+            *targets
+                .get("fixed_initializing")
+                .ok_or("scalar recipe lacks authenticated INITIALIZING")?,
+        ))
+    } else {
+        None
+    };
     fixed_census_transfers(
         instructions,
         address,
@@ -22898,6 +25100,7 @@ fn fixed_detcore_qualified_operation(
         address,
         kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(recipe.template_index),
         edges: recipe.edges,
+        scalar_storage,
     })
 }
 
@@ -22926,6 +25129,1294 @@ const DETCORE_SPECIALIZED_COHORT: [(&str, usize); 10] = [
     ("fixed_constructor_prepare", 53),
     ("fixed_generic_prepare", 54),
 ];
+
+// One observed scalar native composition. These are complete private recipe
+// identities, not independently selectable per-role alternatives. Ordinary
+// images require their own complete observed tuple below.
+const FIXED_SCALAR_NATIVE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 56),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 63),
+    ("fixed_constructor_prepare", 64),
+    ("fixed_generic_prepare", 65),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+// Caller role, instruction offset within that complete caller, and GOT mode.
+type FixedScalarIncomingCall = (&'static str, u64, bool);
+// Helper role and its complete incoming call census over the qualified closure.
+type FixedScalarHelperIncoming = (&'static str, &'static [FixedScalarIncomingCall]);
+const FIXED_SCALAR_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 59, false),
+            ("fixed_arena_backing", 59, false),
+            ("fixed_native_from_native", 188, false),
+            ("fixed_constructor_prepare", 196, false),
+            ("fixed_generic_prepare", 196, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 146, false),
+            ("fixed_generic_prepare", 146, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+];
+// Two other complete observed physical compositions. Shared indices mean
+// byte/operand-identical complete bodies, never independent alternatives.
+const FIXED_SCALAR_ORDINARY_DETCORE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 56),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 66),
+    ("fixed_constructor_prepare", 64),
+    ("fixed_generic_prepare", 65),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+const FIXED_SCALAR_STANDALONE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 68),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 69),
+    ("fixed_constructor_prepare", 70),
+    ("fixed_generic_prepare", 71),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+const FIXED_SCALAR_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 59, false),
+            ("fixed_arena_backing", 59, false),
+            ("fixed_native_from_native", 183, false),
+            ("fixed_constructor_prepare", 167, false),
+            ("fixed_generic_prepare", 167, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 127, false),
+            ("fixed_generic_prepare", 127, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+];
+// The HOST compiler's complete native composition uses CMOV for the two
+// scalar pointer results and SETE for the prepare return. Its opaque setter
+// still returns exactly 0/1, so TEST AL and TEST AL,1 have the same predicate.
+// This tuple is indivisible; an isolated host leaf in a pinned-root family
+// remains unknown. Compiler names never select or bypass an emitted-code proof.
+const FIXED_SCALAR_HOST_NATIVE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 56),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 63),
+    ("fixed_constructor_prepare", 76),
+    ("fixed_generic_prepare", 77),
+    ("fixed_arena_setup", DETCORE_THREE_BAND_SETUP),
+];
+const FIXED_SCALAR_HOST_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 188, false),
+            ("fixed_constructor_prepare", 196, false),
+            ("fixed_generic_prepare", 196, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 146, false),
+            ("fixed_generic_prepare", 146, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+];
+// Exact source-closed scalar-status compositions. A row is indivisible;
+// source/compiler names and isolated helper matches never choose a family.
+struct FixedNakedComposition {
+    image_kind: FixedImageKind,
+    native_syscalls: bool,
+    cohort: &'static [(&'static str, usize)],
+    incoming: &'static [FixedScalarHelperIncoming],
+    setup_bitmap_template: Option<usize>,
+}
+const FIXED_NAKED_HOST_STANDALONE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 80),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 86),
+    ("fixed_generic_prepare", 90),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_HOST_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 219, false),
+            ("fixed_generic_prepare", 219, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 172, false),
+            ("fixed_generic_prepare", 172, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_HOST_NATIVE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 81),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 87),
+    ("fixed_generic_prepare", 91),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_HOST_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 247, false),
+            ("fixed_generic_prepare", 247, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 190, false),
+            ("fixed_generic_prepare", 190, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_HOST_ORDINARY_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 81),
+    ("fixed_tool_heap_metadata", 75),
+    ("fixed_arena_backing", 74),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 87),
+    ("fixed_generic_prepare", 91),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_HOST_ORDINARY_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 41, false),
+            ("fixed_arena_backing", 41, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 247, false),
+            ("fixed_generic_prepare", 247, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 190, false),
+            ("fixed_generic_prepare", 190, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_PINNED_STANDALONE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 67),
+    ("fixed_region_publication_set_opaque", 80),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 72),
+    ("fixed_tool_realloc", 73),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 88),
+    ("fixed_generic_prepare", 92),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_PINNED_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 59, false),
+            ("fixed_arena_backing", 59, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 228, false),
+            ("fixed_generic_prepare", 228, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 169, false),
+            ("fixed_generic_prepare", 169, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_PINNED_NATIVE_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 81),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 89),
+    ("fixed_generic_prepare", 93),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_PINNED_NATIVE_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 59, false),
+            ("fixed_arena_backing", 59, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 256, false),
+            ("fixed_generic_prepare", 256, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 187, false),
+            ("fixed_generic_prepare", 187, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_PINNED_ORDINARY_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 55),
+    ("fixed_region_publication_set_opaque", 81),
+    ("fixed_tool_heap_metadata", 57),
+    ("fixed_arena_backing", 58),
+    ("fixed_tool_require_owned", 59),
+    ("fixed_tool_alloc", 60),
+    ("fixed_tool_dealloc", 61),
+    ("fixed_tool_realloc", 62),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 89),
+    ("fixed_generic_prepare", 93),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 79),
+];
+const FIXED_NAKED_PINNED_ORDINARY_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 59, false),
+            ("fixed_arena_backing", 59, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 256, false),
+            ("fixed_generic_prepare", 256, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 187, false),
+            ("fixed_generic_prepare", 187, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 4, false),
+            ("fixed_tool_alloc", 13, false),
+            ("fixed_tool_dealloc", 4, false),
+            ("fixed_tool_realloc", 26, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 82, false),
+            ("fixed_generic_prepare", 82, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 12, false)],
+    ),
+];
+const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Standalone,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_HOST_STANDALONE_COHORT,
+        incoming: FIXED_NAKED_HOST_STANDALONE_INCOMING,
+        setup_bitmap_template: None,
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_HOST_NATIVE_COHORT,
+        incoming: FIXED_NAKED_HOST_NATIVE_INCOMING,
+        setup_bitmap_template: Some(85),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_HOST_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_HOST_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(85),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Standalone,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_PINNED_STANDALONE_COHORT,
+        incoming: FIXED_NAKED_PINNED_STANDALONE_INCOMING,
+        setup_bitmap_template: None,
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_PINNED_NATIVE_COHORT,
+        incoming: FIXED_NAKED_PINNED_NATIVE_INCOMING,
+        setup_bitmap_template: Some(85),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_PINNED_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_PINNED_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(85),
+    },
+];
+const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 94;
+
+fn fixed_naked_publication_present(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+) -> bool {
+    // Every appended identity belongs to this one source-owned composition,
+    // including the same-opcode bitmap's new exact readonly-data profile.
+    // A fragment cannot enter a historical cohort through an unchanged leaf.
+    witnesses.values().any(|w| {
+        matches!(w.kind,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+            if (78..FIXED_SOURCE_OWNED_TEMPLATE_END).contains(&index))
+    })
+}
+
+fn fixed_naked_composition(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    image_kind: Option<FixedImageKind>,
+) -> Result<&'static FixedNakedComposition> {
+    let raw = witnesses
+        .get("fixed_scalar_syscall")
+        .ok_or("naked-owner publication lacks authenticated syscall transport")?;
+    let candidates: Vec<_> = FIXED_NAKED_COMPOSITIONS
+        .iter()
+        .filter(|spec| {
+            image_kind.is_none_or(|kind| spec.image_kind == kind)
+                && raw.kind
+                    == if spec.native_syscalls {
+                        AuthenticatedDetcoreOperationKind::NativeFixedSyscall3
+                    } else {
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                    }
+                && spec.cohort.iter().all(|&(role, index)| {
+                    witnesses.get(role).is_some_and(|w| {
+                        w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                    })
+                })
+        })
+        .collect();
+    require(
+        candidates.len() == 1,
+        "unknown or mixed naked-owner publication whole composition",
+    )?;
+    let bridge = witnesses
+        .get("fixed_arena_mprotect")
+        .ok_or("naked-owner publication lacks complete C ABI mprotect bridge")?;
+    require(
+        matches!(
+            bridge.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(83 | 84)
+        ),
+        "naked-owner mprotect bridge lacks its exact C ABI body",
+    )?;
+    Ok(candidates[0])
+}
+
+// The C ABI bridge has one argument and returns the complete raw64-bit result.
+// Exact83 proves aligned CALL19/POP/RET plus landing26; exact84 proves the
+// same SYS10/address/32MiB/prot3 arguments and direct tailJMP18. This separate
+// contract is independent of codegen-family selection. No other recipe enters.
+fn fixed_naked_mprotect_bridge(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+    addresses: &mut BTreeSet<u64>,
+) -> Result<u64> {
+    let w = witnesses
+        .get("fixed_arena_mprotect")
+        .ok_or("naked-owner publication lacks complete C ABI mprotect bridge")?;
+    let raw = witnesses
+        .get("fixed_scalar_syscall")
+        .ok_or("naked-owner publication lacks authenticated syscall transport")?;
+    let (raw_pc, landing_pc) = match w.kind {
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(83) => (19_u64, Some(26_u64)),
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(84) => (18_u64, None),
+        _ => return Err("naked-owner mprotect bridge lacks its exact C ABI body".into()),
+    };
+    require(
+        w.role == "fixed_arena_mprotect"
+            && w.address != 0
+            && selected.get("fixed_arena_mprotect") == Some(&w.address)
+            && targets.get("fixed_arena_mprotect") == Some(&w.address)
+            && transfers.get("fixed_arena_mprotect") == Some(&w.edges)
+            && w.scalar_storage
+                == targets
+                    .get("fixed_region")
+                    .zip(targets.get("fixed_initializing"))
+                    .map(|(region, init)| (*region, *init))
+            && addresses.insert(w.address),
+        "naked-owner C ABI bridge loses selected address/storage/census",
+    )?;
+    require(
+        w.edges.len() == (if landing_pc.is_some() { 2 } else { 1 })
+            && w.edges.first().is_some_and(|edge| {
+                w.address.checked_add(raw_pc) == Some(edge.instruction)
+                    && edge.target == raw.address
+                    && edge.local_got_slot.is_none()
+            })
+            && match landing_pc {
+                Some(pc) => w.edges.get(1).is_some_and(|edge| {
+                    w.address.checked_add(pc) == Some(edge.instruction)
+                        && targets.get("fixed_publication_cannot_unwind") == Some(&edge.target)
+                        && edge.target != 0
+                        && !addresses.contains(&edge.target)
+                        && edge.local_got_slot.is_some()
+                }),
+                None => true,
+            },
+        "naked-owner C ABI bridge loses exact raw/landing transfer",
+    )?;
+    Ok(raw_pc)
+}
+
+fn fixed_naked_publication_cohort(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    let spec = fixed_naked_composition(witnesses, Some(image_kind))?;
+    require(
+        [
+            "fixed_region_publication_get",
+            "fixed_region_publication_set",
+            "fixed_tool_heap",
+        ]
+        .iter()
+        .all(|r| !selected.contains_key(*r) && !witnesses.contains_key(*r)),
+        "naked-owner publication mixed with historical receiver/result ABI",
+    )?;
+    let mut addresses = BTreeSet::new();
+    for &(role, index) in spec.cohort {
+        let witness = &witnesses[role];
+        require(
+            witness.role == role
+                && witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                && DETCORE_VALIDATE_TEMPLATES[index].role == role
+                && witness.address != 0
+                && selected.get(role) == Some(&witness.address)
+                && targets.get(role) == Some(&witness.address)
+                && transfers.get(role) == Some(&witness.edges)
+                && addresses.insert(witness.address),
+            "naked-owner whole-body witness loses role/address/census or aliases",
+        )?;
+    }
+    let raw = &witnesses["fixed_scalar_syscall"];
+    require(
+        raw.role == "fixed_scalar_syscall"
+            && raw.address != 0
+            && addresses.insert(raw.address)
+            && selected.get("fixed_scalar_syscall") == Some(&raw.address)
+            && targets.get("fixed_scalar_syscall") == Some(&raw.address)
+            && transfers.get("fixed_scalar_syscall") == Some(&raw.edges)
+            && raw.scalar_storage.is_none(),
+        "naked-owner syscall transport loses actual role/address/census",
+    )?;
+    let bridge_raw_pc =
+        fixed_naked_mprotect_bridge(witnesses, transfers, selected, targets, &mut addresses)?;
+    let raw_offsets: &[u64] = if spec.native_syscalls {
+        &[30, 52]
+    } else {
+        &[15]
+    };
+    require(
+        raw.edges.len() == raw_offsets.len()
+            && raw.edges.iter().zip(raw_offsets).all(|(edge, offset)| {
+                raw.address.checked_add(*offset) == Some(edge.instruction)
+                    && edge.local_got_slot.is_some()
+                    && edge.target != 0
+                    && !addresses.contains(&edge.target)
+            })
+            && raw
+                .edges
+                .iter()
+                .map(|edge| edge.target)
+                .collect::<BTreeSet<_>>()
+                .len()
+                == raw_offsets.len(),
+        "naked-owner transport differs from its complete syscall factory",
+    )?;
+    // The arena bitmap callee is recursively whole-byte/census-qualified.
+    // Its175B form has an arena witness, not a fabricated Detcore identity.
+    // The naked owner's inline exact2050-page loop has no bitmap callee.
+    require(
+        ["fixed_native_bitmap_range"].iter().all(|role| {
+            !selected.contains_key(*role)
+                && !witnesses.contains_key(*role)
+                && !transfers.contains_key(*role)
+        }),
+        "naked-owner composition retains removed bitmap helper",
+    )?;
+    {
+        let role = "fixed_setup_bitmap_range";
+        let address = *targets
+            .get(role)
+            .ok_or("naked-owner bitmap target absent")?;
+        require(
+            address != 0
+                && selected.get(role) == Some(&address)
+                && transfers.contains_key(role)
+                && match (spec.setup_bitmap_template, witnesses.get(role)) {
+                    (Some(index), Some(w)) => {
+                        w.role == role
+                            && w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                            && w.address == address
+                            && transfers.get(role) == Some(&w.edges)
+                            && w.scalar_storage
+                                == targets
+                                    .get("fixed_region")
+                                    .zip(targets.get("fixed_initializing"))
+                                    .map(|(region, init)| (*region, *init))
+                    }
+                    // The separately qualified175B arena template has no
+                    // Detcore witness. This is not an unknown-body allowance.
+                    (None, None) => true,
+                    _ => false,
+                }
+                && addresses.insert(address),
+            "naked-owner bitmap callee loses selected complete identity",
+        )?;
+    }
+    let region = *targets
+        .get("fixed_region")
+        .ok_or("naked-owner REGION absent")?;
+    let initializing = *targets
+        .get("fixed_initializing")
+        .ok_or("naked-owner INITIALIZING absent")?;
+    require(
+        region != 0
+            && initializing != 0
+            && region & 7 == 0
+            && region
+                .checked_add(32)
+                .is_some_and(|end| initializing < region || initializing >= end)
+            && targets.get("fixed_region_ready").copied() == region.checked_add(24)
+            && targets.get("fixed_region_value16").copied() == region.checked_add(16)
+            && !addresses.contains(&region)
+            && !addresses.contains(&initializing),
+        "naked-owner publication loses aligned authentic storage/fields",
+    )?;
+    for &(role, _) in spec.cohort {
+        require(
+            witnesses[role].scalar_storage == Some((region, initializing)),
+            "naked-owner complete witness loses authenticated storage context",
+        )?;
+    }
+    for &(callee, callers) in spec.incoming {
+        // The13-role row fixes gettid+12. Only this independently proved C ABI
+        // bridge contributes its own exact18/19 raw edge, never a per-role
+        // codegen-family alternative or a guessed incoming position.
+        let mut exact_callers = callers.to_vec();
+        if callee == "fixed_scalar_syscall" {
+            exact_callers.push(("fixed_arena_mprotect", bridge_raw_pc, false));
+        }
+        let callers = exact_callers.as_slice();
+        let target = *targets
+            .get(callee)
+            .ok_or("naked-owner helper target absent")?;
+        let mut seen = BTreeSet::new();
+        for (role, edges) in transfers {
+            for edge in edges.iter().filter(|edge| edge.target == target) {
+                let caller = witnesses
+                    .get(role)
+                    .ok_or("unqualified naked-owner helper caller")?;
+                require(
+                    caller.role == *role
+                        && selected.get(role) == Some(&caller.address)
+                        && targets.get(role) == Some(&caller.address)
+                        && transfers.get(role) == Some(&caller.edges),
+                    "naked-owner caller witness loses physical address/census",
+                )?;
+                let offset = edge
+                    .instruction
+                    .checked_sub(caller.address)
+                    .ok_or("naked-owner helper call precedes caller")?;
+                let observed = (role.as_str(), offset, edge.local_got_slot.is_some());
+                require(
+                    callers.contains(&observed) && seen.insert(observed),
+                    "extra duplicate shifted or wrong-mode naked-owner helper edge",
+                )?;
+            }
+        }
+        require(
+            seen == callers.iter().copied().collect::<BTreeSet<_>>(),
+            "missing naked-owner helper incoming edge",
+        )?;
+    }
+    // Complete301 proves origin exactly1/2, all native lease/ticket checks,
+    // locked phase1->2, held state, inline[256,2306) bitmap and setup full-zero
+    // before the sole record8B+origin1B output stores. Its three direct edges
+    // are owner+116->bridge, +176->getter, +257->setup. Complete25 bridge
+    // supplies SYS_gettid186 and three zeros to raw3 at+12. The mprotect C
+    // bridge supplies SYS10/32MiB/prot3 and calls raw3+19 (or native tail+18).
+    // C bridge landing edges remain census-bound; naked setup has none.
+    // Setup250 returns full errno/zero after both exact mprotect bridge calls, metadata
+    // and three permanent occupancy updates. Mode is the complete tuple plus
+    // actual authenticated raw factory, never setup size or source/compiler.
+    // Entries test full EAX==0 before reading owner output. Setter62/110 moves
+    // all24B before ready and full0, or refuses11 without touching payload.
+    // Complete entry instructions, disjoint stack fields, source-bound data,
+    // all helper identities and incoming multisets prove the transaction.
+    Ok(())
+}
+
+fn fixed_naked_result_contract(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+) -> Result<()> {
+    let image_kind = fixed_naked_composition(witnesses, None)?.image_kind;
+    // The separate scalar contract never falls through the historical Result
+    // discriminant arm. Rejoin the complete tuple, transport, data and callees.
+    fixed_naked_publication_cohort(witnesses, transfers, selected, targets, image_kind)
+}
+
+fn fixed_scalar_publication_cohort(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    transfers: &BTreeMap<String, Vec<ConstructorTransfer>>,
+    selected: &BTreeMap<String, u64>,
+    targets: &BTreeMap<String, u64>,
+    image_kind: FixedImageKind,
+) -> Result<()> {
+    if fixed_naked_publication_present(witnesses) {
+        return fixed_naked_publication_cohort(witnesses, transfers, selected, targets, image_kind);
+    }
+    let caller = witnesses
+        .get("fixed_native_from_native")
+        .ok_or("scalar publication lacks authenticated complete owner")?;
+    let (cohort, incoming) = match (image_kind, caller.kind) {
+        (FixedImageKind::Detcore, AuthenticatedDetcoreOperationKind::ValidateTemplate(63))
+            if witnesses.get("fixed_arena_backing").is_some_and(|w| {
+                w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74)
+            }) =>
+        {
+            (
+                FIXED_SCALAR_HOST_NATIVE_COHORT,
+                FIXED_SCALAR_HOST_NATIVE_INCOMING,
+            )
+        }
+        (FixedImageKind::Detcore, AuthenticatedDetcoreOperationKind::ValidateTemplate(63)) => {
+            (FIXED_SCALAR_NATIVE_COHORT, FIXED_SCALAR_NATIVE_INCOMING)
+        }
+        (FixedImageKind::Detcore, AuthenticatedDetcoreOperationKind::ValidateTemplate(66)) => (
+            FIXED_SCALAR_ORDINARY_DETCORE_COHORT,
+            FIXED_SCALAR_NATIVE_INCOMING,
+        ),
+        (FixedImageKind::Standalone, AuthenticatedDetcoreOperationKind::ValidateTemplate(69)) => (
+            FIXED_SCALAR_STANDALONE_COHORT,
+            FIXED_SCALAR_STANDALONE_INCOMING,
+        ),
+        _ => return Err("unknown scalar publication whole composition".into()),
+    };
+    require(
+        [
+            "fixed_region_publication_get",
+            "fixed_region_publication_set",
+            "fixed_tool_heap",
+        ]
+        .iter()
+        .all(|role| !selected.contains_key(*role) && !witnesses.contains_key(*role)),
+        "scalar publication mixed with historical receiver/result ABI",
+    )?;
+    let mut addresses = BTreeSet::new();
+    for &(role, index) in cohort {
+        let witness = witnesses
+            .get(role)
+            .ok_or("missing scalar publication family member")?;
+        require(
+            witness.role == role
+                && witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                && DETCORE_VALIDATE_TEMPLATES[index].role == role
+                && selected.get(role) == Some(&witness.address)
+                && targets.get(role) == Some(&witness.address)
+                && transfers.get(role) == Some(&witness.edges),
+            "mixed or unbound complete scalar publication family",
+        )?;
+        require(
+            witness.address != 0 && addresses.insert(witness.address),
+            "aliased scalar publication function roles",
+        )?;
+    }
+    let region = *targets.get("fixed_region").ok_or("scalar REGION absent")?;
+    let initializing = *targets
+        .get("fixed_initializing")
+        .ok_or("scalar INITIALIZING absent")?;
+    require(
+        region != 0
+            && initializing != 0
+            && region & 7 == 0
+            && region
+                .checked_add(32)
+                .is_some_and(|end| initializing < region || initializing >= end)
+            && targets.get("fixed_region_ready").copied() == region.checked_add(24)
+            && targets.get("fixed_region_value16").copied() == region.checked_add(16)
+            && !addresses.contains(&region)
+            && !addresses.contains(&initializing)
+            && region != initializing,
+        "scalar publication loses authentic aligned storage/field identities",
+    )?;
+    for &(role, index) in cohort {
+        if index >= FIXED_SCALAR_TEMPLATE_START {
+            require(
+                witnesses[role].scalar_storage == Some((region, initializing)),
+                "scalar whole-body witness loses authenticated storage context",
+            )?;
+        }
+    }
+    // Exact incoming multiset over this qualified closure. Ordinary reserve is
+    // a separate source-safe caller, not a new machine-code proof root.
+    for &(callee, callers) in incoming {
+        let target = witnesses[callee].address;
+        let mut seen = BTreeSet::new();
+        for (role, edges) in transfers {
+            for edge in edges.iter().filter(|edge| edge.target == target) {
+                let caller = witnesses
+                    .get(role)
+                    .ok_or("unqualified scalar helper caller")?;
+                require(
+                    caller.role == *role
+                        && selected.get(role) == Some(&caller.address)
+                        && targets.get(role) == Some(&caller.address)
+                        && transfers.get(role) == Some(&caller.edges),
+                    "scalar caller witness loses physical address/census",
+                )?;
+                let pc = edge
+                    .instruction
+                    .checked_sub(caller.address)
+                    .ok_or("scalar helper call precedes caller")?;
+                let observed = (role.as_str(), pc, edge.local_got_slot.is_some());
+                require(
+                    callers.contains(&observed) && seen.insert(observed),
+                    "extra duplicate shifted or wrong-mode scalar helper edge",
+                )?;
+            }
+        }
+        require(
+            seen == callers.iter().copied().collect::<BTreeSet<_>>(),
+            "missing scalar helper incoming edge",
+        )?;
+    }
+    // Whole bodies prove: get(slot) returns only null/slot after the ready load;
+    // set(slot,payload) copies all24B before ready and returns bool without
+    // touching rejected payload; metadata/backing pass actual REGION. The two
+    // complete307/303/210 entries pass REGION and disjoint rsp+16 payloads under the
+    // native gate, test the setter's exact boolean, never reuse moved storage, set READY then clear
+    // INITIALIZING, and get/validate that same published slot. Every helper
+    // null/alignment terminal therefore has the exact live aligned REGION
+    // premise, never a general permission for arbitrary pointer callers.
+    Ok(())
+}
+
+// The ordinary allocator-fixture image also emits the complete 344-byte
+// caller: its TEST AL,1 consumes the same setup291 result (exclusively EAX=0/1)
+// as the ordinary 345-byte caller's CMP EAX,1. That compiler choice does not
+// select a syscall family. Require the independently authenticated ordinary
+// wrapper and all three exact direct edges before admitting this composition.
+fn fixed_scalar_ordinary_bit_result(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+) -> Result<()> {
+    let raw = witnesses
+        .get("fixed_scalar_syscall")
+        .filter(|w| {
+            w.role == "fixed_scalar_syscall"
+                && w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                && w.address != 0
+                && w.scalar_storage.is_none()
+                && w.edges.len() == 1
+                && w.address.checked_add(15) == Some(w.edges[0].instruction)
+                && w.edges[0].local_got_slot.is_some()
+                && w.edges[0].target != 0
+                && w.edges[0].target != w.address
+        })
+        .ok_or("scalar bit-result caller lacks authenticated ordinary syscall wrapper")?;
+    let mut addresses = BTreeSet::from([raw.address, raw.edges[0].target]);
+    for (role, index, offsets) in [
+        ("fixed_native_from_native", 63, &[110][..]),
+        (
+            "fixed_arena_setup",
+            DETCORE_THREE_BAND_SETUP,
+            &[134, 166][..],
+        ),
+    ] {
+        let caller = witnesses
+            .get(role)
+            .filter(|w| {
+                w.role == role
+                    && w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                    && w.address != 0
+            })
+            .ok_or("ordinary scalar syscall edge lacks complete caller witness")?;
+        require(
+            addresses.insert(caller.address),
+            "ordinary scalar syscall roles alias",
+        )?;
+        let expected: Vec<_> = offsets
+            .iter()
+            .map(|offset| {
+                caller
+                    .address
+                    .checked_add(*offset)
+                    .map(|instruction| ConstructorTransfer {
+                        instruction,
+                        target: raw.address,
+                        local_got_slot: None,
+                    })
+                    .ok_or("ordinary scalar syscall edge overflows")
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        let actual: Vec<_> = caller
+            .edges
+            .iter()
+            .filter(|edge| edge.target == raw.address)
+            .cloned()
+            .collect();
+        require(
+            actual == expected,
+            "ordinary scalar syscall edges differ from the complete caller/setup pair",
+        )?;
+    }
+    Ok(())
+}
+
+// The native wrapper factory and the ordinary whole-wrapper recipe retain
+// independent physical proofs. A caller's Result encoding cannot substitute
+// for either one; publication leaf identities alone never select a mode.
+fn fixed_scalar_publication_syscall_mode(
+    witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
+    image_kind: FixedImageKind,
+    native_syscalls: bool,
+) -> Result<()> {
+    if fixed_naked_publication_present(witnesses) {
+        let spec = fixed_naked_composition(witnesses, Some(image_kind))?;
+        return require(
+            spec.native_syscalls == native_syscalls,
+            "naked-owner publication differs from its physical syscall factory",
+        );
+    }
+    let kind = witnesses
+        .get("fixed_native_from_native")
+        .ok_or("scalar syscall mode lacks authenticated complete caller")?
+        .kind;
+    if witnesses
+        .get("fixed_arena_backing")
+        .is_some_and(|w| w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(74))
+    {
+        require(
+            // Historical C2: native uses its factory; ordinary must pass
+            // fixed_scalar_ordinary_bit_result's mandatory raw26 and exact edges.
+            image_kind == FixedImageKind::Detcore
+                && kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(63),
+            "host scalar publication requires its observed native syscall factory",
+        )?;
+    }
+    if let Some(raw) = witnesses.get("fixed_scalar_syscall") {
+        require(
+            raw.role == "fixed_scalar_syscall"
+                && matches!(
+                    (native_syscalls, raw.kind),
+                    (true, AuthenticatedDetcoreOperationKind::NativeFixedSyscall3)
+                        | (
+                            false,
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                        )
+                ),
+            "scalar syscall witness differs from its physical factory",
+        )?;
+    }
+    if matches!(
+        (image_kind, native_syscalls, kind),
+        (
+            FixedImageKind::Detcore,
+            false,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(63)
+        )
+    ) {
+        return fixed_scalar_ordinary_bit_result(witnesses);
+    }
+    require(
+        matches!(
+            (image_kind, native_syscalls, kind),
+            (
+                FixedImageKind::Detcore,
+                true,
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(63)
+            ) | (
+                FixedImageKind::Detcore,
+                false,
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(66)
+            ) | (
+                FixedImageKind::Standalone,
+                false,
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(69)
+            )
+        ),
+        "scalar complete caller mixed with another physical syscall family",
+    )
+}
 
 fn fixed_detcore_specialized_cohort(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
@@ -23040,6 +26531,11 @@ fn fixed_detcore_publication_cohort(
     selected: &BTreeMap<String, u64>,
     targets: &BTreeMap<String, u64>,
 ) -> Result<()> {
+    if fixed_scalar_publication_present(selected.keys().map(String::as_str))
+        || witnesses.values().any(|w| matches!(w.kind, AuthenticatedDetcoreOperationKind::ValidateTemplate(index) if index >= FIXED_SCALAR_TEMPLATE_START))
+    {
+        return fixed_scalar_publication_cohort(witnesses, transfers, selected, targets, FixedImageKind::Detcore);
+    }
     if witnesses.values().any(|witness| {
         DETCORE_SPECIALIZED_COHORT.iter().any(|(_, index)| {
             witness.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(*index)
@@ -23136,12 +26632,18 @@ fn fixed_detcore_full_result_contract(
     selected: &BTreeMap<String, u64>,
     targets: &BTreeMap<String, u64>,
 ) -> Result<()> {
+    if fixed_naked_publication_present(witnesses) {
+        return fixed_naked_result_contract(witnesses, transfers, selected, targets);
+    }
     let Some(caller) = witnesses.get("fixed_native_from_native") else {
         return Ok(());
     };
     let setup_pc = match caller.kind {
         AuthenticatedDetcoreOperationKind::ValidateTemplate(DETCORE_FULL_RESULT_CALLER) => 289,
         AuthenticatedDetcoreOperationKind::ValidateTemplate(52) => 274,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(63) => 304,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(66) => 304,
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(69) => 300,
         _ => return Ok(()),
     };
     let setup = witnesses
@@ -23197,6 +26699,13 @@ fn fixed_detcore_full_result_contract(
     // error EDX -> [R14], and success R15 -> [R14]. Complete291 proves
     // EBP=1 on every error, EBP=0 on success, and sole EAX=EBP/EDX=R14D
     // return. The eight bitmap/syscall edges are recursively census-qualified.
+    // Complete scalar344 tests AL bit0, then stores EDX only on error and R15
+    // only on success. It is paired with this same exact setup291, whose full
+    // EAX is exclusively0/1; its bit test is therefore equivalent for this pair.
+    // Ordinary scalar345 compares full EAX with1, and standalone scalar322
+    // tests AL bit0. Both use this same complete setup291 with sole0/1 EAX,
+    // preserve EDX on the error arm and publish R15 only on the success arm.
+    // This is unrelated to the scalar publication setter's C bool ABI.
     // Source Result enums and symbol extents alone never prove this ABI.
     Ok(())
 }
@@ -23363,6 +26872,7 @@ fn qualify_fixed_operation_closure(
     tls: &AllocatorTlsBoundary,
     (image_kind, _sources): (FixedImageKind, Option<&VerifiedCompiledSources>),
 ) -> Result<FixedOperationClosure> {
+    let scalar_publication = fixed_scalar_publication_present(roles.keys().map(String::as_str));
     let mut pending = FIXED_REQUIRED_ROLES
         .iter()
         .map(|role| roles[*role].st_value)
@@ -23370,7 +26880,7 @@ fn qualify_fixed_operation_closure(
     if let Some(layout) = roles.get("fixed_compiler_layout") {
         pending.push(layout.st_value);
     }
-    for &required in FIXED_PUBLICATION_REQUIRED_ROLES {
+    for &required in fixed_required_publication_roles(roles.keys().map(String::as_str)) {
         pending.push(
             roles
                 .get(required)
@@ -23466,6 +26976,7 @@ fn qualify_fixed_operation_closure(
                                     address,
                                     kind,
                                     edges: edges.clone(),
+                                    scalar_storage: None,
                                 },
                             )
                             .is_none(),
@@ -23475,7 +26986,10 @@ fn qualify_fixed_operation_closure(
                     break;
                 }
             }
-            if image_kind == FixedImageKind::Detcore && address != trusted.st_value {
+            if (image_kind == FixedImageKind::Detcore
+                || (scalar_publication && fixed_scalar_recipe_role(role)))
+                && address != trusted.st_value
+            {
                 match fixed_detcore_qualified_operation(
                     role,
                     address,
@@ -23555,6 +27069,35 @@ fn qualify_fixed_operation_closure(
                 }
             }
             if let Some(edges) = valid {
+                if scalar_publication
+                    && image_kind == FixedImageKind::Standalone
+                    && role == "fixed_scalar_syscall"
+                {
+                    let template = &DETCORE_VALIDATE_TEMPLATES[26];
+                    if fixed_template_shape(
+                        actual,
+                        &fixed_hex(template.hex),
+                        template.operands.iter().map(|op| op.displacement),
+                    ) {
+                        let witness = fixed_detcore_qualified_operation(
+                            role,
+                            address,
+                            (actual, &instructions),
+                            DetcoreRecipeBindings {
+                                targets: &context.targets,
+                                got,
+                                readonly: &context.readonly,
+                                context: &context.compiled_filenames,
+                            },
+                            tls.tls_cell.address,
+                            internal_switch,
+                        )?;
+                        require(
+                            detcore_witnesses.insert(role.clone(), witness).is_none(),
+                            "duplicate authenticated standalone syscall witness",
+                        )?;
+                    }
+                }
                 chosen = Some((role.clone(), edges));
                 break;
             }
@@ -23593,18 +27136,19 @@ fn qualify_fixed_operation_closure(
             fixed_census_transfers(&instructions, address, actual, &edges, got, internal_switch)
                 .map_err(|error| format!("Fixed role {role} at {address:#x}: {error}"))?;
         }
-        let normal_return_witness = if image_kind == FixedImageKind::Standalone {
-            fixed_normal_return_qualified_operation(
-                &role,
-                address,
-                (actual, &instructions),
-                &context.targets,
-                got,
-                &context.readonly,
-            )?
-        } else {
-            None
-        };
+        let normal_return_witness =
+            if image_kind == FixedImageKind::Standalone && !scalar_publication {
+                fixed_normal_return_qualified_operation(
+                    &role,
+                    address,
+                    (actual, &instructions),
+                    &context.targets,
+                    got,
+                    &context.readonly,
+                )?
+            } else {
+                None
+            };
         if let Some(witness) = normal_return_witness {
             require(
                 normal_return_witnesses
@@ -23678,7 +27222,30 @@ fn qualify_fixed_operation_closure(
             .all(|role| transfers.contains_key(*role)),
         "Fixed closure omits a compiler operation or fresh setup",
     )?;
-    if image_kind == FixedImageKind::Detcore {
+    if scalar_publication {
+        let selected = roles
+            .iter()
+            .map(|(role, symbol)| (role.clone(), symbol.st_value))
+            .collect();
+        fixed_scalar_publication_syscall_mode(
+            &detcore_witnesses,
+            image_kind,
+            context.native_syscalls.is_some(),
+        )?;
+        fixed_scalar_publication_cohort(
+            &detcore_witnesses,
+            &transfers,
+            &selected,
+            &context.targets,
+            image_kind,
+        )?;
+        fixed_detcore_full_result_contract(
+            &detcore_witnesses,
+            &transfers,
+            &selected,
+            &context.targets,
+        )?;
+    } else if image_kind == FixedImageKind::Detcore {
         let selected = roles
             .iter()
             .map(|(role, symbol)| (role.clone(), symbol.st_value))
@@ -23696,7 +27263,7 @@ fn qualify_fixed_operation_closure(
             &context.targets,
         )?;
     }
-    if image_kind == FixedImageKind::Standalone {
+    if image_kind == FixedImageKind::Standalone && !scalar_publication {
         let selected = roles
             .iter()
             .map(|(role, symbol)| (role.clone(), symbol.st_value))
@@ -25533,6 +29100,9 @@ fn canonical_rust_symbol(name: &str) -> Option<String> {
 fn preparation_role(name: &str) -> Option<&'static str> {
     let canonical = canonical_rust_symbol(name)?;
     match canonical.as_str() {
+        "_RNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner18from_native_opaque" => {
+            Some("from_native")
+        }
         "_RINvMNtNtCs_3std4sync9once_lockINtB3_8OnceLockINtNtCs_4core6result6ResultNtNtNtCs_15reverie_inguest5guest11tool_region10ToolRegionlEE10initializeNCINvB2_11get_or_initNCNvB2_10try_insert0E0zEB1B_" => {
             Some("tool_region_once_initialize")
         }
@@ -26028,22 +29598,24 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
     if initializer_name == STANDALONE_ROOT {
         require_legacy_standalone_gate(elf)?;
     }
-    let mut addresses: BTreeSet<_> = elf
+    // Resolve the named executable symbols once; the endpoint scan below and
+    // the shim scan further down both walk this list.
+    let named_executable: Vec<(&str, sym::Sym)> = elf
         .syms
         .iter()
         .filter(|s| executable_symbol(elf, s))
-        .filter_map(|s| {
-            elf.strtab
-                .get_at(s.st_name)
-                .filter(|name| {
-                    allocation_wrapper(name)
-                        || qualifies_owned_endpoint(name)
-                        || (s.st_bind() == sym::STB_LOCAL
-                            && (name.contains("PrivatePatchAllocator")
-                                || name.contains("PrivateToolAllocator")))
-                })
-                .map(|_| s.st_value)
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let mut addresses: BTreeSet<_> = named_executable
+        .iter()
+        .filter(|(name, s)| {
+            allocation_wrapper(name)
+                || qualifies_owned_endpoint(name)
+                || (s.st_bind() == sym::STB_LOCAL
+                    && (name.contains("PrivatePatchAllocator")
+                        || name.contains("PrivateToolAllocator")))
         })
+        .map(|(_, s)| s.st_value)
         .collect();
     addresses.extend(
         fixed_role_symbols(elf)?
@@ -26063,21 +29635,15 @@ fn proof_functions(elf: &Elf<'_>, initializer_name: &str) -> Result<BTreeMap<u64
     }
     addresses.extend(generic_symbols(elf)?.values().map(|s| s.st_value));
     for shim in SHIMS {
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = named_executable
             .iter()
-            .filter(|s| executable_symbol(elf, s))
-            .filter(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .is_some_and(|name| name == shim || name.ends_with(shim))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        addresses.insert(candidates[0].st_value);
+        addresses.insert(candidates[0].1.st_value);
     }
     selected_function_ranges(elf, addresses)
 }
@@ -26123,19 +29689,20 @@ fn detcore_proof_functions(elf: &Elf<'_>) -> Result<BTreeMap<u64, u64>> {
 }
 
 fn selected_function_ranges(elf: &Elf<'_>, addresses: BTreeSet<u64>) -> Result<BTreeMap<u64, u64>> {
+    // Collect every defined function size per address in one pass, instead of
+    // rescanning both symbol tables once per selected address.
+    let mut sizes_by_address: BTreeMap<u64, BTreeSet<u64>> = BTreeMap::new();
+    for s in elf.syms.iter().chain(elf.dynsyms.iter()) {
+        if s.st_type() == sym::STT_FUNC && s.st_shndx != section_header::SHN_UNDEF as usize {
+            sizes_by_address
+                .entry(s.st_value)
+                .or_default()
+                .insert(s.st_size);
+        }
+    }
     let mut functions = BTreeMap::new();
     for address in addresses {
-        let sizes: BTreeSet<_> = elf
-            .syms
-            .iter()
-            .chain(elf.dynsyms.iter())
-            .filter(|s| {
-                s.st_type() == sym::STT_FUNC
-                    && s.st_shndx != section_header::SHN_UNDEF as usize
-                    && s.st_value == address
-            })
-            .map(|s| s.st_size)
-            .collect();
+        let sizes: BTreeSet<_> = sizes_by_address.get(&address).cloned().unwrap_or_default();
         require(
             sizes.len() == 1 && !sizes.contains(&0),
             format!("selected function {address:#x} has absent/conflicting alias sizes"),
@@ -28383,47 +31950,52 @@ fn qualify_elf_from_evidence_in_source_context(
         .iter()
         .map(|name| export(&elf, name).map(|(_, s)| symbol_evidence(name, &s)))
         .collect::<Result<Vec<_>>>()?;
+    // Resolve the named executable symbols, the dynamic symbol names and the
+    // relocation-target names once, instead of rescanning the symbol, dynamic
+    // symbol and relocation tables for every shim below.
+    let executable: Vec<(&str, sym::Sym)> = elf
+        .syms
+        .iter()
+        .filter(|s| executable_symbol(&elf, s))
+        .filter_map(|s| elf.strtab.get_at(s.st_name).map(|name| (name, s)))
+        .collect();
+    let dynamic_names: BTreeSet<&str> = elf
+        .dynsyms
+        .iter()
+        .filter_map(|d| elf.dynstrtab.get_at(d.st_name))
+        .collect();
+    let relocated_names: BTreeSet<&str> = elf
+        .dynrelas
+        .iter()
+        .chain(elf.dynrels.iter())
+        .chain(elf.pltrelocs.iter())
+        .filter_map(|r| elf.dynsyms.get(r.r_sym))
+        .filter_map(|s| elf.dynstrtab.get_at(s.st_name))
+        .collect();
     let mut allocation_shims = BTreeMap::new();
     for shim in SHIMS {
         // rustc's v0 symbol names end in the allocation shim identifier; older
         // compilers emit the unmangled identifier. Require the exact suffix,
         // not a broad `alloc` substring that might name an unrelated helper.
-        let candidates: Vec<_> = elf
-            .syms
+        let candidates: Vec<_> = executable
             .iter()
-            .filter(|s| executable_symbol(&elf, s))
-            .filter_map(|s| {
-                elf.strtab
-                    .get_at(s.st_name)
-                    .filter(|name| *name == shim || name.ends_with(shim))
-                    .map(|name| (name, s))
-            })
+            .filter(|(name, _)| *name == shim || name.ends_with(shim))
             .collect();
         require(
             candidates.len() == 1,
             format!("required unique compiler-selected shim {shim} absent/ambiguous"),
         )?;
-        let (name, s) = candidates[0];
+        let &(name, s) = candidates[0];
         require(
             s.st_bind() == sym::STB_LOCAL,
             format!("allocation shim {name} is not LOCAL"),
         )?;
         require(
-            !elf.dynsyms
-                .iter()
-                .any(|d| elf.dynstrtab.get_at(d.st_name) == Some(name)),
+            !dynamic_names.contains(name),
             format!("allocation shim {name} appears in dynamic symbol table"),
         )?;
         require(
-            !elf.dynrelas
-                .iter()
-                .chain(elf.dynrels.iter())
-                .chain(elf.pltrelocs.iter())
-                .any(|r| {
-                    elf.dynsyms
-                        .get(r.r_sym)
-                        .is_some_and(|s| elf.dynstrtab.get_at(s.st_name) == Some(name))
-                }),
+            !relocated_names.contains(name),
             format!("allocation shim {name} has a dynamic preemption route"),
         )?;
         allocation_shims.insert(shim.to_owned(), symbol_evidence(name, &s));
@@ -29017,7 +32589,35 @@ mod tests {
         let rv_two = cargo_two.join(suffix);
         // Current compiled bytes are inputs only. Each must independently match
         // the fixed reviewed length/digest catalog before any positive is earned.
-        let compiled_files: [(&str, &[u8]); 68] = [
+        let compiled_files: [(&str, &[u8]); 84] = [
+            (
+                "reverie/src/tool_process.rs",
+                include_bytes!("../../reverie/src/tool_process.rs"),
+            ),
+            (
+                "reverie/src/tool_outcome.rs",
+                include_bytes!("../../reverie/src/tool_outcome.rs"),
+            ),
+            (
+                "reverie-inguest/src/tool_host.rs",
+                include_bytes!("../../reverie-inguest/src/tool_host.rs"),
+            ),
+            (
+                "reverie-rpc-transport/src/lib.rs",
+                include_bytes!("../../reverie-rpc-transport/src/lib.rs"),
+            ),
+            (
+                "reverie-rpc-transport/src/server.rs",
+                include_bytes!("../../reverie-rpc-transport/src/server.rs"),
+            ),
+            (
+                "reverie-rpc-transport/src/blocking_client.rs",
+                include_bytes!("../../reverie-rpc-transport/src/blocking_client.rs"),
+            ),
+            (
+                "reverie-rpc-transport/src/tool_activation.rs",
+                include_bytes!("../../reverie-rpc-transport/src/tool_activation.rs"),
+            ),
             (
                 "reverie-inguest/src/guest/continuation.rs",
                 include_bytes!("../../reverie-inguest/src/guest/continuation.rs"),
@@ -29236,6 +32836,22 @@ mod tests {
                 include_bytes!("private_static/selected_initializers/view_table.rs"),
             ),
             (
+                "reverie-liteinst-artifact/src/private_static/selected_initializers/package_roles.rs",
+                include_bytes!("private_static/selected_initializers/package_roles.rs"),
+            ),
+            (
+                "reverie-liteinst-artifact/tests/fixtures/package_roles_fallback_member.rs",
+                include_bytes!("../tests/fixtures/package_roles_fallback_member.rs"),
+            ),
+            (
+                "reverie-liteinst-artifact/tests/fixtures/package_roles_libc_member.rs",
+                include_bytes!("../tests/fixtures/package_roles_libc_member.rs"),
+            ),
+            (
+                "reverie-liteinst-artifact/tests/fixtures/package_roles_tp_member.rs",
+                include_bytes!("../tests/fixtures/package_roles_tp_member.rs"),
+            ),
+            (
                 "reverie-liteinst-artifact/src/private_static/selected_initializers/native_leaves.rs",
                 include_bytes!("private_static/selected_initializers/native_leaves.rs"),
             ),
@@ -29284,10 +32900,84 @@ mod tests {
                 include_bytes!("../tests/fixtures/selected_init_v12.json"),
             ),
             (
+                "reverie-inguest/src/launcher/mod.rs",
+                include_bytes!("../../reverie-inguest/src/launcher/mod.rs"),
+            ),
+            (
+                "reverie/src/native_syscall.rs",
+                include_bytes!("../../reverie/src/native_syscall.rs"),
+            ),
+            (
+                "reverie/src/reserved_input/mod.rs",
+                include_bytes!("../../reverie/src/reserved_input/mod.rs"),
+            ),
+            (
+                "reverie/src/reserved_input/registry.rs",
+                include_bytes!("../../reverie/src/reserved_input/registry.rs"),
+            ),
+            (
+                "reverie/src/tool.rs",
+                include_bytes!("../../reverie/src/tool.rs"),
+            ),
+            (
                 "reverie-liteinst-artifact/src/lib.rs",
                 include_bytes!("lib.rs"),
             ),
         ];
+        // These reviewed sources changed for startup or returning-injection contracts.
+        // Keep the fixed catalog authoritative and reject their prior tuples.
+        assert_eq!(CONTENT_REVERIE_CATALOG.len(), 82);
+        for (relative, old_size, old_digest) in [
+            (
+                "Cargo.toml",
+                2142,
+                "b3c19cd3f242ba6185a61c596dea3b417be61543c2c83d1d4d358ee6f7fe4930",
+            ),
+            (
+                "Cargo.toml",
+                2030,
+                "ec6ca86a7e751e556ce92ae82ac349e56b90d509cbddb554abe8b8e7b91cf9e9",
+            ),
+            (
+                "reverie/src/tool_outcome.rs",
+                10307,
+                "ee28ac21532ccc32d15116a3bab71aea074e5177a8c3f630c09e74e8a16b798c",
+            ),
+            (
+                "reverie-inguest/src/tool_host.rs",
+                24858,
+                "571d9604b2894cfb51256bc713d155b3d3ce42eb2cda54c5bc9912435ad96eb3",
+            ),
+            (
+                "reverie-inguest/src/guest/host.rs",
+                204181,
+                "3f3a6486819a5af8212f1d6abe42cc1e1cb098ddd45f8bf137790da50ee8c392",
+            ),
+            (
+                "reverie/src/guest.rs",
+                81764,
+                "b8e45c8b40b0e711fdd01a4a71bbd671c4debcfd1977d44d920446067119dc3a",
+            ),
+        ] {
+            let entries: Vec<_> = CONTENT_REVERIE_CATALOG
+                .iter()
+                .filter(|entry| entry.0 == relative)
+                .collect();
+            assert_eq!(entries.len(), 1, "one declared source {relative}");
+            let bytes = compiled_files
+                .iter()
+                .find(|entry| entry.0 == relative)
+                .unwrap()
+                .1;
+            let (_, size, digest) = *entries[0];
+            assert_eq!(size, bytes.len() as u64);
+            assert_eq!(digest, sha256(bytes));
+            content_catalog_matches(relative, size, digest).unwrap();
+            assert!(
+                content_catalog_matches(relative, old_size, old_digest).is_err(),
+                "prior startup source tuple must refuse: {relative}"
+            );
+        }
         for rv in [&rv_one, &rv_two] {
             for &(relative, bytes) in &compiled_files {
                 fs::create_dir_all(rv.join(relative).parent().unwrap()).unwrap();
@@ -29295,11 +32985,11 @@ mod tests {
             }
         }
         let (rv_inventory, _) = content_reverie_inventory(&rv_one).unwrap();
-        // 66 reviewed sources plus the independently checked qualifier.
-        assert_eq!(rv_inventory.len(), 67);
+        // 82 reviewed sources plus the independently checked qualifier.
+        assert_eq!(rv_inventory.len(), 83);
         let (detcore_inventory, _) =
             content_reverie_inventory_for_image(&rv_one, FixedImageKind::Detcore).unwrap();
-        assert_eq!(detcore_inventory.len(), 68);
+        assert_eq!(detcore_inventory.len(), 84);
         assert_eq!(
             content_reverie_inventory_for_image(&rv_two, FixedImageKind::Detcore)
                 .unwrap()
@@ -42485,6 +46175,46 @@ mod tests {
             }
             bytes
         }
+        // Exact scalar boundary spellings from the retained cc234bb1 ELF.
+        // A selector match never substitutes for its complete body/caller proof.
+        for (role, spelling) in [
+            (
+                "fixed_region_publication_get_opaque",
+                "_RNvMs_NtNtCs1_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10get_opaque",
+            ),
+            (
+                "fixed_region_publication_set_opaque",
+                "_RNvMs_NtNtCs1_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10set_opaque",
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                "_RNvNtNtNtCs1_15reverie_inguest5guest11tool_region5arena24fixed_tool_heap_metadata",
+            ),
+        ] {
+            for name in [spelling.to_owned(), format!("{spelling}.llvm.12345")] {
+                let bytes = elf_symbols(&[(&name, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert_eq!(fixed_emitted_role(&name), Some(role));
+                assert!(roles.contains_key(role));
+            }
+            for extras in [
+                vec![(spelling, sym::STB_GLOBAL)],
+                vec![(spelling, sym::STB_LOCAL), (spelling, sym::STB_LOCAL)],
+            ] {
+                let bytes = elf_symbols(&extras);
+                assert!(fixed_role_symbols(&Elf::parse(&bytes).unwrap()).is_err());
+            }
+            for wrong in [
+                spelling.replace("reverie_inguest", "unowned_inguest"),
+                format!("{spelling}.llvm.foreign"),
+                format!("{spelling}_extra"),
+            ] {
+                assert_ne!(fixed_emitted_role(&wrong), Some(role));
+                let bytes = elf_symbols(&[(&wrong, sym::STB_LOCAL)]);
+                let roles = fixed_role_symbols(&Elf::parse(&bytes).unwrap()).unwrap();
+                assert!(!roles.contains_key(role));
+            }
+        }
         // Exact observed atomic helper spellings feed the same production
         // role census. These controls qualify selection only; existing full
         // provider/switch/readonly/constant-order/GOT mutation tests stay.
@@ -49020,6 +52750,7 @@ mod tests {
         [
             "reverie-inguest/src/guest/alloc.rs",
             "reverie-inguest/src/guest/tool_region_arena.rs",
+            "reverie-inguest/src/guest/tool_region.rs",
             "reverie-inguest/src/guest/tool_region_constructor.rs",
             "reverie-liteinst/src/patch_alloc.rs",
         ]
@@ -49282,9 +53013,3857 @@ mod tests {
         }
     }
 
+    // Independently retained142/143 complete ELF bodies and objdump cursors.
+    // Only bound operands relocate into synthetic pure-control addresses.
+    // These fixtures are not read from production templates at test runtime.
+    fn naked_owner_publication_samples(case: usize) -> Vec<ScalarPublicationSample> {
+        match case {
+            0 => vec![
+                // HOST_STANDALONE: d640d5071951fcd02adf405ad48f01714bf78bfb3a5fb810900b72c600b8ce4f
+                (
+                    "fixed_region_publication_get_opaque",
+                    67,
+                    "0fb6471831c984c0480f45cf48894c24f8488d4424f8488b4424f8c3",
+                    &[0, 4, 6, 8, 12, 17, 22, 27],
+                    &[],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    80,
+                    "0fb6471884c07412c74424fc0b000000488d4424fc8b4424fcc30f1006488b4610488947100f1107c6471801c74424fc00000000488d4424fc8b4424fcc3",
+                    &[0, 4, 6, 8, 16, 21, 25, 26, 29, 33, 37, 40, 44, 52, 57, 61],
+                    &[],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    75,
+                    "4883ec180fb6053de7040484c0740431c0eb34488d0536e704044889442410488d442410488b7c2410e872f8ffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76,
+                        81, 86, 90,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    74,
+                    "4883ec180fb605bde7040484c0740431c9eb31488d05b6e704044889442410488d442410488b7c2410e8f2f8ffff31c94885c0740f807810ff488d057847f8ff480f45c848894c2408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73,
+                        78, 83, 87,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                        (60, 64, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe8272300004885c0740f48c1eb194881fb0800300075025bc3e81e0b0000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e83e1500004885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae83ff0ffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    72,
+                    "534889f3e8e71400004885c00f84d50000004889c14889d848c1e819483d080030000f85bf000000488b53f840b60131c0f0400fb0711074130f1f8000000000f39031c0f0400fb0711075f448b80000001000600000488b71084885f6400f94c74839d6410f93c04108f875400f1f004889f7488b7430084885f674054839d672ee488974100848895438084c8b04384d8d0c384939d1751d4c03041072174c89043848897438084889faeb094889741008488951084885f67426488b3c104c8d04174939d072194939f0751448033c30720e48893c10488b7430084889741008c64110005bc3e814fcffff",
+                    &[
+                        0, 1, 4, 9, 12, 18, 21, 24, 28, 34, 40, 44, 47, 49, 55, 57, 64, 66, 68, 74,
+                        76, 86, 90, 93, 97, 100, 104, 107, 109, 112, 115, 120, 123, 125, 128, 130,
+                        135, 140, 144, 148, 151, 153, 157, 159, 163, 168, 171, 173, 178, 182, 185,
+                        187, 191, 195, 198, 200, 203, 205, 209, 211, 215, 220, 225, 229, 230, 231,
+                    ],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (232, 236, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    73,
+                    "554157415641554154534883ec184d89c44989cf4989d54989f6e8e11300004885c00f846c0100004889c348bd00000010006000004889042448896c240848c7442410000000024c89f048c1e819483d080030000f853a010000498d45ff4985c50f94c048b900000000000000804c29e94939cc0f96c120c180f9010f85c10000004889e74c89ee4c89e2e8a0eeffff4885c00f84aa0000004d39fc4d0f42fc4c89f74989c44889c64c89faff15de840400498b4ef8b20131c0f00fb05310741a6666666666662e0f1f840000000000f39031c0f00fb0531075f5488b53084885d20f94c04839ca400f93c64008c675566666666666662e0f1f8400000000004889d6488b5415084885d274054839ca72ee4889540d0848894c3508488b7c3500488d04374839c84c89e0752648037c0d00721f48897c350048895435084889f1eb1031c0eb3e4889540d0848894b084c89e04885d27429488b740d00488d3c0e4839cf721b4839d775164803741500720f4889740d00488b5415084889540d08c64310004883c4185b415c415d415e415f5dc3e877faffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 90, 94, 97, 100, 110, 113, 116, 119, 121, 124, 130, 133, 136,
+                        139, 144, 147, 153, 156, 160, 163, 166, 169, 172, 178, 182, 184, 186, 191,
+                        193, 208, 210, 212, 217, 219, 223, 226, 229, 232, 236, 239, 241, 256, 259,
+                        264, 267, 269, 272, 274, 279, 284, 289, 293, 296, 299, 301, 306, 308, 313,
+                        318, 321, 323, 325, 327, 332, 336, 339, 342, 344, 349, 353, 356, 358, 361,
+                        363, 368, 370, 375, 380, 385, 389, 393, 394, 396, 398, 400, 402, 403, 404,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (140, 144, "fixed_heap_allocate", false),
+                        (174, 178, "fixed_copy_bytes", true),
+                        (405, 409, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d40e00404000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8f70a00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3de0df0404e82bf1ffff4885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8caf4ffff85c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    86,
+                    "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424010000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e8f9f3ffff85c0740ab801000000e9910000004c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d4ed4040448891c244889e04c897c2408488d442408488b3c24488b742408e89fe5ffff89c1b80100000085c9753a49c744244803000000c6050cd404040048895c2420488d442420488b7c2420e850e5ffff4889c1b8010000004885c9740931c0807910ff0f94c04883c4385b415c415e415fc3",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 106, 111, 115, 125, 130, 135, 139, 146, 150, 153,
+                        158, 163, 167, 172, 177, 179, 184, 186, 188, 197, 204, 209, 214, 219, 224,
+                        227, 232, 235, 237, 239, 243, 246, 250, 251, 253, 255, 257,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (142, 146, "fixed_region", false),
+                        (173, 177, "fixed_region_publication_set_opaque", false),
+                        (199, 204, "fixed_initializing", false),
+                        (220, 224, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    90,
+                    "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424020000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e8e9f2ffff85c0740ab801000000e9910000004c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d3ed3040448891c244889e04c897c2408488d442408488b3c24488b742408e88fe4ffff89c1b80100000085c9753a49c744244803000000c605fcd204040048895c2420488d442420488b7c2420e840e4ffff4889c1b8010000004885c9740931c0807910ff0f94c04883c4385b415c415e415fc3",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 106, 111, 115, 125, 130, 135, 139, 146, 150, 153,
+                        158, 163, 167, 172, 177, 179, 184, 186, 188, 197, 204, 209, 214, 219, 224,
+                        227, 232, 235, 237, 239, 243, 246, 250, 251, 253, 255, 257,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (142, 146, "fixed_region", false),
+                        (173, 177, "fixed_region_publication_set_opaque", false),
+                        (199, 204, "fixed_initializing", false),
+                        (220, 224, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e82b02000084c00f84d20000004889dfbeff3f0100ba0160010031c9e80f02000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e8f301000084c00f849a00000048bf0000001000600000e8ec0200004885c00f888900000048bf0000001400600000e8d40200004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e8830100004889dfbeff3f0100ba01600100b901000000e86c0100004889dfbeffff0d00ba01f00f00b901000000e85501000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e8bfcaffff59c3ff15175e0400",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    83,
+                    "504889febf0a000000ba00000002b903000000e808ddffff59c3ff1560700400",
+                    &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                    &[
+                        (20, 24, "fixed_scalar_syscall", false),
+                        (28, 32, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    usize::MAX,
+                    "b0014839f20f86a300000084c9746989d129f14c8d4601f6c101741741b90100000089f149d3e148c1ee064c094cf7084c89c64c39c274760f1f84000000000041b80100000089f149d3e04889f148c1e9064c0944cf08488d4e0141b80100000049d3e048c1e9064c0944cf084883c6024839f275caeb364889f048c1e806488b44c708480fa3f0730331c0c348ffc64839f20f94c074164889f148c1e906488b4ccf08480fa3f1488d760173e2c3",
+                    &[
+                        0, 2, 5, 11, 13, 15, 17, 19, 23, 26, 28, 34, 36, 39, 43, 48, 51, 54, 56,
+                        64, 70, 72, 75, 78, 82, 87, 91, 97, 100, 104, 109, 113, 116, 118, 120, 123,
+                        127, 132, 136, 138, 140, 141, 144, 147, 150, 152, 155, 159, 164, 168, 172,
+                        174,
+                    ],
+                    &[],
+                ),
+                (
+                    "fixed_scalar_syscall",
+                    26,
+                    "5048c70424000000004531c04531c9ff15639b040059c3",
+                    &[0, 1, 9, 12, 15, 21, 22],
+                    &[(17, 21, "reverie_inguest_trusted_syscall", true)],
+                ),
+            ],
+            1 => vec![
+                // HOST_NATIVE: 63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee
+                (
+                    "fixed_region_publication_get_opaque",
+                    55,
+                    "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1599a82000bf08000000ff1536e02100488d3d87a82000ff15a9182200",
+                    &[
+                        0, 1, 4, 8, 10, 13, 15, 19, 21, 23, 27, 31, 34, 38, 39, 40, 47, 52, 58, 65,
+                    ],
+                    &[
+                        (43, 47, "fixed_scalar_publication_get_location", false),
+                        (54, 58, "fixed_heap_panic_misaligned", true),
+                        (61, 65, "fixed_scalar_publication_get_location", false),
+                        (67, 71, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    81,
+                    "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d153da820004889febf08000000ff15bfdf2100488d3d28a82000ff1532182200",
+                    &[
+                        0, 1, 5, 7, 10, 12, 16, 18, 20, 28, 33, 37, 38, 39, 42, 46, 50, 53, 57, 65,
+                        70, 74, 75, 76, 83, 86, 91, 97, 104,
+                    ],
+                    &[
+                        (79, 83, "fixed_scalar_publication_set_location", false),
+                        (93, 97, "fixed_heap_panic_misaligned", true),
+                        (100, 104, "fixed_scalar_publication_set_location", false),
+                        (106, 110, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    75,
+                    "4883ec180fb6050651240484c0740431c0eb34488d05fe5024044889442410488d442410488b7c2410e8e25301004885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76,
+                        81, 86, 90,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    74,
+                    "4883ec180fb6058651240484c0740431c9eb31488d057e5124044889442410488d442410488b7c2410e86254010031c94885c0740f807810ff488d05e8c12aff480f45c848894c2408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73,
+                        78, 83, 87,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                        (60, 64, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe89718ffff4885c0740f48c1eb194881fb0800300075025bc3e8ce280000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e80eeefeff4885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae89fd2ffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    61,
+                    "534889f3e8b7edfeff4885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be96bd0ffffe8d6fdffff",
+                    &[0, 1, 4, 9, 12, 14, 17, 21, 28, 30, 40, 44, 47, 48, 53],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (49, 53, "fixed_heap_deallocate", false),
+                        (54, 58, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    62,
+                    "554157415641554154534883ec184d89c44989ce4889d54889f3e861edfeff4885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e8bbd1ffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff152d642200488b53f84c89ff4c89eee8aecfffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e803fdffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 86, 90, 93, 96, 106, 109, 112, 115, 117, 119, 122, 125, 128,
+                        133, 136, 138, 141, 145, 148, 151, 154, 157, 163, 167, 170, 173, 178, 181,
+                        183, 185, 189, 190, 192, 194, 196, 198, 199, 200,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (129, 133, "fixed_heap_allocate", false),
+                        (159, 163, "fixed_copy_bytes", true),
+                        (174, 178, "fixed_heap_deallocate", false),
+                        (201, 205, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803dc9212504000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8174b00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3d68212504e85b2402004885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8ae98000085c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    87,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e859aeffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d24d0240448891c244889e04c89642408488d442408488b3c24488b742408e84dd3010089c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c605d9cf24040048895c2420488d442420488b7c2420e8c4d201004889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d15fb5e2200bf080000004889deff15fdb22300488d3de65e2200ff1570eb2300488d15995c2200bf080000004c89f6ff15dbb22300488d3d845c2200ff154eeb2300",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 104, 110, 113, 119, 124, 129, 133, 143, 148, 153,
+                        157, 164, 168, 171, 176, 181, 185, 190, 195, 197, 202, 204, 206, 210, 212,
+                        215, 217, 225, 232, 237, 242, 247, 252, 255, 258, 263, 265, 267, 271, 274,
+                        278, 279, 281, 283, 285, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (160, 164, "fixed_region", false),
+                        (191, 195, "fixed_region_publication_set_opaque", false),
+                        (227, 232, "fixed_initializing", false),
+                        (248, 252, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_constructor_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_constructor_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    91,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e8e9acffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1db4ce240448891c244889e04c89642408488d442408488b3c24488b742408e8ddd1010089c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c60569ce24040048895c2420488d442420488b7c2420e854d101004889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d15a35d2200bf080000004889deff158db12300488d3d8e5d2200ff1500ea2300488d15295b2200bf080000004c89f6ff156bb12300488d3d145b2200ff15dee92300",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 104, 110, 113, 119, 124, 129, 133, 143, 148, 153,
+                        157, 164, 168, 171, 176, 181, 185, 190, 195, 197, 202, 204, 206, 210, 212,
+                        215, 217, 225, 232, 237, 242, 247, 252, 255, 258, 263, 265, 267, 271, 274,
+                        278, 279, 281, 283, 285, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (160, 164, "fixed_region", false),
+                        (191, 195, "fixed_region_publication_set_opaque", false),
+                        (227, 232, "fixed_initializing", false),
+                        (248, 252, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_generic_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_generic_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e8c735000084c00f84d20000004889dfbeff3f0100ba0160010031c9e8ab35000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e88f35000084c00f849a00000048bf0000001000600000e8c83600004885c00f888900000048bf0000001400600000e8b03600004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e81f3500004889dfbeff3f0100ba01600100b901000000e8083500004889dfbeffff0d00ba01f00f00b901000000e8f134000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e88f77000059c3ff153ff22300",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    84,
+                    "4889febf0a000000ba00000002b903000000e939f2ffff",
+                    &[0, 3, 8, 13, 18],
+                    &[(19, 23, "fixed_scalar_syscall", false)],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    85,
+                    "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15c1e82100bf08000000ff150e352300488d3dafe82100ff15816d2300",
+                    &[
+                        0, 1, 4, 7, 11, 17, 20, 26, 28, 31, 37, 39, 41, 43, 46, 50, 53, 55, 61, 64,
+                        67, 71, 76, 79, 82, 84, 96, 101, 104, 107, 110, 114, 119, 123, 128, 131,
+                        135, 140, 144, 147, 149, 151, 154, 158, 163, 167, 169, 171, 172, 173, 176,
+                        179, 182, 184, 187, 191, 196, 200, 204, 206, 207, 208, 215, 220, 226, 233,
+                    ],
+                    &[
+                        (211, 215, "fixed_naked_bitmap_208_location", false),
+                        (222, 226, "fixed_heap_panic_misaligned", true),
+                        (229, 233, "fixed_naked_bitmap_226_location", false),
+                        (235, 239, "fixed_panic_null_reference", true),
+                    ],
+                ),
+            ],
+            2 => vec![
+                // HOST_ORDINARY: 5b318a4bfffcc82acf242bd4fe2341e899d25272d921b24fb949c06cecf79017
+                (
+                    "fixed_region_publication_get_opaque",
+                    55,
+                    "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1501011300bf08000000ff15b6ed1300488d3def001300ff15d10a1400",
+                    &[
+                        0, 1, 4, 8, 10, 13, 15, 19, 21, 23, 27, 31, 34, 38, 39, 40, 47, 52, 58, 65,
+                    ],
+                    &[
+                        (43, 47, "fixed_scalar_publication_get_location", false),
+                        (54, 58, "fixed_heap_panic_misaligned", true),
+                        (61, 65, "fixed_scalar_publication_get_location", false),
+                        (67, 71, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    81,
+                    "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d15a50013004889febf08000000ff153fed1300488d3d90001300ff155a0a1400",
+                    &[
+                        0, 1, 5, 7, 10, 12, 16, 18, 20, 28, 33, 37, 38, 39, 42, 46, 50, 53, 57, 65,
+                        70, 74, 75, 76, 83, 86, 91, 97, 104,
+                    ],
+                    &[
+                        (79, 83, "fixed_scalar_publication_set_location", false),
+                        (93, 97, "fixed_heap_panic_misaligned", true),
+                        (100, 104, "fixed_scalar_publication_set_location", false),
+                        (106, 110, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    75,
+                    "4883ec180fb6056517130284c0740431c0eb34488d055e1713024889442410488d442410488b7c2410e8e248feff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76,
+                        81, 86, 90,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    74,
+                    "4883ec180fb605e517130284c0740431c9eb31488d05de1713024889442410488d442410488b7c2410e86249feff31c94885c0740f807810ff488d05080a6eff480f45c848894c2408488d442408488b4424084883c418c3",
+                    &[
+                        0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73,
+                        78, 83, 87,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (22, 26, "fixed_region", false),
+                        (42, 46, "fixed_region_publication_get_opaque", false),
+                        (60, 64, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe8974000004885c0740f48c1eb194881fb0800300075025bc3e88e0d0000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e84e3200004885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae8dfeeffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    61,
+                    "534889f3e8f73100004885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be9abecffffe8d6feffff",
+                    &[0, 1, 4, 9, 12, 14, 17, 21, 28, 30, 40, 44, 47, 48, 53],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (49, 53, "fixed_heap_deallocate", false),
+                        (54, 58, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    62,
+                    "554157415641554154534883ec184d89c44989ce4889d54889f3e8a13100004885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e8fbedffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff157d961200488b53f84c89ff4c89eee8eeebffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e803feffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 86, 90, 93, 96, 106, 109, 112, 115, 117, 119, 122, 125, 128,
+                        133, 136, 138, 141, 145, 148, 151, 154, 157, 163, 167, 170, 173, 178, 181,
+                        183, 185, 189, 190, 192, 194, 196, 198, 199, 200,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (129, 133, "fixed_heap_allocate", false),
+                        (159, 163, "fixed_copy_bytes", true),
+                        (174, 178, "fixed_heap_deallocate", false),
+                        (201, 205, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d18981302000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8d72700004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3db8971302e84bc9feff4885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e87e5c000085c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    87,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e879d5ffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d946d130248891c244889e04c89642408488d442408488b3c24488b742408e85d9ffeff89c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c605486d13020048895c2420488d442420488b7c2420e8d49efeff4889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d15abb21100bf080000004889deff158d8c1200488d3d96b21100ff15a8a91200488d1571b21100bf080000004c89f6ff156b8c1200488d3d5cb21100ff1586a91200",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 104, 110, 113, 119, 124, 129, 133, 143, 148, 153,
+                        157, 164, 168, 171, 176, 181, 185, 190, 195, 197, 202, 204, 206, 210, 212,
+                        215, 217, 225, 232, 237, 242, 247, 252, 255, 258, 263, 265, 267, 271, 274,
+                        278, 279, 281, 283, 285, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (160, 164, "fixed_region", false),
+                        (191, 195, "fixed_region_publication_set_opaque", false),
+                        (227, 232, "fixed_initializing", false),
+                        (248, 252, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_constructor_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_constructor_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    91,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e809d4ffff85c0740ab801000000e9ad000000f6c3070f85b00000004885db0f84bc0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d246c130248891c244889e04c89642408488d442408488b3c24488b742408e8ed9dfeff89c1b80100000085c9754441f6c607756c4d85f6747c49c7464803000000c605d86b13020048895c2420488d442420488b7c2420e8649dfeff4889c14885c0b801000000740931c0807910ff0f94c04883c4385b415c415e415fc3488d1553b11100bf080000004889deff151d8b1200488d3d3eb11100ff1538a81200488d1501b11100bf080000004c89f6ff15fb8a1200488d3decb01100ff1516a81200",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 101, 104, 110, 113, 119, 124, 129, 133, 143, 148, 153,
+                        157, 164, 168, 171, 176, 181, 185, 190, 195, 197, 202, 204, 206, 210, 212,
+                        215, 217, 225, 232, 237, 242, 247, 252, 255, 258, 263, 265, 267, 271, 274,
+                        278, 279, 281, 283, 285, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (160, 164, "fixed_region", false),
+                        (191, 195, "fixed_region_publication_set_opaque", false),
+                        (227, 232, "fixed_initializing", false),
+                        (248, 252, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_generic_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_generic_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e8e721000084c00f84d20000004889dfbeff3f0100ba0160010031c9e8cb21000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e8af21000084c00f849a00000048bf0000001000600000e8e82200004885c00f888900000048bf0000001400600000e8d02200004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e83f2100004889dfbeff3f0100ba01600100b901000000e8282100004889dfbeffff0d00ba01f00f00b901000000e81121000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e80fecfeff59c3ff15ffa71200",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    83,
+                    "504889febf0a000000ba00000002b903000000e88893feff59c3ff15784f1200",
+                    &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                    &[
+                        (20, 24, "fixed_scalar_syscall", false),
+                        (28, 32, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    85,
+                    "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15e1631100bf08000000ff158e371200488d3dcf631100ff15a9541200",
+                    &[
+                        0, 1, 4, 7, 11, 17, 20, 26, 28, 31, 37, 39, 41, 43, 46, 50, 53, 55, 61, 64,
+                        67, 71, 76, 79, 82, 84, 96, 101, 104, 107, 110, 114, 119, 123, 128, 131,
+                        135, 140, 144, 147, 149, 151, 154, 158, 163, 167, 169, 171, 172, 173, 176,
+                        179, 182, 184, 187, 191, 196, 200, 204, 206, 207, 208, 215, 220, 226, 233,
+                    ],
+                    &[
+                        (211, 215, "fixed_naked_bitmap_208_location", false),
+                        (222, 226, "fixed_heap_panic_misaligned", true),
+                        (229, 233, "fixed_naked_bitmap_226_location", false),
+                        (235, 239, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_scalar_syscall",
+                    26,
+                    "5048c70424000000004531c04531c9ff155bd4130059c3",
+                    &[0, 1, 9, 12, 15, 21, 22],
+                    &[(17, 21, "reverie_inguest_trusted_syscall", true)],
+                ),
+            ],
+            3 => vec![
+                // PINNED_STANDALONE: 699842f359579ebde639229ed7fc6f97d1fc1a628b1724faad2e77913aaf10f8
+                (
+                    "fixed_region_publication_get_opaque",
+                    67,
+                    "0fb6471831c984c0480f45cf48894c24f8488d4424f8488b4424f8c3",
+                    &[0, 4, 6, 8, 12, 17, 22, 27],
+                    &[],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    80,
+                    "0fb6471884c07412c74424fc0b000000488d4424fc8b4424fcc30f1006488b4610488947100f1107c6471801c74424fc00000000488d4424fc8b4424fcc3",
+                    &[0, 4, 6, 8, 16, 21, 25, 26, 29, 33, 37, 40, 44, 52, 57, 61],
+                    &[],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    57,
+                    "4883ec180fb605bd0f050284c0741631c04889442408488d442408488b4424084883c418c3488d05a40f05024889442410488d442410488b7c2410e8d0fcffff4885c074ca807810ff74c448b80030020000600000ebba",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 85,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    58,
+                    "4883ec180fb6053d10050284c0741631c04889442408488d442408488b4424084883c418c3488d05241005024889442410488d442410488b7c2410e850fdffff4885c074ca807810ff74c4488d054693f8ffebbd",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 82,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                        (78, 82, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe817acffff4885c0740f48c1eb194881fb0800300075025bc3e81e0b0000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e85ea0ffff4885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae86ff2ffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    72,
+                    "534889f3e807a0ffff4885c00f84d50000004889c14889d848c1e819483d080030000f85bf000000488b53f840b60131c0f0400fb0711074130f1f8000000000f39031c0f0400fb0711075f448b80000001000600000488b71084885f6400f94c74839d6410f93c04108f875400f1f004889f7488b7430084885f674054839d672ee488974100848895438084c8b04384d8d0c384939d1751d4c03041072174c89043848897438084889faeb094889741008488951084885f67426488b3c104c8d04174939d072194939f0751448033c30720e48893c10488b7430084889741008c64110005bc3e844feffff",
+                    &[
+                        0, 1, 4, 9, 12, 18, 21, 24, 28, 34, 40, 44, 47, 49, 55, 57, 64, 66, 68, 74,
+                        76, 86, 90, 93, 97, 100, 104, 107, 109, 112, 115, 120, 123, 125, 128, 130,
+                        135, 140, 144, 148, 151, 153, 157, 159, 163, 168, 171, 173, 178, 182, 185,
+                        187, 191, 195, 198, 200, 203, 205, 209, 211, 215, 220, 225, 229, 230, 231,
+                    ],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (232, 236, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    73,
+                    "554157415641554154534883ec184d89c44989cf4989d54989f6e8019fffff4885c00f846c0100004889c348bd00000010006000004889042448896c240848c7442410000000024c89f048c1e819483d080030000f853a010000498d45ff4985c50f94c048b900000000000000804c29e94939cc0f96c120c180f9010f85c10000004889e74c89ee4c89e2e8d0f0ffff4885c00f84aa0000004d39fc4d0f42fc4c89f74989c44889c64c89faff15fe5b0400498b4ef8b20131c0f00fb05310741a6666666666662e0f1f840000000000f39031c0f00fb0531075f5488b53084885d20f94c04839ca400f93c64008c675566666666666662e0f1f8400000000004889d6488b5415084885d274054839ca72ee4889540d0848894c3508488b7c3500488d04374839c84c89e0752648037c0d00721f48897c350048895435084889f1eb1031c0eb3e4889540d0848894b084c89e04885d27429488b740d00488d3c0e4839cf721b4839d775164803741500720f4889740d00488b5415084889540d08c64310004883c4185b415c415d415e415f5dc3e8a7fcffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 90, 94, 97, 100, 110, 113, 116, 119, 121, 124, 130, 133, 136,
+                        139, 144, 147, 153, 156, 160, 163, 166, 169, 172, 178, 182, 184, 186, 191,
+                        193, 208, 210, 212, 217, 219, 223, 226, 229, 232, 236, 239, 241, 256, 259,
+                        264, 267, 269, 272, 274, 279, 284, 289, 293, 296, 299, 301, 306, 308, 313,
+                        318, 321, 323, 325, 327, 332, 336, 339, 342, 344, 349, 353, 356, 358, 361,
+                        363, 368, 370, 375, 380, 385, 389, 393, 394, 396, 398, 400, 402, 403, 404,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (140, 144, "fixed_heap_allocate", false),
+                        (174, 178, "fixed_copy_bytes", true),
+                        (405, 409, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d4c200502000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8030f00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3dec1f0502e8270d00004885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e82a00000085c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    88,
+                    "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424010000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e82decffff85c07407b801000000eb574c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d910c050248891c244889e04c897c2408488d442408488b3c24488b742408e8d2f9ffff89c1b80100000085c9740c4883c4385b415c415e415fc349c744244803000000c605430c05020048895c2420488d442420488b7c2420e877f9ffff4885c00f8469ffffff4889c131c0807910ff75bce959ffffff",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 103, 108, 112, 122, 127, 132, 136, 143, 147, 150,
+                        155, 160, 164, 169, 174, 176, 181, 183, 185, 189, 190, 192, 194, 196, 197,
+                        206, 213, 218, 223, 228, 233, 236, 242, 245, 247, 251, 253,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (139, 143, "fixed_region", false),
+                        (170, 174, "fixed_region_publication_set_opaque", false),
+                        (208, 213, "fixed_initializing", false),
+                        (229, 233, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    92,
+                    "415741564154534883ec384889fb4989e648897c2410488d4424104c89742418488d44241848c70424020000004889e04c8d7c24204c897c2408488d442408488b7c2410488b742418488b1424488b4c2408e81debffff85c07407b801000000eb574c8b6424200fb64424284c89735848b9001000000060000048894c24204c8964242888442430488d1d810b050248891c244889e04c897c2408488d442408488b3c24488b742408e8c2f8ffff89c1b80100000085c9740c4883c4385b415c415e415fc349c744244803000000c605330b05020048895c2420488d442420488b7c2420e867f8ffff4885c00f8469ffffff4889c131c0807910ff75bce959ffffff",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 103, 108, 112, 122, 127, 132, 136, 143, 147, 150,
+                        155, 160, 164, 169, 174, 176, 181, 183, 185, 189, 190, 192, 194, 196, 197,
+                        206, 213, 218, 223, 228, 233, 236, 242, 245, 247, 251, 253,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (139, 143, "fixed_region", false),
+                        (170, 174, "fixed_region_publication_set_opaque", false),
+                        (208, 213, "fixed_initializing", false),
+                        (229, 233, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e8570e000084c00f84d20000004889dfbeff3f0100ba0160010031c9e83b0e000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e81f0e000084c00f849a00000048bf0000001000600000e8180f00004885c00f888900000048bf0000001400600000e8000f00004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e8af0d00004889dfbeff3f0100ba01600100b901000000e8980d00004889dfbeffff0d00ba01f00f00b901000000e8810d000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e84f55000059c3ff159fbd0400",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    83,
+                    "504889febf0a000000ba00000002b903000000e81854000059c3ff1568bc0400",
+                    &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                    &[
+                        (20, 24, "fixed_scalar_syscall", false),
+                        (28, 32, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    usize::MAX,
+                    "b0014839f20f86a300000084c9746989d129f14c8d4601f6c101741741b90100000089f149d3e148c1ee064c094cf7084c89c64c39c274760f1f84000000000041b80100000089f149d3e04889f148c1e9064c0944cf08488d4e0141b80100000049d3e048c1e9064c0944cf084883c6024839f275caeb364889f048c1e806488b44c708480fa3f0730331c0c348ffc64839f20f94c074164889f148c1e906488b4ccf08480fa3f1488d760173e2c3",
+                    &[
+                        0, 2, 5, 11, 13, 15, 17, 19, 23, 26, 28, 34, 36, 39, 43, 48, 51, 54, 56,
+                        64, 70, 72, 75, 78, 82, 87, 91, 97, 100, 104, 109, 113, 116, 118, 120, 123,
+                        127, 132, 136, 138, 140, 141, 144, 147, 150, 152, 155, 159, 164, 168, 172,
+                        174,
+                    ],
+                    &[],
+                ),
+                (
+                    "fixed_scalar_syscall",
+                    26,
+                    "5048c70424000000004531c04531c9ff155370040059c3",
+                    &[0, 1, 9, 12, 15, 21, 22],
+                    &[(17, 21, "reverie_inguest_trusted_syscall", true)],
+                ),
+            ],
+            4 => vec![
+                // PINNED_NATIVE: 7ee10fde3cefbd71c44c9843381232ad9d8c54122bfb9cb541b91ee097e0075d
+                (
+                    "fixed_region_publication_get_opaque",
+                    55,
+                    "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d15e1982200bf08000000ff1536ed2300488d3dcf982200ff15f1232400",
+                    &[
+                        0, 1, 4, 8, 10, 13, 15, 19, 21, 23, 27, 31, 34, 38, 39, 40, 47, 52, 58, 65,
+                    ],
+                    &[
+                        (43, 47, "fixed_scalar_publication_get_location", false),
+                        (54, 58, "fixed_heap_panic_misaligned", true),
+                        (61, 65, "fixed_scalar_publication_get_location", false),
+                        (67, 71, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    81,
+                    "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d15859822004889febf08000000ff15bfec2300488d3d70982200ff157a232400",
+                    &[
+                        0, 1, 5, 7, 10, 12, 16, 18, 20, 28, 33, 37, 38, 39, 42, 46, 50, 53, 57, 65,
+                        70, 74, 75, 76, 83, 86, 91, 97, 104,
+                    ],
+                    &[
+                        (79, 83, "fixed_scalar_publication_set_location", false),
+                        (93, 97, "fixed_heap_panic_misaligned", true),
+                        (100, 104, "fixed_scalar_publication_set_location", false),
+                        (106, 110, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    57,
+                    "4883ec180fb6057e24230284c0741631c04889442408488d442408488b4424084883c418c3488d05642423024889442410488d442410488b7c2410e8003dfeff4885c074ca807810ff74c448b80030020000600000ebba",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 85,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    58,
+                    "4883ec180fb605fe24230284c0741631c04889442408488d442408488b4424084883c418c3488d05e42423024889442410488d442410488b7c2410e8803dfeff4885c074ca807810ff74c4488d05c61943ffebbd",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 82,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                        (78, 82, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe847b9ffff4885c0740f48c1eb194881fb0800300075025bc3e8ce280000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e80e8fffff4885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae8efd2ffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    61,
+                    "534889f3e8b78effff4885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be9bbd0ffffe826feffff",
+                    &[0, 1, 4, 9, 12, 14, 17, 21, 28, 30, 40, 44, 47, 48, 53],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (49, 53, "fixed_heap_deallocate", false),
+                        (54, 58, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    62,
+                    "554157415641554154534883ec184d89c44989ce4889d54889f3e8618effff4885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e80bd2ffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff15edfa2100488b53f84c89ff4c89eee8fecfffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e853fdffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 86, 90, 93, 96, 106, 109, 112, 115, 117, 119, 122, 125, 128,
+                        133, 136, 138, 141, 145, 148, 151, 154, 157, 163, 167, 170, 173, 178, 181,
+                        183, 185, 189, 190, 192, 194, 196, 198, 199, 200,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (129, 133, "fixed_heap_allocate", false),
+                        (159, 163, "fixed_copy_bytes", true),
+                        (174, 178, "fixed_heap_deallocate", false),
+                        (201, 205, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d09912302000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e86f1e00004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3da8902302e853a9feff4885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8162b000085c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    89,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e8d1d6ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1ddf67230248891c244889e04c89642408488d442408488b3c24488b742408e8c080feff89c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c605886723020048895c2420488d442420488b7c2420e82b80feff4885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d152b2b2100bf080000004889deff156d6d2200488d3d162b2100ff1528a42200488d15312a2100bf080000004c89f6ff154b6d2200488d3d1c2a2100ff1506a42200",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 101, 107, 110, 116, 121, 126, 130, 140, 145, 150,
+                        154, 161, 165, 168, 173, 178, 182, 187, 192, 194, 199, 201, 203, 207, 208,
+                        210, 212, 214, 215, 219, 221, 224, 226, 234, 241, 246, 251, 256, 261, 264,
+                        270, 273, 275, 279, 281, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (157, 161, "fixed_region", false),
+                        (188, 192, "fixed_region_publication_set_opaque", false),
+                        (236, 241, "fixed_initializing", false),
+                        (257, 261, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_constructor_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_constructor_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    93,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e861d5ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d6f66230248891c244889e04c89642408488d442408488b3c24488b742408e8507ffeff89c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c605186623020048895c2420488d442420488b7c2420e8bb7efeff4885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d15d3292100bf080000004889deff15fd6b2200488d3dbe292100ff15b8a22200488d15c1282100bf080000004c89f6ff15db6b2200488d3dac282100ff1596a22200",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 101, 107, 110, 116, 121, 126, 130, 140, 145, 150,
+                        154, 161, 165, 168, 173, 178, 182, 187, 192, 194, 199, 201, 203, 207, 208,
+                        210, 212, 214, 215, 219, 221, 224, 226, 234, 241, 246, 251, 256, 261, 264,
+                        270, 273, 275, 279, 281, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (157, 161, "fixed_region", false),
+                        (188, 192, "fixed_region_publication_set_opaque", false),
+                        (236, 241, "fixed_initializing", false),
+                        (257, 261, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_generic_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_generic_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e8273f000084c00f84d20000004889dfbeff3f0100ba0160010031c9e80b3f000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e8ef3e000084c00f849a00000048bf0000001000600000e8284000004885c00f888900000048bf0000001400600000e8104000004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e87f3e00004889dfbeff3f0100ba01600100b901000000e8683e00004889dfbeffff0d00ba01f00f00b901000000e8513e000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e82f5b000059c3ff1527af2200",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    83,
+                    "504889febf0a000000ba00000002b903000000e8680d000059c3ff1560612200",
+                    &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                    &[
+                        (20, 24, "fixed_scalar_syscall", false),
+                        (28, 32, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    85,
+                    "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15d1ef2000bf08000000ff153e2b2200488d3dbfef2000ff15f9612200",
+                    &[
+                        0, 1, 4, 7, 11, 17, 20, 26, 28, 31, 37, 39, 41, 43, 46, 50, 53, 55, 61, 64,
+                        67, 71, 76, 79, 82, 84, 96, 101, 104, 107, 110, 114, 119, 123, 128, 131,
+                        135, 140, 144, 147, 149, 151, 154, 158, 163, 167, 169, 171, 172, 173, 176,
+                        179, 182, 184, 187, 191, 196, 200, 204, 206, 207, 208, 215, 220, 226, 233,
+                    ],
+                    &[
+                        (211, 215, "fixed_naked_bitmap_208_location", false),
+                        (222, 226, "fixed_heap_panic_misaligned", true),
+                        (229, 233, "fixed_naked_bitmap_226_location", false),
+                        (235, 239, "fixed_panic_null_reference", true),
+                    ],
+                ),
+            ],
+            5 => vec![
+                // PINNED_ORDINARY: 3e7cd3d9be6a47dbc03fb2dac1f8572ac495b1c9bff7b82975acfe12ff2df536
+                (
+                    "fixed_region_publication_get_opaque",
+                    55,
+                    "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1501211200bf08000000ff1596fe1200488d3def201200ff15c1161300",
+                    &[
+                        0, 1, 4, 8, 10, 13, 15, 19, 21, 23, 27, 31, 34, 38, 39, 40, 47, 52, 58, 65,
+                    ],
+                    &[
+                        (43, 47, "fixed_scalar_publication_get_location", false),
+                        (54, 58, "fixed_heap_panic_misaligned", true),
+                        (61, 65, "fixed_scalar_publication_get_location", false),
+                        (67, 71, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_region_publication_set_opaque",
+                    81,
+                    "5040f6c70775454885ff74550fb6471884c07413c74424040b000000488d4424048b44240459c30f1006488b4610488947100f1107c6471801c744240400000000488d4424048b44240459c3488d15a52012004889febf08000000ff151ffe1200488d3d90201200ff154a161300",
+                    &[
+                        0, 1, 5, 7, 10, 12, 16, 18, 20, 28, 33, 37, 38, 39, 42, 46, 50, 53, 57, 65,
+                        70, 74, 75, 76, 83, 86, 91, 97, 104,
+                    ],
+                    &[
+                        (79, 83, "fixed_scalar_publication_set_location", false),
+                        (93, 97, "fixed_heap_panic_misaligned", true),
+                        (100, 104, "fixed_scalar_publication_set_location", false),
+                        (106, 110, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_tool_heap_metadata",
+                    57,
+                    "4883ec180fb60585df130484c0741631c04889442408488d442408488b4424084883c418c3488d056cdf13044889442410488d442410488b7c2410e880ebffff4885c074ca807810ff74c448b80030020000600000ebba",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 85,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                    ],
+                ),
+                (
+                    "fixed_arena_backing",
+                    58,
+                    "4883ec180fb60505e0130484c0741631c04889442408488d442408488b4424084883c418c3488d05ecdf13044889442410488d442410488b7c2410e800ecffff4885c074ca807810ff74c4488d05de896effebbd",
+                    &[
+                        0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73,
+                        75, 82,
+                    ],
+                    &[
+                        (7, 11, "fixed_initializing", false),
+                        (40, 44, "fixed_region", false),
+                        (60, 64, "fixed_region_publication_get_opaque", false),
+                        (78, 82, "fixed_backing_object", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_require_owned",
+                    59,
+                    "534889fbe8c7de00004885c0740f48c1eb194881fb0800300075025bc3e82e110000",
+                    &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (30, 34, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_alloc",
+                    60,
+                    "4156534883ec184889d34989f6e81ecc00004885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae87feaffff4883c4185b415ec331c04883c4185b415ec3",
+                    &[
+                        0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72,
+                        73, 75, 79, 80, 82,
+                    ],
+                    &[
+                        (14, 18, "fixed_tool_heap_metadata", false),
+                        (61, 65, "fixed_heap_allocate", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_dealloc",
+                    61,
+                    "534889f3e8c7cb00004885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be94be8ffffe816feffff",
+                    &[0, 1, 4, 9, 12, 14, 17, 21, 28, 30, 40, 44, 47, 48, 53],
+                    &[
+                        (5, 9, "fixed_tool_heap_metadata", false),
+                        (49, 53, "fixed_heap_deallocate", false),
+                        (54, 58, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_tool_realloc",
+                    62,
+                    "554157415641554154534883ec184d89c44989ce4889d54889f3e871cb00004885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e89be9ffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff15ede31300488b53f84c89ff4c89eee88ee7ffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e843fdffff",
+                    &[
+                        0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71,
+                        74, 78, 84, 86, 90, 93, 96, 106, 109, 112, 115, 117, 119, 122, 125, 128,
+                        133, 136, 138, 141, 145, 148, 151, 154, 157, 163, 167, 170, 173, 178, 181,
+                        183, 185, 189, 190, 192, 194, 196, 198, 199, 200,
+                    ],
+                    &[
+                        (27, 31, "fixed_tool_heap_metadata", false),
+                        (129, 133, "fixed_heap_allocate", false),
+                        (159, 163, "fixed_copy_bytes", true),
+                        (174, 178, "fixed_heap_deallocate", false),
+                        (201, 205, "fixed_refuse_foreign", false),
+                    ],
+                ),
+                (
+                    "fixed_native_from_native",
+                    78,
+                    "5341544155415641574889fb4989cc4989d54883fa0174164883fa020f85f500000048b8a010020000600000eb0a48b830100200006000004839c30f85d6000000803d003d1404000f84c900000048b800101000006000004839c60f82b600000048b800109000006000004839c60f83a3000000e8cf3600004885c00f8e95000000483943400f858b00000048837b50010f858000000048837b38007479488b0383e00f83f808756e488d3da03c1404e8c34800004885c0755db801000000ba02000000f0480fb15348754b49be001000000060000041803e007542b8000100004889c148c1e906498b54ce08480fa3c2732448ffc0483d0209000072e34c89f7e8d63a000085c0751949891c2445886c240831c0eb0cb816000000eb05b80b000000415f415e415d415c5bc3",
+                    &[
+                        0, 1, 3, 5, 7, 9, 12, 15, 18, 22, 24, 28, 34, 44, 46, 56, 59, 65, 72, 78,
+                        88, 91, 97, 107, 110, 116, 121, 124, 130, 134, 140, 145, 151, 156, 158,
+                        161, 164, 167, 169, 176, 181, 184, 186, 191, 196, 202, 204, 214, 218, 220,
+                        225, 228, 232, 237, 241, 243, 246, 252, 254, 257, 262, 264, 266, 270, 275,
+                        277, 279, 284, 286, 291, 293, 295, 297, 299, 300,
+                    ],
+                    &[
+                        (67, 72, "fixed_initializing", false),
+                        (117, 121, "fixed_native_owner_gettid", false),
+                        (172, 176, "fixed_region", false),
+                        (177, 181, "fixed_region_publication_get_opaque", false),
+                        (258, 262, "fixed_arena_setup", false),
+                    ],
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    89,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424010000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e8a1c6ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1da703140448891c244889e04c89642408488d442408488b3c24488b742408e80010000089c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c6054f0314040048895c2420488d442420488b7c2420e86b0f00004885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d15232e1200bf080000004889deff150d0e1300488d3d0e2e1200ff1538261300488d15a12d1200bf080000004c89f6ff15eb0d1300488d3d8c2d1200ff1516261300",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 101, 107, 110, 116, 121, 126, 130, 140, 145, 150,
+                        154, 161, 165, 168, 173, 178, 182, 187, 192, 194, 199, 201, 203, 207, 208,
+                        210, 212, 214, 215, 219, 221, 224, 226, 234, 241, 246, 251, 256, 261, 264,
+                        270, 273, 275, 279, 281, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (157, 161, "fixed_region", false),
+                        (188, 192, "fixed_region_publication_set_opaque", false),
+                        (236, 241, "fixed_initializing", false),
+                        (257, 261, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_constructor_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_constructor_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_generic_prepare",
+                    93,
+                    "415741564154534883ec384889fb4989e748897c2410488d4424104c897c2418488d44241848c70424020000004889e04c8d6424204c89642408488d442408488b7c2410488b742418488b1424488b4c2408e831c5ffff85c07407b801000000eb69f6c3070f85b30000004885db0f84bf0000004c8b7424200fb64424284c897b5848b9001000000060000048894c24204c8974242888442430488d1d3702140448891c244889e04c89642408488d442408488b3c24488b742408e8900e000089c1b80100000085c9740c4883c4385b415c415e415fc341f6c60775634d85f6747349c7464803000000c605df0114040048895c2420488d442420488b7c2420e8fb0d00004885c00f844dffffff4889c131c0807910ff75b2e93dffffff488d15cb2c1200bf080000004889deff159d0c1300488d3db62c1200ff15c8241300488d15312c1200bf080000004c89f6ff157b0c1300488d3d1c2c1200ff15a6241300",
+                    &[
+                        0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 32, 37, 45, 48, 53, 58, 63, 68, 73, 77,
+                        82, 87, 89, 91, 96, 98, 101, 107, 110, 116, 121, 126, 130, 140, 145, 150,
+                        154, 161, 165, 168, 173, 178, 182, 187, 192, 194, 199, 201, 203, 207, 208,
+                        210, 212, 214, 215, 219, 221, 224, 226, 234, 241, 246, 251, 256, 261, 264,
+                        270, 273, 275, 279, 281, 286, 293, 298, 301, 307, 314, 320, 327, 332, 335,
+                        341, 348,
+                    ],
+                    &[
+                        (83, 87, "fixed_native_from_native", false),
+                        (157, 161, "fixed_region", false),
+                        (188, 192, "fixed_region_publication_set_opaque", false),
+                        (236, 241, "fixed_initializing", false),
+                        (257, 261, "fixed_region_publication_get_opaque", false),
+                        (289, 293, "fixed_naked_generic_record_location", false),
+                        (303, 307, "fixed_heap_panic_misaligned", true),
+                        (310, 314, "fixed_naked_generic_record_location", false),
+                        (316, 320, "fixed_panic_null_reference", true),
+                        (323, 327, "fixed_naked_publish_record_location", false),
+                        (337, 341, "fixed_heap_panic_misaligned", true),
+                        (344, 348, "fixed_naked_publish_record_location", false),
+                        (350, 354, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_setup",
+                    82,
+                    "534889fbbeffff0000ba0120010031c9e85720000084c00f84d20000004889dfbeff3f0100ba0160010031c9e83b20000084c00f84b60000004889dfbeffff0d00ba01f00f0031c9e81f20000084c00f849a00000048bf0000001000600000e8582100004885c00f888900000048bf0000001400600000e8402100004885c0787548b8003002000060000048c7000000000048c7400800000000c640100048c74018000000004889dfbeffff0000ba01200100b901000000e8af1f00004889dfbeff3f0100ba01600100b901000000e8981f00004889dfbeffff0d00ba01f00f00b901000000e8811f000031c0eb09b816000000eb02f7d85bc3",
+                    &[
+                        0, 1, 4, 9, 14, 16, 21, 23, 29, 32, 37, 42, 44, 49, 51, 57, 60, 65, 70, 72,
+                        77, 79, 85, 95, 100, 103, 109, 119, 124, 127, 129, 139, 146, 154, 158, 166,
+                        169, 174, 179, 184, 189, 192, 197, 202, 207, 212, 215, 220, 225, 230, 235,
+                        237, 239, 244, 246, 248, 249,
+                    ],
+                    &[
+                        (17, 21, "fixed_setup_bitmap_range", false),
+                        (45, 49, "fixed_setup_bitmap_range", false),
+                        (73, 77, "fixed_setup_bitmap_range", false),
+                        (96, 100, "fixed_arena_mprotect", false),
+                        (120, 124, "fixed_arena_mprotect", false),
+                        (185, 189, "fixed_setup_bitmap_range", false),
+                        (208, 212, "fixed_setup_bitmap_range", false),
+                        (231, 235, "fixed_setup_bitmap_range", false),
+                    ],
+                ),
+                (
+                    "fixed_native_owner_gettid",
+                    79,
+                    "50bfba00000031f631d231c9e82fbf000059c3ff15f7261300",
+                    &[0, 1, 6, 8, 10, 12, 17, 18, 19],
+                    &[
+                        (13, 17, "fixed_scalar_syscall", false),
+                        (21, 25, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_arena_mprotect",
+                    83,
+                    "504889febf0a000000ba00000002b903000000e8d898000059c3ff15a0001300",
+                    &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                    &[
+                        (20, 24, "fixed_scalar_syscall", false),
+                        (28, 32, "fixed_publication_cannot_unwind", true),
+                    ],
+                ),
+                (
+                    "fixed_setup_bitmap_range",
+                    85,
+                    "504989f04889fe40f6c6070f85bf0000004885f60f84c8000000b0014c39c20f86a900000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa747a6666662e0f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb374c89c048c1e806488b44c6084c0fa3c0730431c059c349ffc04c39c20f94c074164c89c148c1e906488b4cce084c0fa3c14d8d400173e259c3488d15010e1200bf08000000ff151eeb1200488d3def0d1200ff1549031300",
+                    &[
+                        0, 1, 4, 7, 11, 17, 20, 26, 28, 31, 37, 39, 41, 43, 46, 50, 53, 55, 61, 64,
+                        67, 71, 76, 79, 82, 84, 96, 101, 104, 107, 110, 114, 119, 123, 128, 131,
+                        135, 140, 144, 147, 149, 151, 154, 158, 163, 167, 169, 171, 172, 173, 176,
+                        179, 182, 184, 187, 191, 196, 200, 204, 206, 207, 208, 215, 220, 226, 233,
+                    ],
+                    &[
+                        (211, 215, "fixed_naked_bitmap_208_location", false),
+                        (222, 226, "fixed_heap_panic_misaligned", true),
+                        (229, 233, "fixed_naked_bitmap_226_location", false),
+                        (235, 239, "fixed_panic_null_reference", true),
+                    ],
+                ),
+                (
+                    "fixed_scalar_syscall",
+                    26,
+                    "5048c70424000000004531c04531c9ff15b382120059c3",
+                    &[0, 1, 9, 12, 15, 21, 22],
+                    &[(17, 21, "reverie_inguest_trusted_syscall", true)],
+                ),
+            ],
+            _ => panic!("unknown naked-owner control fixture"),
+        }
+    }
+
+    fn naked_owner_publication_control_graph(
+        case: usize,
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        let samples = naked_owner_publication_samples(case);
+        let native = [false, true, false, false, true, false][case];
+        let mut targets: BTreeMap<String, u64> = BTreeMap::from([
+            ("fixed_initializing".into(), 0x600000),
+            ("fixed_region".into(), 0x600008),
+            ("fixed_region_ready".into(), 0x600020),
+            ("fixed_region_value16".into(), 0x600018),
+            ("fixed_backing_object".into(), 0x610000),
+            ("fixed_heap_panic_misaligned".into(), 0x200000),
+            ("fixed_panic_null_reference".into(), 0x200100),
+            ("fixed_copy_bytes".into(), 0x200200),
+            ("fixed_heap_allocate".into(), 0x200300),
+            ("fixed_heap_deallocate".into(), 0x200400),
+            ("fixed_refuse_foreign".into(), 0x200500),
+            ("fixed_publication_cannot_unwind".into(), 0x200900),
+            ("reverie_inguest_trusted_syscall".into(), 0x210000),
+            ("fixed_publication_bounds_panic".into(), 0x210100),
+            ("fixed_scalar_syscall".into(), 0x180000),
+        ]);
+        for (i, &(role, ..)) in samples.iter().enumerate() {
+            targets.insert(role.into(), 0x100000 + i as u64 * 0x1000);
+        }
+        let context = detcore_validate_control_context("8090ccdb");
+        let mut readonly = BTreeMap::new();
+        // Independent exact coordinate fixtures, not production-data lookup.
+        for (i, key, path, line, column) in [
+            (
+                0,
+                "fixed_scalar_publication_get_location",
+                "tool_region.rs",
+                89_u32,
+                36_u32,
+            ),
+            (
+                1,
+                "fixed_scalar_publication_set_location",
+                "tool_region.rs",
+                138,
+                36,
+            ),
+            (
+                2,
+                "fixed_naked_constructor_record_location",
+                "tool_region_constructor.rs",
+                803,
+                14,
+            ),
+            (
+                3,
+                "fixed_naked_generic_record_location",
+                "tool_region_constructor.rs",
+                820,
+                14,
+            ),
+            (
+                4,
+                "fixed_naked_publish_record_location",
+                "tool_region_constructor.rs",
+                785,
+                18,
+            ),
+            (
+                5,
+                "fixed_naked_bitmap_208_location",
+                "tool_region_arena.rs",
+                143,
+                27,
+            ),
+            (
+                6,
+                "fixed_naked_bitmap_226_location",
+                "tool_region_arena.rs",
+                143,
+                27,
+            ),
+        ] {
+            let address = 0x400000 + i * 0x100;
+            let file = 0x500000 + i * 0x100;
+            targets.insert(key.into(), address);
+            targets.insert(format!("{key}_file"), file);
+            let name = &context[&format!("rv:reverie-inguest/src/guest/{path}")];
+            let mut location = vec![0; 24];
+            location[8..16].copy_from_slice(&(name.len() as u64).to_le_bytes());
+            location[16..20].copy_from_slice(&line.to_le_bytes());
+            location[20..24].copy_from_slice(&column.to_le_bytes());
+            readonly.insert(address, location);
+            readonly.insert(file, name.clone());
+        }
+        let mut got = BTreeMap::new();
+        for (i, target) in [
+            targets["fixed_heap_panic_misaligned"],
+            targets["fixed_panic_null_reference"],
+            targets["fixed_copy_bytes"],
+            targets["fixed_publication_cannot_unwind"],
+            targets["fixed_publication_bounds_panic"],
+            targets["reverie_inguest_trusted_syscall"],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            got.insert(0x300000 + i as u64 * 8, target);
+        }
+        let mut witnesses = BTreeMap::new();
+        let mut transfers = BTreeMap::new();
+        let mut selected = BTreeMap::new();
+        for &(role, index, whole, offsets, operands) in &samples {
+            let address = targets[role];
+            let mut bytes = fixed_hex(whole);
+            for &(at, next, key, indirect) in operands {
+                let target = targets[key];
+                let operand = if indirect {
+                    *got.iter().find(|(_, v)| **v == target).unwrap().0
+                } else {
+                    target
+                };
+                let delta = i32::try_from(i128::from(operand) - i128::from(address) - next as i128)
+                    .unwrap();
+                bytes[at..at + 4].copy_from_slice(&delta.to_le_bytes());
+            }
+            let instructions = |body: &[u8]| -> Vec<EncodedConstructorInstruction> {
+                offsets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &offset)| {
+                        let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                        EncodedConstructorInstruction {
+                            address: address + offset as u64,
+                            bytes: body[offset..end].to_vec(),
+                        }
+                    })
+                    .collect()
+            };
+            let check = |body: &[u8],
+                         ts: &BTreeMap<String, u64>,
+                         gs: &BTreeMap<u64, u64>,
+                         ro: &BTreeMap<u64, Vec<u8>>,
+                         ctx: &BTreeMap<String, Vec<u8>>| {
+                if index == usize::MAX {
+                    let edges = fixed_arena_recipe(role, address, body, ts, gs)?;
+                    fixed_census_transfers(&instructions(body), address, body, &edges, gs, false)?;
+                    return Ok(None);
+                }
+                fixed_detcore_qualified_operation(
+                    role,
+                    address,
+                    (body, &instructions(body)),
+                    DetcoreRecipeBindings {
+                        targets: ts,
+                        got: gs,
+                        readonly: ro,
+                        context: ctx,
+                    },
+                    0,
+                    false,
+                )
+                .map(Some)
+            };
+            let witness = check(&bytes, &targets, &got, &readonly, &context)
+                .unwrap_or_else(|e| panic!("naked-owner fixture{case} {role}: {e}"));
+            if mutations {
+                for i in 0..bytes.len() {
+                    let mut bad = bytes.clone();
+                    bad[i] ^= 1;
+                    assert!(
+                        check(&bad, &targets, &got, &readonly, &context).is_err(),
+                        "naked-owner byte {case}/{role}/{i}"
+                    );
+                }
+                let mut bad = bytes.clone();
+                bad.push(0x90);
+                assert!(check(&bad, &targets, &got, &readonly, &context).is_err());
+                for &(_, _, key, indirect) in operands {
+                    let mut bad = targets.clone();
+                    *bad.get_mut(key).unwrap() += 1;
+                    assert!(
+                        check(&bytes, &bad, &got, &readonly, &context).is_err(),
+                        "naked-owner target {case}/{role}/{key}"
+                    );
+                    if indirect {
+                        assert!(
+                            check(&bytes, &targets, &BTreeMap::new(), &readonly, &context).is_err()
+                        );
+                    }
+                    if readonly.contains_key(&targets[key]) {
+                        for i in 0..24 {
+                            let mut bad = readonly.clone();
+                            bad.get_mut(&targets[key]).unwrap()[i] ^= 1;
+                            assert!(check(&bytes, &targets, &got, &bad, &context).is_err());
+                        }
+                        assert!(
+                            check(&bytes, &targets, &got, &readonly, &BTreeMap::new()).is_err()
+                        );
+                    }
+                }
+                if role == "fixed_setup_bitmap_range" && index != usize::MAX {
+                    let keys = [
+                        (
+                            "fixed_naked_bitmap_208_location",
+                            "fixed_detcore_validate_fixed_setup_bitmap_range_208_data",
+                        ),
+                        (
+                            "fixed_naked_bitmap_226_location",
+                            "fixed_detcore_validate_fixed_setup_bitmap_range_226_data",
+                        ),
+                    ];
+                    let mut legacy_targets = targets.clone();
+                    for (current, old) in keys {
+                        legacy_targets.insert(old.into(), targets[current]);
+                        legacy_targets
+                            .insert(format!("{old}_file"), targets[&format!("{current}_file")]);
+                    }
+                    let mut legacy_readonly = readonly.clone();
+                    for (key, _) in keys {
+                        legacy_readonly.get_mut(&targets[key]).unwrap()[16..20]
+                            .copy_from_slice(&128_u32.to_le_bytes());
+                    }
+                    let old = check(&bytes, &legacy_targets, &got, &legacy_readonly, &context)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(
+                        old.kind,
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(25)
+                    );
+                    for (key, _) in keys {
+                        let mut partial = readonly.clone();
+                        partial.get_mut(&targets[key]).unwrap()[16..20]
+                            .copy_from_slice(&128_u32.to_le_bytes());
+                        assert_eq!(
+                            check(&bytes, &legacy_targets, &got, &partial, &context)
+                                .err()
+                                .unwrap()
+                                .to_string(),
+                            "unknown or ambiguous whole Detcore validate recipe"
+                        );
+                    }
+                }
+                if role == "fixed_constructor_prepare" || role == "fixed_generic_prepare" {
+                    // Both external zero-status contracts compare full32bits.
+                    let owner_test = operands
+                        .iter()
+                        .find(|(_, _, key, _)| *key == "fixed_native_from_native")
+                        .unwrap()
+                        .1;
+                    let setter_test = operands
+                        .iter()
+                        .find(|(_, _, key, _)| *key == "fixed_region_publication_set_opaque")
+                        .unwrap()
+                        .1
+                        + 7;
+                    for (at, modrm) in [(owner_test, 0xc0), (setter_test, 0xc9)] {
+                        let mut bad = bytes.clone();
+                        assert_eq!(&bad[at..at + 2], &[0x85, modrm]);
+                        bad[at] = 0x84;
+                        assert_eq!(
+                            check(&bad, &targets, &got, &readonly, &context)
+                                .err()
+                                .unwrap()
+                                .to_string(),
+                            "unknown or ambiguous whole Detcore validate recipe"
+                        );
+                    }
+                }
+                if role == "fixed_native_from_native" {
+                    assert_eq!(check(&fixed_hex("55415741564154534883ec204889cb4989fe49bc00100000006000004883fa0174244883fa020f8537010000498d8424a000020041b702bd160000004c39f0741ee912010000498d84243000020041b701bd160000004c39f00f85f90000000fb6057251050448b900f0efffff9fffff4801ce4881feffff7f000f87d800000084c00f84d0000000bfba00000031f631d231c9e8f81200004885c00f8eb7000000493946400f85ad00000049837e50010f85a200000049837e38000f8497000000418b0683e00f83f8080f8588000000488d05095105044889442410488d442410488b7c2410e8e57500004885c07568b902000000b801000000f0490fb14e487556410fb60424bd0b00000084c0754848c74424100001000048c744241802090000488d7c2410e834f3ffffbd1600000084c075234c89642410488d442410488b7c2410e80725000089c585c075094c893344887b0831ed896c240c488d44240ceb0dc744240c16000000488d44240c8b44240c4883c4205b415c415e415f5dc3ff1581db0400"),&targets,&got,&readonly,&context).err().unwrap().to_string(), "unknown or ambiguous whole Detcore validate recipe");
+                    assert_eq!(check(&fixed_hex("55415741564154534883ec2049be00100000006000004883fa0174234883fa020f853f010000498d86a000020040b502bb160000004839f8741de91b010000498d863000020040b501bb160000004839f80f85030100000fb605da45050248ba00f0efffff9fffff4801d64881feffff7f000f87e200000084c00f84da0000004989fc4989cfbfba00000031f631d231c9e8fa0000004885c00f8ebb00000049394424400f85b00000004c89e149837c2450010f85a100000048837938000f84960000008b0183e00f83f8080f8588000000488d05674505024889442410488d442410488b7c2410e8a3e5ffff4885c07568b902000000b801000000f0490fb14c24487555410fb606bb0b00000084c0754848c74424100001000048c744241802090000488d7c2410e802f5ffffbb1600000084c075234c89742410488d442410488b7c2410e87509000089c385c075094d892741886f0831db895c240c488d44240ceb0dc744240c16000000488d44240c8b44240c4883c4205b415c415e415f5dc3ff154fe90400"),&targets,&got,&readonly,&context).err().unwrap().to_string(), "unknown or ambiguous whole Detcore validate recipe");
+                    // TEST EAX,EAX -> TEST AL,AL admits nonzero statuses with AL0.
+                    let mut bad = bytes.clone();
+                    assert_eq!(&bad[262..264], &[0x85, 0xc0]);
+                    bad[262] = 0x84;
+                    assert_eq!(
+                        check(&bad, &targets, &got, &readonly, &context)
+                            .err()
+                            .unwrap()
+                            .to_string(),
+                        "unknown or ambiguous whole Detcore validate recipe"
+                    );
+                }
+            }
+            selected.insert(role.into(), address);
+            if let Some(w) = witness {
+                assert_eq!(
+                    w.kind,
+                    AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                );
+                transfers.insert(role.into(), w.edges.clone());
+                witnesses.insert(role.into(), w);
+            } else {
+                transfers.insert(role.into(), Vec::new());
+            }
+        }
+        if native {
+            // Pure private-witness integrity control for the independently
+            // tested native ELF factory. This is not physical qualification.
+            let address = targets["fixed_scalar_syscall"];
+            let fixed = 0x220000_u64;
+            let trusted = targets["reverie_inguest_trusted_syscall"];
+            let edges = vec![
+                ConstructorTransfer {
+                    instruction: address + 30,
+                    target: fixed,
+                    local_got_slot: Some(0x300108),
+                },
+                ConstructorTransfer {
+                    instruction: address + 52,
+                    target: trusted,
+                    local_got_slot: Some(0x300110),
+                },
+            ];
+            selected.insert("fixed_scalar_syscall".into(), address);
+            transfers.insert("fixed_scalar_syscall".into(), edges.clone());
+            witnesses.insert(
+                "fixed_scalar_syscall".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_scalar_syscall".into(),
+                    address,
+                    kind: AuthenticatedDetcoreOperationKind::NativeFixedSyscall3,
+                    edges,
+                    scalar_storage: None,
+                },
+            );
+        }
+        DetcorePublicationControlGraph {
+            witnesses,
+            transfers,
+            selected,
+            targets,
+        }
+    }
+
+    #[test]
+    fn naked_owner_publication_requires_complete_body_and_composition() {
+        let check = |g: &DetcorePublicationControlGraph, kind, native| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, kind, native)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                kind,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        for case in 0..6 {
+            let kind = if [true, false, false, true, false, false][case] {
+                FixedImageKind::Standalone
+            } else {
+                FixedImageKind::Detcore
+            };
+            let native = [false, true, false, false, true, false][case];
+            let graph = naked_owner_publication_control_graph(case, true);
+            check(&graph, kind, native).unwrap();
+            assert_eq!(
+                check(&graph, kind, !native).unwrap_err().to_string(),
+                "naked-owner publication differs from its physical syscall factory"
+            );
+            let other_kind = if kind == FixedImageKind::Standalone {
+                FixedImageKind::Detcore
+            } else {
+                FixedImageKind::Standalone
+            };
+            assert!(check(&graph, other_kind, native).is_err());
+            let mut missing_raw = naked_owner_publication_control_graph(case, false);
+            missing_raw.witnesses.remove("fixed_scalar_syscall");
+            assert_eq!(
+                check(&missing_raw, kind, native).unwrap_err().to_string(),
+                "naked-owner publication lacks authenticated syscall transport"
+            );
+            for role in graph.selected.keys() {
+                for mutation in 0..4 {
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    match mutation {
+                        0 => {
+                            bad.selected.remove(role);
+                        }
+                        1 => {
+                            *bad.targets.get_mut(role).unwrap() += 1;
+                        }
+                        2 => {
+                            bad.transfers.remove(role);
+                        }
+                        _ => {
+                            if let Some(w) = bad.witnesses.get_mut(role) {
+                                w.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                            } else {
+                                bad.selected.remove(role);
+                            }
+                        }
+                    }
+                    assert!(
+                        check(&bad, kind, native).is_err(),
+                        "naked-owner binding {case}/{role}/{mutation}"
+                    );
+                }
+            }
+            for field in [
+                "fixed_region",
+                "fixed_region_ready",
+                "fixed_region_value16",
+                "fixed_initializing",
+            ] {
+                let mut bad = naked_owner_publication_control_graph(case, false);
+                *bad.targets.get_mut(field).unwrap() += 1;
+                assert!(check(&bad, kind, native).is_err());
+            }
+            let spec = fixed_naked_composition(&graph.witnesses, Some(kind)).unwrap();
+            for &(callee, callers) in spec.incoming {
+                for &(caller, pc, _) in callers {
+                    for mutation in 0..4 {
+                        let mut bad = naked_owner_publication_control_graph(case, false);
+                        let w = bad.witnesses.get_mut(caller).unwrap();
+                        let i = w
+                            .edges
+                            .iter()
+                            .position(|edge| edge.instruction == w.address + pc)
+                            .unwrap();
+                        match mutation {
+                            0 => {
+                                w.edges.remove(i);
+                            }
+                            1 => {
+                                w.edges.push(w.edges[i].clone());
+                            }
+                            2 => {
+                                w.edges[i].instruction += 1;
+                            }
+                            _ => {
+                                w.edges[i].local_got_slot = Some(0x300f00);
+                            }
+                        }
+                        bad.transfers.insert(caller.into(), w.edges.clone());
+                        assert_eq!(
+                            check(&bad, kind, native).unwrap_err().to_string(),
+                            if mutation == 0 {
+                                "missing naked-owner helper incoming edge"
+                            } else {
+                                "extra duplicate shifted or wrong-mode naked-owner helper edge"
+                            },
+                            "naked-owner census {case}/{callee}/{caller}/{mutation}"
+                        );
+                    }
+                }
+            }
+            for mutation in 0..3 {
+                let mut bad = naked_owner_publication_control_graph(case, false);
+                match mutation {
+                    0 => {
+                        bad.selected
+                            .insert("fixed_native_bitmap_range".into(), 0x170000);
+                    }
+                    1 => {
+                        let owner = &bad.witnesses["fixed_native_from_native"];
+                        let w = AuthenticatedDetcoreOperation {
+                            role: "fixed_native_bitmap_range".into(),
+                            address: owner.address,
+                            kind: owner.kind,
+                            edges: owner.edges.clone(),
+                            scalar_storage: owner.scalar_storage,
+                        };
+                        bad.witnesses.insert("fixed_native_bitmap_range".into(), w);
+                    }
+                    _ => {
+                        bad.transfers
+                            .insert("fixed_native_bitmap_range".into(), Vec::new());
+                    }
+                }
+                assert_eq!(
+                    check(&bad, kind, native).unwrap_err().to_string(),
+                    "naked-owner composition retains removed bitmap helper"
+                );
+            }
+            for role in spec
+                .cohort
+                .iter()
+                .map(|(role, _)| *role)
+                .chain(["fixed_arena_mprotect"])
+            {
+                for mutation in 0..3 {
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    let w = bad.witnesses.get_mut(role).unwrap();
+                    match mutation {
+                        0 => {
+                            w.role = "wrong_role".into();
+                        }
+                        1 => {
+                            w.address += 1;
+                        }
+                        _ => {
+                            w.scalar_storage = None;
+                        }
+                    }
+                    assert!(
+                        check(&bad, kind, native).is_err(),
+                        "naked-owner private witness {case}/{role}/{mutation}"
+                    );
+                }
+            }
+            if graph.witnesses.contains_key("fixed_setup_bitmap_range") {
+                let mut bad = naked_owner_publication_control_graph(case, false);
+                let bitmap = bad.witnesses.get_mut("fixed_setup_bitmap_range").unwrap();
+                bitmap.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(25);
+                bitmap.scalar_storage = None;
+                assert_eq!(
+                    check(&bad, kind, native).unwrap_err().to_string(),
+                    "naked-owner bitmap callee loses selected complete identity"
+                );
+                let mut old = scalar_ordinary_bit_result_control_graph(false);
+                let current = &graph.witnesses["fixed_setup_bitmap_range"];
+                old.witnesses.insert(
+                    "fixed_setup_bitmap_range".into(),
+                    AuthenticatedDetcoreOperation {
+                        role: current.role.clone(),
+                        address: current.address,
+                        kind: current.kind,
+                        edges: current.edges.clone(),
+                        scalar_storage: current.scalar_storage,
+                    },
+                );
+                assert_eq!(
+                    fixed_scalar_publication_syscall_mode(
+                        &old.witnesses,
+                        FixedImageKind::Detcore,
+                        false
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    "unknown or mixed naked-owner publication whole composition"
+                );
+            }
+            for other in 0..6 {
+                if other == case {
+                    continue;
+                }
+                let donor = naked_owner_publication_control_graph(other, false);
+                for role in [
+                    "fixed_native_from_native",
+                    "fixed_region_publication_set_opaque",
+                    "fixed_arena_setup",
+                    "fixed_constructor_prepare",
+                    "fixed_generic_prepare",
+                    "fixed_tool_heap_metadata",
+                    "fixed_arena_backing",
+                ] {
+                    if donor.witnesses[role].kind == graph.witnesses[role].kind {
+                        continue;
+                    }
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    bad.witnesses.get_mut(role).unwrap().kind = donor.witnesses[role].kind;
+                    assert_eq!(
+                        check(&bad, kind, native).unwrap_err().to_string(),
+                        "unknown or mixed naked-owner publication whole composition"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_owned_bitmap_requires_unique_literal_two_object_profile() {
+        let old = &DETCORE_VALIDATE_TEMPLATES[25];
+        let current = &DETCORE_VALIDATE_TEMPLATES[85];
+        let both = [(25, old), (85, current)];
+        let why = "unknown or ambiguous whole Detcore validate recipe";
+        for present in [false, true] {
+            assert_eq!(
+                fixed_detcore_unique_template("fixed_setup_bitmap_range", &both, why, |_| Ok(
+                    present
+                ))
+                .err()
+                .unwrap()
+                .to_string(),
+                why
+            );
+        }
+        // A const table may be instantiated separately at each use. Select
+        // from the actual candidate array, not another promoted table copy.
+        for (profile, selected) in both {
+            assert_eq!(
+                fixed_detcore_unique_template("fixed_setup_bitmap_range", &both, why, |t| Ok(
+                    core::ptr::eq(t, selected)
+                ))
+                .unwrap()
+                .0,
+                profile
+            );
+        }
+        for candidates in [
+            vec![(25, old), (24, old)],
+            vec![(85, current), (85, current)],
+            vec![(25, old), (85, current), (85, current)],
+        ] {
+            assert_eq!(
+                fixed_detcore_unique_template(
+                    "fixed_setup_bitmap_range",
+                    &candidates,
+                    why,
+                    |_| Ok(true)
+                )
+                .err()
+                .unwrap()
+                .to_string(),
+                why
+            );
+        }
+        assert_eq!(
+            fixed_detcore_unique_template("fixed_arena_setup", &both, why, |_| Ok(true))
+                .err()
+                .unwrap()
+                .to_string(),
+            why
+        );
+    }
+
+    #[test]
+    fn naked_owner_exact_source_roles_preserve_historical_spellings() {
+        let name="_RNvMs_NtNtNtCs_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner18from_native_opaque".replace("Cs_","Cs1_");
+        assert_eq!(fixed_emitted_role(&name), Some("fixed_native_from_native"));
+        assert!(fixed_emitted_role(&format!("prefix{name}")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}_unknown")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}.llvm.bad")).is_none());
+        let name="_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena30initialize_fixed_arenas_opaque".replace("Cs_","Cs1_");
+        assert_eq!(fixed_emitted_role(&name), Some("fixed_arena_setup"));
+        assert!(fixed_emitted_role(&format!("prefix{name}")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}_unknown")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}.llvm.bad")).is_none());
+        let name =
+            "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region11constructor19native_owner_gettid"
+                .replace("Cs_", "Cs1_");
+        assert_eq!(fixed_emitted_role(&name), Some("fixed_native_owner_gettid"));
+        assert!(fixed_emitted_role(&format!("prefix{name}")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}_unknown")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}.llvm.bad")).is_none());
+        let name = "_RNvNtNtNtCs_15reverie_inguest5guest11tool_region5arena20fixed_arena_mprotect"
+            .replace("Cs_", "Cs1_");
+        assert_eq!(fixed_emitted_role(&name), Some("fixed_arena_mprotect"));
+        assert!(fixed_emitted_role(&format!("prefix{name}")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}_unknown")).is_none());
+        assert!(fixed_emitted_role(&format!("{name}.llvm.bad")).is_none());
+        // Standalone bitmap175 retains the existing arena qualifier; the
+        // appended239B bitmap must not promote that role into scalar dispatch.
+        assert!(!fixed_scalar_recipe_role("fixed_setup_bitmap_range"));
+        assert!(fixed_scalar_recipe_role("fixed_arena_setup"));
+        assert!(fixed_scalar_recipe_role("fixed_native_owner_gettid"));
+        assert!(fixed_scalar_recipe_role("fixed_arena_mprotect"));
+        let bridge =
+            "_RNvNtNtNtCs1_15reverie_inguest5guest11tool_region11constructor19native_owner_gettid";
+        assert_eq!(
+            resolved_preparation_role(bridge),
+            Some("fixed_native_owner_gettid")
+        );
+        assert!(owned_fixed_setup_role("fixed_native_owner_gettid"));
+        assert!(resolved_preparation_role(&format!("{bridge}_unknown")).is_none());
+        assert_eq!(
+            fixed_emitted_role(
+                "_RNvNtNtNtCs1_15reverie_inguest5guest11tool_region5arena23initialize_fixed_arenas"
+            ),
+            Some("fixed_arena_setup")
+        );
+        assert_eq!(
+            fixed_emitted_role(
+                "_RNvMs_NtNtNtCs1_15reverie_inguest5guest11tool_region11constructorNtB4_16NativeFreshOwner11from_native"
+            ),
+            Some("fixed_native_from_native")
+        );
+    }
+
+    // Both complete bridge fixtures come from retained native ELF output,
+    // independently of production recipes. No extent or mode label admits one.
+    fn naked_mprotect_bridge_control(graph: &mut DetcorePublicationControlGraph, variant: usize) {
+        let sample: ScalarPublicationSample = match variant {
+            83 => (
+                "fixed_arena_mprotect",
+                83,
+                "504889febf0a000000ba00000002b903000000e8f8dbfeff59c3ff1540e52300", // ELF8419792eeae9b23706bbe6f2c0326e30bc07cec741942c58970dad89fe00bce7
+                &[0, 1, 4, 9, 14, 19, 24, 25, 26],
+                &[
+                    (20, 24, "fixed_scalar_syscall", false),
+                    (28, 32, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            84 => (
+                "fixed_arena_mprotect",
+                84,
+                "4889febf0a000000ba00000002b903000000e939f2ffff", // ELF63c9b9f1259c8223e51b066aab5483b05273c273c7e4b3b8c52e0be299c3c9ee
+                &[0, 3, 8, 13, 18],
+                &[(19, 23, "fixed_scalar_syscall", false)],
+            ),
+            _ => panic!("unknown C ABI bridge fixture"),
+        };
+        let (role, index, whole, offsets, operands) = sample;
+        let address = graph.targets[role];
+        let got = BTreeMap::from([(0x300018, graph.targets["fixed_publication_cannot_unwind"])]);
+        let mut bytes = fixed_hex(whole);
+        for &(at, next, key, indirect) in operands {
+            let target = graph.targets[key];
+            let operand = if indirect { 0x300018 } else { target };
+            let delta =
+                i32::try_from(i128::from(operand) - i128::from(address) - next as i128).unwrap();
+            bytes[at..at + 4].copy_from_slice(&delta.to_le_bytes());
+        }
+        let instructions = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &offset)| {
+                let end = offsets.get(i + 1).copied().unwrap_or(bytes.len());
+                EncodedConstructorInstruction {
+                    address: address + offset as u64,
+                    bytes: bytes[offset..end].to_vec(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let readonly = BTreeMap::new();
+        let context = BTreeMap::new();
+        let witness = fixed_detcore_qualified_operation(
+            role,
+            address,
+            (&bytes, &instructions),
+            DetcoreRecipeBindings {
+                targets: &graph.targets,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+        );
+        graph.transfers.insert(role.into(), witness.edges.clone());
+        graph.witnesses.insert(role.into(), witness);
+    }
+
+    #[test]
+    fn naked_mprotect_c_abi_bridge_composes_only_with_exact_physical_edges() {
+        let check = |g: &DetcorePublicationControlGraph, native| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Detcore, native)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        for case in [1, 4] {
+            // Actual HOST/PINNED native factory families.
+            for variant in [83, 84] {
+                let mut graph = naked_owner_publication_control_graph(case, false);
+                naked_mprotect_bridge_control(&mut graph, variant);
+                check(&graph, true).unwrap();
+                assert_eq!(
+                    check(&graph, false).unwrap_err().to_string(),
+                    "naked-owner publication differs from its physical syscall factory"
+                );
+                for mutation in 0..15 {
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    naked_mprotect_bridge_control(&mut bad, variant);
+                    if mutation == 0 {
+                        bad.witnesses.remove("fixed_arena_mprotect");
+                    } else {
+                        let w = bad.witnesses.get_mut("fixed_arena_mprotect").unwrap();
+                        match mutation {
+                            1 => {
+                                w.edges[0].instruction += 1;
+                            }
+                            2 => {
+                                w.edges[0].target += 1;
+                            }
+                            3 => {
+                                w.edges[0].local_got_slot = Some(0x300f00);
+                            }
+                            4 => {
+                                w.edges.push(w.edges[0].clone());
+                            }
+                            5 => {
+                                w.edges.remove(0);
+                            }
+                            6 => {
+                                if variant == 83 {
+                                    w.edges[1].target += 1;
+                                } else {
+                                    w.edges.push(w.edges[0].clone());
+                                }
+                            }
+                            7 => {
+                                w.scalar_storage = None;
+                            }
+                            8 => {
+                                w.address += 1;
+                            }
+                            9 => {
+                                w.role = "wrong_bridge".into();
+                            }
+                            10 => {
+                                bad.selected
+                                    .insert("fixed_arena_mprotect".into(), w.address + 1);
+                            }
+                            11 => {
+                                w.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                            }
+                            12 => {
+                                if variant == 83 {
+                                    w.edges.remove(1);
+                                } else {
+                                    w.edges.push(w.edges[0].clone());
+                                }
+                            }
+                            13 => {
+                                if variant == 83 {
+                                    w.edges[1].instruction += 1;
+                                } else {
+                                    w.edges.push(w.edges[0].clone());
+                                }
+                            }
+                            _ => {
+                                if variant == 83 {
+                                    w.edges[1].local_got_slot = None;
+                                } else {
+                                    w.edges.push(w.edges[0].clone());
+                                }
+                            }
+                        }
+                        bad.transfers
+                            .insert("fixed_arena_mprotect".into(), w.edges.clone());
+                    }
+                    let why = match mutation {
+                        0 => "naked-owner publication lacks complete C ABI mprotect bridge",
+                        1..=6 => "naked-owner C ABI bridge loses exact raw/landing transfer",
+                        7..=10 => "naked-owner C ABI bridge loses selected address/storage/census",
+                        11 => "naked-owner mprotect bridge lacks its exact C ABI body",
+                        _ => "naked-owner C ABI bridge loses exact raw/landing transfer",
+                    };
+                    assert_eq!(
+                        check(&bad, true).unwrap_err().to_string(),
+                        why,
+                        "bridge{variant} nativecase{case} mutation{mutation}"
+                    );
+                }
+                let mut bad = graph;
+                bad.witnesses.get_mut("fixed_scalar_syscall").unwrap().kind =
+                    AuthenticatedDetcoreOperationKind::NativeFixedSyscall6;
+                assert_eq!(
+                    check(&bad, true).unwrap_err().to_string(),
+                    "unknown or mixed naked-owner publication whole composition"
+                );
+            }
+        }
+    }
+
     // Retained capflags e370e9a7 bytes and instruction boundaries. All ten new
     // bodies match signals a327dd1c except the enumerated typed address fields.
     // These pure controls do not claim physical qualification or execution.
+    // These are independent retained complete ELF bodies and objdump boundaries,
+    // not copies obtained from the production template table at test runtime.
+    type ScalarPublicationSample = (
+        &'static str,
+        usize,
+        &'static str,
+        &'static [usize],
+        &'static [(usize, usize, &'static str, bool)],
+    );
+    fn scalar_publication_leaf_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_region_publication_get_opaque",
+                55,
+                "504889fe40f6c607751e4885f6742b0fb6461831c984c0480f45ce48890c244889e0488b042459c3488d1569192200bf08000000ff15ae6a2300488d3d57192200ff1531a22300",
+                &[
+                    0, 1, 4, 8, 10, 13, 15, 19, 21, 23, 27, 31, 34, 38, 39, 40, 47, 52, 58, 65,
+                ],
+                &[
+                    (43, 47, "fixed_scalar_publication_get_location", false),
+                    (54, 58, "fixed_heap_panic_misaligned", true),
+                    (61, 65, "fixed_scalar_publication_get_location", false),
+                    (67, 71, "fixed_panic_null_reference", true),
+                ],
+            ),
+            (
+                "fixed_region_publication_set_opaque",
+                56,
+                "5040f6c707752d4885ff743d0fb6471884c0740784c00f94c059c30f1006488b4e1048894f100f1107c647180184c00f94c059c3488d15251922004889febf08000000ff154f6a2300488d3d10192200ff15d2a12300",
+                &[
+                    0, 1, 5, 7, 10, 12, 16, 18, 20, 22, 25, 26, 27, 30, 34, 38, 41, 45, 47, 50, 51,
+                    52, 59, 62, 67, 73, 80,
+                ],
+                &[
+                    (55, 59, "fixed_scalar_publication_set_location", false),
+                    (69, 73, "fixed_heap_panic_misaligned", true),
+                    (76, 80, "fixed_scalar_publication_set_location", false),
+                    (82, 86, "fixed_panic_null_reference", true),
+                ],
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                57,
+                "4883ec180fb605b661240484c0741631c04889442408488d442408488b4424084883c418c3488d059c6124044889442410488d442410488b7c2410e8c0daffff4885c074ca807810ff74c448b80030020000600000ebba",
+                &[
+                    0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73, 75,
+                    85,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (40, 44, "fixed_region", false),
+                    (60, 64, "fixed_region_publication_get_opaque", false),
+                ],
+            ),
+            (
+                "fixed_arena_backing",
+                58,
+                "4883ec180fb6054663240484c0741631c04889442408488d442408488b4424084883c418c3488d052c6324044889442410488d442410488b7c2410e850dcffff4885c074ca807810ff74c4488d05ee202dffebbd",
+                &[
+                    0, 4, 11, 13, 15, 17, 22, 27, 32, 36, 37, 44, 49, 54, 59, 64, 67, 69, 73, 75,
+                    82,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (40, 44, "fixed_region", false),
+                    (60, 64, "fixed_region_publication_get_opaque", false),
+                    (78, 82, "fixed_backing_object", false),
+                ],
+            ),
+            (
+                "fixed_tool_require_owned",
+                59,
+                "534889fbe807a000004885c0740f48c1eb194881fb0800300075025bc3e8ce280000",
+                &[0, 1, 4, 9, 12, 14, 18, 25, 27, 28, 29],
+                &[
+                    (5, 9, "fixed_tool_heap_metadata", false),
+                    (30, 34, "fixed_refuse_foreign", false),
+                ],
+            ),
+            (
+                "fixed_tool_alloc",
+                60,
+                "4156534883ec184889d34989f6e89e6a00004885c074324889042448b80000001000600000488944240848c7442410000000024889e74c89f64889dae8bfc7ffff4883c4185b415ec331c04883c4185b415ec3",
+                &[
+                    0, 2, 3, 7, 10, 13, 18, 21, 23, 27, 37, 42, 51, 54, 57, 60, 65, 69, 70, 72, 73,
+                    75, 79, 80, 82,
+                ],
+                &[
+                    (14, 18, "fixed_tool_heap_metadata", false),
+                    (61, 65, "fixed_heap_allocate", false),
+                ],
+            ),
+            (
+                "fixed_tool_dealloc",
+                61,
+                "534889f3e8476a00004885c074274889d948c1e9194881f908003000751748be0000001000600000488b53f84889c75be98bc5ffffe8f6f2ffff",
+                &[0, 1, 4, 9, 12, 14, 17, 21, 28, 30, 40, 44, 47, 48, 53],
+                &[
+                    (5, 9, "fixed_tool_heap_metadata", false),
+                    (49, 53, "fixed_heap_deallocate", false),
+                    (54, 58, "fixed_refuse_foreign", false),
+                ],
+            ),
+            (
+                "fixed_tool_realloc",
+                62,
+                "554157415641554154534883ec184d89c44989ce4889d54889f3e8f16900004885c00f84a00000004989c749bd0000001000600000488904244c896c240848c7442410000000024889d848c1e819483d080030007572488d45ff4885c50f95c048b900000000000000804829e94939cc0f97c108c175404889e74889ee4c89e2e8dbc6ffff4885c0742d4d39f44d0f42f44889df4889c64c89f24989c6ff15fdf02300488b53f84c89ff4c89eee8cec4ffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e823f2ffff",
+                &[
+                    0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71, 74,
+                    78, 84, 86, 90, 93, 96, 106, 109, 112, 115, 117, 119, 122, 125, 128, 133, 136,
+                    138, 141, 145, 148, 151, 154, 157, 163, 167, 170, 173, 178, 181, 183, 185, 189,
+                    190, 192, 194, 196, 198, 199, 200,
+                ],
+                &[
+                    (27, 31, "fixed_tool_heap_metadata", false),
+                    (129, 133, "fixed_heap_allocate", false),
+                    (159, 163, "fixed_copy_bytes", true),
+                    (174, 178, "fixed_heap_deallocate", false),
+                    (201, 205, "fixed_refuse_foreign", false),
+                ],
+            ),
+        ]
+    }
+    // Full native callers and canonical setup from immutable image31ffdc35.
+    fn scalar_publication_native_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_native_from_native",
+                63,
+                "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b80000000fb60528fb220449b800f0efffff9fffff4c01c24881faffff7f000f879700000084c00f848f00000089cd4989febfba0000004989f731f631d231c9e89d75feff4c89fe40f6c6070f85c60000004885c04c89f77e6248394640755c48837e5001755548837e3800744e8b0683e00f83f8087544488d05bbfa22044889442408488d442408488b7c2408e85f70feff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8f3ddffff84c0740c4c89f741c70616000000ebc34889dfe8bb93feff4c89f7a8017405418916ebaf4d893eebac488d1533a32000bf08000000ff1530db2100",
+                &[
+                    0, 1, 3, 5, 6, 10, 20, 23, 28, 34, 38, 41, 44, 50, 57, 67, 70, 77, 83, 85, 91,
+                    93, 96, 101, 104, 106, 108, 110, 115, 118, 122, 128, 131, 134, 136, 140, 142,
+                    147, 149, 154, 156, 158, 161, 164, 166, 173, 178, 183, 188, 193, 196, 199, 201,
+                    206, 211, 217, 219, 222, 224, 226, 232, 234, 240, 242, 246, 250, 251, 253, 255,
+                    256, 257, 266, 275, 280, 285, 287, 289, 292, 299, 301, 304, 309, 312, 314, 316,
+                    319, 321, 324, 326, 333, 338,
+                ],
+                &[
+                    (53, 57, "fixed_initializing", false),
+                    (111, 115, "fixed_scalar_syscall", false),
+                    (169, 173, "fixed_region", false),
+                    (189, 193, "fixed_region_publication_get_opaque", false),
+                    (281, 285, "fixed_native_bitmap_range", false),
+                    (305, 309, "fixed_arena_setup", false),
+                    (329, 333, "fixed_scalar_native_record_location", false),
+                    (340, 344, "fixed_heap_panic_misaligned", true),
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                64,
+                "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e885ceffff0fb644243084c00f84a300000041f6c7070f85a70000004d85ff0f84b30000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3da5c922044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8893ffeffa801744041f6c607756a4d85f6747a49c7464803000000c6055cc92204004c897c2410488d442410488b7c2410e8073ffeff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3488d1528752000bf080000004c89feff153aaa2100488d3d13752000ff15bde12100488d1536722000bf080000004c89f6ff1518aa2100488d3d21722000ff159be12100ff1515df2100",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 214,
+                    219, 221, 225, 226, 228, 230, 232, 233, 240, 245, 248, 254, 261, 267, 274, 279,
+                    282, 288, 295, 301,
+                ],
+                &[
+                    (39, 43, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (236, 240, "fixed_scalar_constructor_record_location", false),
+                    (250, 254, "fixed_heap_panic_misaligned", true),
+                    (257, 261, "fixed_scalar_constructor_record_location", false),
+                    (263, 267, "fixed_panic_null_reference", true),
+                    (270, 274, "fixed_scalar_publish_record_location", false),
+                    (284, 288, "fixed_heap_panic_misaligned", true),
+                    (291, 295, "fixed_scalar_publish_record_location", false),
+                    (297, 301, "fixed_panic_null_reference", true),
+                    (303, 307, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                65,
+                "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e84acdffff0fb6442430bb0100000084c00f84a300000041f6c7070f85a70000004d85ff0f84b30000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d65c822044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8493efeffa801744041f6c607756a4d85f6747a49c7464803000000c6051cc82204004c897c2410488d442410488b7c2410e8c73dfeff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3488d1500742000bf080000004c89feff15faa82100488d3deb732000ff157de02100488d15f6702000bf080000004c89f6ff15d8a82100488d3de1702000ff155be02100ff15d5dd2100",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 214,
+                    219, 221, 225, 226, 228, 230, 232, 233, 240, 245, 248, 254, 261, 267, 274, 279,
+                    282, 288, 295, 301,
+                ],
+                &[
+                    (34, 38, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (236, 240, "fixed_scalar_generic_record_location", false),
+                    (250, 254, "fixed_heap_panic_misaligned", true),
+                    (257, 261, "fixed_scalar_generic_record_location", false),
+                    (263, 267, "fixed_panic_null_reference", true),
+                    (270, 274, "fixed_scalar_publish_record_location", false),
+                    (284, 288, "fixed_heap_panic_misaligned", true),
+                    (291, 295, "fixed_scalar_publish_record_location", false),
+                    (297, 301, "fixed_panic_null_reference", true),
+                    (303, 307, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_arena_setup",
+                24,
+                "554157415653504889fbbeffff0000ba0120010031c9e895feffffbd0100000041be1600000084c00f84e5000000beff3f0100ba016001004889df31c9e86efeffff84c00f84c9000000beffff0d00ba01f00f004889df31c9e852feffff84c00f84ad00000049bf0030020000600000498db700d0fd0fbf0a000000ba00000002b903000000e895e0ffff4885c0787d498db700d0fd13bf0a000000ba00000002b903000000e875e0ffff4885c0785d0f57c0410f290741c647100049c7471800000000beffff0000ba012001004889dfb901000000e8d5fdffffbeff3f0100ba016001004889dfb901000000e8befdffffbeffff0d00ba01f00f004889dfb901000000e8a7fdffff31edeb064989c641f7de89e84489f24883c4085b415e415f5dc3",
+                &[
+                    0, 1, 3, 5, 6, 7, 10, 15, 20, 22, 27, 32, 38, 40, 46, 51, 56, 59, 61, 66, 68,
+                    74, 79, 84, 87, 89, 94, 96, 102, 112, 119, 124, 129, 134, 139, 142, 144, 151,
+                    156, 161, 166, 171, 174, 176, 179, 183, 188, 196, 201, 206, 209, 214, 219, 224,
+                    229, 232, 237, 242, 247, 252, 255, 260, 265, 267, 269, 272, 275, 277, 280, 284,
+                    285, 287, 289, 290,
+                ],
+                &[
+                    (23, 27, "fixed_setup_bitmap_range", false),
+                    (62, 66, "fixed_setup_bitmap_range", false),
+                    (90, 94, "fixed_setup_bitmap_range", false),
+                    (135, 139, "fixed_scalar_syscall", false),
+                    (167, 171, "fixed_scalar_syscall", false),
+                    (215, 219, "fixed_setup_bitmap_range", false),
+                    (238, 242, "fixed_setup_bitmap_range", false),
+                    (261, 265, "fixed_setup_bitmap_range", false),
+                ],
+            ),
+        ]
+    }
+    // Raw independent retained ordinary ELF bodies, actual instruction boundaries,
+    // and separately enumerated operand identities. Historical samples stay fixed.
+    fn scalar_publication_ordinary_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_native_from_native",
+                66,
+                "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b80000000fb605df9b130249b800f0efffff9fffff4c01c24881faffff7f000f879700000084c00f848f00000089cd4989febfba0000004989f731f631d231c9e8dd7bffff4c89fe40f6c6070f85c70000004885c04c89f77e6248394640755c48837e5001755548837e3800744e8b0683e00f83f8087544488d05739b13024889442408488d442408488b7c2408e88f0dffff4c89f74885c07521ba02000000b801000000f0490fb15748750f0fb60384c0741fc7070b000000eb06c7071600000031ed40886f084883c4185b415e415f5dc348c74424080001000048c744241002090000488d7c2408e8a3f4ffff84c0740c4c89f741c70616000000ebc34889dfe80b0a00004c89f783f8017505418916ebae4d893eebab488d155ae81100bf08000000ff15ffc21200",
+                &[
+                    0, 1, 3, 5, 6, 10, 20, 23, 28, 34, 38, 41, 44, 50, 57, 67, 70, 77, 83, 85, 91,
+                    93, 96, 101, 104, 106, 108, 110, 115, 118, 122, 128, 131, 134, 136, 140, 142,
+                    147, 149, 154, 156, 158, 161, 164, 166, 173, 178, 183, 188, 193, 196, 199, 201,
+                    206, 211, 217, 219, 222, 224, 226, 232, 234, 240, 242, 246, 250, 251, 253, 255,
+                    256, 257, 266, 275, 280, 285, 287, 289, 292, 299, 301, 304, 309, 312, 315, 317,
+                    320, 322, 325, 327, 334, 339,
+                ],
+                &[
+                    (53, 57, "fixed_initializing", false),
+                    (111, 115, "fixed_scalar_syscall", false),
+                    (169, 173, "fixed_region", false),
+                    (189, 193, "fixed_region_publication_get_opaque", false),
+                    (281, 285, "fixed_native_bitmap_range", false),
+                    (305, 309, "fixed_arena_setup", false),
+                    (330, 334, "fixed_scalar_native_record_location", false),
+                    (341, 345, "fixed_heap_panic_misaligned", true),
+                ],
+            ),
+            (
+                "fixed_region_publication_get_opaque",
+                67,
+                "0fb6471831c984c0480f45cf48894c24f8488d4424f8488b4424f8c3",
+                &[0, 4, 6, 8, 12, 17, 22, 27],
+                &[],
+            ),
+            (
+                "fixed_region_publication_set_opaque",
+                68,
+                "0fb6471884c0740684c00f94c0c30f1006488b4e1048894f100f1107c647180184c00f94c0c3",
+                &[0, 4, 6, 8, 10, 13, 14, 17, 21, 25, 28, 32, 34, 37],
+                &[],
+            ),
+            (
+                "fixed_native_from_native",
+                69,
+                "5541574156534883ec1848bb001000000060000080f901b83000020041b8a00002004c0f44c04909d84939f00f85b40000000fb605f7c1040249b800f0efffff9fffff4c01c24881faffff7f000f879300000084c00f848b00000089cd4989febfba0000004989f731f631d231c9e8ddabffff4885c00f8e920000004c89f9493947400f85850000004883795001757e488379380074778b0183e00f83f808756d488d0590c104024889442408488d442408488b7c2408e8e48bffff4885c0754dba02000000b801000000f0490fb15748753b0fb60384c074144c89f741c7060b000000eb32c70716000000eb2a48c74424080001000048c744241002090000488d7c2408e856f3ffff84c0741b4c89f741c7061600000031ed40886f084883c4185b415e415f5dc34889dfe8dfe4ffff4c89f7a8017405418916ebdb4d893eebd8",
+                &[
+                    0, 1, 3, 5, 6, 10, 20, 23, 28, 34, 38, 41, 44, 50, 57, 67, 70, 77, 83, 85, 91,
+                    93, 96, 101, 104, 106, 108, 110, 115, 118, 124, 127, 131, 137, 142, 144, 149,
+                    151, 153, 156, 159, 161, 168, 173, 178, 183, 188, 191, 193, 198, 203, 209, 211,
+                    214, 216, 218, 221, 228, 230, 236, 238, 247, 256, 261, 266, 268, 270, 273, 280,
+                    282, 286, 290, 291, 293, 295, 296, 297, 300, 305, 308, 310, 312, 315, 317, 320,
+                ],
+                &[
+                    (53, 57, "fixed_initializing", false),
+                    (111, 115, "fixed_scalar_syscall", false),
+                    (164, 168, "fixed_region", false),
+                    (184, 188, "fixed_region_publication_get_opaque", false),
+                    (262, 266, "fixed_native_bitmap_range", false),
+                    (301, 305, "fixed_arena_setup", false),
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                70,
+                "415741564154534883ec384989fe4989e7488d7c2428bb010000004c89f64c89fab901000000e895f3ffff0fb644243084c00f84860000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d3598b504024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e8fc7fffffa801743649c744244803000000c60558b50402004c89742410488d442410488b7c2410e8b47fffff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3ff152e520400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 56, 61, 65, 75, 80,
+                    85, 89, 96, 100, 103, 108, 113, 118, 122, 127, 132, 134, 136, 145, 152, 157,
+                    162, 167, 172, 175, 177, 179, 183, 185, 190, 192, 196, 197, 199, 201, 203, 204,
+                ],
+                &[
+                    (39, 43, "fixed_native_from_native", false),
+                    (92, 96, "fixed_region", false),
+                    (128, 132, "fixed_region_publication_set_opaque", false),
+                    (147, 152, "fixed_initializing", false),
+                    (168, 172, "fixed_region_publication_get_opaque", false),
+                    (206, 210, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                71,
+                "415741564154534883ec384989fe4989e7488d7c24284c89f64c89fab902000000e8baf2ffff0fb6442430bb0100000084c00f84860000004c8b6424284d897e5848b9001000000060000048894c24104c89642418884424204c8d35b8b404024c8934244889e0488d4424104889442408488d442408488b3c24488b742408e81c7fffffa801743649c744244803000000c60578b40402004c89742410488d442410488b7c2410e8d47effff4885c0740831db807810ff7505bb0100000089d84883c4385b415c415e415fc3ff154e510400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 56, 61, 65, 75, 80,
+                    85, 89, 96, 100, 103, 108, 113, 118, 122, 127, 132, 134, 136, 145, 152, 157,
+                    162, 167, 172, 175, 177, 179, 183, 185, 190, 192, 196, 197, 199, 201, 203, 204,
+                ],
+                &[
+                    (34, 38, "fixed_native_from_native", false),
+                    (92, 96, "fixed_region", false),
+                    (128, 132, "fixed_region_publication_set_opaque", false),
+                    (147, 152, "fixed_initializing", false),
+                    (168, 172, "fixed_region_publication_get_opaque", false),
+                    (206, 210, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_tool_dealloc",
+                72,
+                "534889f3e8c7deffff4885c00f84d50000004889c14889d848c1e819483d080030000f85bf000000488b53f840b60131c0f0400fb0711074130f1f8000000000f39031c0f0400fb0711075f448b80000001000600000488b71084885f6400f94c74839d6410f93c04108f875400f1f004889f7488b7430084885f674054839d672ee488974100848895438084c8b04384d8d0c384939d1751d4c03041072174c89043848897438084889faeb094889741008488951084885f67426488b3c104c8d04174939d072194939f0751448033c30720e48893c10488b7430084889741008c64110005bc3e844feffff",
+                &[
+                    0, 1, 4, 9, 12, 18, 21, 24, 28, 34, 40, 44, 47, 49, 55, 57, 64, 66, 68, 74, 76,
+                    86, 90, 93, 97, 100, 104, 107, 109, 112, 115, 120, 123, 125, 128, 130, 135,
+                    140, 144, 148, 151, 153, 157, 159, 163, 168, 171, 173, 178, 182, 185, 187, 191,
+                    195, 198, 200, 203, 205, 209, 211, 215, 220, 225, 229, 230, 231,
+                ],
+                &[
+                    (5, 9, "fixed_tool_heap_metadata", false),
+                    (232, 236, "fixed_refuse_foreign", false),
+                ],
+            ),
+            (
+                "fixed_tool_realloc",
+                73,
+                "554157415641554154534883ec184d89c44989cf4989d54989f6e8c1ddffff4885c00f846c0100004889c348bd00000010006000004889042448896c240848c7442410000000024c89f048c1e819483d080030000f853a010000498d45ff4985c50f94c048b900000000000000804c29e94939cc0f96c120c180f9010f85c10000004889e74c89ee4c89e2e840f4ffff4885c00f84aa0000004d39fc4d0f42fc4c89f74989c44889c64c89faff1556560400498b4ef8b20131c0f00fb05310741a6666666666662e0f1f840000000000f39031c0f00fb0531075f5488b53084885d20f94c04839ca400f93c64008c675566666666666662e0f1f8400000000004889d6488b5415084885d274054839ca72ee4889540d0848894c3508488b7c3500488d04374839c84c89e0752648037c0d00721f48897c350048895435084889f1eb1031c0eb3e4889540d0848894b084c89e04885d27429488b740d00488d3c0e4839cf721b4839d775164803741500720f4889740d00488b5415084889540d08c64310004883c4185b415c415d415e415f5dc3e8a7fcffff",
+                &[
+                    0, 1, 3, 5, 7, 9, 10, 14, 17, 20, 23, 26, 31, 34, 40, 43, 53, 57, 62, 71, 74,
+                    78, 84, 90, 94, 97, 100, 110, 113, 116, 119, 121, 124, 130, 133, 136, 139, 144,
+                    147, 153, 156, 160, 163, 166, 169, 172, 178, 182, 184, 186, 191, 193, 208, 210,
+                    212, 217, 219, 223, 226, 229, 232, 236, 239, 241, 256, 259, 264, 267, 269, 272,
+                    274, 279, 284, 289, 293, 296, 299, 301, 306, 308, 313, 318, 321, 323, 325, 327,
+                    332, 336, 339, 342, 344, 349, 353, 356, 358, 361, 363, 368, 370, 375, 380, 385,
+                    389, 393, 394, 396, 398, 400, 402, 403, 404,
+                ],
+                &[
+                    (27, 31, "fixed_tool_heap_metadata", false),
+                    (140, 144, "fixed_heap_allocate", false),
+                    (174, 178, "fixed_copy_bytes", true),
+                    (405, 409, "fixed_refuse_foreign", false),
+                ],
+            ),
+        ]
+    }
+    fn scalar_publication_ordinary_control_graph(
+        image_kind: FixedImageKind,
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        let mut samples = scalar_publication_leaf_samples().to_vec();
+        let ordinary = scalar_publication_ordinary_samples();
+        if image_kind == FixedImageKind::Detcore {
+            samples.extend_from_slice(scalar_publication_native_samples());
+            let slot = samples
+                .iter_mut()
+                .find(|s| s.0 == "fixed_native_from_native")
+                .unwrap();
+            *slot = ordinary[0];
+        } else {
+            for replacement in [ordinary[1], ordinary[2], ordinary[6], ordinary[7]] {
+                *samples.iter_mut().find(|s| s.0 == replacement.0).unwrap() = replacement;
+            }
+            samples.extend_from_slice(&ordinary[3..6]);
+            samples.push(scalar_publication_native_samples()[3]); // measured identical setup291
+        }
+        scalar_publication_control_graph_from_samples(samples, mutations)
+    }
+    fn scalar_publication_control_graph(
+        native: bool,
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        let mut samples = scalar_publication_leaf_samples().to_vec();
+        if native {
+            samples.extend_from_slice(scalar_publication_native_samples());
+        }
+        scalar_publication_control_graph_from_samples(samples, mutations)
+    }
+    fn scalar_publication_control_graph_from_samples(
+        samples: Vec<ScalarPublicationSample>,
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        let mut targets = BTreeMap::from([
+            ("fixed_initializing".into(), 0x600000),
+            ("fixed_region".into(), 0x600008),
+            ("fixed_region_ready".into(), 0x600020),
+            ("fixed_region_value16".into(), 0x600018),
+            ("fixed_backing_object".into(), 0x610000),
+            ("fixed_heap_panic_misaligned".into(), 0x200000),
+            ("fixed_panic_null_reference".into(), 0x200100),
+            ("fixed_copy_bytes".into(), 0x200200),
+            ("fixed_heap_allocate".into(), 0x200300),
+            ("fixed_heap_deallocate".into(), 0x200400),
+            ("fixed_refuse_foreign".into(), 0x200500),
+            ("fixed_scalar_syscall".into(), 0x200600),
+            ("fixed_native_bitmap_range".into(), 0x200700),
+            ("fixed_setup_bitmap_range".into(), 0x200800),
+            ("fixed_publication_cannot_unwind".into(), 0x200900),
+            ("fixed_scalar_native_record_location".into(), 0x400200),
+            ("fixed_scalar_publish_record_location".into(), 0x400300),
+            ("fixed_scalar_constructor_record_location".into(), 0x400400),
+            ("fixed_scalar_generic_record_location".into(), 0x400500),
+            ("fixed_scalar_native_record_location_file".into(), 0x500200),
+            ("fixed_scalar_publish_record_location_file".into(), 0x500300),
+            (
+                "fixed_scalar_constructor_record_location_file".into(),
+                0x500400,
+            ),
+            ("fixed_scalar_generic_record_location_file".into(), 0x500500),
+            ("fixed_scalar_publication_get_location".into(), 0x400000),
+            ("fixed_scalar_publication_set_location".into(), 0x400100),
+            (
+                "fixed_scalar_publication_get_location_file".into(),
+                0x500000,
+            ),
+            (
+                "fixed_scalar_publication_set_location_file".into(),
+                0x500100,
+            ),
+        ]);
+        for (i, &(role, ..)) in samples.iter().enumerate() {
+            targets.insert(role.into(), 0x100000 + i as u64 * 0x1000);
+        }
+        let context = detcore_validate_control_context("987e72b");
+        let filename = &context["rv:reverie-inguest/src/guest/tool_region.rs"];
+        let mut readonly = BTreeMap::new();
+        for (address, file, line) in [(0x400000, 0x500000, 89_u32), (0x400100, 0x500100, 138_u32)] {
+            let mut location = vec![0; 24];
+            location[8..16].copy_from_slice(&(filename.len() as u64).to_le_bytes());
+            location[16..20].copy_from_slice(&line.to_le_bytes());
+            location[20..24].copy_from_slice(&36_u32.to_le_bytes());
+            readonly.insert(address, location);
+            readonly.insert(file, filename.clone());
+        }
+        let filename = &context["rv:reverie-inguest/src/guest/tool_region_constructor.rs"];
+        for (address, file, line, column) in [
+            (0x400200, 0x500200, 587_u32, 35_u32),
+            (0x400300, 0x500300, 634, 18),
+            (0x400400, 0x500400, 652, 14),
+            (0x400500, 0x500500, 669, 14),
+        ] {
+            let mut location = vec![0; 24];
+            location[8..16].copy_from_slice(&(filename.len() as u64).to_le_bytes());
+            location[16..20].copy_from_slice(&line.to_le_bytes());
+            location[20..24].copy_from_slice(&column.to_le_bytes());
+            readonly.insert(address, location);
+            readonly.insert(file, filename.clone());
+        }
+        let got = BTreeMap::from([
+            (0x300000, 0x200000),
+            (0x300008, 0x200100),
+            (0x300010, 0x200200),
+            (0x300018, 0x200900),
+        ]);
+        let mut witnesses = BTreeMap::new();
+        let mut transfers = BTreeMap::new();
+        let mut selected = BTreeMap::new();
+        for &(role, index, whole, offsets, operands) in &samples {
+            let address = targets[role];
+            let mut bytes = fixed_hex(whole);
+            for &(at, next, key, indirect) in operands {
+                let target = targets[key];
+                let operand = if indirect {
+                    *got.iter().find(|(_, value)| **value == target).unwrap().0
+                } else {
+                    target
+                };
+                let displacement =
+                    i32::try_from(i128::from(operand) - i128::from(address) - next as i128)
+                        .unwrap();
+                bytes[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
+            }
+            let instructions = |body: &[u8]| -> Vec<EncodedConstructorInstruction> {
+                offsets
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &offset)| {
+                        let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                        EncodedConstructorInstruction {
+                            address: address + offset as u64,
+                            bytes: body[offset..end].to_vec(),
+                        }
+                    })
+                    .collect()
+            };
+            let check = |body: &[u8],
+                         ins: &[EncodedConstructorInstruction],
+                         ts: &BTreeMap<String, u64>,
+                         gs: &BTreeMap<u64, u64>,
+                         ro: &BTreeMap<u64, Vec<u8>>,
+                         ctx: &BTreeMap<String, Vec<u8>>| {
+                fixed_detcore_qualified_operation(
+                    role,
+                    address,
+                    (body, ins),
+                    DetcoreRecipeBindings {
+                        targets: ts,
+                        got: gs,
+                        readonly: ro,
+                        context: ctx,
+                    },
+                    0,
+                    false,
+                )
+            };
+            let ins = instructions(&bytes);
+            let witness = check(&bytes, &ins, &targets, &got, &readonly, &context)
+                .unwrap_or_else(|e| panic!("scalar {role}: {e}"));
+            assert_eq!(
+                witness.kind,
+                AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+            );
+            if mutations {
+                for byte in 0..bytes.len() {
+                    let mut bad = bytes.clone();
+                    bad[byte] ^= 1;
+                    assert!(
+                        check(
+                            &bad,
+                            &instructions(&bad),
+                            &targets,
+                            &got,
+                            &readonly,
+                            &context
+                        )
+                        .is_err(),
+                        "scalar {role}+{byte}"
+                    );
+                }
+                let mut truncated = bytes.clone();
+                truncated.pop();
+                assert!(check(&truncated, &ins, &targets, &got, &readonly, &context).is_err());
+                let mut appended = bytes.clone();
+                appended.push(0x90);
+                assert!(check(&appended, &ins, &targets, &got, &readonly, &context).is_err());
+                let mut missing = ins.clone();
+                missing.remove(0);
+                assert!(check(&bytes, &missing, &targets, &got, &readonly, &context).is_err());
+                for &(_, _, key, indirect) in operands {
+                    let mut bad = targets.clone();
+                    bad.insert(key.into(), targets[key] + 1);
+                    assert!(
+                        check(&bytes, &ins, &bad, &got, &readonly, &context).is_err(),
+                        "scalar target {role}/{key}"
+                    );
+                    if indirect {
+                        assert!(
+                            check(
+                                &bytes,
+                                &ins,
+                                &targets,
+                                &BTreeMap::new(),
+                                &readonly,
+                                &context
+                            )
+                            .is_err()
+                        );
+                    }
+                    if key.starts_with("fixed_scalar_") && readonly.contains_key(&targets[key]) {
+                        for byte in 0..24 {
+                            let mut bad = readonly.clone();
+                            bad.get_mut(&targets[key]).unwrap()[byte] ^= 1;
+                            assert!(
+                                check(&bytes, &ins, &targets, &got, &bad, &context).is_err(),
+                                "scalar Location {key}/{byte}"
+                            );
+                        }
+                        let file = targets[&format!("{key}_file")];
+                        let mut bad = readonly.clone();
+                        bad.get_mut(&file).unwrap()[0] ^= 1;
+                        assert!(check(&bytes, &ins, &targets, &got, &bad, &context).is_err());
+                        assert!(
+                            check(&bytes, &ins, &targets, &got, &readonly, &BTreeMap::new())
+                                .is_err()
+                        );
+                    }
+                }
+            }
+            transfers.insert(role.into(), witness.edges.clone());
+            selected.insert(role.into(), address);
+            witnesses.insert(role.into(), witness);
+        }
+        DetcorePublicationControlGraph {
+            witnesses,
+            transfers,
+            selected,
+            targets,
+        }
+    }
+    #[test]
+    fn observed_scalar_publication_leaf_recipes() {
+        let graph = scalar_publication_control_graph(false, true);
+        assert_eq!(graph.witnesses.len(), 8);
+        assert_eq!(
+            fixed_required_publication_roles(graph.selected.keys().map(String::as_str)),
+            FIXED_SCALAR_PUBLICATION_REQUIRED_ROLES
+        );
+        assert_eq!(
+            fixed_required_publication_roles(
+                [
+                    "fixed_region_publication_get",
+                    "fixed_region_publication_set"
+                ]
+                .into_iter()
+            ),
+            FIXED_PUBLICATION_REQUIRED_ROLES
+        );
+    }
+
+    #[test]
+    fn observed_scalar_native_publication_family() {
+        let check = |g: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        let graph = scalar_publication_control_graph(true, true);
+        assert_eq!(graph.witnesses.len(), 12);
+        check(&graph).unwrap();
+        fixed_detcore_publication_cohort(
+            &graph.witnesses,
+            &graph.transfers,
+            &graph.selected,
+            &graph.targets,
+        )
+        .unwrap();
+        for &(role, _) in FIXED_SCALAR_NATIVE_COHORT {
+            for mode in 0..5 {
+                let mut bad = scalar_publication_control_graph(true, false);
+                match mode {
+                    0 => {
+                        bad.witnesses.remove(role);
+                    }
+                    1 => {
+                        bad.selected.remove(role);
+                    }
+                    2 => {
+                        *bad.targets.get_mut(role).unwrap() += 1;
+                    }
+                    3 => {
+                        bad.transfers.remove(role);
+                    }
+                    _ => {
+                        bad.witnesses.get_mut(role).unwrap().kind =
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                    }
+                }
+                assert!(check(&bad).is_err(), "scalar missing/unbound {role}/{mode}");
+            }
+        }
+        for field in [
+            "fixed_region",
+            "fixed_region_ready",
+            "fixed_region_value16",
+            "fixed_initializing",
+        ] {
+            let mut bad = scalar_publication_control_graph(true, false);
+            *bad.targets.get_mut(field).unwrap() += 1;
+            assert!(check(&bad).is_err(), "scalar field {field}");
+        }
+        // Address uniqueness is independent of matching public/private labels.
+        for target in [
+            graph.targets["fixed_region"],
+            graph.targets["fixed_initializing"],
+            graph.selected["fixed_arena_setup"],
+            0,
+        ] {
+            let mut bad = scalar_publication_control_graph(true, false);
+            let role = "fixed_tool_alloc";
+            bad.witnesses.get_mut(role).unwrap().address = target;
+            bad.targets.insert(role.into(), target);
+            bad.selected.insert(role.into(), target);
+            assert!(check(&bad).is_err(), "scalar aliased identity {target:#x}");
+        }
+        for &(callee, _) in FIXED_SCALAR_NATIVE_INCOMING {
+            let mut bad = scalar_publication_control_graph(true, false);
+            bad.transfers.insert(
+                "unqualified_extra_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.selected[callee],
+                    local_got_slot: None,
+                }],
+            );
+            assert!(check(&bad).is_err(), "scalar extra incoming {callee}");
+        }
+        // Tamper both private and public vectors: exact helper PCs/count/mode
+        // are still enforced, rather than merely comparing two equal lists.
+        for (caller, callee) in [
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_set_opaque",
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_get_opaque",
+            ),
+            ("fixed_tool_alloc", "fixed_tool_heap_metadata"),
+        ] {
+            for mode in 0..4 {
+                let mut bad = scalar_publication_control_graph(true, false);
+                let target = bad.selected[callee];
+                let witness = bad.witnesses.get_mut(caller).unwrap();
+                let i = witness
+                    .edges
+                    .iter()
+                    .position(|edge| edge.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        witness.edges.remove(i);
+                    }
+                    1 => {
+                        witness.edges.push(witness.edges[i].clone());
+                    }
+                    2 => {
+                        witness.edges[i].instruction += 1;
+                    }
+                    _ => {
+                        witness.edges[i].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(caller.into(), witness.edges.clone());
+                assert!(check(&bad).is_err(), "scalar census {caller}/{mode}");
+            }
+        }
+        // The separate setup-result join is conditional on the exact344 caller
+        // and still rejects a shifted/missing/duplicate setup edge or old setup.
+        for mode in 0..4 {
+            let mut bad = scalar_publication_control_graph(true, false);
+            if mode == 3 {
+                bad.witnesses.get_mut("fixed_arena_setup").unwrap().kind =
+                    AuthenticatedDetcoreOperationKind::ValidateTemplate(23);
+            } else {
+                let setup = bad.selected["fixed_arena_setup"];
+                let caller = bad.witnesses.get_mut("fixed_native_from_native").unwrap();
+                let i = caller
+                    .edges
+                    .iter()
+                    .position(|edge| edge.target == setup)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        caller.edges.remove(i);
+                    }
+                    1 => {
+                        caller.edges.push(caller.edges[i].clone());
+                    }
+                    _ => {
+                        caller.edges[i].instruction += 1;
+                    }
+                }
+                bad.transfers
+                    .insert("fixed_native_from_native".into(), caller.edges.clone());
+            }
+            assert!(check(&bad).is_err(), "scalar setup result {mode}");
+        }
+        // Both halves authenticate independently before the family join fails.
+        for (old_role, scalar_role) in [
+            (
+                "fixed_region_publication_get",
+                "fixed_region_publication_get_opaque",
+            ),
+            (
+                "fixed_region_publication_set",
+                "fixed_region_publication_set_opaque",
+            ),
+            ("fixed_tool_heap", "fixed_tool_heap_metadata"),
+            ("fixed_tool_alloc", "fixed_tool_alloc"),
+            ("fixed_constructor_prepare", "fixed_constructor_prepare"),
+        ] {
+            let mut old = detcore_specialized_control_graph();
+            let mut scalar = scalar_publication_control_graph(true, false);
+            let witness = old.witnesses.remove(old_role).unwrap();
+            scalar.selected.insert(old_role.into(), witness.address);
+            scalar.targets.insert(old_role.into(), witness.address);
+            scalar
+                .transfers
+                .insert(old_role.into(), witness.edges.clone());
+            scalar.witnesses.insert(old_role.into(), witness);
+            assert!(
+                check(&scalar).is_err(),
+                "historical {old_role} in scalar family"
+            );
+            let mut old = detcore_specialized_control_graph();
+            let mut scalar = scalar_publication_control_graph(true, false);
+            let witness = scalar.witnesses.remove(scalar_role).unwrap();
+            old.selected.insert(scalar_role.into(), witness.address);
+            old.targets.insert(scalar_role.into(), witness.address);
+            old.transfers
+                .insert(scalar_role.into(), witness.edges.clone());
+            old.witnesses.insert(scalar_role.into(), witness);
+            assert!(
+                fixed_detcore_publication_cohort(
+                    &old.witnesses,
+                    &old.transfers,
+                    &old.selected,
+                    &old.targets
+                )
+                .is_err(),
+                "scalar {scalar_role} in historical family"
+            );
+        }
+    }
+
+    // Actual HOST86 ELF 7568cb1f4832537622bb23249cf7c19e0322470c9dcadc038b22b9a4b44f10c9.
+    // These four whole byte strings and instruction boundaries come from the retained
+    // image, independently of DETCORE_VALIDATE_TEMPLATES. The common control helper
+    // relocates only the listed operands and exercises every byte and target mutation.
+    fn scalar_publication_host_native_samples() -> &'static [ScalarPublicationSample] {
+        &[
+            (
+                "fixed_arena_backing",
+                74,
+                "4883ec180fb6055ebe230484c0740431c9eb31488d0556be23044889442410488d442410488b7c2410e862dcffff31c94885c0740f807810ff488d05787244ff480f45c848894c2408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 48, 51, 53, 57, 64, 68, 73, 78,
+                    83, 87,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                    (60, 64, "fixed_backing_object", false),
+                ],
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                75,
+                "4883ec180fb605cebc230484c0740431c0eb34488d05c6bc23044889442410488d442410488b7c2410e8d2daffff4885c074dc31c9807810ff48b80030020000600000480f44c14889442408488d442408488b4424084883c418c3",
+                &[
+                    0, 4, 11, 13, 15, 17, 19, 26, 31, 36, 41, 46, 49, 51, 53, 57, 67, 71, 76, 81,
+                    86, 90,
+                ],
+                &[
+                    (7, 11, "fixed_initializing", false),
+                    (22, 26, "fixed_region", false),
+                    (42, 46, "fixed_region_publication_get_opaque", false),
+                ],
+            ),
+            (
+                "fixed_constructor_prepare",
+                76,
+                "415741564154534883ec384989ff4989e4488d7c2428bb010000004c89fe4c89e2b901000000e895d6ffff0fb644243084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d7dfb24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e8c919010084c0743c41f6c60775664d85f6747649c7464803000000c60534fb2404004c897c2410488d442410488b7c2410e8471901004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d155c812200bf080000004c89feff15d6d82300488d3d47812200ff15f90b2400488d15fa7e2200bf080000004c89f6ff15b4d82300488d3de57e2200ff15d70b2400ff15b90b2400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 27, 30, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 215,
+                    217, 221, 222, 224, 226, 228, 229, 236, 241, 244, 250, 257, 263, 270, 275, 278,
+                    284, 291, 297,
+                ],
+                &[
+                    (39, 43, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (232, 236, "fixed_scalar_constructor_record_location", false),
+                    (246, 250, "fixed_heap_panic_misaligned", true),
+                    (253, 257, "fixed_scalar_constructor_record_location", false),
+                    (259, 263, "fixed_panic_null_reference", true),
+                    (266, 270, "fixed_scalar_publish_record_location", false),
+                    (280, 284, "fixed_heap_panic_misaligned", true),
+                    (287, 291, "fixed_scalar_publish_record_location", false),
+                    (293, 297, "fixed_panic_null_reference", true),
+                    (299, 303, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+            (
+                "fixed_generic_prepare",
+                77,
+                "415741564154534883ec384989ff4989e4488d7c24284c89fe4c89e2b902000000e86ad5ffff0fb6442430bb0100000084c00f849f00000041f6c7070f85a30000004d85ff0f84af0000004c8b7424284d89675848b9001000000060000048894c24104c89742418884424204c8d3d4dfa24044c893c244889e0488d4424104889442408488d442408488b3c24488b742408e89918010084c0743c41f6c60775664d85f6747649c7464803000000c60504fa2404004c897c2410488d442410488b7c2410e8171801004885c0740931db807810ff0f94c389d84883c4385b415c415e415fc3488d1544802200bf080000004c89feff15a6d72300488d3d2f802200ff15c90a2400488d15ca7d2200bf080000004c89f6ff1584d72300488d3db57d2200ff15a70a2400ff15890a2400",
+                &[
+                    0, 2, 4, 6, 7, 11, 14, 17, 22, 25, 28, 33, 38, 43, 48, 50, 56, 60, 66, 69, 75,
+                    80, 84, 94, 99, 104, 108, 115, 119, 122, 127, 132, 137, 141, 146, 151, 153,
+                    155, 159, 161, 164, 166, 174, 181, 186, 191, 196, 201, 204, 206, 208, 212, 215,
+                    217, 221, 222, 224, 226, 228, 229, 236, 241, 244, 250, 257, 263, 270, 275, 278,
+                    284, 291, 297,
+                ],
+                &[
+                    (34, 38, "fixed_native_from_native", false),
+                    (111, 115, "fixed_region", false),
+                    (147, 151, "fixed_region_publication_set_opaque", false),
+                    (176, 181, "fixed_initializing", false),
+                    (197, 201, "fixed_region_publication_get_opaque", false),
+                    (232, 236, "fixed_scalar_generic_record_location", false),
+                    (246, 250, "fixed_heap_panic_misaligned", true),
+                    (253, 257, "fixed_scalar_generic_record_location", false),
+                    (259, 263, "fixed_panic_null_reference", true),
+                    (266, 270, "fixed_scalar_publish_record_location", false),
+                    (280, 284, "fixed_heap_panic_misaligned", true),
+                    (287, 291, "fixed_scalar_publish_record_location", false),
+                    (293, 297, "fixed_panic_null_reference", true),
+                    (299, 303, "fixed_publication_cannot_unwind", true),
+                ],
+            ),
+        ]
+    }
+
+    fn scalar_publication_host_native_sample_vector() -> Vec<ScalarPublicationSample> {
+        let mut samples = scalar_publication_leaf_samples().to_vec();
+        samples.extend_from_slice(scalar_publication_native_samples());
+        for replacement in scalar_publication_host_native_samples() {
+            let slot = samples
+                .iter_mut()
+                .find(|sample| sample.0 == replacement.0)
+                .unwrap();
+            *slot = *replacement;
+        }
+        samples
+    }
+
+    fn scalar_publication_host_native_control_graph(
+        mutations: bool,
+    ) -> DetcorePublicationControlGraph {
+        scalar_publication_control_graph_from_samples(
+            scalar_publication_host_native_sample_vector(),
+            mutations,
+        )
+    }
+
+    #[test]
+    fn observed_scalar_host_native_publication_family() {
+        let check = |g: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, FixedImageKind::Detcore, true)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        // The shared helper first authenticates all twelve complete bodies and
+        // mutates every byte (including relocations), target, instruction census,
+        // Location byte and source filename. None is copied from the matcher.
+        let graph = scalar_publication_host_native_control_graph(true);
+        assert_eq!(graph.witnesses.len(), 12);
+        check(&graph).unwrap();
+        fixed_detcore_publication_cohort(
+            &graph.witnesses,
+            &graph.transfers,
+            &graph.selected,
+            &graph.targets,
+        )
+        .unwrap();
+        // Previously supported pinned native and ordinary compositions remain
+        // separately qualifying; the host tuple is not a replacement for them.
+        check(&scalar_publication_control_graph(true, false)).unwrap();
+        let ordinary = scalar_ordinary_bit_result_control_graph(false);
+        fixed_scalar_publication_syscall_mode(&ordinary.witnesses, FixedImageKind::Detcore, false)
+            .unwrap();
+
+        for role in graph.witnesses.keys() {
+            for mode in 0..5 {
+                let mut bad = scalar_publication_host_native_control_graph(false);
+                match mode {
+                    0 => {
+                        bad.witnesses.remove(role);
+                    }
+                    1 => {
+                        bad.selected.remove(role);
+                    }
+                    2 => {
+                        *bad.targets.get_mut(role).unwrap() += 1;
+                    }
+                    3 => {
+                        bad.transfers.remove(role);
+                    }
+                    _ => {
+                        bad.witnesses.get_mut(role).unwrap().kind =
+                            AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                    }
+                }
+                assert!(check(&bad).is_err(), "host missing/unbound {role}/{mode}");
+            }
+        }
+        for field in [
+            "fixed_region",
+            "fixed_region_ready",
+            "fixed_region_value16",
+            "fixed_initializing",
+        ] {
+            let mut bad = scalar_publication_host_native_control_graph(false);
+            *bad.targets.get_mut(field).unwrap() += 1;
+            assert!(check(&bad).is_err(), "host storage field {field}");
+        }
+
+        let mut pinned_samples = scalar_publication_leaf_samples().to_vec();
+        pinned_samples.extend_from_slice(scalar_publication_native_samples());
+        // Each half authenticates independently. Every single changed role
+        // mixed into the other complete tuple must fail at the family join.
+        for host in scalar_publication_host_native_samples() {
+            for direction in 0..2 {
+                let mut samples = if direction == 0 {
+                    pinned_samples.clone()
+                } else {
+                    scalar_publication_host_native_sample_vector()
+                };
+                let replacement = if direction == 0 {
+                    *host
+                } else {
+                    *pinned_samples
+                        .iter()
+                        .find(|sample| sample.0 == host.0)
+                        .unwrap()
+                };
+                *samples
+                    .iter_mut()
+                    .find(|sample| sample.0 == host.0)
+                    .unwrap() = replacement;
+                let bad = scalar_publication_control_graph_from_samples(samples, false);
+                assert_eq!(
+                    fixed_scalar_publication_cohort(
+                        &bad.witnesses,
+                        &bad.transfers,
+                        &bad.selected,
+                        &bad.targets,
+                        FixedImageKind::Detcore,
+                    )
+                    .unwrap_err()
+                    .to_string(),
+                    "mixed or unbound complete scalar publication family",
+                    "host mixed role {}/{direction}",
+                    host.0,
+                );
+            }
+        }
+        for callee in [
+            "fixed_region_publication_get_opaque",
+            "fixed_region_publication_set_opaque",
+            "fixed_tool_heap_metadata",
+        ] {
+            let mut bad = scalar_publication_host_native_control_graph(false);
+            bad.transfers.insert(
+                "unqualified_extra_host_caller".into(),
+                vec![ConstructorTransfer {
+                    instruction: 1,
+                    target: bad.selected[callee],
+                    local_got_slot: None,
+                }],
+            );
+            assert_eq!(
+                check(&bad).unwrap_err().to_string(),
+                "unqualified scalar helper caller",
+            );
+        }
+        // Check the actual host PCs, including the newly moved getter sites,
+        // before corrupting both private and public census vectors together.
+        for (caller, callee, pc) in [
+            (
+                "fixed_arena_backing",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_tool_heap_metadata",
+                "fixed_region_publication_get_opaque",
+                41,
+            ),
+            (
+                "fixed_native_from_native",
+                "fixed_region_publication_get_opaque",
+                188,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_get_opaque",
+                196,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_get_opaque",
+                196,
+            ),
+            (
+                "fixed_constructor_prepare",
+                "fixed_region_publication_set_opaque",
+                146,
+            ),
+            (
+                "fixed_generic_prepare",
+                "fixed_region_publication_set_opaque",
+                146,
+            ),
+            ("fixed_tool_require_owned", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_alloc", "fixed_tool_heap_metadata", 13),
+            ("fixed_tool_dealloc", "fixed_tool_heap_metadata", 4),
+            ("fixed_tool_realloc", "fixed_tool_heap_metadata", 26),
+        ] {
+            let witness = &graph.witnesses[caller];
+            let edges: Vec<_> = witness
+                .edges
+                .iter()
+                .filter(|edge| edge.target == graph.selected[callee])
+                .collect();
+            assert_eq!(edges.len(), 1, "host incoming {caller}/{callee}");
+            assert_eq!(edges[0].instruction - witness.address, pc);
+            assert_eq!(edges[0].local_got_slot, None);
+            for mode in 0..4 {
+                let mut bad = scalar_publication_host_native_control_graph(false);
+                let target = bad.selected[callee];
+                let witness = bad.witnesses.get_mut(caller).unwrap();
+                let index = witness
+                    .edges
+                    .iter()
+                    .position(|edge| edge.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        witness.edges.remove(index);
+                    }
+                    1 => {
+                        witness.edges.push(witness.edges[index].clone());
+                    }
+                    2 => {
+                        witness.edges[index].instruction += 1;
+                    }
+                    _ => {
+                        witness.edges[index].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(caller.into(), witness.edges.clone());
+                assert_eq!(
+                    check(&bad).unwrap_err().to_string(),
+                    if mode == 0 {
+                        "missing scalar helper incoming edge"
+                    } else {
+                        "extra duplicate shifted or wrong-mode scalar helper edge"
+                    },
+                    "host census {caller}/{callee}/{mode}",
+                );
+            }
+        }
+
+        // This is an independently valid ordinary raw23/template26 witness and
+        // setup/caller pair. Swap only the four host leaf/entry witnesses while
+        // keeping their exact public bindings. The observed historical HOST
+        // fixture qualifies only through the complete ordinary wrapper proof.
+        let mut wrong_mode = scalar_ordinary_bit_result_control_graph(false);
+        let mut host_mode = scalar_publication_host_native_control_graph(false);
+        for sample in scalar_publication_host_native_samples() {
+            let role = sample.0;
+            let witness = host_mode.witnesses.remove(role).unwrap();
+            wrong_mode
+                .transfers
+                .insert(role.into(), witness.edges.clone());
+            wrong_mode.selected.insert(role.into(), witness.address);
+            wrong_mode.targets.insert(role.into(), witness.address);
+            wrong_mode.witnesses.insert(role.into(), witness);
+        }
+        fixed_scalar_publication_cohort(
+            &wrong_mode.witnesses,
+            &wrong_mode.transfers,
+            &wrong_mode.selected,
+            &wrong_mode.targets,
+            FixedImageKind::Detcore,
+        )
+        .unwrap();
+        fixed_detcore_full_result_contract(
+            &wrong_mode.witnesses,
+            &wrong_mode.transfers,
+            &wrong_mode.selected,
+            &wrong_mode.targets,
+        )
+        .unwrap();
+        fixed_scalar_ordinary_bit_result(&wrong_mode.witnesses).unwrap();
+        fixed_scalar_publication_syscall_mode(
+            &wrong_mode.witnesses,
+            FixedImageKind::Detcore,
+            false,
+        )
+        .unwrap();
+        let mut no_wrapper = wrong_mode.witnesses;
+        no_wrapper.remove("fixed_scalar_syscall");
+        assert_eq!(
+            fixed_scalar_publication_syscall_mode(&no_wrapper, FixedImageKind::Detcore, false)
+                .unwrap_err()
+                .to_string(),
+            "scalar bit-result caller lacks authenticated ordinary syscall wrapper",
+        );
+        assert_eq!(
+            fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, false)
+                .unwrap_err()
+                .to_string(),
+            "scalar bit-result caller lacks authenticated ordinary syscall wrapper",
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                false,
+            )
+            .is_err()
+        );
+    }
+
+    // Independent fixture57 ELF 9cf626b49e6f83b74e1d3ff4ea54cb366bcfd8aed770104c94631c9712046f28:
+    // caller63 at 0xb1a6b0 (344B), raw26 at 0xb0d1c0 (23B), setup24 (291B).
+    // All twelve publication bodies match the existing complete scalar tuple;
+    // the caller's bit test is not evidence of native syscall wrappers.
+    fn scalar_ordinary_bit_result_control_graph(mutations: bool) -> DetcorePublicationControlGraph {
+        let mut graph = scalar_publication_control_graph(true, mutations);
+        let role = "fixed_scalar_syscall";
+        let address = graph.targets[role];
+        let mut bytes = fixed_hex("5048c70424000000004531c04531c9ff15636e130059c3");
+        let offsets = [0, 1, 9, 12, 15, 21, 22];
+        let slot = 0x300020_u64;
+        let trusted = 0x200a00_u64;
+        let displacement = i32::try_from(i128::from(slot) - i128::from(address) - 21).unwrap();
+        bytes[17..21].copy_from_slice(&displacement.to_le_bytes());
+        graph
+            .targets
+            .insert("reverie_inguest_trusted_syscall".into(), trusted);
+        let got = BTreeMap::from([(slot, trusted)]);
+        let check = |body: &[u8], got: &BTreeMap<u64, u64>| {
+            let instructions: Vec<_> = offsets
+                .iter()
+                .enumerate()
+                .map(|(i, &start)| {
+                    let end = offsets.get(i + 1).copied().unwrap_or(body.len());
+                    EncodedConstructorInstruction {
+                        address: address + start as u64,
+                        bytes: body[start..end].to_vec(),
+                    }
+                })
+                .collect();
+            fixed_detcore_qualified_operation(
+                role,
+                address,
+                (body, &instructions),
+                DetcoreRecipeBindings {
+                    targets: &graph.targets,
+                    got,
+                    readonly: &BTreeMap::new(),
+                    context: &BTreeMap::new(),
+                },
+                0,
+                false,
+            )
+        };
+        let raw = check(&bytes, &got).unwrap();
+        assert_eq!(
+            raw.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+        );
+        if mutations {
+            for i in 0..bytes.len() {
+                let mut bad = bytes.clone();
+                bad[i] ^= 1;
+                assert!(check(&bad, &got).is_err(), "ordinary wrapper byte {i}");
+            }
+            assert!(check(&bytes, &BTreeMap::new()).is_err());
+            assert!(check(&bytes, &BTreeMap::from([(slot, trusted + 1)])).is_err());
+        }
+        graph.selected.insert(role.into(), address);
+        graph.transfers.insert(role.into(), raw.edges.clone());
+        graph.witnesses.insert(role.into(), raw);
+        graph
+    }
+
+    #[test]
+    fn ordinary_fixture_bit_result_requires_the_actual_syscall_family() {
+        let check = |graph: &DetcorePublicationControlGraph| -> Result<()> {
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Detcore,
+                false,
+            )?;
+            fixed_scalar_publication_cohort(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+                FixedImageKind::Detcore,
+            )?;
+            fixed_detcore_full_result_contract(
+                &graph.witnesses,
+                &graph.transfers,
+                &graph.selected,
+                &graph.targets,
+            )
+        };
+        let graph = scalar_ordinary_bit_result_control_graph(true);
+        check(&graph).unwrap();
+        assert!(
+            fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, true,)
+                .is_err()
+        );
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &graph.witnesses,
+                FixedImageKind::Standalone,
+                false,
+            )
+            .is_err()
+        );
+        for mode in 0..8 {
+            let mut bad = scalar_ordinary_bit_result_control_graph(false);
+            let raw = bad.witnesses.get_mut("fixed_scalar_syscall").unwrap();
+            match mode {
+                0 => {
+                    raw.kind = AuthenticatedDetcoreOperationKind::NativeFixedSyscall3;
+                }
+                1 => {
+                    raw.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                }
+                2 => {
+                    raw.address += 1;
+                }
+                3 => {
+                    raw.edges.clear();
+                }
+                4 => {
+                    raw.edges.push(raw.edges[0].clone());
+                }
+                5 => {
+                    raw.edges[0].local_got_slot = None;
+                }
+                6 => {
+                    raw.role = "another wrapper".into();
+                }
+                _ => {
+                    bad.witnesses.remove("fixed_scalar_syscall");
+                }
+            }
+            assert!(check(&bad).is_err(), "ordinary wrapper witness {mode}");
+        }
+        for role in ["fixed_native_from_native", "fixed_arena_setup"] {
+            for mode in 0..5 {
+                let mut bad = scalar_ordinary_bit_result_control_graph(false);
+                let target = bad.witnesses["fixed_scalar_syscall"].address;
+                let caller = bad.witnesses.get_mut(role).unwrap();
+                let index = caller
+                    .edges
+                    .iter()
+                    .position(|e| e.target == target)
+                    .unwrap();
+                match mode {
+                    0 => {
+                        caller.edges.remove(index);
+                    }
+                    1 => {
+                        caller.edges.push(caller.edges[index].clone());
+                    }
+                    2 => {
+                        caller.edges[index].instruction += 1;
+                    }
+                    3 => {
+                        caller.edges[index].target += 1;
+                    }
+                    _ => {
+                        caller.edges[index].local_got_slot = Some(0x300020);
+                    }
+                }
+                bad.transfers.insert(role.into(), caller.edges.clone());
+                assert!(check(&bad).is_err(), "ordinary direct edge {role}/{mode}");
+            }
+        }
+    }
+
+    #[test]
+    fn observed_scalar_ordinary_publication_families() {
+        let check = |g: &DetcorePublicationControlGraph,
+                     image_kind: FixedImageKind|
+         -> Result<()> {
+            fixed_scalar_publication_syscall_mode(&g.witnesses, image_kind, false)?;
+            fixed_scalar_publication_cohort(
+                &g.witnesses,
+                &g.transfers,
+                &g.selected,
+                &g.targets,
+                image_kind,
+            )?;
+            fixed_detcore_full_result_contract(&g.witnesses, &g.transfers, &g.selected, &g.targets)
+        };
+        for image_kind in [FixedImageKind::Detcore, FixedImageKind::Standalone] {
+            let graph = scalar_publication_ordinary_control_graph(image_kind, true);
+            assert_eq!(graph.witnesses.len(), 12);
+            check(&graph, image_kind).unwrap();
+            let cohort = if image_kind == FixedImageKind::Detcore {
+                FIXED_SCALAR_ORDINARY_DETCORE_COHORT
+            } else {
+                FIXED_SCALAR_STANDALONE_COHORT
+            };
+            for &(role, _) in cohort {
+                for mode in 0..5 {
+                    let mut bad = scalar_publication_ordinary_control_graph(image_kind, false);
+                    match mode {
+                        0 => {
+                            bad.witnesses.remove(role);
+                        }
+                        1 => {
+                            bad.selected.remove(role);
+                        }
+                        2 => {
+                            *bad.targets.get_mut(role).unwrap() += 1;
+                        }
+                        3 => {
+                            bad.transfers.remove(role);
+                        }
+                        _ => {
+                            bad.witnesses.get_mut(role).unwrap().kind =
+                                AuthenticatedDetcoreOperationKind::ValidateTemplate(0);
+                        }
+                    }
+                    assert!(
+                        check(&bad, image_kind).is_err(),
+                        "ordinary unbound {role}/{mode}"
+                    );
+                }
+            }
+            for (caller, callee) in [
+                (
+                    "fixed_native_from_native",
+                    "fixed_region_publication_get_opaque",
+                ),
+                (
+                    "fixed_constructor_prepare",
+                    "fixed_region_publication_set_opaque",
+                ),
+                (
+                    "fixed_generic_prepare",
+                    "fixed_region_publication_get_opaque",
+                ),
+                ("fixed_tool_realloc", "fixed_tool_heap_metadata"),
+                ("fixed_native_from_native", "fixed_arena_setup"),
+            ] {
+                for mode in 0..4 {
+                    let mut bad = scalar_publication_ordinary_control_graph(image_kind, false);
+                    let target = bad.selected[callee];
+                    let witness = bad.witnesses.get_mut(caller).unwrap();
+                    let i = witness
+                        .edges
+                        .iter()
+                        .position(|edge| edge.target == target)
+                        .unwrap();
+                    match mode {
+                        0 => {
+                            witness.edges.remove(i);
+                        }
+                        1 => {
+                            witness.edges.push(witness.edges[i].clone());
+                        }
+                        2 => {
+                            witness.edges[i].instruction += 1;
+                        }
+                        _ => {
+                            witness.edges[i].local_got_slot = Some(0x300020);
+                        }
+                    }
+                    bad.transfers.insert(caller.into(), witness.edges.clone());
+                    assert!(
+                        check(&bad, image_kind).is_err(),
+                        "ordinary exact edge {caller}/{callee}/{mode}"
+                    );
+                }
+            }
+            for field in [
+                "fixed_region",
+                "fixed_region_ready",
+                "fixed_region_value16",
+                "fixed_initializing",
+            ] {
+                let mut bad = scalar_publication_ordinary_control_graph(image_kind, false);
+                *bad.targets.get_mut(field).unwrap() += 1;
+                assert!(check(&bad, image_kind).is_err(), "ordinary storage {field}");
+            }
+            assert!(
+                fixed_scalar_publication_syscall_mode(&graph.witnesses, image_kind, true).is_err()
+            );
+            let other_kind = if image_kind == FixedImageKind::Detcore {
+                FixedImageKind::Standalone
+            } else {
+                FixedImageKind::Detcore
+            };
+            assert!(check(&graph, other_kind).is_err());
+            // Independently authenticated old/native/other-profile bodies are
+            // still refused when exchanged into this complete ordinary tuple.
+            for control in 0..3 {
+                let other = if control == 0 {
+                    scalar_publication_control_graph(true, false)
+                } else if control == 1 {
+                    scalar_publication_ordinary_control_graph(other_kind, false)
+                } else {
+                    detcore_specialized_control_graph()
+                };
+                for &(role, _) in cohort {
+                    let Some(other_witness) = other.witnesses.get(role) else {
+                        continue;
+                    };
+                    if other_witness.kind == graph.witnesses[role].kind {
+                        continue;
+                    } // identical complete recipes are intentionally shared
+                    let mut bad = scalar_publication_ordinary_control_graph(image_kind, false);
+                    let mut other = if control == 0 {
+                        scalar_publication_control_graph(true, false)
+                    } else if control == 1 {
+                        scalar_publication_ordinary_control_graph(other_kind, false)
+                    } else {
+                        detcore_specialized_control_graph()
+                    };
+                    let witness = other.witnesses.remove(role).unwrap();
+                    bad.selected.insert(role.into(), witness.address);
+                    bad.targets.insert(role.into(), witness.address);
+                    bad.transfers.insert(role.into(), witness.edges.clone());
+                    bad.witnesses.insert(role.into(), witness);
+                    assert!(
+                        check(&bad, image_kind).is_err(),
+                        "ordinary mixed composition {control}/{role}"
+                    );
+                }
+            }
+        }
+        let native = scalar_publication_control_graph(true, false);
+        fixed_scalar_publication_syscall_mode(&native.witnesses, FixedImageKind::Detcore, true)
+            .unwrap();
+        assert!(
+            fixed_scalar_publication_syscall_mode(
+                &native.witnesses,
+                FixedImageKind::Detcore,
+                false
+            )
+            .is_err()
+        );
+    }
+
     fn detcore_specialized_control_graph() -> DetcorePublicationControlGraph {
         let samples: &[(&str, u64, usize, &str, &[usize])] = &[
             (
@@ -50081,6 +57660,153 @@ mod tests {
             &graph.targets,
         )
         .expect("the authenticated retained normal publication cohort must compose");
+    }
+
+    #[test]
+    fn current_alloc_locations_match_retained_host153_data() {
+        // Independent readonly samples from HOST153 native ELF
+        // 32bc62c4b30a8e1459058333328729517a5024f792fa5a0ee50289d10344fa20.
+        // These are the full 24B objects before their sole filename RELATIVE
+        // relocation. This test does not construct a VerifiedCompiledSources
+        // or replace the physical mapping/writer/call-operand checks.
+        // Only the measured length is relevant to these full Location objects.
+        // The context is explicitly synthetic, not original filename authority.
+        let filename = format!(
+            "/synthetic/{}/reverie-inguest/src/guest/alloc.rs",
+            "x".repeat(198)
+        )
+        .into_bytes();
+        assert_eq!(filename.len(), 244);
+        let context = BTreeMap::from([(
+            "rv:reverie-inguest/src/guest/alloc.rs".to_owned(),
+            filename.clone(),
+        )]);
+        // Exact current-source coordinate/statement checks are retained in
+        // the separate HOST153 evidence; do not add a compile-time dependency
+        // on source outside this vendorable artifact crate.
+        let span = DETCORE_VALIDATE_DATA
+            .iter()
+            .find(|spec| spec.key == "fixed_detcore_validate_fixed_tool_span_end_data")
+            .unwrap();
+        // This eighteenth row is source-bound only; HOST153 did not select it.
+        assert_eq!((span.line, span.column), (279, 16));
+        for (key, whole, old_line) in [
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_537_data",
+                "0000000000000000f400000000000000a60000002a000000",
+                177u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_550_data",
+                "0000000000000000f400000000000000a60000002a000000",
+                177u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_571_data",
+                "0000000000000000f4000000000000009500000022000000",
+                160u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_586_data",
+                "0000000000000000f400000000000000c000000019000000",
+                203u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_607_data",
+                "0000000000000000f400000000000000c000000019000000",
+                203u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_620_data",
+                "0000000000000000f400000000000000b600000029000000",
+                193u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_allocate_629_data",
+                "0000000000000000f400000000000000dd00000017000000",
+                232u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_308_data",
+                "0000000000000000f400000000000000f500000018000000",
+                256u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_321_data",
+                "0000000000000000f400000000000000f500000018000000",
+                256u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_342_data",
+                "0000000000000000f400000000000000f80000000d000000",
+                259u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_363_data",
+                "0000000000000000f400000000000000f80000000d000000",
+                259u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_376_data",
+                "0000000000000000f400000000000000fc00000011000000",
+                263u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_397_data",
+                "0000000000000000f400000000000000fc00000011000000",
+                263u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_410_data",
+                "0000000000000000f4000000000000000b01000043000000",
+                278u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_431_data",
+                "0000000000000000f4000000000000000b01000043000000",
+                278u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_444_data",
+                "0000000000000000f4000000000000000d01000040000000",
+                280u32,
+            ),
+            (
+                "fixed_detcore_validate_fixed_heap_deallocate_462_data",
+                "0000000000000000f4000000000000000d01000040000000",
+                280u32,
+            ),
+        ] {
+            let spec = DETCORE_VALIDATE_DATA
+                .iter()
+                .find(|spec| spec.key == key)
+                .unwrap();
+            let location = fixed_hex(whole);
+            assert_eq!(location.len(), 24);
+            let targets = BTreeMap::from([(format!("{key}_file"), 0x3000_u64)]);
+            let check = |bytes: &[u8]| {
+                let readonly =
+                    BTreeMap::from([(0x2000_u64, bytes.to_vec()), (0x3000_u64, filename.clone())]);
+                detcore_validate_readonly_recipe(spec, 0x2000, &targets, &readonly, &context)
+            };
+            check(&location).unwrap_or_else(|error| panic!("HOST153 {key}: {error}"));
+            for byte in 0..location.len() {
+                let mut bad = location.clone();
+                bad[byte] ^= 1;
+                assert_eq!(
+                    check(&bad).unwrap_err(),
+                    "complete Detcore readonly object differs",
+                    "{key} Location byte {byte}"
+                );
+            }
+            let mut stale = location.clone();
+            stale[16..20].copy_from_slice(&old_line.to_le_bytes());
+            assert_eq!(
+                check(&stale).unwrap_err(),
+                "complete Detcore readonly object differs",
+                "{key} stale coordinate {old_line}"
+            );
+        }
     }
 
     // Also nested in the same existing helper identity, AFTER template/data integration.

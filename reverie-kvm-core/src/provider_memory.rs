@@ -190,11 +190,34 @@ impl AddressSpace for ProviderMemory<'_> {
         length: u64,
         protection: libc::c_int,
     ) -> std::result::Result<(), MapError> {
+        // Linux applies mprotect(2) one mapping at a time and keeps what it
+        // applied when it then fails (ENOMEM at a hole, EACCES at a mapping it
+        // may not change), where this refuses the whole range first: on a
+        // refusal, the part the page states lack is recorded.
+        let refuse = |error| {
+            self.0.note_user_mapping_change(address, length);
+            Err(error)
+        };
         let Some(address) = self.0.user_range_to_guest(address, length) else {
-            return Err(MapError::Unaddressable);
+            return refuse(MapError::Unaddressable);
         };
         if !self.0.user_range_is_mapped(address, length) {
-            return Err(MapError::NotMapped);
+            return refuse(MapError::NotMapped);
+        }
+        if self.0.shares_parent_address_space()
+            && self
+                .0
+                .range_contains_retained_shared(address, length as usize)
+        {
+            // On Linux a vfork child's mprotect changes its parent's view
+            // too; this copy cannot, so the change is refused whole, as a
+            // capability failure the allocation owner publishes on unlock.
+            let _ = self
+                .0
+                .capture_shared_file_error(GuestMemory::vfork_shared_view_change(
+                    "mprotect in a vfork child",
+                ));
+            return refuse(MapError::Unsupported);
         }
         if protection & libc::PROT_EXEC != 0
             && self.0.range_contains_shared_file(address, length as usize)
@@ -208,21 +231,19 @@ impl AddressSpace for ProviderMemory<'_> {
                     operation: "mprotect",
                     reason: "executable ordinary shared-file mappings are not implemented",
                 });
-            return Err(MapError::Unsupported);
+            return refuse(MapError::Unsupported);
         }
         if protection & libc::PROT_WRITE != 0
             && !self.0.file_write_permitted(address, length as usize)
         {
-            return Err(MapError::AccessDenied);
+            return refuse(MapError::AccessDenied);
         }
-        self.0
-            .map_user_permissions(
-                address,
-                length,
-                protection != libc::PROT_NONE,
-                protection & libc::PROT_WRITE != 0,
-            )
-            .map_err(|_| MapError::Failed)
+        // The pages keep the protection as declared. The bits were validated
+        // by the caller, so they fit a byte.
+        match self.0.protect_user_range(address, length, protection as u8) {
+            Ok(()) => Ok(()),
+            Err(_) => refuse(MapError::Failed),
+        }
     }
 
     fn unmap(&self, address: u64, length: u64) -> std::result::Result<(), MapError> {

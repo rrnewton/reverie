@@ -104,8 +104,11 @@
 //!   - reverie-ptrace: the kernel keeps the parent inside the call until the
 //!     child execs or exits, so the child has registered before the parent's
 //!     call returns.
-//!   - reverie-kvm starts the child only after the parent's call has returned
-//!     to the tool, so the child registers after it.
+//!   - reverie-kvm, likewise, keeps the parent inside the call until the
+//!     child execs or exits (and the child's changes to its copy of the
+//!     parent's private memory went back), and starts the child while the
+//!     call is pending, so the child has registered before the parent's call
+//!     returns.
 //!
 //! # Adding a field
 //!
@@ -352,6 +355,27 @@ pub struct BackendCapabilities {
     /// still fail closed when the kernel's state disagrees with what the
     /// reports predict.
     pub reports_sigreturns: bool,
+
+    /// How many hardware watchpoints a guest thread can hold at once
+    /// ([`Guest::set_watchpoints`](crate::Guest::set_watchpoints), see
+    /// [`WatchSpec`](crate::WatchSpec)); 0 when the backend sets none.
+    /// Whether a hit can change a timer event is a per-thread fact,
+    /// [`Guest::watch_hits_keep_timer_events`](crate::Guest::watch_hits_keep_timer_events).
+    pub hardware_watchpoints: u8,
+
+    /// [`Guest::backtrace`](crate::Guest::backtrace) unwinds the current
+    /// guest thread's stack and returns its frames. It may still return
+    /// `None` at a particular stop, for example where the thread's registers
+    /// are unavailable. False where it never returns a backtrace, so that a
+    /// tool asked to report a stack at every event of some kind can refuse
+    /// the request before the guest starts, rather than report no stack each
+    /// time.
+    /// - reverie-ptrace (and e9patch preprocessing, which runs on it) unwinds
+    ///   remotely with libunwind;
+    /// - reverie-dbt walks the guest's frame-pointer chain in process;
+    /// - reverie-sabre returns one frame, the site of the trapped syscall;
+    /// - reverie-kvm and reverie-liteinst's in-guest runtime never return one.
+    pub provides_guest_backtraces: bool,
 }
 
 impl BackendCapabilities {
@@ -384,6 +408,9 @@ impl BackendCapabilities {
         promotes_open_files_before_native_lifecycle: false,
         // The report reads an x86-64 signal frame.
         reports_sigreturns: cfg!(target_arch = "x86_64"),
+        // DR0-DR3 on x86-64; arm64 watchpoints are not implemented yet.
+        hardware_watchpoints: if cfg!(target_arch = "x86_64") { 4 } else { 0 },
+        provides_guest_backtraces: true,
     };
 
     /// `reverie-e9patch`: the guest is rewritten ahead of time and then run
@@ -416,6 +443,8 @@ impl BackendCapabilities {
         runs_guest_code_between_injections: true,
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
+        hardware_watchpoints: 0,
+        provides_guest_backtraces: false,
         ..Self::PTRACE
     };
 
@@ -439,6 +468,7 @@ impl BackendCapabilities {
         delivers_preemption_timer_events: false,
         runs_guest_code_between_injections: true,
         reports_sigreturns: false,
+        hardware_watchpoints: 0,
         ..Self::PTRACE
     };
 
@@ -464,6 +494,7 @@ impl BackendCapabilities {
         delivers_preemption_timer_events: false,
         promotes_open_files_before_native_lifecycle: true,
         reports_sigreturns: false,
+        hardware_watchpoints: 0,
         ..Self::PTRACE
     };
 
@@ -482,8 +513,9 @@ impl BackendCapabilities {
         kernel_signal_targets_are_predictable: false,
         host_task_reads_reach_guest_threads: false,
         host_timed_signals_are_physical: false,
-        delivers_preemption_timer_events: false,
         reports_sigreturns: false,
+        hardware_watchpoints: 0,
+        provides_guest_backtraces: false,
         ..Self::PTRACE
     };
 }
@@ -527,20 +559,21 @@ mod tests {
             "runs_guest_code_between_injections": false,
             "promotes_open_files_before_native_lifecycle": false,
             "reports_sigreturns": cfg!(target_arch = "x86_64"),
+            "hardware_watchpoints": if cfg!(target_arch = "x86_64") { 4 } else { 0 },
+            "provides_guest_backtraces": true,
         })
     }
 
     /// The ptrace table with `changes` applied; every key in `changes` must
     /// already exist and must actually change, so a table cannot list a no-op.
-    /// Off x86-64 ptrace does not report sigreturns either, so there a
-    /// `reports_sigreturns: false` change is the no-op it would be, and is
-    /// dropped.
+    /// Off x86-64 ptrace neither reports sigreturns nor sets watchpoints, so
+    /// there a `reports_sigreturns: false` or `hardware_watchpoints: 0`
+    /// change is the no-op it would be, and is dropped.
     fn ptrace_with(mut changes: serde_json::Value) -> serde_json::Value {
         if !cfg!(target_arch = "x86_64") {
-            changes
-                .as_object_mut()
-                .unwrap()
-                .remove("reports_sigreturns");
+            let changes = changes.as_object_mut().unwrap();
+            changes.remove("reports_sigreturns");
+            changes.remove("hardware_watchpoints");
         }
         let mut table = ptrace_table();
         for (key, value) in changes.as_object().unwrap() {
@@ -589,6 +622,8 @@ mod tests {
                 "runs_guest_code_between_injections": true,
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
+                "hardware_watchpoints": 0,
+                "provides_guest_backtraces": false,
             }))
         );
     }
@@ -615,6 +650,7 @@ mod tests {
                 "delivers_preemption_timer_events": false,
                 "runs_guest_code_between_injections": true,
                 "reports_sigreturns": false,
+                "hardware_watchpoints": 0,
             }))
         );
     }
@@ -641,6 +677,7 @@ mod tests {
                 "delivers_preemption_timer_events": false,
                 "promotes_open_files_before_native_lifecycle": true,
                 "reports_sigreturns": false,
+                "hardware_watchpoints": 0,
             }))
         );
     }
@@ -661,8 +698,9 @@ mod tests {
                 "kernel_signal_targets_are_predictable": false,
                 "host_task_reads_reach_guest_threads": false,
                 "host_timed_signals_are_physical": false,
-                "delivers_preemption_timer_events": false,
                 "reports_sigreturns": false,
+                "hardware_watchpoints": 0,
+                "provides_guest_backtraces": false,
             }))
         );
     }

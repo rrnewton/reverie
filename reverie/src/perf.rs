@@ -286,7 +286,13 @@ impl Builder {
         attr.set_precise_ip(self.precise_ip.into());
         attr.__bindgen_anon_2.wakeup_events = 1; // generate a wakeup (overflow) after one sample event
         if self.sample_time {
-            attr.sample_type = perf::PERF_SAMPLE_TIME as u64;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "the generated constant is u32 on x86_64 and u64 on aarch64"
+            )]
+            {
+                attr.sample_type = perf::PERF_SAMPLE_TIME as u64;
+            }
             attr.set_use_clockid(1);
             attr.clockid = libc::CLOCK_MONOTONIC;
         }
@@ -878,6 +884,44 @@ impl PerfCounter {
         self.fd
     }
 
+    /// Moves the perf descriptor to the lowest free number at or above
+    /// `minimum`, close-on-exec, and closes its old number. The counter's
+    /// mapping and programming belong to the open file, not to the number, so
+    /// they are unchanged. Returns the new number. When no number at or above
+    /// `minimum` can be had (`EINVAL` past `RLIMIT_NOFILE`, `EMFILE`), the
+    /// counter keeps its old number and the error is returned. When closing
+    /// the old number fails, the counter already uses the new one and that
+    /// error is returned. Either way the old number may still be open (a
+    /// seccomp filter can report success for a close it did not run), so a
+    /// caller that must know asks.
+    ///
+    /// # Safety
+    ///
+    /// No borrow of the old number (such as one from an `InGuestRcbCounter`'s
+    /// `boundary_fd`) may be live, and no other thread may use the counter.
+    pub unsafe fn move_fd_at_least(&mut self, minimum: libc::c_int) -> Result<libc::c_int, Errno> {
+        let moved = if let Some(raw_syscall) = self.raw_syscall {
+            Errno::from_ret(unsafe {
+                raw_syscall(
+                    libc::SYS_fcntl,
+                    [
+                        self.fd as u64,
+                        libc::F_DUPFD_CLOEXEC as u64,
+                        minimum as u64,
+                        0,
+                        0,
+                        0,
+                    ],
+                ) as usize
+            })? as libc::c_int
+        } else {
+            Errno::result(unsafe { libc::fcntl(self.fd, libc::F_DUPFD_CLOEXEC, minimum) })?
+        };
+        let old = std::mem::replace(&mut self.fd, moved);
+        try_close_perf_fd(old, self.raw_syscall)?;
+        Ok(moved)
+    }
+
     /// Consume terminal resources without allowing a release error to skip the
     /// other release or panic over the run's original failure. Each resource is
     /// taken before the syscall: Linux may have released an fd even when close
@@ -1047,7 +1091,7 @@ struct SampleScan {
 
 /// Count the `PERF_RECORD_SAMPLE` records from `tail` to `head` of a ring
 /// buffer, where `read_header` reads the header of the record at a position.
-#[cfg(test)]
+#[cfg(all(test, target_arch = "x86_64"))]
 fn count_sample_records(
     tail: u64,
     head: u64,

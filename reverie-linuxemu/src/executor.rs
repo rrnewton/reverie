@@ -67,6 +67,7 @@ use crate::signal::SIGINFO_SIZE;
 use crate::signal::SS_AUTODISARM;
 #[cfg(any(test, feature = "test-support", feature = "native-test-support"))]
 use crate::signal::SharedThreadSignalState;
+use crate::signal::SignalTrapFields;
 use crate::signal::event_for_process;
 use crate::signal::event_for_thread;
 #[cfg(test)]
@@ -86,7 +87,12 @@ pub(crate) mod pipe_owner;
 
 #[cfg(test)]
 #[path = "executor/entry_host_wait_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_host_wait_tests;
+
+#[cfg(test)]
+#[path = "executor/reaper_stack_tests.rs"]
+mod reaper_stack_tests;
 
 use capture_identity::CaptureMetadata;
 use capture_identity::CaptureObjectIdentity;
@@ -118,9 +124,10 @@ use proc::*;
 mod read_write;
 use read_write::*;
 mod file;
-pub use file::*;
+use file::*;
 mod event_fds;
 use event_fds::*;
+mod facts;
 mod pidfd;
 use pidfd::*;
 mod socket;
@@ -135,6 +142,8 @@ mod xattr;
 use xattr::*;
 mod mm;
 pub(crate) use mm::*;
+mod pkeys;
+use pkeys::*;
 mod time;
 use time::*;
 mod sys_signal;
@@ -297,6 +306,20 @@ pub struct PendingSignal {
     pub domain: PendingSignalDomain,
 }
 
+/// What a signal selection that a group exit preempts decides
+/// ([`ElfExecutor::take_pending_signal_for_delivery_unless_group_exit`] and
+/// [`ElfExecutor::admit_signal_unless_group_exit`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GuardedSignal {
+    /// The signal to deliver.
+    Selected(PendingSignal),
+    /// No signal is eligible.
+    Nothing,
+    /// The task's thread group has committed this exit: the task takes no
+    /// signal, and nothing was selected or changed.
+    GroupExit(ExitStatus),
+}
+
 /// State survives the borrowed Tool future until selected delivery or terminal cleanup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ParkedSignalState {
@@ -383,6 +406,10 @@ pub struct ElfExecutor {
     exit_status: Option<ExitStatus>,
     exit_group: bool,
     clear_child_tid: Option<u64>,
+    /// The process whose address space this task shares as a vfork child
+    /// (`CLONE_VM | CLONE_VFORK`), until its window ends
+    /// ([`ElfExecutor::release_vfork_mm`]).
+    vfork_parent: Option<reverie::SignalProcessId>,
     signal_callback_nonce: u64,
     parent_death_exec: Mutex<Option<ParentDeathExecSnapshot>>,
     terminal_factory: Option<crate::terminal_cleanup::CleanupFactory>,
@@ -444,9 +471,11 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 
 #[cfg(any(test, feature = "test-support", feature = "native-test-support"))]
 pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
+    let private_copy_gate = PrivateCopyGate::default();
     LoadedStaticElf {
         entry_point: 0,
         stack_pointer: 0,
+        stack_executable: false,
         heap_base: BOOT_RESERVED_END,
         min_break: BOOT_RESERVED_END,
         program_break: BOOT_RESERVED_END,
@@ -456,10 +485,12 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         mmap_limit: BOOT_RESERVED_END + 2 * PAGE_SIZE,
         executable_path: std::path::PathBuf::from("test"),
         executable_file: None,
-        executable_image: Arc::from([]),
+        executable_image: Arc::default(),
         argv0: b"test".to_vec(),
         cwd: cwd.to_owned(),
         cwd_fd: std::fs::File::open(cwd).unwrap(),
+        files: private_copy_gate.bind(std::collections::BTreeMap::new()),
+        private_copy_gate,
         stdin: Some(std::fs::File::open("/dev/null").unwrap()),
         stdin_entry_id: Arc::new(()),
         auxv: Vec::new(),
@@ -473,13 +504,14 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         orphan_reaper_pid: Arc::new(AtomicI32::new(0)),
         is_traced_tree_root: true,
         umask: 0o022,
-        linux_personality: crate::elf::LINUX_FIXED_PERSONALITY,
+        linux_personality: libc::ADDR_NO_RANDOMIZE as u32,
         ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
         host_metadata_timestamps: false,
         tool_directory: None,
         thread_name: *b"test\0\0\0\0\0\0\0\0\0\0\0\0",
         thread_group_leader_name: Arc::new(Mutex::new(*b"test\0\0\0\0\0\0\0\0\0\0\0\0")),
         thp_disabled: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        pkey_zero_claimed: Arc::new(AtomicBool::new(false)),
         keep_capabilities: false,
         capability_effective: crate::credentials::capability_mask(),
         capability_permitted: crate::credentials::capability_mask(),
@@ -498,7 +530,6 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         task_lifecycle: Arc::new(std::sync::Mutex::new(
             crate::elf::TaskLifecycleTable::with_root(1, 1, 1, true),
         )),
-        files: std::collections::BTreeMap::new(),
         file_retirement: crate::elf::FileRetirement::default(),
         signal_refusal: None,
         pipe_owners: Default::default(),
@@ -517,10 +548,8 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         regular_create_directory_policy: initialize_regular_create_directory_policy()
             .expect("test KVM state requires a supported host open policy"),
         fdinfo_files: std::collections::BTreeMap::new(),
-        fdinfo_table: std::sync::Weak::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
         file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
-            inotify_cookies: InotifyCookieTable::default(),
             next_inode: 0x2100_0000,
             objects: std::collections::BTreeMap::new(),
             proc_transfers: std::collections::BTreeMap::new(),
@@ -541,6 +570,7 @@ pub fn test_loaded_state_for_vm(cwd: &std::path::Path) -> LoadedStaticElf {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     include!("../tests/support/executor_terminal_tests.rs");
     include!("executor/parent_death_tests.rs");
@@ -553,6 +583,9 @@ mod tests {
     include!("executor/read_zero_cancel_tests.rs");
     include!("executor/descriptor_generic_tests.rs");
     include!("executor/tool_directory_tests.rs");
+    include!("executor/host_resources_tests.rs");
+    include!("executor/script_line_tests.rs");
+    include!("executor/pkeys_tests.rs");
     use std::collections::BTreeMap;
     use std::io::Read;
     use std::io::Seek;
@@ -3073,9 +3106,8 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
-            ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
         ] {
             for flags in invalid {
@@ -3088,7 +3120,6 @@ mod tests {
 
         for path in [
             "/proc/self/maps".to_owned(),
-            format!("/proc/self/fdinfo/{ordinary}"),
             format!("/proc/self/fd/{proc_file}"),
         ] {
             for flags in invalid {
@@ -3689,9 +3720,8 @@ mod tests {
 
         for (path, dirfd, control_error) in [
             ("", libc::AT_FDCWD, libc::ENOENT),
-            ("missing", GUEST_NOFILE_LIMIT, libc::EBADF),
+            ("missing", guest_nofile_limit(), libc::EBADF),
             ("missing", libc::AT_FDCWD, libc::ENOENT),
-            ("/proc/self/fdinfo/999", libc::AT_FDCWD, libc::ENOENT),
             ("/proc/self/fd/999", libc::AT_FDCWD, libc::ENOENT),
         ] {
             for flags in early {
@@ -3708,7 +3738,6 @@ mod tests {
         }
         for path in [
             "/proc/self/maps".to_owned(),
-            format!("/proc/self/fdinfo/{ordinary}"),
             format!("/proc/self/fd/{proc_file}"),
         ] {
             for flags in early {
@@ -3761,7 +3790,7 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, state.mmap_limit as usize).unwrap();
         let fd = open_with_flags(&mut memory, &mut state, "/proc/self/maps", libc::O_PATH);
-        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
         assert!(shared.installed_matches(&state));
         // Installing over an equal state keeps every entry and its host fd.
         let host_before = host_fd(&state, fd as i32);
@@ -3807,7 +3836,7 @@ mod tests {
             .files
             .insert(fd, std::fs::File::open(&a_path).unwrap());
         state.fd_entry_ids.remove(&fd);
-        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
         let a_inode = inode(&state.files[&fd]);
         // The task now holds a different file under the same fd. Identical
         // (empty) identities must not count as the same entry: install puts
@@ -3887,7 +3916,7 @@ mod tests {
             );
         }
 
-        let shared = FileTableState::try_from_elf(&state).unwrap();
+        let mut shared = FileTableState::try_from_elf(&state).unwrap();
         assert_eq!(
             shared.synthetic_proc_nofollow_fds,
             state.synthetic_proc_nofollow_fds
@@ -4815,7 +4844,14 @@ mod tests {
                     (stat.st_size, stat.st_blocks, stat.st_uid, stat.st_gid),
                     (0, 0, 0, 0)
                 );
-                assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+                assert_eq!(
+                    [
+                        (stat.st_atime, stat.st_atime_nsec),
+                        (stat.st_mtime, stat.st_mtime_nsec),
+                        (stat.st_ctime, stat.st_ctime_nsec),
+                    ],
+                    identity.timestamps
+                );
             }
             assert_eq!(
                 syscall_result(
@@ -4855,31 +4891,6 @@ mod tests {
                 );
             }
             let actual: [u8; std::mem::size_of::<libc::statfs>()] = read_struct(&memory, OUTPUT);
-            assert_eq!(actual, sentinel);
-        }
-    }
-
-    #[test]
-    fn fstat_and_fstatfs_low_words_preserve_private_fdinfo_refusal() {
-        let mut f = FdinfoFixture::new(true);
-        let target = f.open("a", libc::O_RDONLY);
-        assert!(target >= 3);
-        let info = f.info(target);
-        let sentinel = [0xa5; std::mem::size_of::<libc::statfs>()];
-        for upper in [0, 1_u64 << 32, 1_u64 << 63, 0xffff_ffff_0000_0000] {
-            f.memory.write(PAGE_SIZE, &sentinel).unwrap();
-            for address in [PAGE_SIZE, u64::MAX] {
-                assert_eq!(
-                    f.call(
-                        libc::SYS_fstatfs,
-                        [upper | info as u64, address, 0, 0, 0, 0]
-                    ),
-                    negative_errno(libc::ENOSYS),
-                    "private fdinfo refusal precedes copyout"
-                );
-            }
-            let actual: [u8; std::mem::size_of::<libc::statfs>()] =
-                read_struct(&f.memory, PAGE_SIZE);
             assert_eq!(actual, sentinel);
         }
     }
@@ -4949,6 +4960,50 @@ mod tests {
         }
         assert!(state.proc_files.is_empty());
         assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), vec![9]);
+    }
+
+    #[test]
+    fn locks_and_fdinfo_opens_are_refused() {
+        // The executor serves neither /proc/locks nor any fdinfo: an open or
+        // a stat of one fails as one of any procfs object does. The guest
+        // descriptor below has the supervisor's number, so its fdinfo path
+        // also names the supervisor's own entry, which the guest never reads.
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let held = std::fs::File::open("/").unwrap();
+        let fd = held.as_raw_fd();
+        state.files.insert(fd, held);
+        let at_fdcwd = libc::AT_FDCWD as u64;
+        for spelling in [
+            "/proc/locks".to_owned(),
+            "/proc/self/../locks".to_owned(),
+            format!("/proc/self/fdinfo/{fd}"),
+        ] {
+            write_c_string(&mut memory, 0x100, &spelling);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_openat,
+                    [at_fdcwd, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+                ),
+                negative_errno(libc::EACCES),
+                "open {spelling}"
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [at_fdcwd, 0x100, 0x1000, 0, 0, 0],
+                ),
+                negative_errno(libc::EACCES),
+                "stat {spelling}"
+            );
+        }
+        assert!(state.proc_files.is_empty() && state.fdinfo_files.is_empty());
+        assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), vec![fd]);
     }
 
     #[test]
@@ -5062,7 +5117,60 @@ mod tests {
             assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
             assert_eq!(stat.st_size, 0);
             assert_eq!(stat.st_blocks, 0);
-            assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+            assert_eq!(
+                [
+                    (stat.st_atime, stat.st_atime_nsec),
+                    (stat.st_mtime, stat.st_mtime_nsec),
+                    (stat.st_ctime, stat.st_ctime_nsec),
+                ],
+                identity.timestamps
+            );
+            // The statx route reports the same keeper timestamps, nanoseconds
+            // included, not a seconds-only copy.
+            let statx_address = address + 0x400;
+            write_c_string(&mut memory, 0x1800, "");
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [
+                        fd as u64,
+                        0x1800,
+                        libc::AT_EMPTY_PATH as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        statx_address,
+                        0,
+                    ],
+                ),
+                None,
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result: 0,
+                    segment: None
+                }
+            ));
+            let extended: libc::statx = read_struct(&memory, statx_address);
+            assert_eq!(
+                [
+                    (
+                        extended.stx_atime.tv_sec,
+                        i64::from(extended.stx_atime.tv_nsec)
+                    ),
+                    (
+                        extended.stx_mtime.tv_sec,
+                        i64::from(extended.stx_mtime.tv_nsec)
+                    ),
+                    (
+                        extended.stx_ctime.tv_sec,
+                        i64::from(extended.stx_ctime.tv_nsec)
+                    ),
+                ],
+                identity.timestamps,
+            );
             stats.push(stat);
         }
 
@@ -7178,12 +7286,6 @@ mod tests {
                 [3, libc::F_SETLK as u64, LOCK, 0, 0, 0],
             ),
             0
-        );
-        let locks = synthetic_proc_content(&state, b"/proc/locks").unwrap();
-        assert_eq!(locks, b"1: OFDLCK ADVISORY WRITE -1 00:00:1 0 EOF\n");
-        assert_eq!(
-            synthetic_proc_content(&state, b"/proc/self/../locks").unwrap(),
-            locks
         );
         lock.l_pid = 0;
         assert_eq!(write_struct(&mut ProviderMemory(&memory), LOCK, &lock), 0);
@@ -11366,6 +11468,105 @@ mod tests {
         assert_eq!(executor.take_unsupported_refusal(), None);
     }
 
+    /// userfaultfd is refused with ENOSYS and its typed refusal
+    /// (`Userfaultfd`), which no other result carries: not a protection-key
+    /// call, which this executor answers as a CPU without protection keys
+    /// does (`executor/pkeys.rs`), not a ppoll, which it answers for a zero
+    /// timeout with or without a temporary mask (0: nothing is ready and no
+    /// signal is pending) and declines without one for a wait, and not a call
+    /// that succeeds.
+    #[test]
+    fn unimplemented_calls_carry_their_typed_refusals() {
+        const MASK: u64 = 0x100;
+        const ZERO_TIMEOUT: u64 = 0x200;
+        let root = TestDir::new();
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let refusal = |operation, diagnostic| {
+            Some(reverie::UnsupportedRefusal::new(
+                operation,
+                reverie::Errno::ENOSYS,
+                diagnostic,
+            ))
+        };
+        for (number, args, result) in [
+            (libc::SYS_pkey_alloc, [0; 6], libc::EINVAL),
+            (libc::SYS_pkey_alloc, [0; 6], libc::ENOSPC),
+            (
+                libc::SYS_pkey_mprotect,
+                [PAGE_SIZE, PAGE_SIZE, libc::PROT_READ as u64, 1, 0, 0],
+                libc::EINVAL,
+            ),
+            (libc::SYS_pkey_free, [1, 0, 0, 0, 0, 0], libc::EINVAL),
+        ] {
+            assert_eq!(
+                executor.execute(&SyscallRequest::new(number as u64, args), &memory),
+                negative_errno(result),
+                "syscall {number}"
+            );
+            assert_eq!(
+                executor.take_unsupported_refusal(),
+                None,
+                "syscall {number}"
+            );
+        }
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_userfaultfd as u64,
+                    [libc::O_CLOEXEC as u64, 0, 0, 0, 0, 0]
+                ),
+                &memory
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(
+            executor.take_unsupported_refusal(),
+            refusal(
+                reverie::UnsupportedOperation::Userfaultfd,
+                USERFAULTFD_REFUSAL
+            )
+        );
+        // No descriptors and no timeout: nothing is ready, so a masked ppoll
+        // would wait, which this executor declines without a refusal: the
+        // Tool runs masked waits as zero-timeout probes.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_ppoll as u64,
+                    [0, 0, 0, MASK, KERNEL_SIGSET_SIZE as u64, 0]
+                ),
+                &memory
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        assert_eq!(executor.take_unsupported_refusal(), None);
+        // With a zero timeout, the same ppoll answers 0, with a temporary
+        // mask as without one, as Linux's does when nothing is ready and no
+        // signal is pending.
+        for mask in [MASK, 0] {
+            assert_eq!(
+                executor.execute(
+                    &SyscallRequest::new(
+                        libc::SYS_ppoll as u64,
+                        [0, 0, ZERO_TIMEOUT, mask, KERNEL_SIGSET_SIZE as u64, 0]
+                    ),
+                    &memory
+                ),
+                0,
+                "mask {mask:#x}"
+            );
+            assert_eq!(executor.take_unsupported_refusal(), None);
+        }
+        assert!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]),
+                &memory
+            ) > 0
+        );
+        assert_eq!(executor.take_unsupported_refusal(), None);
+    }
+
     /// Every call that Detcore decides on every backend
     /// (`TOOL_DECIDED_SYSCALLS`) answers ENOSYS with the typed refusal
     /// `UnsupportedOperation::ToolDecided`. That nothing is forwarded is shown
@@ -11483,15 +11684,28 @@ mod tests {
     }
 
     /// `sched_get_priority_min` and `sched_get_priority_max` stay host
-    /// forwards, because Detcore passes them through: for SCHED_OTHER,
-    /// SCHED_FIFO, SCHED_RR and the invalid policy 999, each answer, an error
-    /// included, is the host's own, and none carries a refusal.
+    /// forwards, because Detcore passes them through: for every policy the
+    /// host accepts or rejects - SCHED_OTHER, SCHED_FIFO, SCHED_RR,
+    /// SCHED_BATCH, SCHED_IDLE, SCHED_DEADLINE, SCHED_EXT (7), the invalid
+    /// policy 999, and a policy word above 32 bits, which the kernel reads
+    /// as its low word - each answer, an error included, is the host's own,
+    /// and none carries a refusal.
     #[test]
     fn scheduling_priority_bounds_are_the_hosts() {
         let root = TestDir::new();
         let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
-        for policy in [libc::SCHED_OTHER, libc::SCHED_FIFO, libc::SCHED_RR, 999] {
+        for policy in [
+            libc::SCHED_OTHER as u64,
+            libc::SCHED_FIFO as u64,
+            libc::SCHED_RR as u64,
+            libc::SCHED_BATCH as u64,
+            libc::SCHED_IDLE as u64,
+            libc::SCHED_DEADLINE as u64,
+            7,
+            999,
+            1_u64 << 32,
+        ] {
             for number in [
                 libc::SYS_sched_get_priority_min,
                 libc::SYS_sched_get_priority_max,
@@ -11505,7 +11719,7 @@ mod tests {
                 };
                 assert_eq!(
                     executor.execute(
-                        &SyscallRequest::new(number as u64, [policy as u64, 0, 0, 0, 0, 0]),
+                        &SyscallRequest::new(number as u64, [policy, 0, 0, 0, 0, 0]),
                         &memory
                     ),
                     host,
@@ -12180,7 +12394,7 @@ mod tests {
                     (1, 0, &[0]),
                     (3, 2, &[0, libc::POLLNVAL, libc::POLLIN]),
                     (
-                        GUEST_NOFILE_LIMIT as u64 + 1,
+                        guest_nofile_limit() as u64 + 1,
                         negative_errno(libc::EINVAL),
                         &[],
                     ),
@@ -14852,6 +15066,41 @@ mod tests {
         // The host's retransmission timeout and send MSS pass through.
         assert_ne!(info.tcpi_rto, 0, "tcpi_rto should be the host's");
         assert_ne!(info.tcpi_snd_mss, 0, "tcpi_snd_mss should be the host's");
+        // Native oracle: the same host socket's own TCP_INFO. The guest
+        // answer must preserve the host bytes for every field that cannot
+        // change on an idle loopback connection between the two calls, so
+        // fabricated or zeroed counters would fail here.
+        let client_host_fd = host_fd(&executor.state, client as libc::c_int).unwrap();
+        // SAFETY: a zeroed tcp_info is a valid output buffer.
+        let mut native: libc::tcp_info = unsafe { std::mem::zeroed() };
+        let mut native_len = info_size as libc::socklen_t;
+        // SAFETY: native is writable for native_len bytes; client_host_fd is
+        // the live host socket behind the guest descriptor.
+        assert_eq!(
+            unsafe {
+                libc::getsockopt(
+                    client_host_fd,
+                    libc::IPPROTO_TCP,
+                    libc::TCP_INFO,
+                    (&mut native as *mut libc::tcp_info).cast::<libc::c_void>(),
+                    &mut native_len,
+                )
+            },
+            0
+        );
+        assert_eq!(info.tcpi_state, native.tcpi_state);
+        assert_eq!(info.tcpi_ca_state, native.tcpi_ca_state);
+        assert_eq!(info.tcpi_retransmits, native.tcpi_retransmits);
+        assert_eq!(info.tcpi_probes, native.tcpi_probes);
+        assert_eq!(info.tcpi_backoff, native.tcpi_backoff);
+        assert_eq!(info.tcpi_options, native.tcpi_options);
+        assert_eq!(info.tcpi_snd_mss, native.tcpi_snd_mss);
+        assert_eq!(info.tcpi_rcv_mss, native.tcpi_rcv_mss);
+        assert_eq!(info.tcpi_snd_cwnd, native.tcpi_snd_cwnd);
+        assert_eq!(info.tcpi_snd_ssthresh, native.tcpi_snd_ssthresh);
+        assert_eq!(info.tcpi_rcv_ssthresh, native.tcpi_rcv_ssthresh);
+        assert_eq!(info.tcpi_advmss, native.tcpi_advmss);
+        assert_eq!(info.tcpi_reordering, native.tcpi_reordering);
 
         for fd in [accepted, client, server] {
             assert_eq!(
@@ -18189,7 +18438,7 @@ mod tests {
 
         let event_host_fd = state.files.get(&(event_fd as i32)).unwrap().as_raw_fd();
         let epoll_host_fd = state.files.get(&(epoll_fd as i32)).unwrap().as_raw_fd();
-        let shared_files = FileTableState::try_from_elf(&state).unwrap();
+        let mut shared_files = FileTableState::try_from_elf(&state).unwrap();
         shared_files.install(&mut state).unwrap();
         assert_eq!(
             state.files.get(&(event_fd as i32)).unwrap().as_raw_fd(),
@@ -19219,36 +19468,6 @@ mod tests {
         direct
     }
 
-    #[test]
-    fn fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields() {
-        let raw = b"pos:\t23\nflags:\t02100002\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
-        assert_eq!(
-            read_fdinfo_bytes(raw.as_slice(), raw.len() as u64).unwrap(),
-            raw
-        );
-        assert_eq!(
-            read_fdinfo_bytes(raw.as_slice(), raw.len() as u64 - 1),
-            Err(negative_errno(libc::EOVERFLOW))
-        );
-        let actual = replace_fdinfo_flags(raw, libc::O_RDWR).unwrap();
-        let expected = b"pos:\t23\nflags:\t02\nmnt_id:\t865\nino:\t91\nlock:\t1: FLOCK ADVISORY READ 123 00:00:91 0 EOF\n";
-        assert_eq!(
-            actual, expected,
-            "only guest status/CLOEXEC flags are replaced"
-        );
-        for malformed in [
-            b"pos:\t1\n".as_slice(),
-            b"flags:\txyz\n",
-            b"flags:\t0\nflags:\t0\n",
-            b"flags:\t0",
-        ] {
-            assert_eq!(
-                replace_fdinfo_flags(malformed, 0),
-                Err(negative_errno(libc::EIO))
-            );
-        }
-    }
-
     struct FdinfoFixture {
         executor: ElfExecutor,
         memory: GuestMemory,
@@ -19280,44 +19499,198 @@ mod tests {
                 [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
             )
         }
-        fn info(&mut self, fd: i64) -> i64 {
-            let result = self.open(&format!("/proc/self/fdinfo/{fd}"), libc::O_RDONLY);
-            assert!(result >= 0, "fdinfo open: {result}");
-            result
-        }
         fn seek(&mut self, fd: i64, offset: i64, whence: i32) -> i64 {
             self.call(
                 libc::SYS_lseek,
                 [fd as u64, offset as u64, whence as u64, 0, 0, 0],
             )
         }
+        /// Up to `count` bytes read from `fd` into the second page.
         fn read(&mut self, fd: i64, count: usize) -> Vec<u8> {
             let result = self.call(
                 libc::SYS_read,
                 [fd as u64, PAGE_SIZE, count as u64, 0, 0, 0],
             );
-            assert!(result >= 0, "fdinfo read: {result}");
+            assert!(result >= 0, "read: {result}");
             let mut bytes = vec![0; result as usize];
             self.memory.read(PAGE_SIZE, &mut bytes).unwrap();
             bytes
         }
-        fn field(bytes: &[u8], name: &str, radix: u32) -> u64 {
-            let text = std::str::from_utf8(bytes).unwrap();
-            let fields: Vec<_> = text
-                .lines()
-                .filter_map(|line| line.strip_prefix(name))
-                .collect();
-            assert_eq!(fields.len(), 1, "{name}: {text}");
-            u64::from_str_radix(fields[0].trim(), radix).unwrap()
+        /// The process's name, which `/proc/self/status` renders at read
+        /// time, set with PR_SET_NAME.
+        fn set_name(&mut self, name: &str) {
+            self.memory
+                .write(0x180, &CString::new(name).unwrap().into_bytes_with_nul())
+                .unwrap();
+            assert_eq!(
+                self.call(
+                    libc::SYS_prctl,
+                    [libc::PR_SET_NAME as u64, 0x180, 0, 0, 0, 0]
+                ),
+                0
+            );
         }
-        fn check_object(&self, bytes: &[u8], fd: i64, position: u64) {
-            let file = &self.executor.state.files[&(fd as i32)];
-            let raw = std::fs::read(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).unwrap();
-            assert_eq!(Self::field(bytes, "pos:", 10), position);
-            for field in ["ino:", "mnt_id:"] {
-                assert_eq!(Self::field(bytes, field, 10), Self::field(&raw, field, 10));
-            }
-        }
+    }
+
+    /// `/proc/self/status` is one seq_file description over the process's
+    /// live cells, as Linux's is: a positioned read moves the sequence's
+    /// position and not the file's, so the next plain read starts the
+    /// sequence again and renders the cells as they are then; and a negative
+    /// position is EINVAL.
+    #[test]
+    fn process_status_pread_moves_the_sequence_and_not_the_file_position() {
+        let mut f = FdinfoFixture::new(false);
+        f.set_name("first");
+        let status = f.open("/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0, "{status}");
+        assert_eq!(
+            f.call(libc::SYS_pread64, [status as u64, PAGE_SIZE, 7, 0, 0, 0]),
+            7
+        );
+        let mut prefix = [0; 7];
+        f.memory.read(PAGE_SIZE, &mut prefix).unwrap();
+        assert_eq!(&prefix, b"Name:\tf");
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), 0);
+        f.set_name("second");
+        let fresh = f.read(status, 4096);
+        assert!(
+            fresh.starts_with(b"Name:\tsecond\n"),
+            "{}",
+            String::from_utf8_lossy(&fresh)
+        );
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), fresh.len() as i64);
+        assert_eq!(
+            f.call(
+                libc::SYS_pread64,
+                [status as u64, PAGE_SIZE, 64, u64::MAX, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), fresh.len() as i64);
+    }
+
+    /// A read of `/proc/self/status` whose copy to the caller faults part
+    /// way returns the bytes it copied and keeps the rest buffered for the
+    /// next read, which does not render the cells again, as Linux's
+    /// seq_read does. One that faults at its first byte is EFAULT and moves
+    /// nothing, a zero-length one moves nothing, and a count the architecture
+    /// cannot address is EFAULT before any copy, as vfs_read refuses it.
+    #[test]
+    fn process_status_keeps_what_a_faulting_read_did_not_copy() {
+        let mut f = FdinfoFixture::new(false);
+        f.set_name("first");
+        let status = f.open("/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0, "{status}");
+        f.memory
+            .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
+            .unwrap();
+        f.memory
+            .map_user_permissions(2 * PAGE_SIZE, PAGE_SIZE, true, false)
+            .unwrap();
+        f.memory.enable_user_access();
+        assert_eq!(
+            f.call(libc::SYS_read, [status as u64, 2 * PAGE_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), 0);
+        assert_eq!(
+            f.call(libc::SYS_read, [status as u64, 2 * PAGE_SIZE, 64, 0, 0, 0]),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), 0);
+        let original = f.read(status, 4096);
+        assert!(original.starts_with(b"Name:\tfirst\n"));
+        assert_eq!(f.seek(status, 0, libc::SEEK_SET), 0);
+        assert_eq!(
+            f.call(
+                libc::SYS_read,
+                [status as u64, 2 * PAGE_SIZE - 7, 64, 0, 0, 0]
+            ),
+            7
+        );
+        let mut prefix = [0; 7];
+        f.memory.read(2 * PAGE_SIZE - 7, &mut prefix).unwrap();
+        assert_eq!(prefix.as_slice(), &original[..7]);
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), 7);
+        f.set_name("second");
+        assert_eq!(f.read(status, 4096), original[7..]);
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), original.len() as i64);
+        let native = std::fs::File::open("/proc/self/status").unwrap();
+        let mut native_buffer = [0_u8; 256];
+        // SAFETY: the descriptor is live; the kernel refuses the count before
+        // it writes anything to the buffer.
+        let native_result = unsafe {
+            libc::syscall(
+                libc::SYS_read,
+                native.as_raw_fd(),
+                native_buffer.as_mut_ptr(),
+                usize::MAX,
+            )
+        };
+        assert_eq!(native_result, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EFAULT)
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_read,
+                [status as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            f.call(
+                libc::SYS_pread64,
+                [status as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), original.len() as i64);
+    }
+
+    /// Every descriptor of one `/proc/self/status` description shares its
+    /// position and what it buffered, as Linux's do: a duplicate goes on
+    /// where the other left off, from the same rendering; a seek through
+    /// either moves both; a seek to a position replays the sequence to it,
+    /// rendering the cells as they are at the seek; and SEEK_END is refused,
+    /// as seq_lseek refuses it.
+    #[test]
+    fn every_descriptor_of_process_status_shares_its_position_and_buffer() {
+        let mut f = FdinfoFixture::new(false);
+        f.set_name("first");
+        let status = f.open("/proc/self/status", libc::O_RDONLY);
+        assert!(status >= 0, "{status}");
+        let original = f.read(status, 4096);
+        assert_eq!(f.seek(status, 0, libc::SEEK_SET), 0);
+        assert_eq!(f.read(status, 7), original[..7]);
+        let alias = f.call(
+            libc::SYS_fcntl,
+            [status as u64, libc::F_DUPFD_CLOEXEC as u64, 20, 0, 0, 0],
+        );
+        assert_eq!(alias, 20);
+        f.set_name("second");
+        assert_eq!(f.read(alias, 4096), original[7..]);
+        assert_eq!(f.seek(status, 0, libc::SEEK_CUR), original.len() as i64);
+        assert_eq!(f.seek(alias, 0, libc::SEEK_SET), 0);
+        let fresh = f.read(status, 4096);
+        assert!(
+            fresh.starts_with(b"Name:\tsecond\n"),
+            "{}",
+            String::from_utf8_lossy(&fresh)
+        );
+        assert_eq!(f.seek(status, 3, libc::SEEK_SET), 3);
+        f.set_name("third");
+        let suffix = f.read(alias, 4096);
+        assert!(
+            suffix.starts_with(b"e:\tsecond\n"),
+            "{}",
+            String::from_utf8_lossy(&suffix)
+        );
+        assert_eq!(
+            f.seek(status, 0, libc::SEEK_END),
+            negative_errno(libc::EINVAL)
+        );
     }
 
     fn epoll_pwait2_test_interest(f: &mut FdinfoFixture, initial: u64) -> (i64, i64) {
@@ -20000,7 +20373,15 @@ mod tests {
         );
         // The parent still retains its old File and binding before dispatch sync.
         // Keeping this Arc alive rules out accidental success via Weak expiry.
-        assert!(f.executor.state.files.contains_key(&(event as i32)));
+        // (The closer's retirement replaced that File's description with the
+        // placeholder, so a guest lookup no longer finds it: `copies()`.)
+        assert!(
+            f.executor
+                .state
+                .files
+                .copies()
+                .contains_key(&(event as i32))
+        );
         assert!(Arc::ptr_eq(
             &parent_binding,
             &f.executor.state.native_poll_fds[&(event as i32)],
@@ -20097,7 +20478,9 @@ mod tests {
             .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
         let retired = [cloexec_event, cloexec_ep]
             .map(|fd| (fd, f.executor.state.native_poll_fds[&(fd as i32)].clone()));
-        f.executor.replace_after_exec(test_state(&f.root.0));
+        f.executor
+            .replace_after_exec(test_state(&f.root.0))
+            .unwrap();
         assert!(Arc::ptr_eq(&table, &f.executor.state.poll_table_id));
         assert!(Arc::ptr_eq(&domain, &f.executor.state.epoll_domain));
         for (fd, binding) in surviving {
@@ -20418,660 +20801,6 @@ mod tests {
         );
     }
 
-    fn fdinfo_content_unsupported_targets(fixture: &mut FdinfoFixture) -> Vec<(&'static str, i64)> {
-        let synthetic_proc = fixture.open("/proc/self/maps", libc::O_RDONLY);
-        fixture.memory.write(0x300, &0_u64.to_ne_bytes()).unwrap();
-        let signalfd = fixture.call(
-            libc::SYS_signalfd4,
-            [
-                u64::MAX,
-                0x300,
-                KERNEL_SIGSET_SIZE as u64,
-                libc::SFD_NONBLOCK as u64,
-                0,
-                0,
-            ],
-        );
-        let anonymous_inode = fixture.call(
-            libc::SYS_eventfd2,
-            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
-        );
-        for (label, fd) in [
-            ("synthetic-proc", synthetic_proc),
-            ("signalfd", signalfd),
-            ("anonymous-inode", anonymous_inode),
-        ] {
-            assert!(fd >= 0, "failed to create {label} target: {fd}");
-        }
-        vec![
-            ("synthetic-proc", synthetic_proc),
-            ("signalfd", signalfd),
-            ("captured-output", libc::STDOUT_FILENO as i64),
-            ("anonymous-inode", anonymous_inode),
-        ]
-    }
-
-    fn assert_fdinfo_rejection_does_not_allocate(
-        fixture: &mut FdinfoFixture,
-        path: &str,
-        flags: libc::c_int,
-        expected: libc::c_int,
-        label: &str,
-    ) {
-        let files = fixture
-            .executor
-            .state
-            .files
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        let entries = fixture
-            .executor
-            .state
-            .fd_entry_ids
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        let descriptions = fixture
-            .executor
-            .state
-            .fdinfo_files
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        assert_eq!(
-            fixture.open(path, flags),
-            negative_errno(expected),
-            "fdinfo target={label} flags={flags:#x}"
-        );
-        assert_eq!(
-            fixture
-                .executor
-                .state
-                .files
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-            files,
-            "rejected fdinfo open allocated a file for {label} flags={flags:#x}"
-        );
-        assert_eq!(
-            fixture
-                .executor
-                .state
-                .fd_entry_ids
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-            entries,
-            "rejected fdinfo open allocated an entry for {label} flags={flags:#x}"
-        );
-        assert_eq!(
-            fixture
-                .executor
-                .state
-                .fdinfo_files
-                .keys()
-                .copied()
-                .collect::<Vec<_>>(),
-            descriptions,
-            "rejected fdinfo open allocated sequence state for {label} flags={flags:#x}"
-        );
-    }
-
-    fn assert_fdinfo_content_unsupported_order(
-        fixture: &mut FdinfoFixture,
-        policy: RegularCreateDirectoryPolicy,
-    ) {
-        let (create_directory, create_directory_exclusive) = match policy {
-            RegularCreateDirectoryPolicy::EarlyEinval => (libc::EINVAL, libc::EINVAL),
-            RegularCreateDirectoryPolicy::LegacyLookup => (libc::ENOTDIR, libc::EEXIST),
-        };
-        for (label, target) in fdinfo_content_unsupported_targets(fixture) {
-            let path = format!("/proc/self/fdinfo/{target}");
-            let host = host_fd(&fixture.executor.state, target as libc::c_int).unwrap();
-            let native_path = CString::new(format!("/proc/self/fdinfo/{host}")).unwrap();
-            let mut native_stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
-            // SAFETY: native_path is NUL-terminated, and native_stat is writable.
-            assert_eq!(
-                unsafe {
-                    libc::fstatat(
-                        libc::AT_FDCWD,
-                        native_path.as_ptr(),
-                        native_stat.as_mut_ptr(),
-                        0,
-                    )
-                },
-                0,
-                "native content-unsupported fdinfo pathname must exist: {label}"
-            );
-            // SAFETY: fstatat initialized native_stat on success.
-            let native_stat = unsafe { native_stat.assume_init() };
-            fixture
-                .memory
-                .write(
-                    0x100,
-                    CString::new(path.as_str()).unwrap().as_bytes_with_nul(),
-                )
-                .unwrap();
-            assert_eq!(
-                fixture.call(
-                    libc::SYS_newfstatat,
-                    [libc::AT_FDCWD as u64, 0x100, PAGE_SIZE, 0, 0, 0],
-                ),
-                0,
-                "live content-unsupported fdinfo pathname must exist: {label}"
-            );
-            let guest_stat: libc::stat = read_struct(&fixture.memory, PAGE_SIZE);
-            assert_eq!(
-                (guest_stat.st_mode, guest_stat.st_nlink, guest_stat.st_size,),
-                (
-                    native_stat.st_mode,
-                    native_stat.st_nlink,
-                    native_stat.st_size,
-                ),
-                "fdinfo fstatat shape differs for {label}"
-            );
-            let mut native_statx = std::mem::MaybeUninit::<libc::statx>::zeroed();
-            // SAFETY: native_path is NUL-terminated, and native_statx is writable.
-            assert_eq!(
-                unsafe {
-                    libc::syscall(
-                        libc::SYS_statx,
-                        libc::AT_FDCWD,
-                        native_path.as_ptr(),
-                        0,
-                        libc::STATX_BASIC_STATS,
-                        native_statx.as_mut_ptr(),
-                    )
-                },
-                0,
-                "native content-unsupported fdinfo statx path must exist: {label}"
-            );
-            // SAFETY: statx initialized native_statx on success.
-            let native_statx = unsafe { native_statx.assume_init() };
-            assert_eq!(
-                fixture.call(
-                    libc::SYS_statx,
-                    [
-                        libc::AT_FDCWD as u64,
-                        0x100,
-                        0,
-                        libc::STATX_BASIC_STATS as u64,
-                        2 * PAGE_SIZE,
-                        0,
-                    ],
-                ),
-                0,
-                "live content-unsupported fdinfo statx path must exist: {label}"
-            );
-            let guest_statx: libc::statx = read_struct(&fixture.memory, 2 * PAGE_SIZE);
-            assert_eq!(
-                (
-                    guest_statx.stx_mode,
-                    guest_statx.stx_nlink,
-                    guest_statx.stx_size,
-                ),
-                (
-                    native_statx.stx_mode,
-                    native_statx.stx_nlink,
-                    native_statx.stx_size,
-                ),
-                "fdinfo statx shape differs for {label}"
-            );
-            let timestamp_mask = libc::STATX_ATIME | libc::STATX_MTIME | libc::STATX_CTIME;
-            assert_eq!(
-                native_statx.stx_mask & libc::STATX_BASIC_STATS,
-                libc::STATX_BASIC_STATS,
-                "native fdinfo must report the complete requested basic-stat mask for {label}"
-            );
-            assert_eq!(
-                guest_statx.stx_mask & libc::STATX_BASIC_STATS,
-                libc::STATX_BASIC_STATS & !timestamp_mask,
-                "the pre-existing synthetic statx mask truncation must remain explicit for {label}"
-            );
-            assert!(
-                fixture.executor.state.fdinfo_files.is_empty(),
-                "metadata lookup allocated fdinfo sequence state for {label}"
-            );
-            for (flags, expected) in [
-                (libc::O_RDONLY, libc::ENOSYS),
-                (libc::O_RDONLY | libc::O_DIRECTORY, libc::ENOTDIR),
-                (libc::O_WRONLY | libc::O_TMPFILE, libc::ENOTDIR),
-                (
-                    libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-                    create_directory,
-                ),
-                (
-                    libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-                    create_directory_exclusive,
-                ),
-            ] {
-                assert_fdinfo_rejection_does_not_allocate(fixture, &path, flags, expected, label);
-            }
-        }
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_unsupported_targets_use_current_policy_after_existence() {
-        let mut fixture = FdinfoFixture::new(true);
-        let policy = initialize_regular_create_directory_policy().unwrap();
-        assert_eq!(
-            fixture.executor.state.regular_create_directory_policy,
-            policy
-        );
-        assert_fdinfo_content_unsupported_order(&mut fixture, policy);
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_unsupported_targets_use_injected_legacy_policy_after_existence() {
-        let mut fixture = FdinfoFixture::new(true);
-        fixture.executor.state.regular_create_directory_policy =
-            RegularCreateDirectoryPolicy::LegacyLookup;
-        assert_fdinfo_content_unsupported_order(
-            &mut fixture,
-            RegularCreateDirectoryPolicy::LegacyLookup,
-        );
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_carrier_seals_and_pwrite_match_native() {
-        const BUFFER: u64 = 0x300;
-        let mut fixture = FdinfoFixture::new(false);
-        let target = fixture.open("a", libc::O_RDONLY);
-        assert!(target >= 0);
-        let info = fixture.info(target);
-        let alias = fixture.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
-        assert!(alias >= 0);
-
-        // Keep this expected mask independent of the production constant so a
-        // producer/validator mutation cannot weaken both sides together.
-        let required =
-            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        for fd in [info, alias] {
-            let host = fixture.executor.state.files[&(fd as libc::c_int)].as_raw_fd();
-            // SAFETY: host is a live fdinfo carrier and these fcntl commands
-            // take no third argument.
-            assert_eq!(
-                unsafe { libc::fcntl(host, libc::F_GETFL) } & libc::O_ACCMODE,
-                libc::O_RDONLY,
-                "fdinfo carrier or alias is not read-only"
-            );
-            // SAFETY: host remains live and F_GET_SEALS takes no third argument.
-            let seals = unsafe { libc::fcntl(host, libc::F_GET_SEALS) };
-            assert!(
-                seals == required || seals == (required | LINUX_F_SEAL_EXEC),
-                "unexpected fdinfo carrier seal policy: {seals:#x}"
-            );
-        }
-
-        let target_host = fixture.executor.state.files[&(target as libc::c_int)].as_raw_fd();
-        let native_path = CString::new(format!("/proc/self/fdinfo/{target_host}")).unwrap();
-        // SAFETY: native_path is NUL-terminated; successful open returns an
-        // owned descriptor that is closed below.
-        let native = unsafe { libc::open(native_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        assert!(native >= 0, "{}", std::io::Error::last_os_error());
-        fixture.memory.write(BUFFER, b"x").unwrap();
-        let bad_address = fixture.executor.state.mmap_limit + PAGE_SIZE;
-        for (label, guest_fd, native_fd, address, count, offset, expected) in [
-            ("one-byte", info, native, BUFFER, 1, 0, libc::ESPIPE),
-            ("zero-byte", info, native, BUFFER, 0, 0, libc::ESPIPE),
-            ("negative", info, native, BUFFER, 1, -1, libc::EINVAL),
-            (
-                "zero-negative",
-                info,
-                native,
-                bad_address,
-                0,
-                -1,
-                libc::EINVAL,
-            ),
-            ("bad-pointer", info, native, bad_address, 1, 0, libc::ESPIPE),
-            (
-                "invalid-fd",
-                GUEST_NOFILE_LIMIT as i64,
-                -1,
-                BUFFER,
-                1,
-                0,
-                libc::EBADF,
-            ),
-            (
-                "invalid-fd-negative",
-                GUEST_NOFILE_LIMIT as i64,
-                -1,
-                BUFFER,
-                1,
-                -1,
-                libc::EINVAL,
-            ),
-        ] {
-            let native_pointer = if address == bad_address {
-                usize::MAX as *const libc::c_void
-            } else {
-                b"x".as_ptr().cast::<libc::c_void>()
-            };
-            // Linux v6.3 and v7.1 fdinfo use single_open/seq_file, which clear
-            // FMODE_PWRITE. The global negative-offset check precedes fd and
-            // buffer validation; otherwise missing FMODE_PWRITE yields ESPIPE.
-            let native_result = unsafe {
-                libc::syscall(
-                    libc::SYS_pwrite64,
-                    native_fd as libc::c_int,
-                    native_pointer,
-                    count as libc::size_t,
-                    offset as libc::off_t,
-                )
-            };
-            assert_eq!(native_result, -1, "native fdinfo pwrite {label}");
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(expected),
-                "native fdinfo pwrite {label}"
-            );
-            assert_eq!(
-                fixture.call(
-                    libc::SYS_pwrite64,
-                    [guest_fd as u64, address, count as u64, offset as u64, 0, 0,],
-                ),
-                negative_errno(expected),
-                "guest fdinfo pwrite {label}"
-            );
-        }
-        // SAFETY: native was returned by open and is closed exactly once.
-        assert_eq!(unsafe { libc::close(native) }, 0);
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_missing_closed_and_malformed_targets_remain_enoent() {
-        let mut fixture = FdinfoFixture::new(false);
-        fixture.executor.state.regular_create_directory_policy =
-            RegularCreateDirectoryPolicy::LegacyLookup;
-        let closed = fixture.open("a", libc::O_RDONLY);
-        assert!(closed >= 0);
-        assert_eq!(
-            fixture.call(libc::SYS_close, [closed as u64, 0, 0, 0, 0, 0]),
-            0
-        );
-        for path in [
-            format!("/proc/self/fdinfo/{closed}"),
-            "/proc/self/fdinfo/999".to_owned(),
-            "/proc/self/fdinfo/not-a-fd".to_owned(),
-            "/proc/self/fdinfo/03".to_owned(),
-        ] {
-            for flags in [
-                libc::O_RDONLY,
-                libc::O_RDONLY | libc::O_DIRECTORY,
-                libc::O_WRONLY | libc::O_TMPFILE,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                libc::O_RDONLY
-                    | libc::O_CREAT
-                    | libc::O_EXCL
-                    | libc::O_DIRECTORY
-                    | libc::O_NOFOLLOW,
-            ] {
-                assert_fdinfo_rejection_does_not_allocate(
-                    &mut fixture,
-                    &path,
-                    flags,
-                    libc::ENOENT,
-                    "missing/closed/malformed",
-                );
-            }
-        }
-        for flags in [
-            libc::O_RDONLY,
-            libc::O_RDONLY | libc::O_DIRECTORY,
-            libc::O_WRONLY | libc::O_TMPFILE,
-        ] {
-            assert_fdinfo_rejection_does_not_allocate(
-                &mut fixture,
-                "/proc/self/fdinfo/",
-                flags,
-                libc::ENOENT,
-                "pre-existing fdinfo directory-path residual",
-            );
-        }
-        // A trailing slash leaves the fdinfo directory itself as the final
-        // component. Linux v6.3 fs/namei.c:3460-3469 rejects its create path
-        // with EISDIR before lookup, O_EXCL, or O_NOFOLLOW can matter.
-        for flags in [
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        ] {
-            assert_fdinfo_rejection_does_not_allocate(
-                &mut fixture,
-                "/proc/self/fdinfo/",
-                flags,
-                libc::EISDIR,
-                "fdinfo trailing slash",
-            );
-        }
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_procfd_combined_flags_precede_reopen_refusal() {
-        let mut fixture = FdinfoFixture::new(false);
-        let target = fixture.open("a", libc::O_RDONLY);
-        assert!(target >= 0);
-        let info = fixture.info(target);
-        let path = format!("/proc/self/fd/{info}");
-        for (label, flags, expected) in [
-            (
-                "directory-nofollow",
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                libc::ENOTDIR,
-            ),
-            (
-                "path-directory-nofollow",
-                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                libc::ENOTDIR,
-            ),
-            (
-                "write-nofollow",
-                libc::O_WRONLY | libc::O_NOFOLLOW,
-                libc::ELOOP,
-            ),
-            (
-                "create-exclusive-write-nofollow",
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW,
-                libc::EEXIST,
-            ),
-        ] {
-            assert_eq!(
-                fixture.open(&path, flags),
-                negative_errno(expected),
-                "fdinfo proc-fd precedence case={label}"
-            );
-        }
-        assert_eq!(
-            fixture.open(&path, libc::O_PATH | libc::O_NOFOLLOW),
-            negative_errno(libc::ELOOP)
-        );
-        assert_eq!(
-            fixture.open(&path, libc::O_RDONLY),
-            negative_errno(libc::ENOSYS),
-            "ordinary fdinfo proc-fd reopen remains unsupported"
-        );
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_tmpfile_access_precedes_directory() {
-        let mut fixture = FdinfoFixture::new(false);
-        let target = fixture.open("a", libc::O_RDONLY);
-        assert!(target >= 0);
-        let guest_path = format!("/proc/self/fdinfo/{target}");
-        let host_target = fixture.executor.state.files[&(target as i32)].as_raw_fd();
-        let native_path = format!("/proc/self/fdinfo/{host_target}");
-        for (label, flags, expected) in [
-            ("readonly", libc::O_RDONLY | libc::O_TMPFILE, libc::EINVAL),
-            (
-                "private-without-directory",
-                libc::O_WRONLY | (libc::O_TMPFILE & !libc::O_DIRECTORY),
-                libc::EINVAL,
-            ),
-            (
-                "writeonly-create",
-                libc::O_WRONLY | libc::O_TMPFILE | libc::O_CREAT,
-                libc::EINVAL,
-            ),
-            (
-                "readwrite-create",
-                libc::O_RDWR | libc::O_TMPFILE | libc::O_CREAT,
-                libc::EINVAL,
-            ),
-            (
-                "access-three-create",
-                libc::O_ACCMODE | libc::O_TMPFILE | libc::O_CREAT,
-                libc::EINVAL,
-            ),
-            (
-                "readonly-nofollow",
-                libc::O_RDONLY | libc::O_TMPFILE | libc::O_NOFOLLOW,
-                libc::EINVAL,
-            ),
-            (
-                "readonly-truncate",
-                libc::O_RDONLY | libc::O_TMPFILE | libc::O_TRUNC,
-                libc::EINVAL,
-            ),
-            (
-                "readonly-direct",
-                libc::O_RDONLY | libc::O_TMPFILE | libc::O_DIRECT,
-                libc::EINVAL,
-            ),
-            (
-                "readonly-exclusive",
-                libc::O_RDONLY | libc::O_TMPFILE | libc::O_EXCL,
-                libc::EINVAL,
-            ),
-            (
-                "readonly-all-extras",
-                libc::O_RDONLY
-                    | libc::O_TMPFILE
-                    | libc::O_NOFOLLOW
-                    | libc::O_TRUNC
-                    | libc::O_DIRECT
-                    | libc::O_EXCL,
-                libc::EINVAL,
-            ),
-            ("writeonly", libc::O_WRONLY | libc::O_TMPFILE, libc::ENOTDIR),
-            ("readwrite", libc::O_RDWR | libc::O_TMPFILE, libc::ENOTDIR),
-            (
-                "access-three",
-                libc::O_ACCMODE | libc::O_TMPFILE,
-                libc::ENOTDIR,
-            ),
-            ("path", libc::O_PATH | libc::O_TMPFILE, libc::ENOTDIR),
-            (
-                "path-all-extras",
-                libc::O_PATH
-                    | libc::O_TMPFILE
-                    | libc::O_NOFOLLOW
-                    | libc::O_TRUNC
-                    | libc::O_DIRECT
-                    | libc::O_EXCL,
-                libc::ENOTDIR,
-            ),
-        ] {
-            assert_eq!(
-                native_open_error(&native_path, flags),
-                Some(expected),
-                "native fdinfo O_TMPFILE case={label}"
-            );
-            assert_eq!(
-                fixture.open(&guest_path, flags),
-                negative_errno(expected),
-                "guest fdinfo O_TMPFILE case={label}"
-            );
-        }
-    }
-
-    #[test]
-    fn synthetic_proc_fdinfo_legacy_create_directory_is_exact() {
-        let mut fixture = FdinfoFixture::new(false);
-        fixture.executor.state.regular_create_directory_policy =
-            RegularCreateDirectoryPolicy::LegacyLookup;
-        let target = fixture.open("a", libc::O_RDONLY);
-        assert!(target >= 0);
-        let valid = format!("/proc/self/fdinfo/{target}");
-        for (flags, expected) in [
-            (
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-                libc::ENOTDIR,
-            ),
-            (
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                libc::ENOTDIR,
-            ),
-            (
-                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-                libc::EEXIST,
-            ),
-            (
-                libc::O_RDONLY
-                    | libc::O_CREAT
-                    | libc::O_EXCL
-                    | libc::O_DIRECTORY
-                    | libc::O_NOFOLLOW,
-                libc::EEXIST,
-            ),
-        ] {
-            assert_eq!(
-                fixture.open(&valid, flags),
-                negative_errno(expected),
-                "present legacy fdinfo flags={flags:#x}"
-            );
-        }
-        // Linux v6.3 fs/proc/fd.c:221-240 returns ENOENT directly for a
-        // negative fdinfo final component, before namei's create-error
-        // fallback. O_EXCL and O_NOFOLLOW therefore do not change this result.
-        for path in [
-            "/proc/self/fdinfo/999",
-            "/proc/self/fdinfo/not-a-fd",
-            "/proc/self/fdinfo/03",
-            "/proc/999/fdinfo/3",
-        ] {
-            for flags in [
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-                libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-                libc::O_RDONLY
-                    | libc::O_CREAT
-                    | libc::O_EXCL
-                    | libc::O_DIRECTORY
-                    | libc::O_NOFOLLOW,
-            ] {
-                assert_eq!(
-                    fixture.open(path, flags),
-                    negative_errno(libc::ENOENT),
-                    "missing/malformed legacy fdinfo path={path} flags={flags:#x}"
-                );
-            }
-        }
-        for flags in [
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        ] {
-            assert_eq!(
-                fixture.open("/proc/self/fdinfo/", flags),
-                negative_errno(libc::EISDIR),
-                "legacy fdinfo trailing slash flags={flags:#x}"
-            );
-        }
-        assert_eq!(
-            fixture.open("ordinary-missing", libc::O_RDONLY),
-            negative_errno(libc::ENOENT),
-            "fdinfo policy injection must not alter an ordinary missing lookup"
-        );
-    }
-
     fn inherited_pipe_stdin_fixture(capture: bool) -> (FdinfoFixture, std::fs::File) {
         let root = TestDir::new();
         for (name, data) in [("a", b"abc"), ("b", b"def"), ("c", b"ghi")] {
@@ -21355,7 +21084,7 @@ mod tests {
             authoritative
         );
         let replacement = test_state(&f.root.0);
-        f.executor.replace_after_exec(replacement);
+        f.executor.replace_after_exec(replacement).unwrap();
         assert_eq!(f.executor.state.stdin.as_ref().unwrap().as_raw_fd(), local);
         assert_eq!(
             f.executor
@@ -21380,7 +21109,9 @@ mod tests {
             ),
             0
         );
-        f.executor.replace_after_exec(test_state(&f.root.0));
+        f.executor
+            .replace_after_exec(test_state(&f.root.0))
+            .unwrap();
         assert!(f.executor.state.stdin.is_none());
         assert!(f.executor.file_table.lock().unwrap().stdin.is_none());
         assert_eq!(
@@ -21449,6 +21180,38 @@ mod tests {
             .flatten()
             .map(|&(fd, _)| fd)
             .collect()
+    }
+
+    #[test]
+    fn dup_to_self_at_the_allocation_bound_is_not_an_allocation() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        // Place a descriptor at the current bound directly: it stands for
+        // one allocated while RLIMIT_NOFILE was higher, then lowered.
+        let bound = guest_nofile_limit();
+        state
+            .files
+            .insert(bound, std::fs::File::open("/dev/null").unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup2,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            i64::from(bound)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_dup3,
+                [bound as u64, bound as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        state.files.remove(&bound);
     }
 
     #[test]
@@ -21551,7 +21314,7 @@ mod tests {
             let replacement_cwd = replacement.cwd_fd.as_raw_fd();
             let replacement_stdin = replacement.stdin.as_ref().unwrap().as_raw_fd();
             let observed = observe_unlocked_retirement(&f.executor);
-            f.executor.replace_after_exec(replacement);
+            f.executor.replace_after_exec(replacement).unwrap();
             f.executor.state.file_retirement.set_probe(None);
             let retired = observed_retired_fds(&observed);
             for fd in [
@@ -22145,7 +21908,7 @@ mod tests {
         let old_metadata = metadata(&f.executor.state);
         assert!(f.executor.state.fdinfo_files.is_empty());
         let shared = f.executor.file_table.clone();
-        let authoritative = shared.lock().unwrap();
+        let mut authoritative = shared.lock().unwrap();
         for fd in [first as i32, second as i32] {
             assert!(!Arc::ptr_eq(
                 &old_entries[&fd],
@@ -22156,7 +21919,9 @@ mod tests {
                 &authoritative.fd_object_inodes[&fd]
             ));
         }
-        let clone_source = authoritative.stdin.as_ref().unwrap();
+        // An owned duplicate of stdin's description: install below takes the
+        // table mutably.
+        let clone_source = authoritative.stdin.as_ref().unwrap().try_clone().unwrap();
         let original_limit = nofile_limit();
         let reduced = libc::rlimit {
             rlim_cur: original_limit.rlim_cur.min(256),
@@ -22239,11 +22004,15 @@ mod tests {
         }
         assert_eq!(metadata(&f.executor.state), old_metadata);
         assert!(f.executor.state.fdinfo_files.is_empty());
-        for (fd, position) in [(first, 1), (second, 2)] {
-            assert_eq!(
-                unsafe { libc::lseek(old_handles[&(fd as i32)], 0, libc::SEEK_CUR) },
-                position
-            );
+        // The sibling's closes retired the entries this snapshot copied for
+        // `first` and `second`, and with them this task's copies (the record
+        // of private copies in fd_table.rs): each handle is still this task's,
+        // as the failed install left it, but it holds the revocation
+        // placeholder instead of the closed description and its offset.
+        for fd in [first, second] {
+            let raw = old_handles[&(fd as i32)];
+            assert_ne!(flags(raw).0 & libc::O_PATH, 0);
+            assert_eq!(unsafe { libc::lseek(raw, 0, libc::SEEK_CUR) }, -1);
         }
         let epoll_host = old_handles[&(epoll as i32)];
         let event_host = old_handles[&(event as i32)];
@@ -22312,824 +22081,6 @@ mod tests {
             0
         );
         eprintln!("{COMPLETE}");
-    }
-
-    #[test]
-    fn fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        assert!(target >= 0);
-        let info = f.info(target);
-        assert_eq!(f.seek(target, 17, libc::SEEK_SET), 17);
-        assert_eq!(
-            f.call(
-                libc::SYS_fcntl,
-                [
-                    target as u64,
-                    libc::F_SETFL as u64,
-                    (libc::O_APPEND | libc::O_NONBLOCK) as u64,
-                    0,
-                    0,
-                    0
-                ]
-            ),
-            0
-        );
-        assert_eq!(
-            f.call(
-                libc::SYS_fcntl,
-                [
-                    target as u64,
-                    libc::F_SETFD as u64,
-                    libc::FD_CLOEXEC as u64,
-                    0,
-                    0,
-                    0
-                ]
-            ),
-            0
-        );
-        let bytes = f.read(info, 4096);
-        f.check_object(&bytes, target, 17);
-        let flags = FdinfoFixture::field(&bytes, "flags:", 8);
-        let expected = f.call(
-            libc::SYS_fcntl,
-            [target as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
-        ) as u64
-            | libc::O_CLOEXEC as u64;
-        assert_eq!(flags, expected);
-        let alias = f.call(libc::SYS_dup, [target as u64, 0, 0, 0, 0, 0]);
-        assert!(alias >= 0);
-        let alias_info = f.info(alias);
-        let alias_bytes = f.read(alias_info, 4096);
-        f.check_object(&alias_bytes, alias, 17);
-        assert_eq!(
-            FdinfoFixture::field(&alias_bytes, "flags:", 8),
-            flags & !(libc::O_CLOEXEC as u64)
-        );
-        // Opening fdinfo is not a snapshot. Closing and then reusing the target
-        // entry changes the very first observation of a separately opened info.
-        let replacement_info = f.info(target);
-        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
-        assert_eq!(
-            f.call(
-                libc::SYS_read,
-                [replacement_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
-            ),
-            negative_errno(libc::ENOENT)
-        );
-        assert_eq!(f.open("b", libc::O_RDWR), target);
-        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
-        let replaced = f.read(replacement_info, 4096);
-        f.check_object(&replaced, target, 23);
-        assert_ne!(
-            FdinfoFixture::field(&bytes, "ino:", 10),
-            FdinfoFixture::field(&replaced, "ino:", 10)
-        );
-    }
-
-    #[test]
-    fn fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
-        let info = f.info(target);
-        let original = f.read(info, 4096);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        let prefix = f.read(info, 7);
-        assert_eq!(prefix, original[..7]);
-        let alias = f.call(
-            libc::SYS_fcntl,
-            [info as u64, libc::F_DUPFD_CLOEXEC as u64, 20, 0, 0, 0],
-        );
-        assert_eq!(alias, 20);
-        assert_eq!(f.seek(target, 29, libc::SEEK_SET), 29);
-        assert_eq!(f.read(alias, 4096), original[7..]);
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), original.len() as i64);
-        assert_eq!(f.seek(alias, 0, libc::SEEK_SET), 0);
-        let fresh = f.read(info, 4096);
-        f.check_object(&fresh, target, 29);
-        assert_eq!(f.seek(target, 31, libc::SEEK_SET), 31);
-        assert_eq!(f.seek(info, 3, libc::SEEK_SET), 3);
-        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
-        let suffix = f.read(alias, 4096);
-        assert!(std::str::from_utf8(&suffix).unwrap().starts_with(":\t31\n"));
-        assert_eq!(
-            f.seek(info, 0, libc::SEEK_END),
-            negative_errno(libc::EINVAL)
-        );
-        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
-        assert_eq!(
-            f.seek(info, 3, libc::SEEK_SET),
-            negative_errno(libc::ENOENT)
-        );
-        assert_eq!(f.seek(alias, 0, libc::SEEK_CUR), 0);
-        assert_eq!(f.open("b", libc::O_RDWR), target);
-        assert_eq!(f.seek(target, 53, libc::SEEK_SET), 53);
-        let replaced = f.read(alias, 4096);
-        f.check_object(&replaced, target, 53);
-    }
-
-    #[test]
-    fn fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        let info = f.info(target);
-        assert_eq!(f.seek(target, 11, libc::SEEK_SET), 11);
-        assert_eq!(
-            f.call(libc::SYS_pread64, [info as u64, PAGE_SIZE, 7, 0, 0, 0]),
-            7
-        );
-        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
-        // No intervening info seek: pread changed seq read_pos but not f_pos.
-        let fresh = f.read(info, 4096);
-        f.check_object(&fresh, target, 23);
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), fresh.len() as i64);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        f.memory
-            .map_user_permissions(0, 4 * PAGE_SIZE, true, true)
-            .unwrap();
-        f.memory
-            .map_user_permissions(2 * PAGE_SIZE, PAGE_SIZE, true, false)
-            .unwrap();
-        f.memory.enable_user_access();
-        assert_eq!(
-            f.call(libc::SYS_read, [info as u64, 2 * PAGE_SIZE, 0, 0, 0, 0]),
-            0
-        );
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
-        assert_eq!(f.seek(target, 13, libc::SEEK_SET), 13);
-        let after_zero = f.read(info, 4096);
-        f.check_object(&after_zero, target, 13);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        assert_eq!(
-            f.call(libc::SYS_read, [info as u64, 2 * PAGE_SIZE, 64, 0, 0, 0]),
-            negative_errno(libc::EFAULT)
-        );
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
-        assert_eq!(f.seek(target, 31, libc::SEEK_SET), 31);
-        let original = f.read(info, 4096);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        assert_eq!(
-            f.call(
-                libc::SYS_read,
-                [info as u64, 2 * PAGE_SIZE - 7, 64, 0, 0, 0]
-            ),
-            7
-        );
-        let mut prefix = [0; 7];
-        f.memory.read(2 * PAGE_SIZE - 7, &mut prefix).unwrap();
-        assert_eq!(prefix.as_slice(), &original[..7]);
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 7);
-        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
-        assert_eq!(f.read(info, 4096), original[7..]);
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), original.len() as i64);
-        assert_eq!(
-            f.call(
-                libc::SYS_pread64,
-                [info as u64, PAGE_SIZE, 64, u64::MAX, 0, 0]
-            ),
-            negative_errno(libc::EINVAL)
-        );
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        assert_eq!(f.seek(target, 41, libc::SEEK_SET), 41);
-        let retained = f.read(info, 4096);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        assert_eq!(f.read(info, 7), retained[..7]);
-        let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
-        assert!(alias >= 0);
-        assert_eq!(f.seek(target, 47, libc::SEEK_SET), 47);
-        let native = std::fs::File::open(format!(
-            "/proc/self/fdinfo/{}",
-            f.executor.state.files[&(target as i32)].as_raw_fd()
-        ))
-        .unwrap();
-        let mut native_buffer = [0_u8; 256];
-        // Real vfs_read rejects the original overflowing interval before seq.
-        assert_eq!(
-            unsafe {
-                libc::syscall(
-                    libc::SYS_read,
-                    native.as_raw_fd(),
-                    native_buffer.as_mut_ptr(),
-                    usize::MAX,
-                )
-            },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EFAULT)
-        );
-        assert_eq!(
-            f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]),
-            negative_errno(libc::EFAULT)
-        );
-        assert_eq!(
-            f.call(
-                libc::SYS_pread64,
-                [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]
-            ),
-            negative_errno(libc::EFAULT)
-        );
-        // Even a zero-length request needs an architectural userspace pointer;
-        // an unmapped but architecture-valid zero-length pointer is accepted.
-        assert_eq!(
-            unsafe {
-                libc::syscall(
-                    libc::SYS_read,
-                    native.as_raw_fd(),
-                    u64::MAX as *mut libc::c_void,
-                    0_usize,
-                )
-            },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EFAULT)
-        );
-        assert_eq!(
-            f.call(libc::SYS_read, [alias as u64, u64::MAX, 0, 0, 0, 0]),
-            negative_errno(libc::EFAULT)
-        );
-        let unmapped = X86_64_GUEST_USER_LIMIT - PAGE_SIZE;
-        assert_eq!(
-            unsafe {
-                libc::syscall(
-                    libc::SYS_read,
-                    native.as_raw_fd(),
-                    unmapped as *mut libc::c_void,
-                    0_usize,
-                )
-            },
-            0
-        );
-        assert_eq!(
-            f.call(libc::SYS_read, [alias as u64, unmapped, 0, 0, 0, 0]),
-            0
-        );
-        assert_eq!(
-            unsafe {
-                libc::syscall(
-                    libc::SYS_pread64,
-                    native.as_raw_fd(),
-                    u64::MAX as *mut libc::c_void,
-                    0_usize,
-                    -1_i64,
-                )
-            },
-            -1
-        );
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EINVAL)
-        );
-        assert_eq!(
-            f.call(
-                libc::SYS_pread64,
-                [alias as u64, u64::MAX, 0, u64::MAX, 0, 0]
-            ),
-            negative_errno(libc::EINVAL)
-        );
-        for fd in [info, alias] {
-            assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
-        }
-        assert_eq!(f.read(alias, 4096), retained[7..]);
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        let fresh = f.read(info, 4096);
-        f.check_object(&fresh, target, 47);
-    }
-
-    #[test]
-    fn fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        let info = f.info(target);
-        let cloexec = f.call(
-            libc::SYS_fcntl,
-            [info as u64, libc::F_DUPFD_CLOEXEC as u64, 30, 0, 0, 0],
-        );
-        assert_eq!(cloexec, 30);
-        let mut child = f.executor.fork_child(2, false, false).unwrap();
-        let child_table = child.file_table.clone();
-        assert!(!Arc::ptr_eq(&child_table, &f.executor.file_table));
-        assert_eq!(
-            child.execute(
-                &SyscallRequest::new(libc::SYS_close as u64, [target as u64, 0, 0, 0, 0, 0]),
-                &f.memory
-            ),
-            0
-        );
-        f.memory.write(0x100, b"c\0").unwrap();
-        assert_eq!(
-            child.execute(
-                &SyscallRequest::new(
-                    libc::SYS_openat as u64,
-                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
-                ),
-                &f.memory
-            ),
-            target
-        );
-        assert_eq!(f.seek(target, 47, libc::SEEK_SET), 47);
-        let length = child.execute(
-            &SyscallRequest::new(
-                libc::SYS_read as u64,
-                [info as u64, PAGE_SIZE, 4096, 0, 0, 0],
-            ),
-            &f.memory,
-        );
-        assert!(length > 0);
-        let mut bytes = vec![0; length as usize];
-        f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
-        f.check_object(&bytes, target, 47);
-        let table = f.executor.file_table.clone();
-        let generation = f.executor.task_generation;
-        f.executor.replace_after_exec(test_state(&f.root.0));
-        assert!(Arc::ptr_eq(&table, &f.executor.file_table));
-        assert_eq!(f.executor.task_generation, generation);
-        assert!(f.executor.state.fdinfo_files.contains_key(&(info as i32)));
-        assert!(
-            !f.executor
-                .state
-                .fdinfo_files
-                .contains_key(&(cloexec as i32))
-        );
-        assert_eq!(
-            f.call(libc::SYS_read, [cloexec as u64, PAGE_SIZE, 1, 0, 0, 0]),
-            negative_errno(libc::EBADF)
-        );
-        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-        assert_eq!(f.seek(target, 53, libc::SEEK_SET), 53);
-        let after_exec = f.read(info, 4096);
-        f.check_object(&after_exec, target, 53);
-        assert_eq!(f.call(libc::SYS_close, [target as u64, 0, 0, 0, 0, 0]), 0);
-        assert_eq!(
-            child.execute(
-                &SyscallRequest::new(
-                    libc::SYS_lseek as u64,
-                    [info as u64, 0, libc::SEEK_SET as u64, 0, 0, 0]
-                ),
-                &f.memory
-            ),
-            0
-        );
-        assert_eq!(
-            child.execute(
-                &SyscallRequest::new(
-                    libc::SYS_read as u64,
-                    [info as u64, PAGE_SIZE, 4096, 0, 0, 0]
-                ),
-                &f.memory
-            ),
-            negative_errno(libc::ENOENT)
-        );
-    }
-
-    #[test]
-    fn fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        let leader_info = f.info(target);
-        let mut worker = f.executor.thread_child(2).unwrap();
-        f.memory
-            .write(
-                0x100,
-                format!("/proc/thread-self/fdinfo/{target}\0").as_bytes(),
-            )
-            .unwrap();
-        let worker_info = worker.execute(
-            &SyscallRequest::new(
-                libc::SYS_openat as u64,
-                [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-            ),
-            &f.memory,
-        );
-        assert!(worker_info >= 0);
-        let life = f.executor.state.task_lifecycle.clone();
-        life.lock()
-            .unwrap()
-            .remove(f.executor.state.tid, f.executor.task_generation);
-        f.executor.release_files_on_exit();
-        worker.state.regular_create_directory_policy = RegularCreateDirectoryPolicy::LegacyLookup;
-        let leader_path = format!("/proc/1/fdinfo/{target}\0");
-        f.memory.write(0x100, leader_path.as_bytes()).unwrap();
-        for flags in [
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-            libc::O_RDONLY | libc::O_CREAT | libc::O_EXCL | libc::O_DIRECTORY | libc::O_NOFOLLOW,
-        ] {
-            assert_eq!(
-                worker.execute(
-                    &SyscallRequest::new(
-                        libc::SYS_openat as u64,
-                        [libc::AT_FDCWD as u64, 0x100, flags as u64, 0, 0, 0],
-                    ),
-                    &f.memory,
-                ),
-                negative_errno(libc::ENOENT),
-                "dead fdinfo task parent must precede Legacy create errors for flags={flags:#x}"
-            );
-        }
-        for (number, args) in [
-            (
-                libc::SYS_openat,
-                [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-            ),
-            (
-                libc::SYS_newfstatat,
-                [libc::AT_FDCWD as u64, 0x100, PAGE_SIZE, 0, 0, 0],
-            ),
-            (
-                libc::SYS_statx,
-                [
-                    libc::AT_FDCWD as u64,
-                    0x100,
-                    0,
-                    libc::STATX_BASIC_STATS as u64,
-                    2 * PAGE_SIZE,
-                    0,
-                ],
-            ),
-        ] {
-            assert_eq!(
-                worker.execute(&SyscallRequest::new(number as u64, args), &f.memory),
-                negative_errno(libc::ENOENT),
-                "dead leader fdinfo pathname must not resolve for syscall {number}"
-            );
-        }
-        let worker_path = format!("/proc/thread-self/fdinfo/{target}\0");
-        f.memory.write(0x100, worker_path.as_bytes()).unwrap();
-        let live_info = worker.execute(
-            &SyscallRequest::new(
-                libc::SYS_openat as u64,
-                [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
-            ),
-            &f.memory,
-        );
-        assert!(live_info >= 0);
-        for (number, args) in [
-            (
-                libc::SYS_newfstatat,
-                [libc::AT_FDCWD as u64, 0x100, PAGE_SIZE, 0, 0, 0],
-            ),
-            (
-                libc::SYS_statx,
-                [
-                    libc::AT_FDCWD as u64,
-                    0x100,
-                    0,
-                    libc::STATX_BASIC_STATS as u64,
-                    2 * PAGE_SIZE,
-                    0,
-                ],
-            ),
-        ] {
-            assert_eq!(
-                worker.execute(&SyscallRequest::new(number as u64, args), &f.memory),
-                0,
-                "live worker fdinfo pathname must resolve for syscall {number}"
-            );
-        }
-        assert_eq!(
-            worker.execute(
-                &SyscallRequest::new(libc::SYS_close as u64, [live_info as u64, 0, 0, 0, 0, 0],),
-                &f.memory,
-            ),
-            0
-        );
-        assert_eq!(
-            worker.execute(
-                &SyscallRequest::new(
-                    libc::SYS_read as u64,
-                    [leader_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
-                ),
-                &f.memory
-            ),
-            negative_errno(libc::ENOENT)
-        );
-        assert!(
-            worker.execute(
-                &SyscallRequest::new(
-                    libc::SYS_read as u64,
-                    [worker_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
-                ),
-                &f.memory
-            ) > 0
-        );
-        // A reused numeric leader ID must not resurrect the old open description.
-        life.lock().unwrap().register(1, 1, 1, true);
-        assert_eq!(
-            worker.execute(
-                &SyscallRequest::new(
-                    libc::SYS_read as u64,
-                    [leader_info as u64, PAGE_SIZE, 4096, 0, 0, 0]
-                ),
-                &f.memory
-            ),
-            negative_errno(libc::ENOENT)
-        );
-    }
-
-    #[test]
-    fn fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts() {
-        let mut f = FdinfoFixture::new(true);
-        let source = f.open("a", libc::O_RDWR);
-        assert!(source >= 0);
-        for target in 0..=2 {
-            assert_eq!(
-                f.call(libc::SYS_dup2, [source as u64, target, 0, 0, 0, 0]),
-                target as i64
-            );
-            let info = f.info(target as i64);
-            let bytes = f.read(info, 4096);
-            f.check_object(&bytes, target as i64, 0);
-            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
-        }
-        assert_eq!(
-            f.call(libc::SYS_pipe2, [0x200, libc::O_CLOEXEC as u64, 0, 0, 0, 0]),
-            0
-        );
-        let pipe: [i32; 2] = read_struct(&f.memory, 0x200);
-        for target in 0..=2 {
-            assert_eq!(
-                f.call(libc::SYS_dup2, [pipe[0] as u64, target, 0, 0, 0, 0]),
-                target as i64
-            );
-            let info = f.info(target as i64);
-            let bytes = f.read(info, 4096);
-            f.check_object(&bytes, target as i64, 0);
-            // Pipefs may be absent from mountinfo. Preserve its real nonzero ID;
-            // the Tool's existing unlisted-order algorithm owns normalization.
-            assert_ne!(FdinfoFixture::field(&bytes, "mnt_id:", 10), 0);
-            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
-        }
-    }
-
-    #[test]
-    fn fdinfo_dispatch_preserves_supported_open_status_flags() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        for flags in [
-            libc::O_RDONLY,
-            libc::O_NOFOLLOW,
-            libc::O_SYNC,
-            libc::O_DSYNC,
-            libc::O_NOFOLLOW | libc::O_SYNC | libc::O_APPEND | libc::O_NONBLOCK,
-        ] {
-            let info = f.open(
-                &format!("/proc/self/fdinfo/{target}"),
-                flags | libc::O_CLOEXEC,
-            );
-            assert!(info >= 0);
-            let status = f.call(
-                libc::SYS_fcntl,
-                [info as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
-            );
-            let raw = CString::new(format!(
-                "/proc/self/fdinfo/{}",
-                f.executor.state.files[&(target as i32)].as_raw_fd()
-            ))
-            .unwrap();
-            let native = unsafe { libc::open(raw.as_ptr(), flags | libc::O_CLOEXEC) };
-            assert!(native >= 0);
-            let native = unsafe { std::fs::File::from_raw_fd(native) };
-            assert_eq!(
-                status,
-                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_GETFL) } as i64
-            );
-            assert_eq!(
-                f.call(
-                    libc::SYS_fcntl,
-                    [info as u64, libc::F_SETFD as u64, 0, 0, 0, 0]
-                ),
-                0
-            );
-            assert_eq!(
-                f.call(
-                    libc::SYS_fcntl,
-                    [info as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
-                ),
-                status
-            );
-            let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
-            assert!(alias >= 0);
-            assert_eq!(f.seek(target, 13, libc::SEEK_SET), 13);
-            let original = f.read(info, 4096);
-            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-            assert_eq!(f.read(info, 7), original[..7]);
-            assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
-            let requested = (status as libc::c_int ^ libc::O_NONBLOCK) | libc::O_DIRECT;
-            // Native proc fdinfo has no direct-I/O capability. The same
-            // mixed flag request must fail atomically, leaving NONBLOCK too.
-            assert_eq!(
-                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_SETFL, requested) },
-                -1
-            );
-            assert_eq!(
-                std::io::Error::last_os_error().raw_os_error(),
-                Some(libc::EINVAL)
-            );
-            assert_eq!(
-                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_GETFL) } as i64,
-                status
-            );
-            assert_eq!(
-                f.call(
-                    libc::SYS_fcntl,
-                    [
-                        alias as u64,
-                        libc::F_SETFL as u64,
-                        requested as u64,
-                        0,
-                        0,
-                        0
-                    ]
-                ),
-                negative_errno(libc::EINVAL)
-            );
-            for fd in [info, alias] {
-                assert_eq!(
-                    f.call(
-                        libc::SYS_fcntl,
-                        [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
-                    ),
-                    status
-                );
-                assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
-            }
-            assert_eq!(f.read(alias, 4096), original[7..]);
-            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
-            let after_refusal = f.read(info, 4096);
-            f.check_object(&after_refusal, target, 37);
-            assert_eq!(f.call(libc::SYS_close, [alias as u64, 0, 0, 0, 0, 0]), 0);
-            assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
-        }
-        for flag in [libc::O_PATH, libc::O_DIRECT, libc::O_NOATIME, libc::O_ASYNC] {
-            assert_eq!(
-                f.open(&format!("/proc/self/fdinfo/{target}"), flag),
-                negative_errno(libc::ENOSYS)
-            );
-        }
-    }
-
-    #[test]
-    fn fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable() {
-        let mut f = FdinfoFixture::new(true);
-        assert_eq!(
-            f.open("/proc/self/fdinfo/1", libc::O_RDONLY),
-            negative_errno(libc::ENOSYS)
-        );
-        let target = f.open("a", libc::O_RDWR);
-        let info = f.info(target);
-        let private = f.open("/proc/self/maps", libc::O_RDONLY);
-        assert!(private >= 0);
-        assert_eq!(
-            f.open(&format!("/proc/self/fdinfo/{private}"), libc::O_RDONLY),
-            negative_errno(libc::ENOSYS)
-        );
-        f.memory.write(0x300, &0_u64.to_ne_bytes()).unwrap();
-        let signal = f.call(
-            libc::SYS_signalfd4,
-            [u64::MAX, 0x300, 8, libc::SFD_NONBLOCK as u64, 0, 0],
-        );
-        assert!(signal >= 0);
-        assert_eq!(
-            f.open(&format!("/proc/self/fdinfo/{signal}"), libc::O_RDONLY),
-            negative_errno(libc::ENOSYS)
-        );
-        for (number, args) in [
-            (libc::SYS_eventfd2, [0; 6]),
-            (libc::SYS_epoll_create1, [0; 6]),
-        ] {
-            let private = f.call(number, args);
-            assert!(private >= 0);
-            assert_eq!(
-                f.open(&format!("/proc/self/fdinfo/{private}"), libc::O_RDONLY),
-                negative_errno(libc::ENOSYS)
-            );
-            assert_eq!(
-                f.call(libc::SYS_dup2, [private as u64, target as u64, 0, 0, 0, 0]),
-                target
-            );
-            assert_eq!(
-                f.call(libc::SYS_read, [info as u64, PAGE_SIZE, 4096, 0, 0, 0]),
-                negative_errno(libc::ENOSYS)
-            );
-        }
-        assert_eq!(
-            f.open("/proc/999999/fdinfo/1", libc::O_RDONLY),
-            negative_errno(libc::ENOENT)
-        );
-        assert_eq!(
-            f.open("/proc/self/fdinfo/999999", libc::O_RDONLY),
-            negative_errno(libc::ENOENT)
-        );
-        let private = std::fs::File::open(f.root.0.join("b")).unwrap();
-        // A supervisor fd is not made reachable merely because its raw number
-        // exists. Choose a duplicate beyond the guest table's current keys.
-        let raw = unsafe { libc::fcntl(private.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 1000) };
-        assert!(raw >= 1000);
-        let private = unsafe { std::fs::File::from_raw_fd(raw) };
-        assert_eq!(
-            f.open(
-                &format!("/proc/self/fdinfo/{}", private.as_raw_fd()),
-                libc::O_RDONLY
-            ),
-            negative_errno(libc::ENOENT)
-        );
-        assert!(f.open("/proc/self/environ", libc::O_RDONLY) < 0);
-    }
-
-    #[test]
-    fn fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers() {
-        let mut f = FdinfoFixture::new(false);
-        let target = f.open("a", libc::O_RDWR);
-        let info = f.info(target);
-        let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
-        assert!(alias >= 0);
-        for fd in [info, alias] {
-            f.memory
-                .write(0x100, format!("/proc/self/fd/{fd}\0").as_bytes())
-                .unwrap();
-            let count = f.call(libc::SYS_readlink, [0x100, PAGE_SIZE, 256, 0, 0, 0]);
-            assert!(count > 0);
-            let mut bytes = vec![0; count as usize];
-            f.memory.read(PAGE_SIZE, &mut bytes).unwrap();
-            assert_eq!(bytes, format!("/proc/1/fdinfo/{target}").as_bytes());
-            assert_eq!(f.call(libc::SYS_lstat, [0x100, PAGE_SIZE, 0, 0, 0, 0]), 0);
-            let link =
-                read_guest_struct::<libc::stat>(&ProviderMemory(&f.memory), PAGE_SIZE).unwrap();
-            assert_eq!(link.st_mode & libc::S_IFMT, libc::S_IFLNK);
-            assert_eq!(
-                f.call(libc::SYS_fstat, [fd as u64, PAGE_SIZE, 0, 0, 0, 0]),
-                0
-            );
-            let stat =
-                read_guest_struct::<libc::stat>(&ProviderMemory(&f.memory), PAGE_SIZE).unwrap();
-            assert_eq!(stat.st_size, 0);
-            assert_eq!(stat.st_mode & libc::S_IFMT, libc::S_IFREG);
-            assert_eq!(
-                stat.st_ino,
-                synthetic_proc_inode(format!("/proc/1/fdinfo/{target}").as_bytes())
-            );
-            assert_eq!(
-                f.call(libc::SYS_write, [fd as u64, PAGE_SIZE, 1, 0, 0, 0]),
-                negative_errno(libc::EBADF)
-            );
-            assert_eq!(
-                f.call(libc::SYS_sendfile, [target as u64, fd as u64, 0, 1, 0, 0]),
-                negative_errno(libc::ENOSYS)
-            );
-            assert_eq!(
-                f.call(
-                    libc::SYS_mmap,
-                    [
-                        0,
-                        PAGE_SIZE,
-                        libc::PROT_READ as u64,
-                        libc::MAP_PRIVATE as u64,
-                        fd as u64,
-                        0
-                    ]
-                ),
-                negative_errno(libc::ENOSYS)
-            );
-            assert_eq!(
-                f.open(&format!("/proc/self/fd/{fd}"), libc::O_RDONLY),
-                negative_errno(libc::ENOSYS)
-            );
-            let mut control = rights_control(&[fd as i32]);
-            assert_eq!(
-                translate_outgoing_control(&mut control, &f.executor.state),
-                Err(negative_errno(libc::ENOSYS))
-            );
-        }
-        let vector = libc::iovec {
-            iov_base: PAGE_SIZE as *mut libc::c_void,
-            iov_len: 64,
-        };
-        assert_eq!(
-            write_struct(&mut ProviderMemory(&f.memory), 0x200, &vector),
-            0
-        );
-        assert_eq!(
-            f.call(libc::SYS_readv, [info as u64, 0x200, 1, 0, 0, 0]),
-            negative_errno(libc::ENOSYS)
-        );
-        let path = format!("/proc/self/fdinfo/{target}");
-        f.memory
-            .write(0x100, CString::new(path).unwrap().as_bytes_with_nul())
-            .unwrap();
-        assert_eq!(f.call(libc::SYS_stat, [0x100, PAGE_SIZE, 0, 0, 0, 0]), 0);
-        let stat = read_guest_struct::<libc::stat>(&ProviderMemory(&f.memory), PAGE_SIZE).unwrap();
-        assert_eq!(stat.st_size, 0);
-        assert_eq!(
-            stat.st_ino,
-            synthetic_proc_inode(format!("/proc/1/fdinfo/{target}").as_bytes())
-        );
     }
 
     #[test]
@@ -25063,31 +24014,27 @@ mod tests {
     }
 
     /// Asserts that `fd`, a duplicate of it, and both in a forked child report
-    /// only the fixed metadata time.
-    fn assert_fixed_through_dup_and_fork(
+    /// the expected metadata times: a fixed time, or with `None` the kernel's
+    /// timestamps of the host object behind `fd`.
+    fn assert_descriptor_through_dup_and_fork(
         memory: &mut GuestMemory,
         state: &mut LoadedStaticElf,
         fd: libc::c_int,
+        fixed: Option<libc::time_t>,
         name: &str,
     ) {
-        assert_fixed_descriptor_timestamps(memory, state, fd, DETERMINISTIC_METADATA_SECONDS, name);
+        assert_descriptor_timestamps(memory, state, fd, fixed, name);
         let duplicate = syscall_result(memory, state, libc::SYS_dup, [fd as u64, 0, 0, 0, 0, 0]);
         assert!(duplicate >= 0, "{name}: dup failed: {duplicate}");
         let duplicate = duplicate as libc::c_int;
-        assert_fixed_descriptor_timestamps(
-            memory,
-            state,
-            duplicate,
-            DETERMINISTIC_METADATA_SECONDS,
-            &format!("{name} dup"),
-        );
+        assert_descriptor_timestamps(memory, state, duplicate, fixed, &format!("{name} dup"));
         let mut child = state.try_clone_for_fork(2).unwrap();
         for (fd, alias) in [(fd, "original"), (duplicate, "dup")] {
-            assert_fixed_descriptor_timestamps(
+            assert_descriptor_timestamps(
                 memory,
                 &mut child,
                 fd,
-                DETERMINISTIC_METADATA_SECONDS,
+                fixed,
                 &format!("{name} {alias} in a forked child"),
             );
         }
@@ -25167,7 +24114,7 @@ mod tests {
     }
 
     #[test]
-    fn host_metadata_timestamps_keep_signalfd_fixed_through_dup_and_fork() {
+    fn host_metadata_timestamps_keep_signalfd_on_host_times_through_dup_and_fork() {
         const SIGNAL_MASK: u64 = 0x100;
 
         let root = TestDir::new();
@@ -25191,16 +24138,43 @@ mod tests {
             ],
         );
         assert!(signal_fd >= 0, "signalfd failed: {signal_fd}");
-        assert_fixed_through_dup_and_fork(
+        // The guest sees the eventfd's own device and inode, as Linux reports
+        // them; no number is allocated here for it.
+        let signal_fd = signal_fd as libc::c_int;
+        let mut kernel = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: kernel is writable and the eventfd's host descriptor is live.
+        assert_eq!(
+            unsafe { libc::fstat(host_fd(&state, signal_fd).unwrap(), kernel.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: fstat initialized kernel on success.
+        let kernel = unsafe { kernel.assume_init() };
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [signal_fd as u64, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, 0x1000);
+        assert_eq!(
+            (stat.st_dev, stat.st_ino),
+            (kernel.st_dev, kernel.st_ino),
+            "signalfd reports the eventfd's device and inode"
+        );
+        assert_descriptor_through_dup_and_fork(
             &mut memory,
             &mut state,
             signal_fd as libc::c_int,
+            None,
             "signalfd",
         );
     }
 
     #[test]
-    fn host_metadata_timestamps_keep_self_pidfd_fixed_through_dup_and_fork() {
+    fn host_metadata_timestamps_keep_self_pidfd_on_host_times_through_dup_and_fork() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         state.host_metadata_timestamps = true;
@@ -25213,10 +24187,37 @@ mod tests {
             [pid as u64, 0, 0, 0, 0, 0],
         );
         assert!(pidfd >= 0, "pidfd_open failed: {pidfd}");
-        assert_fixed_through_dup_and_fork(
+        // The guest sees the pidfd's own device and inode, as Linux reports
+        // them; no number is allocated here for it.
+        let pidfd_guest = pidfd as libc::c_int;
+        let mut kernel = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: kernel is writable and the pidfd's host descriptor is live.
+        assert_eq!(
+            unsafe { libc::fstat(host_fd(&state, pidfd_guest).unwrap(), kernel.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: fstat initialized kernel on success.
+        let kernel = unsafe { kernel.assume_init() };
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [pidfd_guest as u64, 0x1000, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, 0x1000);
+        assert_eq!(
+            (stat.st_dev, stat.st_ino),
+            (kernel.st_dev, kernel.st_ino),
+            "self pidfd reports the pidfd's device and inode"
+        );
+        assert_descriptor_through_dup_and_fork(
             &mut memory,
             &mut state,
             pidfd as libc::c_int,
+            None,
             "self pidfd",
         );
     }
@@ -25437,13 +24438,12 @@ mod tests {
         }
     }
 
-    /// Only the backend's own pidfd, which names the supervisor process that
-    /// holds every guest process of the run, reports the fixed time. A pidfd
-    /// for another host process received from outside the run is a real host
-    /// object and keeps its host timestamps. The backend's pidfd keeps the
-    /// fixed time when one guest socket passes it to another.
+    /// Every pidfd is a real host object and keeps its host timestamps: one
+    /// the backend made for the supervisor process, including when one guest
+    /// socket passes it to another, and one for another host process received
+    /// from outside the run alike.
     #[test]
-    fn host_metadata_timestamps_keep_host_times_for_an_imported_native_pidfd() {
+    fn host_metadata_timestamps_keep_host_times_for_pidfds() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         state.host_metadata_timestamps = true;
@@ -25466,11 +24466,11 @@ mod tests {
             receive_guest_rights(&mut memory, &mut state, receiver, RIGHTS_CONTROL_CAPACITY);
         assert_eq!(result, 1);
         assert_eq!(passed.len(), 1);
-        assert_fixed_descriptor_timestamps(
+        assert_descriptor_timestamps(
             &mut memory,
             &mut state,
             passed[0],
-            DETERMINISTIC_METADATA_SECONDS,
+            None,
             "the backend's pidfd passed between guest sockets",
         );
 
@@ -25485,37 +24485,6 @@ mod tests {
         assert!(native >= 0, "native pidfd_open failed");
         // SAFETY: successful pidfd_open transfers descriptor ownership to File.
         let native = unsafe { std::fs::File::from_raw_fd(native) };
-        // A kernel without pidfs compares the fdinfo Pid lines instead of
-        // inodes; both name a live process visible to this procfs, and differ.
-        let own_host = host_fd(&state, own as libc::c_int).unwrap();
-        let (native_pid, own_pid) = (
-            pidfd_fdinfo_pid(native.as_raw_fd()),
-            pidfd_fdinfo_pid(own_host),
-        );
-        assert!(
-            native_pid.is_some_and(|pid| pid > 0)
-                && own_pid.is_some_and(|pid| pid > 0)
-                && native_pid != own_pid,
-            "fdinfo Pid lines: native {native_pid:?}, own {own_pid:?}"
-        );
-        // pidfd_open recorded the supervisor's signature. Both comparison
-        // paths tell the two processes apart, the fdinfo path included on a
-        // kernel with pidfs, and a pidfd whose value cannot be read counts as
-        // the supervisor's.
-        let own_signature = pidfd_signature(own_host).unwrap();
-        assert_eq!(recorded_self_pidfd_signature(), Some(own_signature));
-        assert_ne!(pidfd_signature(native.as_raw_fd()).unwrap(), own_signature);
-        for signature in [own_signature, PidfdSignature::Fdinfo(own_pid.unwrap())] {
-            assert!(
-                pidfd_matches_signature(own_host, signature),
-                "{signature:?}"
-            );
-            assert!(
-                !pidfd_matches_signature(native.as_raw_fd(), signature),
-                "{signature:?}"
-            );
-            assert!(pidfd_matches_signature(-1, signature), "{signature:?}");
-        }
         let (outside, inside) = std::os::unix::net::UnixDatagram::pair().unwrap();
         let inside = insert_file_with_flags(
             &mut state,
@@ -25694,12 +24663,13 @@ mod tests {
         None
     }
 
-    /// The backend's own pidfd reports the fixed time when the supervisor has
-    /// no descriptor left, as after a guest's shared mappings have pinned
-    /// every descriptor number: recognizing it allocates no descriptor.
+    /// The backend's own pidfd reports its kernel timestamps when the
+    /// supervisor has no descriptor left, as after a guest's shared mappings
+    /// have pinned every descriptor number: no classification runs on it, so
+    /// nothing needs a descriptor to recognize it.
     #[test]
-    fn host_metadata_timestamps_keep_self_pidfd_fixed_when_descriptors_run_out() {
-        const TEST: &str = "executor::tests::host_metadata_timestamps_keep_self_pidfd_fixed_when_descriptors_run_out";
+    fn host_metadata_timestamps_keep_self_pidfd_on_host_times_when_descriptors_run_out() {
+        const TEST: &str = "executor::tests::host_metadata_timestamps_keep_self_pidfd_on_host_times_when_descriptors_run_out";
         const EMPTY_ADDRESS: u64 = 0x2c0;
         const STAT_ADDRESS: u64 = 0x1000;
         const STATX_ADDRESS: u64 = 0x1200;
@@ -25720,6 +24690,21 @@ mod tests {
             [pid as u64, 0, 0, 0, 0, 0],
         );
         assert!(pidfd >= 0, "pidfd_open failed: {pidfd}");
+        let pidfd = pidfd as libc::c_int;
+        let mut kernel = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: kernel is writable and the pidfd's host descriptor is live.
+        assert_eq!(
+            unsafe { libc::fstat(host_fd(&state, pidfd).unwrap(), kernel.as_mut_ptr()) },
+            0
+        );
+        // SAFETY: fstat initialized kernel on success.
+        let kernel = unsafe { kernel.assume_init() };
+        let host_times = [
+            (kernel.st_atime, kernel.st_atime_nsec),
+            (kernel.st_mtime, kernel.st_mtime_nsec),
+            (kernel.st_ctime, kernel.st_ctime_nsec),
+        ];
+        assert_ne!(host_times, [(DETERMINISTIC_METADATA_SECONDS, 0); 3]);
         let (exhausted, observed) = with_full_descriptor_table(|| {
             let probe = descriptor_allocation_errno();
             let fstat = syscall_result(
@@ -25755,16 +24740,16 @@ mod tests {
                 (stat.st_mtime, stat.st_mtime_nsec),
                 (stat.st_ctime, stat.st_ctime_nsec),
             ],
-            [(DETERMINISTIC_METADATA_SECONDS, 0); 3],
+            host_times,
             "fstat of the self pidfd with no descriptor left"
         );
         assert_eq!(
             [
-                (statx.stx_atime.tv_sec, statx.stx_atime.tv_nsec),
-                (statx.stx_mtime.tv_sec, statx.stx_mtime.tv_nsec),
-                (statx.stx_ctime.tv_sec, statx.stx_ctime.tv_nsec),
+                (statx.stx_atime.tv_sec, i64::from(statx.stx_atime.tv_nsec)),
+                (statx.stx_mtime.tv_sec, i64::from(statx.stx_mtime.tv_nsec)),
+                (statx.stx_ctime.tv_sec, i64::from(statx.stx_ctime.tv_nsec)),
             ],
-            [(DETERMINISTIC_METADATA_SECONDS, 0); 3],
+            host_times,
             "statx of the self pidfd with no descriptor left"
         );
         eprintln!("{DESCRIPTOR_EXHAUSTION_COMPLETE}");
@@ -28467,8 +27452,8 @@ mod tests {
         memory.write(READ_ZERO_BUFFER, &[0x5a; 16]).unwrap();
         for address in READ_ZERO_ADDRESSES {
             // Live process seq reads admit a zero-length userspace interval
-            // without touching a page, like the fdinfo control. The route
-            // must preserve position and all canaries.
+            // without touching a page. The route must preserve position and
+            // all canaries.
             let expected_result = if address >= 0x8000_0000_0000_0000 {
                 negative_errno(libc::EFAULT)
             } else {
@@ -28510,47 +27495,6 @@ mod tests {
                 .as_slice(),
             expected
         );
-    }
-
-    #[test]
-    fn read_zero_count_fdinfo_preserves_live_sequence_instead_of_reading_carrier() {
-        let mut f = FdinfoFixture::new(false);
-        f.memory = read_zero_memory();
-        let target = f.open("a", libc::O_RDWR);
-        assert_eq!(f.seek(target, 23, libc::SEEK_SET), 23);
-        let info = f.info(target);
-        f.memory.write(READ_ZERO_BUFFER, &[0x5a; 16]).unwrap();
-        for address in READ_ZERO_ADDRESSES {
-            assert_eq!(
-                f.call(
-                    libc::SYS_read,
-                    [READ_ZERO_HIGH_FD | info as u64, address, 0, 0, 0, 0],
-                ),
-                if address >= 0x8000_0000_0000_0000 {
-                    negative_errno(libc::EFAULT)
-                } else {
-                    0
-                },
-                "fdinfo address={address:#x}"
-            );
-            assert_read_zero_canaries(&f.memory);
-            assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 0);
-            assert_eq!(f.seek(target, 0, libc::SEEK_CUR), 23);
-        }
-        assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
-        assert_eq!(
-            f.call(libc::SYS_read, [info as u64, READ_ZERO_BUFFER, 8, 0, 0, 0]),
-            8
-        );
-        assert_eq!(
-            read_guest_bytes::<8>(&ProviderMemory(&f.memory), READ_ZERO_BUFFER).unwrap(),
-            *b"pos:\t37\n"
-        );
-        assert_eq!(
-            read_guest_bytes::<8>(&ProviderMemory(&f.memory), READ_ZERO_BUFFER + 8).unwrap(),
-            [0x5a; 8]
-        );
-        assert_eq!(f.seek(info, 0, libc::SEEK_CUR), 8);
     }
 
     #[test]
@@ -32704,7 +31648,7 @@ mod tests {
             .expect("the admitted signal is selected under the temporary mask");
         assert_eq!(pending.event.signal(), libc::SIGUSR1);
         let action = executor.signal_action(libc::SIGUSR1);
-        executor.enter_signal_handler(pending, action, false);
+        executor.enter_signal_handler(pending, action);
         {
             let thread_signals = executor.state.thread_signals.lock();
             assert_eq!(
@@ -32852,6 +31796,166 @@ mod tests {
         assert_eq!(thread_signals.blocked, temporary);
         assert_eq!(thread_signals.saved_sigmask, Some(own));
         assert!(thread_signals.pending.contains(libc::SIGUSR1));
+    }
+
+    /// A zero-timeout ppoll with a temporary mask that finds nothing ready
+    /// answers as Linux's do_poll does after its one sample: 0 while the mask
+    /// blocks every pending signal, and, where it lets a pending caught signal
+    /// in, EINTR with the temporary mask installed and the thread's own saved,
+    /// so the signal is delivered under the temporary mask, as for pselect6.
+    #[test]
+    fn masked_ppoll_probe_delivers_under_its_temporary_mask() {
+        const TIMEOUT: u64 = 0x100;
+        const MASK: u64 = 0x180;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (pid, tid) = (state.pid, state.tid);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let own = test_sigset(&[libc::SIGUSR1]);
+        state.thread_signals.lock().blocked = own;
+        test_catch_signal(&state, libc::SIGUSR1);
+        assert_eq!(
+            write_struct(
+                &mut ProviderMemory(&memory),
+                TIMEOUT,
+                &libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0
+                }
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
+            0
+        );
+        let ppoll = [0, 0, TIMEOUT, MASK, KERNEL_SIGSET_SIZE as u64, 0];
+
+        // A temporary mask that also blocks it: 0, own mask kept.
+        memory.write(MASK, &own.to_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            0
+        );
+        assert_eq!(state.thread_signals.lock().blocked, own);
+        assert_eq!(state.thread_signals.lock().saved_sigmask, None);
+
+        // One that admits it: EINTR, delivered under the temporary mask.
+        let temporary = test_sigset(&[libc::SIGTERM]);
+        memory.write(MASK, &temporary.to_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            negative_errno(libc::EINTR)
+        );
+        let thread_signals = state.thread_signals.lock();
+        assert_eq!(thread_signals.blocked, temporary);
+        assert_eq!(thread_signals.saved_sigmask, Some(own));
+        assert!(thread_signals.pending.contains(libc::SIGUSR1));
+    }
+
+    /// With nothing ready, a masked ppoll tests the pending signals before it
+    /// would wait, as Linux's do_poll does at any timeout: a call with a
+    /// timeout answers EINTR for a pending caught signal its mask lets in,
+    /// with that mask installed for the delivery, and is declined (ENOSYS)
+    /// only when no such signal is pending. A pending ignored signal the mask
+    /// lets in leaves ENOSYS at either timeout, read only: nothing is
+    /// dequeued and the thread's mask stays its own.
+    #[test]
+    fn masked_ppoll_tests_pending_signals_before_it_would_wait() {
+        const TIMEOUT: u64 = 0x100;
+        const MASK: u64 = 0x180;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let (pid, tid) = (state.pid, state.tid);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let own = test_sigset(&[libc::SIGUSR1, libc::SIGWINCH]);
+        state.thread_signals.lock().blocked = own;
+        test_catch_signal(&state, libc::SIGUSR1);
+        let ppoll = [0, 0, TIMEOUT, MASK, KERNEL_SIGSET_SIZE as u64, 0];
+        let set_timeout = |memory: &GuestMemory, nanoseconds: i64| {
+            assert_eq!(
+                write_struct(
+                    &mut ProviderMemory(memory),
+                    TIMEOUT,
+                    &libc::timespec {
+                        tv_sec: 0,
+                        tv_nsec: nanoseconds
+                    }
+                ),
+                0
+            );
+        };
+        memory
+            .write(MASK, &test_sigset(&[libc::SIGTERM]).to_bytes())
+            .unwrap();
+
+        // Nothing pending: 0 at a zero timeout, a wait declined.
+        set_timeout(&memory, 0);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            0
+        );
+        set_timeout(&memory, 100_000_000);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            negative_errno(libc::ENOSYS)
+        );
+
+        // SIGWINCH, ignored by default, pending under the thread's mask and
+        // let in by the temporary one: ENOSYS at both timeouts, read only.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGWINCH as u64, 0, 0, 0],
+            ),
+            0
+        );
+        for nanoseconds in [0, 100_000_000] {
+            set_timeout(&memory, nanoseconds);
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+                negative_errno(libc::ENOSYS),
+                "{nanoseconds}"
+            );
+            let thread_signals = state.thread_signals.lock();
+            assert_eq!(thread_signals.blocked, own);
+            assert_eq!(thread_signals.saved_sigmask, None);
+            assert!(thread_signals.pending.contains(libc::SIGWINCH));
+        }
+
+        // A caught SIGUSR1 pending too, with SIGWINCH blocked by the temporary
+        // mask: a call with a timeout answers EINTR, the mask installed for
+        // the delivery and the thread's own saved.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_tgkill,
+                [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
+            0
+        );
+        let temporary = test_sigset(&[libc::SIGTERM, libc::SIGWINCH]);
+        memory.write(MASK, &temporary.to_bytes()).unwrap();
+        set_timeout(&memory, 100_000_000);
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_ppoll, ppoll),
+            negative_errno(libc::EINTR)
+        );
+        let thread_signals = state.thread_signals.lock();
+        assert_eq!(thread_signals.blocked, temporary);
+        assert_eq!(thread_signals.saved_sigmask, Some(own));
+        assert!(thread_signals.pending.contains(libc::SIGUSR1));
+        assert!(thread_signals.pending.contains(libc::SIGWINCH));
     }
 
     #[test]
@@ -37135,7 +36239,14 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fcntl,
-                [4, libc::F_DUPFD as u64, GUEST_NOFILE_LIMIT as u64, 0, 0, 0,],
+                [
+                    4,
+                    libc::F_DUPFD as u64,
+                    guest_nofile_limit() as u64,
+                    0,
+                    0,
+                    0,
+                ],
             ),
             negative_errno(libc::EINVAL)
         );
@@ -37610,7 +36721,15 @@ mod tests {
             Some(canonical_ignored)
         );
         assert_eq!(test_signal_action(&replacement, libc::SIGUSR2), None);
-        assert!(replacement.thread_signals.lock().altstack.is_none());
+        assert_eq!(
+            replacement.thread_signals.lock().altstack,
+            Some(GuestStack {
+                sp: 0,
+                flags: 0,
+                size: 0,
+            }),
+            "exec clears the alternate stack's address and size and keeps its flags",
+        );
         assert_eq!(replacement.pgid, 55, "exec preserves the process group");
         assert_eq!(
             replacement
@@ -37746,7 +36865,6 @@ mod tests {
                 overflowing.sp.wrapping_add(overflowing.size),
                 Some(overflowing.sp),
                 false,
-                false,
             )),
         );
     }
@@ -37766,18 +36884,53 @@ mod tests {
             ..Default::default()
         };
         executor.state.thread_signals.lock().altstack = Some(stack);
-        for current in [stack.sp + 1, top] {
+        // Linux's get_sigframe decides the switch from the rsp less its
+        // 128-byte red zone, and the fit check from the rsp itself.
+        for current in [stack.sp + 129, top] {
             assert_eq!(
                 executor.signal_stack_top(action, current),
-                Ok((current, Some(stack.sp), true, false)),
-                "an rsp in (base, top] is nested",
+                Ok((current, Some(stack.sp), true)),
+                "an rsp in (base + 128, top] is nested: {current:#x}",
             );
         }
-        assert_eq!(
-            executor.signal_stack_top(action, stack.sp),
-            Ok((top, Some(stack.sp), false, false)),
-            "an rsp at base is off-stack and starts a fresh altstack frame",
-        );
+        for current in [stack.sp + 1, stack.sp + 128] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((top, Some(stack.sp), false)),
+                "an rsp in (base, base + 128], its red zone reaching below the \
+                 stack, starts at the top of the stack again: {current:#x}",
+            );
+        }
+        for current in [top + 1, top + 128] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((current, None, true)),
+                "an rsp in (top, top + 128], its red zone reaching into the stack, \
+                 gets its frame below the red zone with no switch: {current:#x}",
+            );
+        }
+        for current in [stack.sp, top + 129] {
+            assert_eq!(
+                executor.signal_stack_top(action, current),
+                Ok((top, Some(stack.sp), false)),
+                "an rsp whose red zone is off the stack starts a fresh altstack frame: \
+                 {current:#x}",
+            );
+        }
+        // Without SA_ONSTACK there is no switch, and a nested frame must still
+        // fit on the stack.
+        let ordinary = KernelSigaction::default();
+        for (current, nested) in [(stack.sp + 1, true), (top, true), (top + 1, false)] {
+            assert_eq!(
+                executor.signal_stack_top(ordinary, current),
+                Ok((current, nested.then_some(stack.sp), true)),
+                "without SA_ONSTACK: {current:#x}",
+            );
+        }
+        // A frame saves the stack's own flags, as Linux's
+        // unsafe_save_altstack does, never SS_ONSTACK: a frame nested on the
+        // stack saves the same uc_stack as the frame that switched to it.
+        assert_eq!(executor.signal_altstack(), stack);
 
         let autodisarm = GuestStack {
             flags: SS_AUTODISARM,
@@ -37786,10 +36939,307 @@ mod tests {
         executor.state.thread_signals.lock().altstack = Some(autodisarm);
         assert_eq!(
             executor.signal_stack_top(action, stack.sp + 1),
-            Ok((top, Some(stack.sp), false, true)),
+            Ok((top, Some(stack.sp), false)),
             "an armed SS_AUTODISARM stack is treated as off-stack",
         );
-        assert_eq!(executor.signal_altstack(stack.sp + 1).flags, SS_AUTODISARM,);
+        assert_eq!(executor.signal_altstack(), autodisarm);
+
+        // After an exec the stack has no address or size and keeps its
+        // flags: it is disabled, and a frame saves it as the task holds it.
+        for flags in [0, SS_AUTODISARM] {
+            let after_exec = GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            };
+            executor.state.thread_signals.lock().altstack = Some(after_exec);
+            assert_eq!(
+                executor.signal_stack_top(action, stack.sp + 1),
+                Ok((stack.sp + 1, None, true)),
+                "a stack with no size is disabled, flags {flags:#x}",
+            );
+            assert_eq!(executor.signal_altstack(), after_exec);
+        }
+
+        executor.state.thread_signals.lock().altstack = None;
+        assert_eq!(
+            executor.signal_altstack(),
+            GuestStack {
+                sp: 0,
+                flags: libc::SS_DISABLE,
+                size: 0,
+            },
+            "no stack, or one SS_AUTODISARM disarmed, saves SS_DISABLE",
+        );
+    }
+
+    #[test]
+    fn signal_frames_keep_the_last_traps_fields() {
+        let root = TestDir::new();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        assert_eq!(executor.signal_trap_fields(), SignalTrapFields::default());
+        // A page fault sets all three fields.
+        executor.record_user_trap(14, 6, Some(0x10));
+        let fault = SignalTrapFields {
+            trapno: 14,
+            error_code: 6,
+            cr2: 0x10,
+        };
+        assert_eq!(executor.signal_trap_fields(), fault);
+        // A later #UD sets the vector and error code and, as on Linux, keeps
+        // the page fault's address.
+        executor.record_user_trap(6, 0, None);
+        assert_eq!(
+            executor.signal_trap_fields(),
+            SignalTrapFields {
+                trapno: 6,
+                error_code: 0,
+                cr2: 0x10,
+            },
+        );
+    }
+
+    #[test]
+    fn every_delivery_disarms_an_autodisarm_stack() {
+        // Linux's signal_delivered resets an SS_AUTODISARM stack after every
+        // delivery (sas_ss_reset), also for a handler that does not run on it
+        // and for a stack exec left without a size; a stack without the flag
+        // stays as it was.
+        let stack = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let autodisarm = GuestStack {
+            flags: SS_AUTODISARM,
+            ..stack
+        };
+        let after_exec = GuestStack {
+            sp: 0,
+            flags: SS_AUTODISARM,
+            size: 0,
+        };
+        for (before, after) in [(stack, Some(stack)), (autodisarm, None), (after_exec, None)] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let (pid, tid) = (state.pid, state.tid);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            test_catch_signal(&state, libc::SIGUSR1);
+            state.thread_signals.lock().altstack = Some(before);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_tgkill,
+                    [pid as u64, tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+                ),
+                0
+            );
+            let mut executor = ElfExecutor::new(state, false);
+            let pending = executor
+                .take_pending_signal_for_delivery()
+                .unwrap()
+                .expect("SIGUSR1 is pending");
+            let action = executor.signal_action(libc::SIGUSR1);
+            assert_eq!(action.flags & libc::SA_ONSTACK as u64, 0);
+            assert_eq!(
+                executor.signal_altstack(),
+                before,
+                "the frame saves it first"
+            );
+            executor.enter_signal_handler(pending, action);
+            assert_eq!(
+                executor.state.thread_signals.lock().altstack,
+                after,
+                "{before:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sigaltstack_reports_a_stack_exec_left_as_disabled_with_its_autodisarm() {
+        // Linux reports sas_ss_flags, SS_DISABLE for a stack with no size,
+        // with the stored SS_AUTODISARM: exec keeps the flags and clears the
+        // address and size.
+        const OLD: u64 = 0x180;
+        for flags in [0, SS_AUTODISARM] {
+            let root = TestDir::new();
+            let mut state = test_state(&root.0);
+            let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+            state.thread_signals.lock().altstack = Some(GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            });
+            assert_eq!(
+                sigaltstack(&mut memory, &mut state, Some(0x4000), &[0, OLD, 0, 0, 0, 0]),
+                0,
+            );
+            assert_eq!(
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(&memory), OLD).unwrap()),
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                },
+                "flags {flags:#x}",
+            );
+        }
+    }
+
+    #[test]
+    fn sigaltstack_follows_do_sigaltstack() {
+        // Linux's do_sigaltstack (kernel/signal.c), in its order: EPERM while
+        // running on the stack, EINVAL for a mode other than 0, SS_ONSTACK or
+        // SS_DISABLE (SS_AUTODISARM aside), no change for a request equal to
+        // the stack held, SS_DISABLE keeping the flags as given, and ENOMEM
+        // only when enabling a stack below MINSIGSTKSZ.
+        const REQUEST: u64 = 0x100;
+        const OLD: u64 = 0x180;
+        let enabled = GuestStack {
+            sp: 0x8000,
+            flags: 0,
+            size: libc::MINSIGSTKSZ as u64,
+        };
+        let disabled_autodisarm = GuestStack {
+            sp: 0,
+            flags: libc::SS_DISABLE | SS_AUTODISARM,
+            size: 0,
+        };
+        let call = |state: &mut LoadedStaticElf,
+                    memory: &mut GuestMemory,
+                    stack_pointer: u64,
+                    requested: Option<GuestStack>| {
+            if let Some(requested) = requested {
+                memory.write(REQUEST, &requested.encode()).unwrap();
+            }
+            let request = if requested.is_some() { REQUEST } else { 0 };
+            let result = sigaltstack(
+                memory,
+                state,
+                Some(stack_pointer),
+                &[request, OLD, 0, 0, 0, 0],
+            );
+            let old =
+                GuestStack::decode(read_guest_bytes::<24>(&ProviderMemory(memory), OLD).unwrap());
+            (result, old)
+        };
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // SS_DISABLE with SS_AUTODISARM is a valid request: the stack keeps
+        // those flags with no address or size, and reports and saves them.
+        state.thread_signals.lock().altstack = Some(enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(disabled_autodisarm)).0,
+            0
+        );
+        assert_eq!(
+            state.thread_signals.lock().altstack,
+            Some(disabled_autodisarm)
+        );
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, None),
+            (0, disabled_autodisarm)
+        );
+        // A frame saves it as held.
+        let saved = test_state(&root.0);
+        saved.thread_signals.lock().altstack = Some(disabled_autodisarm);
+        assert_eq!(
+            ElfExecutor::new(saved, false).signal_altstack(),
+            disabled_autodisarm
+        );
+
+        // A request equal to the stack held changes nothing, before the size
+        // check: here the stack exec leaves, with no address or size.
+        for flags in [0, SS_AUTODISARM] {
+            let after_exec = GuestStack {
+                sp: 0,
+                flags,
+                size: 0,
+            };
+            state.thread_signals.lock().altstack = Some(after_exec);
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(after_exec)).0,
+                0,
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(after_exec));
+            // What a query then reports can be given back: SS_DISABLE with the
+            // stored SS_AUTODISARM.
+            let (result, reported) = call(&mut state, &mut memory, 0x4000, None);
+            assert_eq!(result, 0);
+            assert_eq!(
+                reported,
+                GuestStack {
+                    sp: 0,
+                    flags: libc::SS_DISABLE | flags,
+                    size: 0,
+                }
+            );
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(reported)).0,
+                0,
+                "{flags:#x}"
+            );
+            let held = (flags != 0).then_some(disabled_autodisarm);
+            assert_eq!(state.thread_signals.lock().altstack, held, "{flags:#x}");
+        }
+
+        // SS_ONSTACK is an input mode, stored as given; the report shows
+        // SS_ONSTACK only while the caller runs on the stack.
+        state.thread_signals.lock().altstack = None;
+        let onstack = GuestStack {
+            flags: libc::SS_ONSTACK,
+            ..enabled
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(onstack)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        assert_eq!(call(&mut state, &mut memory, 0x4000, None).1, enabled);
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, None).1,
+            onstack
+        );
+        // EPERM on the stack comes before the no-change return.
+        assert_eq!(
+            call(&mut state, &mut memory, enabled.sp + 1, Some(onstack)).0,
+            negative_errno(libc::EPERM)
+        );
+
+        // Any other mode is EINVAL, and the stack stays.
+        for flags in [
+            libc::SS_ONSTACK | libc::SS_DISABLE,
+            4,
+            0x1234,
+            libc::SS_ONSTACK | libc::SS_DISABLE | SS_AUTODISARM,
+        ] {
+            let request = GuestStack { flags, ..enabled };
+            assert_eq!(
+                call(&mut state, &mut memory, 0x4000, Some(request)).0,
+                negative_errno(libc::EINVAL),
+                "{flags:#x}"
+            );
+            assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        }
+
+        // ENOMEM only when enabling below MINSIGSTKSZ; disabling ignores the
+        // size and the address.
+        let small = GuestStack {
+            size: libc::MINSIGSTKSZ as u64 - 1,
+            ..enabled
+        };
+        assert_eq!(
+            call(&mut state, &mut memory, 0x4000, Some(small)).0,
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(state.thread_signals.lock().altstack, Some(onstack));
+        let disable = GuestStack {
+            flags: libc::SS_DISABLE,
+            ..small
+        };
+        assert_eq!(call(&mut state, &mut memory, 0x4000, Some(disable)).0, 0);
+        assert_eq!(state.thread_signals.lock().altstack, None);
     }
 
     #[test]
@@ -37881,7 +37331,9 @@ mod tests {
     }
 
     #[test]
-    fn rt_sigreturn_ignores_ss_onstack_altstack_input() {
+    fn rt_sigreturn_restores_an_ss_onstack_altstack_input() {
+        // Linux's do_sigaltstack takes SS_ONSTACK as an input mode, as 0, and
+        // stores the flags as given; restore_altstack goes through it too.
         let root = TestDir::new();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let original_stack = GuestStack {
@@ -37892,15 +37344,15 @@ mod tests {
         executor.state.thread_signals.lock().altstack = Some(original_stack);
         let mut restored_mask = KernelSigset::default();
         restored_mask.insert(libc::SIGUSR2);
-        let invalid_stack = GuestStack {
+        let onstack_input = GuestStack {
             sp: 0x20_000,
             flags: libc::SS_ONSTACK,
             size: libc::MINSIGSTKSZ as u64,
         };
-        executor.restore_signal_thread_state(restored_mask, invalid_stack, original_stack.sp);
+        executor.restore_signal_thread_state(restored_mask, onstack_input, original_stack.sp);
         assert_eq!(
             executor.state.thread_signals.lock().altstack,
-            Some(original_stack)
+            Some(onstack_input)
         );
 
         assert!(
@@ -38263,69 +37715,132 @@ mod tests {
         assert!(executor.take_process_action().is_none());
     }
 
+    /// A clone this backend cannot perform keeps its answer, creates no child,
+    /// and records the typed refusal `UnsupportedOperation::Clone`, naming the
+    /// case: CLONE_VM for a new process without CLONE_VFORK (EOPNOTSUPP), by
+    /// clone and by clone3; a thread without CLONE_FS or without CLONE_FILES
+    /// (EINVAL); a thread with no stack (EINVAL); and every other declined
+    /// shape, among them an exit signal other than SIGCHLD and a thread's exit
+    /// signal from clone (EINVAL), CLONE_VM with CLONE_FS for a process, a
+    /// vfork with a child tid, and clone3's set_tid (EOPNOTSUPP). Linux's own
+    /// refusals that the backend checks record none: a thread without
+    /// CLONE_SIGHAND, and a clone3 struct shorter than its first version
+    /// (EINVAL).
     #[test]
-    fn clone3_accepts_glibc_pthread_profile_with_tls_and_tid_addresses() {
+    fn clone_the_backend_cannot_perform_is_a_typed_refusal() {
         const CLONE3_ARGS: u64 = 0x200;
-        const CHILD_TID_ADDRESS: u64 = 0x300;
-        const PARENT_TID_ADDRESS: u64 = 0x308;
         const CHILD_STACK: u64 = 0x4000;
-        const CHILD_STACK_SIZE: u64 = 0x9000;
-        const TLS: u64 = 0x1_234_000;
 
         let root = TestDir::new();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        let mut clone3 = [0_u8; 88];
-        let flags = THREAD_CLONE_REQUIRED_FLAGS
-            | libc::CLONE_SYSVSEM as u64
-            | libc::CLONE_SETTLS as u64
-            | libc::CLONE_PARENT_SETTID as u64
-            | libc::CLONE_CHILD_CLEARTID as u64;
-        clone3[0..8].copy_from_slice(&flags.to_le_bytes());
-        // glibc leaves clone_args.pidfd aliased to the thread descriptor even
-        // though CLONE_PIDFD is absent; Linux ignores the slot in that case.
-        clone3[8..16].copy_from_slice(&CHILD_TID_ADDRESS.to_le_bytes());
-        clone3[16..24].copy_from_slice(&CHILD_TID_ADDRESS.to_le_bytes());
-        clone3[24..32].copy_from_slice(&PARENT_TID_ADDRESS.to_le_bytes());
-        clone3[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
-        clone3[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
-        clone3[56..64].copy_from_slice(&TLS.to_le_bytes());
-        memory.write(CLONE3_ARGS, &clone3).unwrap();
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
-        let request = SyscallRequest::new(
-            libc::SYS_clone3 as u64,
-            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
-        );
-
-        assert!(is_thread_clone_request(&request, &memory));
-        let legacy_thread = SyscallRequest::new(
-            libc::SYS_clone as u64,
-            [THREAD_CLONE_REQUIRED_FLAGS, CHILD_STACK, 0, 0, TLS, 0],
-        );
-        assert!(is_thread_clone_request(&legacy_thread, &memory));
-        let process_clone = SyscallRequest::new(
-            libc::SYS_clone as u64,
-            [libc::SIGCHLD as u64, 0, 0, 0, 0, 0],
-        );
-        assert!(!is_thread_clone_request(&process_clone, &memory));
-
-        assert_eq!(executor.execute_process_action(&request, &memory), Some(2));
-        match executor.take_process_action() {
-            Some(ProcessAction::Thread {
-                child_tid,
-                child_stack,
-                parent_tid,
-                child_tid_address,
-                clear_child_tid,
-                tls,
-            }) => {
-                assert_eq!(child_tid, 2);
-                assert_eq!(child_stack, CHILD_STACK + CHILD_STACK_SIZE);
-                assert_eq!(parent_tid, Some(PARENT_TID_ADDRESS));
-                assert_eq!(child_tid_address, None);
-                assert_eq!(clear_child_tid, Some(CHILD_TID_ADDRESS));
-                assert_eq!(tls, Some(TLS));
+        let refusal = |errno, diagnostic| {
+            Some(reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::Clone,
+                reverie::Errno::new(errno),
+                diagnostic,
+            ))
+        };
+        let clone = |flags: u64, stack| {
+            SyscallRequest::new(libc::SYS_clone as u64, [flags, stack, 0, 0, 0, 0])
+        };
+        let mut clone3 = |at: u64, fields: &[(usize, u64)]| {
+            let mut args = [0_u8; 88];
+            for (offset, value) in fields {
+                args[*offset..*offset + 8].copy_from_slice(&value.to_le_bytes());
             }
-            _ => panic!("glibc pthread clone3 did not produce a thread action"),
+            memory.write(at, &args).unwrap();
+            SyscallRequest::new(libc::SYS_clone3 as u64, [at, args.len() as u64, 0, 0, 0, 0])
+        };
+        let vm = libc::CLONE_VM as u64;
+        let sigchld = libc::SIGCHLD as u64;
+        let thread = THREAD_CLONE_REQUIRED_FLAGS;
+        let cases = [
+            (
+                clone(vm | sigchld, CHILD_STACK),
+                refusal(libc::ENOTSUP, SHARED_MEMORY_PROCESS_REFUSAL),
+            ),
+            (
+                clone3(CLONE3_ARGS, &[(0, vm)]),
+                refusal(libc::ENOTSUP, SHARED_MEMORY_PROCESS_REFUSAL),
+            ),
+            (
+                clone(thread & !(libc::CLONE_FS as u64), CHILD_STACK),
+                refusal(libc::EINVAL, UNSHARED_THREAD_REFUSAL),
+            ),
+            (
+                clone(thread & !(libc::CLONE_FILES as u64), CHILD_STACK),
+                refusal(libc::EINVAL, UNSHARED_THREAD_REFUSAL),
+            ),
+            (
+                clone(thread, 0),
+                refusal(libc::EINVAL, STACKLESS_THREAD_REFUSAL),
+            ),
+            (
+                clone(libc::SIGUSR1 as u64, 0),
+                refusal(libc::EINVAL, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(thread | sigchld, CHILD_STACK),
+                refusal(libc::EINVAL, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(thread | libc::CLONE_PTRACE as u64, CHILD_STACK),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(vm | libc::CLONE_FS as u64 | sigchld, CHILD_STACK),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(libc::CLONE_VFORK as u64 | sigchld, 0),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(
+                    vm | libc::CLONE_VFORK as u64 | libc::CLONE_CHILD_SETTID as u64 | sigchld,
+                    0,
+                ),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(libc::CLONE_NEWNS as u64 | sigchld, 0),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone3(CLONE3_ARGS + 0x100, &[(32, sigchld), (64, 0x100), (72, 1)]),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone3(
+                    CLONE3_ARGS + 0x200,
+                    &[
+                        (0, libc::CLONE_CHILD_SETTID as u64),
+                        (16, 0x100),
+                        (32, sigchld),
+                    ],
+                ),
+                refusal(libc::ENOTSUP, CLONE_FLAGS_REFUSAL),
+            ),
+            (
+                clone(thread & !(libc::CLONE_SIGHAND as u64), CHILD_STACK),
+                None,
+            ),
+        ];
+        let errno = |refusal: &Option<reverie::UnsupportedRefusal>| {
+            refusal.map_or(libc::EINVAL, |refusal| refusal.errno.into_raw())
+        };
+        for (request, expected) in cases.into_iter().chain([(
+            SyscallRequest::new(libc::SYS_clone3 as u64, [CLONE3_ARGS, 56, 0, 0, 0, 0]),
+            None,
+        )]) {
+            assert_eq!(
+                executor.execute_process_action(&request, &memory),
+                Some(negative_errno(errno(&expected))),
+                "{request:?}"
+            );
+            assert!(executor.take_process_action().is_none(), "{request:?}");
+            assert_eq!(executor.take_unsupported_refusal(), expected, "{request:?}");
         }
     }
 
@@ -38500,7 +38015,7 @@ mod tests {
         let request =
             SyscallRequest::new(libc::SYS_set_tid_address as u64, [CLEAR_TID, 0, 0, 0, 0, 0]);
         assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
-        executor.replace_after_exec(test_state(&root.0));
+        executor.replace_after_exec(test_state(&root.0)).unwrap();
         assert_eq!(executor.take_clear_child_tid(), None);
     }
 
@@ -38545,7 +38060,7 @@ mod tests {
             );
 
             for exec_depth in 1..=2 {
-                executor.replace_after_exec(test_state(&root.0));
+                executor.replace_after_exec(test_state(&root.0)).unwrap();
                 assert!(
                     executor
                         .state
@@ -38596,7 +38111,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_residency_is_deterministic() {
+    fn mincore_validates_without_writing_residency() {
         const VECTOR: u64 = 4 * PAGE_SIZE;
 
         let root = TestDir::new();
@@ -38691,6 +38206,9 @@ mod tests {
             syscall_result(&mut memory, &mut state, libc::SYS_munlockall, [u64::MAX; 6],),
             0
         );
+        // Residency is the Tool's decision; LinuxEmu only validates and
+        // leaves the vector's bytes as the guest left them.
+        memory.write(VECTOR, &[7_u8, 7]).unwrap();
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -38702,7 +38220,16 @@ mod tests {
         );
         assert_eq!(
             read_guest_bytes::<2>(&ProviderMemory(&memory), VECTOR).unwrap(),
-            [1, 1]
+            [7, 7]
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 10 * PAGE_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
         );
         assert_eq!(
             syscall_result(
@@ -38721,6 +38248,58 @@ mod tests {
                 [PAGE_SIZE + 1, PAGE_SIZE, VECTOR, 0, 0, 0],
             ),
             negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn mincore_vector_must_be_writable_when_user_access_is_enforced() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        // Pages: 1 target (writable), 2 writable vector, 3 read-only vector,
+        // 4 PROT_NONE vector, 5-6 straddling vector (writable, PROT_NONE).
+        let mut memory = GuestMemory::new(0, 7 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, false).unwrap();
+        memory
+            .map_user_range(2 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_permissions(3 * PAGE_SIZE, PAGE_SIZE, true, false)
+            .unwrap();
+        memory
+            .map_user_range(4 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory
+            .map_user_range(5 * PAGE_SIZE, PAGE_SIZE, false)
+            .unwrap();
+        memory
+            .map_user_range(6 * PAGE_SIZE, PAGE_SIZE, true)
+            .unwrap();
+        memory.enable_user_access();
+        memory.write(2 * PAGE_SIZE, &[7_u8; 4]).unwrap();
+        for vector in [3 * PAGE_SIZE, 4 * PAGE_SIZE] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_mincore,
+                    [PAGE_SIZE, PAGE_SIZE, vector, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT),
+                "vector {vector:#x}",
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mincore,
+                [PAGE_SIZE, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0],
+            ),
+            0,
+        );
+        assert_eq!(
+            read_guest_bytes::<4>(&ProviderMemory(&memory), 2 * PAGE_SIZE).unwrap(),
+            [7, 7, 7, 7]
         );
     }
 
@@ -39761,7 +39340,7 @@ mod tests {
 
         // Exec retains the task but clears its robust head and resets
         // dumpability. Peer lookup must still succeed with the empty state.
-        child.replace_after_exec(test_state(&root.0));
+        child.replace_after_exec(test_state(&root.0)).unwrap();
         assert_eq!(
             get_robust_list(
                 &mut memory,
@@ -40843,7 +40422,7 @@ mod tests {
         let mut leader = ElfExecutor::new(test_state(&root.0), false);
         let mut old_worker = leader.thread_child(2).unwrap();
         commit_test_exit(&mut old_worker, 61, false);
-        leader.replace_after_exec(test_state(&root.0));
+        leader.replace_after_exec(test_state(&root.0)).unwrap();
         let mut new_worker = leader.thread_child(2).unwrap();
         assert_ne!(old_worker.task_generation, new_worker.task_generation);
         old_worker.retire_current_thread(ExitStatus::Exited(99), true);
@@ -41883,7 +41462,7 @@ mod tests {
 
         assert_eq!(pending.event.signal(), libc::SIGUSR2);
         assert_eq!(executor.signal_action(pending.event.signal()), replacement);
-        executor.enter_signal_handler(pending, replacement, false);
+        executor.enter_signal_handler(pending, replacement);
         assert!(
             executor
                 .state
@@ -42546,7 +42125,7 @@ mod tests {
         let old_target = leader.state.thread_signals.downgrade();
         // Successful exec's runtime tears down siblings before replacing state.
         drop(sender);
-        leader.replace_after_exec(test_state(&root.0));
+        leader.replace_after_exec(test_state(&root.0)).unwrap();
         assert!(old_target.upgrade().is_none());
         assert!(
             leader
@@ -42626,7 +42205,7 @@ mod tests {
         ));
         leader.executable_path = executable.clone();
         leader.executable_file = Some(Arc::new(std::fs::File::open(&executable).unwrap()));
-        leader.executable_image = Arc::from(b"loaded image".as_slice());
+        leader.executable_image = Arc::new(b"loaded image".to_vec());
         leader
             .task_lifecycle
             .lock()
@@ -42654,7 +42233,7 @@ mod tests {
         for state in [&leader, &worker] {
             for alias in aliases(state.tid) {
                 let invoked = PathBuf::from(std::ffi::OsString::from_vec(alias.clone()));
-                let resolved = resolve_guest_exec_image(state, alias, &envp).unwrap();
+                let resolved = resolve_guest_exec_image(state, alias, &envp, &mut None).unwrap();
                 assert_eq!(resolved.path, invoked);
                 assert!(resolved.file.is_some());
                 assert!(Arc::ptr_eq(
@@ -42665,7 +42244,8 @@ mod tests {
             }
         }
         assert_eq!(
-            resolve_guest_exec_image(&leader, b"/proc/39/exe".to_vec(), &envp).unwrap_err(),
+            resolve_guest_exec_image(&leader, b"/proc/39/exe".to_vec(), &envp, &mut None)
+                .unwrap_err(),
             negative_errno(libc::ENOENT),
         );
         for foreign in [
@@ -42674,7 +42254,7 @@ mod tests {
             b"/proc/39/task/38/exe".to_vec(),
         ] {
             assert_eq!(
-                resolve_guest_exec_image(&leader, foreign, &envp).unwrap_err(),
+                resolve_guest_exec_image(&leader, foreign, &envp, &mut None).unwrap_err(),
                 negative_errno(libc::ENOENT),
             );
         }
@@ -42683,14 +42263,15 @@ mod tests {
         let supervisor_exe = format!("/proc/{supervisor_pid}/exe").into_bytes();
         assert!(std::path::Path::new(std::ffi::OsStr::from_bytes(&supervisor_exe)).exists());
         assert_eq!(
-            resolve_guest_exec_image(&leader, supervisor_exe, &envp).unwrap_err(),
+            resolve_guest_exec_image(&leader, supervisor_exe, &envp, &mut None).unwrap_err(),
             negative_errno(libc::ENOENT),
             "a live supervisor proc entry must not become a guest executable",
         );
 
         std::fs::remove_file(&executable).unwrap();
         let resolved =
-            resolve_guest_exec_image(&worker, b"/proc/thread-self/exe".to_vec(), &envp).unwrap();
+            resolve_guest_exec_image(&worker, b"/proc/thread-self/exe".to_vec(), &envp, &mut None)
+                .unwrap();
         assert_eq!(resolved.path, Path::new("/proc/thread-self/exe"));
         assert!(resolved.file.is_some());
         assert_eq!(resolved.image, b"loaded image");
@@ -42699,14 +42280,19 @@ mod tests {
         let relative = dir.0.join("relative/program");
         std::fs::write(&relative, b"relative image").unwrap();
         let resolved =
-            resolve_guest_exec_image(&leader, b"relative/program".to_vec(), &envp).unwrap();
+            resolve_guest_exec_image(&leader, b"relative/program".to_vec(), &envp, &mut None)
+                .unwrap();
         assert_eq!(resolved.path, relative);
         assert_eq!(resolved.image, b"relative image");
         let absolute = dir.0.join("absolute-program");
         std::fs::write(&absolute, b"absolute image").unwrap();
-        let resolved =
-            resolve_guest_exec_image(&leader, absolute.as_os_str().as_bytes().to_vec(), &envp)
-                .unwrap();
+        let resolved = resolve_guest_exec_image(
+            &leader,
+            absolute.as_os_str().as_bytes().to_vec(),
+            &envp,
+            &mut None,
+        )
+        .unwrap();
         assert_eq!(resolved.path, absolute);
         assert_eq!(resolved.image, b"absolute image");
 
@@ -42716,7 +42302,8 @@ mod tests {
         std::fs::write(&searched, b"image").unwrap();
         let envp = vec![format!("PATH={}", bin.display())];
         let resolved =
-            resolve_guest_exec_image(&leader, b"searched-program".to_vec(), &envp).unwrap();
+            resolve_guest_exec_image(&leader, b"searched-program".to_vec(), &envp, &mut None)
+                .unwrap();
         assert_eq!(resolved.path, searched.canonicalize().unwrap());
         assert_eq!(resolved.image, b"image");
 
@@ -42724,9 +42311,13 @@ mod tests {
         std::fs::write(&target, b"target image").unwrap();
         let alias = dir.0.join("program-link");
         std::os::unix::fs::symlink(&target, &alias).unwrap();
-        let resolved =
-            resolve_guest_exec_image(&leader, alias.as_os_str().as_bytes().to_vec(), &envp)
-                .unwrap();
+        let resolved = resolve_guest_exec_image(
+            &leader,
+            alias.as_os_str().as_bytes().to_vec(),
+            &envp,
+            &mut None,
+        )
+        .unwrap();
         assert_eq!(resolved.path, alias);
         assert_eq!(resolved.image, b"target image");
     }
@@ -43656,7 +43247,9 @@ mod tests {
             syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, get),
             0,
         );
-        shared_child.replace_after_exec(test_state(&root.0));
+        shared_child
+            .replace_after_exec(test_state(&root.0))
+            .unwrap();
         assert_eq!(
             syscall_result(&mut memory, &mut leader.state, libc::SYS_prctl, set(1)),
             0,
@@ -44175,8 +43768,13 @@ mod child_panic_owner_tests {
 
 #[cfg(test)]
 #[path = "executor/exit_descriptor_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod exit_descriptor_tests;
 
 #[cfg(test)]
 #[path = "executor/fd_link_path_tests.rs"]
 mod fd_link_path_tests;
+
+#[cfg(test)]
+#[path = "executor/revoked_copy_tests.rs"]
+mod revoked_copy_tests;

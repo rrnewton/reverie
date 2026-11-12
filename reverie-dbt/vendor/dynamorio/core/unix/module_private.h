@@ -137,6 +137,18 @@ bool
 privload_redirect_sym(os_privmod_data_t *opd, ptr_uint_t *r_addr, const char *name);
 
 #ifdef LINUX
+/* Exact selected symbol and defining image from the normal relocation search. */
+typedef struct {
+    os_privmod_data_t *defining_module;
+    ELF_SYM_TYPE *symbol;
+} private_export_t;
+
+/* Does not invoke an indirect resolver.  Ordinary relocation passes NULL metadata. */
+app_pc
+module_lookup_export_by_name(os_privmod_data_t *pd, const char *name,
+                             bool *is_ifunc DR_PARAM_OUT,
+                             private_export_t *selected DR_PARAM_OUT);
+
 void
 module_init_os_privmod_data_from_dyn(os_privmod_data_t *opd, ELF_DYNAMIC_ENTRY_TYPE *dyn,
                                      ptr_int_t load_delta);

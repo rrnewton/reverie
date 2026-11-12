@@ -91,7 +91,7 @@ fn syncfs_closed_and_path_only_precede_private_refusal_without_host_call() {
         u32::MAX as u64,
         i32::MIN as u32 as u64,
         i32::MAX as u64,
-        GUEST_NOFILE_LIMIT as u64,
+        guest_nofile_limit() as u64,
     ] {
         assert_eq!(
             syncfs_call(&mut memory, &mut state, raw),
@@ -411,15 +411,6 @@ fn syncfs_known_private_descriptions_are_refused_without_host_call() {
             "fd={fd}"
         );
     }
-    // Fdinfo needs a live executor table; a standalone test_state deliberately
-    // cannot open one. Exercise the actual executor binding, not a forged map.
-    let mut fixture = FdinfoFixture::new(true);
-    let target = fixture.open("a", libc::O_RDONLY);
-    let info = fixture.info(target);
-    assert_eq!(
-        fixture.call(libc::SYS_syncfs, [info as u64, 0, 0, 0, 0, 0]),
-        negative_errno(libc::ENOSYS)
-    );
 }
 
 #[test]

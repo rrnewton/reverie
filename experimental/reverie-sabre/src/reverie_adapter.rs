@@ -94,16 +94,17 @@ where
         tool: T,
         global_state: T::GlobalState,
         config: <T::GlobalState as GlobalTool>::Config,
-    ) -> Self {
+    ) -> Result<Self, reverie::Error> {
+        T::facility_admission(&config)?;
         let _ = root_process_pid();
         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
-        Self {
+        Ok(Self {
             tool,
             global_state,
             config,
             thread_states: Mutex::new(HashMap::new()),
             syscall_subscriptions,
-        }
+        })
     }
 
     /// Forwards an intercepted syscall to [`ReverieTool::handle_syscall_event`].
@@ -443,6 +444,7 @@ where
         let tid = current_tid();
         let rpc = protect_with(|| BlockingRpcClient::<T::GlobalState>::connect(&socket_path, tid))?;
         let config = rpc.as_ref().config().clone();
+        T::facility_admission(&config).map_err(std::io::Error::other)?;
         let tool = T::new(current_pid(), &config);
         let thread_state = match take_process_fork_handoff(&tool, tid)? {
             Some(inherited) => inherited,
@@ -1091,6 +1093,12 @@ impl<T> Guest<T> for SabreGuest<'_, '_, T>
 where
     T: ReverieTool,
 {
+    // This backend has no stopped-generation private input implementation.
+    // The typed default injection methods refuse without issuing a native call.
+    fn reserved_input_control(&self) -> Option<reverie::reserved_input::ReservedInputControl> {
+        None
+    }
+
     type Memory = LocalMemory;
     type Stack = SabreStack;
 
@@ -1710,7 +1718,8 @@ mod tests {
     #[test]
     fn forwards_syscalls_to_shared_tool_handler() {
         HANDLED.store(0, Ordering::Relaxed);
-        let adapter = ReverieAdapter::new(FixedTool, (), ());
+        let adapter = ReverieAdapter::new(FixedTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(123));
         assert_eq!(HANDLED.load(Ordering::Relaxed), 1);
@@ -1780,14 +1789,16 @@ mod tests {
 
     #[test]
     fn local_adapter_restarts_a_non_wait_private_errno() {
-        let adapter = ReverieAdapter::new(RestartReadTool, (), ());
+        let adapter = ReverieAdapter::new(RestartReadTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::read, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
     }
 
     #[test]
     fn local_adapter_restarts_wait4_private_errno() {
-        let adapter = ReverieAdapter::new(RestartWait4Tool, (), ());
+        let adapter = ReverieAdapter::new(RestartWait4Tool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
     }
@@ -1818,7 +1829,8 @@ mod tests {
 
     #[test]
     fn local_adapter_restarts_waitid_private_errno() {
-        let adapter = ReverieAdapter::new(RestartWaitidTool, (), ());
+        let adapter = ReverieAdapter::new(RestartWaitidTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::waitid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
     }
@@ -1842,7 +1854,8 @@ mod tests {
     #[test]
     fn local_adapter_delivers_post_exec() {
         POST_EXECS.store(0, Ordering::Relaxed);
-        let adapter = ReverieAdapter::new(FixedTool, (), ());
+        let adapter = ReverieAdapter::new(FixedTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         adapter.handle_post_exec();
         assert_eq!(POST_EXECS.load(Ordering::Relaxed), 1);
     }
@@ -1869,7 +1882,8 @@ mod tests {
     #[test]
     fn local_adapter_delivers_process_exit() {
         PROCESS_EXITS.store(0, Ordering::Relaxed);
-        let adapter = ReverieAdapter::new(ProcessExitTool, (), ());
+        let adapter = ReverieAdapter::new(ProcessExitTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         adapter.handle_process_exit(ExitStatus::Exited(7));
         assert_eq!(PROCESS_EXITS.load(Ordering::Relaxed), 1);
     }
@@ -1909,7 +1923,8 @@ mod tests {
             }
         }
 
-        let adapter = ReverieAdapter::new(TailInjectingThreadStartTool, (), ());
+        let adapter = ReverieAdapter::new(TailInjectingThreadStartTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         // The assertion is that this RETURNS. A panic here fails the test by
         // aborting it, which is the regression; suspending and being dropped is
         // the established behaviour being preserved.
@@ -1939,7 +1954,8 @@ mod tests {
 
     #[test]
     fn local_adapter_bypasses_unsubscribed_syscalls() {
-        let adapter = ReverieAdapter::new(UnsubscribedTool, (), ());
+        let adapter = ReverieAdapter::new(UnsubscribedTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(
             adapter.handle_syscall(syscall),
@@ -2159,7 +2175,8 @@ mod tests {
         assert!(crate::callbacks::current_syscall_frame().is_none());
         {
             let _frame_guard = crate::callbacks::SyscallFrameGuard::enter(&mut frame);
-            let adapter = ReverieAdapter::new(RegisterTool, (), ());
+            let adapter = ReverieAdapter::new(RegisterTool, (), ())
+                .expect("fixture Tool admits its unit configuration");
             let syscall =
                 Syscall::from_raw(Sysno::getpid, SyscallArgs::new(10, 20, 30, 40, 60, 50));
             assert_eq!(adapter.handle_syscall(syscall), Ok(123));
@@ -2434,7 +2451,8 @@ mod tests {
             type ThreadState = ();
         }
 
-        let adapter = ReverieAdapter::new(TailTool, (), ());
+        let adapter = ReverieAdapter::new(TailTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(
             adapter.handle_syscall(syscall),
@@ -2500,7 +2518,8 @@ mod tests {
                     .leave_guest_execution()
                     .expect("worker should enter handler state");
 
-                let adapter = ReverieAdapter::new(ExitTool, (), ());
+                let adapter = ReverieAdapter::new(ExitTool, (), ())
+                    .expect("fixture Tool admits its unit configuration");
                 let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
                 assert_eq!(adapter.handle_syscall(syscall), Ok(0));
                 assert_eq!(CLEANUPS.load(Ordering::Acquire), 1);
@@ -2564,7 +2583,8 @@ mod tests {
             type ThreadState = ();
         }
 
-        let adapter = ReverieAdapter::new(TailTool, (), ());
+        let adapter = ReverieAdapter::new(TailTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let invoked = AtomicBool::new(false);
         let syscall = Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(7, 0, 0, 0, 0, 0));
         let result = adapter.handle_syscall_with_inject(syscall, || {
@@ -2596,7 +2616,8 @@ mod tests {
             }
         }
 
-        let adapter = ReverieAdapter::new(DoubleInjectTool, (), ());
+        let adapter = ReverieAdapter::new(DoubleInjectTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let invoked = AtomicBool::new(false);
         let syscall = Syscall::from_raw(Sysno::clone3, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         let result = adapter.handle_syscall_with_inject(syscall, || {
@@ -2628,7 +2649,8 @@ mod tests {
             }
         }
 
-        let adapter = ReverieAdapter::new(RewriteTool, (), ());
+        let adapter = ReverieAdapter::new(RewriteTool, (), ())
+            .expect("fixture Tool admits its unit configuration");
         let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Err(Errno::ENOSYS));
     }
@@ -2671,15 +2693,18 @@ mod tests {
     fn blocked_handler_does_not_serialize_other_threads() {
         let first_entered = Arc::new(Barrier::new(2));
         let release_first = Arc::new(Barrier::new(2));
-        let adapter = Arc::new(ReverieAdapter::new(
-            BlockingTool {
-                first_entered: first_entered.clone(),
-                release_first: release_first.clone(),
-                calls: AtomicUsize::new(0),
-            },
-            (),
-            (),
-        ));
+        let adapter = Arc::new(
+            ReverieAdapter::new(
+                BlockingTool {
+                    first_entered: first_entered.clone(),
+                    release_first: release_first.clone(),
+                    calls: AtomicUsize::new(0),
+                },
+                (),
+                (),
+            )
+            .expect("fixture Tool admits its unit configuration"),
+        );
 
         let first_adapter = adapter.clone();
         let first = thread::spawn(move || {

@@ -7,7 +7,7 @@
  */
 
 use bytes::BytesMut;
-use nix::sys::signal::Signal;
+use safeptrace::AnySignal;
 
 use crate::gdbstub::commands::*;
 use crate::gdbstub::hex::*;
@@ -15,9 +15,9 @@ use crate::gdbstub::signals;
 
 /// The signal of a `C` or `S` action, which gdb sends by its own number
 /// (`gdbstub::signals`).
-fn decode_signal(hex: &[u8]) -> Option<Signal> {
+fn decode_signal(hex: &[u8]) -> Option<AnySignal> {
     let gdb = decode_hex::<u8>(hex).ok()?;
-    Signal::try_from(signals::from_gdb(gdb)?).ok()
+    AnySignal::new(signals::from_gdb(gdb)?)
 }
 
 #[derive(PartialEq, Debug)]

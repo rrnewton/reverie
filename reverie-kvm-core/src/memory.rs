@@ -39,12 +39,16 @@ const PAGE_SIZE: usize = 4096;
 
 mod page_maps;
 mod shared_file;
+mod vfork;
 use page_maps::UserPages;
 use page_maps::Versioned;
 pub use shared_file::AllocationGuard;
 use shared_file::MemoryCopyAccess;
 pub use shared_file::PrivateRangePlan;
 pub use shared_file::SharedFileRangePlan;
+pub use vfork::VforkWriteBack;
+#[cfg(any(test, feature = "test-support"))]
+pub use vfork::vfork_window_steps;
 
 #[cfg(any(test, feature = "test-support"))]
 type SyscallDispatchObserver = Arc<dyn Fn(&crate::SyscallRequest) + Send + Sync>;
@@ -273,6 +277,21 @@ struct Mapping {
     /// checks it twice.
     deferred_queued: std::sync::atomic::AtomicBool,
     sync_mmu: Mutex<Option<bool>>,
+    /// Whether this memory is a vfork child's copy of an address space that
+    /// the child shares with its parent on Linux
+    /// ([`GuestMemory::snapshot_sharing_address_space`]), from the copy until
+    /// the child's exec ([`GuestMemory::retire_shared_files_for_exec`]). While
+    /// it is, the child may change a mapping only for a while: a change still
+    /// in place when its window ends is refused then
+    /// ([`GuestMemory::shares_parent_address_space`]).
+    shares_parent_address_space: std::sync::atomic::AtomicBool,
+    /// The parent of a vfork child's copy, until the child's changes to
+    /// private memory go back to it ([`GuestMemory::return_vfork_changes`])
+    /// or the child execs.
+    vfork_parent: Mutex<Option<vfork::VforkParent>>,
+    /// How many times this memory's image has been replaced by an exec
+    /// ([`GuestMemory::retire_shared_files_for_exec`]).
+    exec_count: std::sync::atomic::AtomicU64,
 }
 
 /// The end of the x86-64 user address space with 4-level paging.
@@ -310,6 +329,17 @@ impl UserWindow {
     }
 }
 
+/// The next mapping incarnation (`AddressSpaceState::mapping_incarnations`),
+/// unique in the process, so two copies of one address space never give two
+/// different mappings the same one.
+static NEXT_MAPPING_INCARNATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1);
+
+/// A mapping incarnation no page has had.
+fn fresh_mapping_incarnation() -> u64 {
+    NEXT_MAPPING_INCARNATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 #[derive(Clone, Debug)]
 struct AddressSpaceState {
     coverage: IdentityCoverage,
@@ -327,6 +357,19 @@ struct AddressSpaceState {
     /// The physical pages of `MAP_SHARED | MAP_ANONYMOUS` mappings. Their
     /// contents survive `MADV_DONTNEED`, which drops private anonymous pages.
     shared_anonymous_pages: Versioned<BTreeSet<u64>>,
+    /// The incarnation of the mapping each page belongs to, by physical page:
+    /// one value per new mapping ([`GuestMemory::record_page_backing`]),
+    /// unique in the process, which a move keeps and an unmap removes, and
+    /// which a protection change does not touch. The pages a remap grows a
+    /// mapping by are new pages, with an incarnation of their own
+    /// ([`GuestMemory::remap_user_range`]). A page that holds the same
+    /// state in two copies of one address space but another incarnation was
+    /// mapped again in one of them, though nothing else about it differs: a
+    /// vfork child's write-back compares them
+    /// ([`GuestMemory::return_vfork_changes`]). Copies of an address space
+    /// share the map until one of them changes it, so a fork does not copy
+    /// it page by page.
+    mapping_incarnations: Arc<BTreeMap<u64, u64>>,
     /// Facts about hidden Tool-scratch pages that let the next expose and
     /// hide skip every tree; see [`ScratchCache`].
     scratch_cache: ScratchCache,
@@ -489,6 +532,21 @@ impl ScratchCache {
 }
 
 impl AddressSpaceState {
+    /// Sets the mapping incarnation of `page`, or removes it with `None`.
+    /// The map is copied out of the copies that share it only when the value
+    /// changes, so an edit that changes nothing (a fork child's hidden
+    /// Tool-scratch pages, which have none) copies nothing.
+    fn set_mapping_incarnation(&mut self, page: u64, incarnation: Option<u64>) {
+        if self.mapping_incarnations.get(&page).copied() == incarnation {
+            return;
+        }
+        let incarnations = Arc::make_mut(&mut self.mapping_incarnations);
+        match incarnation {
+            Some(incarnation) => incarnations.insert(page, incarnation),
+            None => incarnations.remove(&page),
+        };
+    }
+
     fn scratch_cache_versions(&self) -> [u64; 4] {
         [
             self.reservations.version(),
@@ -530,6 +588,7 @@ impl AddressSpaceState {
             pages: UserPages::new(),
             file_pages: Versioned::new(BTreeMap::new()),
             shared_anonymous_pages: Versioned::new(BTreeSet::new()),
+            mapping_incarnations: Arc::default(),
             scratch_cache: ScratchCache::default(),
             backing_pages: BTreeMap::new(),
         }
@@ -542,6 +601,22 @@ impl AddressSpaceState {
             guest_base: self.coverage.start,
             guest_end: self.coverage.end,
         }
+    }
+
+    /// The stack window ([`GuestMemory::establish_user_stack_window`]), once
+    /// established.
+    fn stack_window(&self) -> Option<UserWindow> {
+        self.windows
+            .iter()
+            .copied()
+            .find(|window| window.user_end == USER_STACK_TOP)
+    }
+
+    /// The first and last physical page that `window`'s user addresses name.
+    fn window_pages(window: UserWindow) -> Option<(u64, u64)> {
+        let page = PAGE_SIZE as u64;
+        let end = window.physical(window.user_end);
+        (end > window.physical_start).then(|| (window.physical_start / page, end / page - 1))
     }
 
     /// The exclusive end of the identity user addresses.
@@ -573,6 +648,44 @@ impl AddressSpaceState {
             return Ok((address, limit));
         }
         Err(self.invalid_address(address, length))
+    }
+
+    /// Whether a page of user `[address, end)` is mapped. The range is taken
+    /// one region at a time, as [`Self::user_extent`] divides the user
+    /// addresses, so it may leave the identity addresses or a window; the
+    /// addresses between the regions are not user addresses, have no pages,
+    /// and are skipped.
+    fn user_range_reaches_mapping(&self, address: u64, end: u64) -> bool {
+        let page = PAGE_SIZE as u64;
+        let mut cursor = address;
+        while cursor < end {
+            let Ok((physical, limit)) = self.user_extent(cursor, 0) else {
+                let next_region = self
+                    .windows
+                    .iter()
+                    .map(|window| window.user_start)
+                    .chain(std::iter::once(self.coverage.start))
+                    .filter(|start| *start > cursor)
+                    .min();
+                match next_region {
+                    Some(start) => cursor = start,
+                    None => return false,
+                }
+                continue;
+            };
+            // The region holds `cursor`, so it ends above it.
+            let physical_end = limit.min(physical.saturating_add(end - cursor));
+            if self
+                .pages
+                .range(physical / page..=(physical_end - 1) / page)
+                .next()
+                .is_some()
+            {
+                return true;
+            }
+            cursor += physical_end - physical;
+        }
+        false
     }
 
     /// The user address of physical address `physical`, if it has one.
@@ -1140,10 +1253,88 @@ impl Drop for PendingReservation {
     }
 }
 
+/// The mapping a provider declared for a guest page: the protection the
+/// guest asked for (`PROT_READ`, `PROT_WRITE` and `PROT_EXEC` bits, none for
+/// `PROT_NONE`), flags the provider keeps on the mapping, and a lineage the
+/// provider assigns. This memory stores and copies them and decides nothing
+/// from them: a page keeps them while it stays mapped, through a protection
+/// change ([`GuestMemory::protect_user_range`]), a flag or lineage change
+/// ([`GuestMemory::flag_user_range`],
+/// [`GuestMemory::set_user_stack_window_lineage`]), a move
+/// ([`GuestMemory::remap_user_range`]) and into a copy.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub struct DeclaredMapping {
+    /// The declared protection.
+    pub prot: u8,
+    /// The provider's flags.
+    pub flags: u8,
+    /// The provider's lineage, zero for a new mapping
+    /// ([`GuestMemory::map_user_protection`]). LinuxEmu gives each mapping of
+    /// the stack window that a forked child inherits one of its own.
+    pub lineage: u16,
+}
+
+/// A mapped page of the stack window, as
+/// [`GuestMemory::user_stack_window_pages`] reports it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowPage {
+    /// The page's user address.
+    pub user_address: u64,
+    /// The mapping declared for the page, if one was ([`DeclaredMapping`]).
+    pub declared: Option<DeclaredMapping>,
+    /// What the page is reserved for, if anything.
+    pub reservation: Option<RegionKind>,
+}
+
+/// A user page's state: whether the guest can reach it and write it, and the
+/// mapping it belongs to where the caller declared it (`None` otherwise:
+/// [`GuestMemory::map_user_permissions`] and the shared-file paths say
+/// nothing about it).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UserPageState {
-    Accessible { writable: bool },
-    NoAccess,
+    Accessible {
+        writable: bool,
+        declared: Option<DeclaredMapping>,
+    },
+    NoAccess {
+        declared: Option<DeclaredMapping>,
+    },
+}
+
+impl UserPageState {
+    /// A page with access as `accessible` and `writable` say, and no declared
+    /// mapping.
+    fn undeclared(accessible: bool, writable: bool) -> Self {
+        if accessible {
+            Self::Accessible {
+                writable,
+                declared: None,
+            }
+        } else {
+            Self::NoAccess { declared: None }
+        }
+    }
+
+    /// A page of a mapping with `declared`'s protection and flags.
+    fn of(declared: DeclaredMapping) -> Self {
+        let prot = libc::c_int::from(declared.prot);
+        if prot == libc::PROT_NONE {
+            Self::NoAccess {
+                declared: Some(declared),
+            }
+        } else {
+            Self::Accessible {
+                writable: prot & libc::PROT_WRITE != 0,
+                declared: Some(declared),
+            }
+        }
+    }
+
+    fn declared(self) -> Option<DeclaredMapping> {
+        match self {
+            Self::Accessible { declared, .. } | Self::NoAccess { declared } => declared,
+        }
+    }
 }
 
 // SAFETY: Mapping owns every mmap view until Drop, not a Rust reference.
@@ -1216,13 +1407,26 @@ impl GuestMemory {
         let mapping: NonNull<u8> =
             NonNull::new(mapping.cast()).expect("mmap returned a null mapping");
         let base_address = mapping.as_ptr().expose_provenance();
-        let original_pages = (0..slice.length / PAGE_SIZE)
-            .map(|page| {
-                // SAFETY: this is derived while the original whole-range mmap
-                // is intact, and every offset names the start of a live page.
-                unsafe { NonNull::new_unchecked(mapping.as_ptr().add(page * PAGE_SIZE)) }
-            })
-            .collect();
+        // One pointer per page, 2 MiB per GiB of guest memory: a host that
+        // cannot allocate it has run out of memory like a refused mmap, so
+        // report it the same way rather than abort the process.
+        let page_count = slice.length / PAGE_SIZE;
+        let mut original_pages = Vec::new();
+        if let Err(error) = original_pages.try_reserve_exact(page_count) {
+            // SAFETY: the mapping was created above and nothing refers to it.
+            unsafe { libc::munmap(mapping.as_ptr().cast(), slice.length) };
+            return Err(Error::MemoryMapping(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                error,
+            )));
+        }
+        original_pages.extend((0..page_count).map(|page| {
+            // SAFETY: this is derived while the original whole-range mmap
+            // is intact, and every offset names the start of a live page.
+            unsafe { NonNull::new_unchecked(mapping.as_ptr().add(page * PAGE_SIZE)) }
+        }));
+        // Exactly the reserved capacity, so this does not reallocate.
+        let original_pages = original_pages.into_boxed_slice();
         let size = slice.length;
         Ok(Self {
             mapping: Arc::new(Mapping {
@@ -1238,6 +1442,9 @@ impl GuestMemory {
                 deferred: Mutex::new(shared_file::DeferredFailures::default()),
                 deferred_queued: std::sync::atomic::AtomicBool::new(false),
                 sync_mmu: Mutex::new(None),
+                shares_parent_address_space: std::sync::atomic::AtomicBool::new(false),
+                vfork_parent: Mutex::new(None),
+                exec_count: std::sync::atomic::AtomicU64::new(0),
             }),
             failure_context: None,
             operation_origin: None,
@@ -1508,13 +1715,87 @@ impl GuestMemory {
         self.observe_test_vector_copy(total);
     }
 
+    /// A copy of this memory for a fork: another address space, which keeps a
+    /// stack-window record of its own ([`GuestMemory::user_stack_window_pages`]).
     pub fn snapshot(&self) -> Result<Self> {
         self.snapshot_with_sparse_copy(copy_sparse_file)
+    }
+
+    /// A copy of this memory for a child that shares this address space on
+    /// Linux (`vfork(2)`, and `clone(2)` or `clone3(2)` with
+    /// `CLONE_VM|CLONE_VFORK`) but runs on a copy here: as
+    /// [`GuestMemory::snapshot`], but the copy shares the stack window's
+    /// record, taken with the pages it copies, so that a change either makes
+    /// afterwards, which the other's pages lack, leaves the other's pages
+    /// unknown ([`GuestMemory::user_stack_window_pages`]), while the child
+    /// runs and after it exits, until the child's new image takes a record of
+    /// its own ([`GuestMemory::detach_user_stack_window_watch`]).
+    ///
+    /// The copy inherits this memory's shared views (ordinary files and
+    /// fork-shared anonymous memory) as a fork's does, so a store through a
+    /// view on either side is visible on the other at once. The copy has its
+    /// own arena and entry gate, so it adds no participant to this memory's
+    /// gate, and taking it requires what a fork's copy of shared views does:
+    /// this memory's one participant stopped, or none. The copy keeps this
+    /// memory as its parent: when the child's window ends, its changes to
+    /// private memory go back here ([`GuestMemory::return_vfork_changes`]),
+    /// once the copy maps its pages as this memory did when the copy was
+    /// taken ([`GuestMemory::shares_parent_address_space`]).
+    pub fn snapshot_sharing_address_space(&self) -> Result<Self> {
+        let copy = self.snapshot_keeping(copy_sparse_file, true)?;
+        copy.link_vfork_parent(self);
+        Ok(copy)
+    }
+
+    /// Whether this memory is a vfork child's copy of an address space the
+    /// child shares with its parent on Linux
+    /// ([`GuestMemory::snapshot_sharing_address_space`]), and the child has
+    /// not exec'd since ([`GuestMemory::retire_shared_files_for_exec`]).
+    ///
+    /// On Linux such a child maps, unmaps and protects memory in its
+    /// parent's address space; here only the changes to the contents of
+    /// private memory go back to the parent, when the window ends
+    /// ([`GuestMemory::return_vfork_changes`]). So the child may change a
+    /// mapping only for a while: a copy that does not map its pages as when
+    /// the child started, when its window ends, is refused then with
+    /// [`Error::VforkChildCapability`] before anything goes back. While this
+    /// holds, the provider refuses a brk that moves the break, and the
+    /// creation of a thread, at the call. As a backstop below the provider, a
+    /// publication that would install, replace or withdraw a shared view,
+    /// and a protection change over one, are refused at once with
+    /// [`Error::SharedFileCapability`], so that the parent's shared views,
+    /// which the copy's stores still reach, are exactly the child's when the
+    /// parent resumes.
+    pub fn shares_parent_address_space(&self) -> bool {
+        self.mapping
+            .shares_parent_address_space
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The refusal of a change to a shared view while
+    /// [`GuestMemory::shares_parent_address_space`] holds.
+    pub(crate) fn vfork_shared_view_change(operation: &'static str) -> Error {
+        Error::SharedFileCapability {
+            operation,
+            reason: "a vfork child shares its parent's address space until it execs or exits, \
+                     and runs on a copy here, so it cannot change a shared view it inherited \
+                     or map a new one",
+        }
     }
 
     fn snapshot_with_sparse_copy(
         &self,
         sparse_copy: impl FnOnce(RawFd, RawFd, usize) -> io::Result<()>,
+    ) -> Result<Self> {
+        self.snapshot_keeping(sparse_copy, false)
+    }
+
+    /// The snapshot, keeping the stack window's record shared with this
+    /// memory when `share_record` says so, and else taking one of its own.
+    fn snapshot_keeping(
+        &self,
+        sparse_copy: impl FnOnce(RawFd, RawFd, usize) -> io::Result<()>,
+        share_record: bool,
     ) -> Result<Self> {
         const COPY_CHUNK: usize = 1024 * 1024;
 
@@ -1523,7 +1804,7 @@ impl GuestMemory {
         // it is inherited, so the child shares it rather than copying it.
         let _allocation = self.share_anonymous_memory_for_fork()?;
         if self.contains_retained_shared() {
-            return self.snapshot_with_shared_files(_allocation);
+            return self.snapshot_with_shared_files(_allocation, share_record);
         }
         if self.entry_gate().single_member_domain_active() {
             return Err(Error::SharedFileCapability {
@@ -1532,20 +1813,32 @@ impl GuestMemory {
             });
         }
         let snapshot = Self::new(self.guest_base(), self.len())?;
-        let user_access = self
+        let mut user_access = self
             .mapping
             .address_space
             .lock()
             .expect("guest memory access map lock poisoned")
             .clone();
+        // A fork's copy is another address space: it starts with this one's
+        // stack-window record, and the two record their own changes.
+        if !share_record {
+            user_access.pages.detach_watch();
+        }
 
-        // The sparse helper requires whole, equal-sized files at offset zero.
-        // A subset uses the existing view-relative copy without extending that
-        // contract or copying bytes outside the view.
-        let copied_sparse = if user_access.backing_pages.is_empty()
-            && self.mapping.slice.offset == 0
-            && self.len() == self.mapping.slice.backing.length
-        {
+        // The sparse copy requires whole, equal-sized files at offset zero. A
+        // subset uses the existing view-relative copy without extending that
+        // contract or copying bytes outside the view. Without a separately
+        // backed page the base backing is the whole arena, and one sparse copy
+        // copies it; with some, each run of base pages and each separately
+        // backed page is copied from its own backing, by its data extents.
+        let whole =
+            self.mapping.slice.offset == 0 && self.len() == self.mapping.slice.backing.length;
+        let copied_sparse = if !whole {
+            false
+        } else if !user_access.backing_pages.is_empty() {
+            self.copy_sparse_snapshot(&snapshot, &user_access.backing_pages)
+                .is_ok()
+        } else {
             let _source_guard = self
                 .mapping
                 .slice
@@ -1566,8 +1859,6 @@ impl GuestMemory {
                 self.len(),
             )
             .is_ok()
-        } else {
-            false
         };
 
         // SEEK_DATA/SEEK_HOLE and copy_file_range are Linux optimizations, not
@@ -1599,7 +1890,157 @@ impl GuestMemory {
         // The sparse fd operation is not a copy lease or a global snapshot
         // fence. Fallback byte copies each take their own short admission.
         self.check_copy_failure()?;
+        snapshot.mark_shares_parent_address_space(share_record);
         Ok(snapshot)
+    }
+
+    /// Copies every page of this arena, which holds separately backed pages
+    /// (`backing_pages`) but no retained shared view, into `snapshot`, a new
+    /// arena of the same base and size, reading no hole: each run of base
+    /// pages by the data extents of the base backing
+    /// ([`GuestMemory::copy_sparse_base_run`]), and each separately backed
+    /// page by the data extent of its own backing at that page
+    /// ([`GuestMemory::copy_sparse_separate_run`]), into its place in the
+    /// snapshot's base backing. A page whose backing holds no data there is a
+    /// hole of the snapshot, and reads as zeros, as it does here. Reading such
+    /// a page through the arena would commit it on both sides, which is why a
+    /// fork used to cost as much as the whole arena once one page had a
+    /// backing of its own. An error can leave part of the snapshot copied; the
+    /// caller then copies every byte, which overwrites it.
+    fn copy_sparse_snapshot(
+        &self,
+        snapshot: &GuestMemory,
+        backing_pages: &BTreeMap<u64, InstalledBackingPage>,
+    ) -> io::Result<()> {
+        #[cfg(test)]
+        tests::injected_sparse_snapshot_failure()?;
+        let mut cursor = self.guest_base();
+        let mut separate = backing_pages.iter().peekable();
+        while let Some((&page, installed)) = separate.next() {
+            // A run of consecutive pages at consecutive offsets of one backing,
+            // as one publication installs them.
+            let mut pages = 1;
+            while let Some(&(&next, following)) = separate.peek()
+                && next == page + pages as u64
+                && Arc::ptr_eq(&following._slice.backing, &installed._slice.backing)
+                && following._slice.offset == installed._slice.offset + pages * PAGE_SIZE
+            {
+                pages += 1;
+                separate.next();
+            }
+            let address = page * PAGE_SIZE as u64;
+            self.copy_sparse_base_run(snapshot, cursor, address)?;
+            self.copy_sparse_separate_run(snapshot, address, installed, pages)?;
+            cursor = address + (pages * PAGE_SIZE) as u64;
+        }
+        self.copy_sparse_base_run(snapshot, cursor, self.guest_end())
+    }
+
+    /// Copies the pages of `[start, end)` of this arena's base backing, none of
+    /// them separately backed, into the same range of `child`'s base backing,
+    /// a new arena of the same base and size: their data extents only
+    /// (`copy_sparse_range`), so a hole is never read and stays a hole of the
+    /// child. An error can leave part of the range copied.
+    fn copy_sparse_base_run(&self, child: &GuestMemory, start: u64, end: u64) -> io::Result<()> {
+        if start >= end {
+            return Ok(());
+        }
+        let length = usize::try_from(end - start).expect("guest range must fit usize");
+        let invalid = |_| io::Error::new(io::ErrorKind::InvalidInput, "range outside the arena");
+        let source = self.checked_offset(start, length).map_err(invalid)?;
+        let destination = child.checked_offset(start, length).map_err(invalid)?;
+        let _source_guard = self
+            .mapping
+            .slice
+            .backing
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        let _destination_guard = child
+            .mapping
+            .slice
+            .backing
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        copy_sparse_range(
+            self.mapping.slice.backing.fd.as_raw_fd(),
+            self.mapping.slice.offset + source,
+            child.mapping.slice.backing.fd.as_raw_fd(),
+            child.mapping.slice.offset + destination,
+            length,
+        )
+    }
+
+    /// Copies `pages` separately backed pages from `address` on, which
+    /// `installed` begins (a private backing of their own, at consecutive
+    /// offsets of it), into the same range of `child`'s base backing, which
+    /// must read as zeros there: the data extents of their backing at those
+    /// pages only (`copy_sparse_range`), from its descriptor, so a page the
+    /// backing holds no data for is neither read nor written and reads as
+    /// zeros in the child too. A retained shared view is never copied; the
+    /// caller inherits it. An error can leave part of the range copied.
+    fn copy_sparse_separate_run(
+        &self,
+        child: &GuestMemory,
+        address: u64,
+        installed: &InstalledBackingPage,
+        pages: usize,
+    ) -> io::Result<()> {
+        if installed._slice.backing.kind != BackingKind::Fixed {
+            return Err(io::Error::other(
+                "a retained shared view is inherited, not copied",
+            ));
+        }
+        let length = pages * PAGE_SIZE;
+        let destination = child
+            .checked_offset(address, length)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "range outside the arena"))?;
+        // This arena's host-access guard serializes every host access to its
+        // pages, separately backed ones included (`read_host_chunks`).
+        let _source_guard = self
+            .mapping
+            .slice
+            .backing
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        let _destination_guard = child
+            .mapping
+            .slice
+            .backing
+            .host_access
+            .lock()
+            .expect("guest memory lock poisoned");
+        copy_sparse_range(
+            installed._slice.backing.fd.as_raw_fd(),
+            installed._slice.offset,
+            child.mapping.slice.backing.fd.as_raw_fd(),
+            child.mapping.slice.offset + destination,
+            length,
+        )
+    }
+
+    /// Marks a finished snapshot as a vfork child's copy when `share_record`
+    /// says it is one ([`GuestMemory::shares_parent_address_space`]). The
+    /// copy is not yet reachable by any vCPU, so no publication races this.
+    fn mark_shares_parent_address_space(&self, share_record: bool) {
+        self.mapping
+            .shares_parent_address_space
+            .store(share_record, std::sync::atomic::Ordering::Release);
+    }
+
+    /// The declared mapping of the page that holds physical `address`, if it
+    /// is mapped and declared ([`DeclaredMapping`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn declared_mapping(&self, address: u64) -> Option<DeclaredMapping> {
+        self.mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .pages
+            .get(&(address / PAGE_SIZE as u64))
+            .and_then(|state| state.declared())
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1761,7 +2202,13 @@ impl GuestMemory {
                 {
                     continue;
                 }
-                old.push((page, state.reservations.edit().insert(page, kind)));
+                let previous = state.reservations.edit().insert(page, kind);
+                // A page taken over for another use has changed, even where
+                // its state stays as it was (see `watch_user_stack_window`).
+                if previous != Some(kind) {
+                    state.pages.count_change(page, page);
+                }
+                old.push((page, previous));
             }
         }
         Ok(PendingReservation {
@@ -1871,6 +2318,106 @@ impl GuestMemory {
             .expect("guest memory access map lock poisoned");
         state.windows.clear();
         state.identity_end = None;
+    }
+
+    /// Watches the stack window ([`GuestMemory::establish_user_stack_window`])
+    /// from now on, with a record of its own, replacing any earlier watch. The
+    /// window's pages ([`GuestMemory::user_stack_window_pages`]) are
+    /// known while the record is certain: every change to a page of it, by
+    /// whatever path maps, unmaps, protects, moves or publishes it or reserves
+    /// it for another use, is this memory's own and is held in its page states
+    /// (the page map counts each one, `UserPages::watch`, so no path can make
+    /// one unseen), and nothing the states do not hold has changed
+    /// ([`GuestMemory::note_user_mapping_change`]). A loader calls this once
+    /// it has mapped the window for a new image. Without a stack window there
+    /// is nothing to watch.
+    pub fn watch_user_stack_window(&self) {
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        if let Some((first, last)) = state
+            .stack_window()
+            .and_then(AddressSpaceState::window_pages)
+        {
+            state.pages.watch(first, last);
+        }
+    }
+
+    /// The mapped pages of the stack window, lowest first, each with what this
+    /// memory holds about it ([`WindowPage`]). `None` when nothing watches the
+    /// window, and when its record is not certain:
+    /// [`GuestMemory::note_user_mapping_change`] named part of it, or a copy
+    /// that shares the record ([`GuestMemory::snapshot_sharing_address_space`])
+    /// changed a page of it. While the record is certain, every change to the
+    /// window since the watch began is held in these pages. What mappings they
+    /// make is the provider's to decide. A fork's copy of the memory
+    /// ([`GuestMemory::snapshot`]) keeps the pages and a record of its own; a
+    /// new image's loader starts again.
+    pub fn user_stack_window_pages(&self) -> Option<Vec<WindowPage>> {
+        let state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let window = state.stack_window()?;
+        let (first, last) = AddressSpaceState::window_pages(window)?;
+        if state.pages.certain_watch() != Some((first, last)) {
+            return None;
+        }
+        let page = PAGE_SIZE as u64;
+        Some(
+            (first..=last)
+                .filter_map(|number| {
+                    let page_state = state.pages.get(&number)?;
+                    Some(WindowPage {
+                        user_address: window.user_start + number * page - window.physical_start,
+                        declared: page_state.declared(),
+                        reservation: state.reservations.get(&number).copied(),
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// Records that the guest changed something about the mappings of the
+    /// user range `[address, address + length)` that the pages' states do not
+    /// hold, as when Linux applies part of a call that this backend refuses
+    /// whole. When the range overlaps the stack window, its record is no
+    /// longer certain ([`GuestMemory::user_stack_window_pages`]). An empty
+    /// range names nothing.
+    pub fn note_user_mapping_change(&self, address: u64, length: u64) {
+        let mut state = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let Some(window) = state.stack_window() else {
+            return;
+        };
+        if length > 0
+            && address < window.user_end
+            && address.saturating_add(length) > window.user_start
+            && let Some((first, last)) = AddressSpaceState::window_pages(window)
+        {
+            state.pages.note_change(first, last);
+        }
+    }
+
+    /// Gives this memory a stack-window record of its own, certain exactly
+    /// when the shared one is for this memory now
+    /// ([`GuestMemory::snapshot_sharing_address_space`]): a new image's loader
+    /// calls this before it clears the old image, since the new image is a
+    /// new address space, and clearing the old one changes nothing for a
+    /// process that shared it.
+    pub fn detach_user_stack_window_watch(&self) {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .pages
+            .detach_watch();
     }
 
     /// The established windows, by user start, and the end of the identity
@@ -1986,6 +2533,7 @@ impl GuestMemory {
         access.pages.clear();
         access.file_pages.edit().clear();
         access.shared_anonymous_pages.edit().clear();
+        access.mapping_incarnations = Arc::default();
         access.reservations.edit().clear();
         access.cursors = None;
     }
@@ -2011,13 +2559,108 @@ impl GuestMemory {
         accessible: bool,
         writable: bool,
     ) -> Result<()> {
+        let state = UserPageState::undeclared(accessible, writable);
+        self.set_user_pages(guest_address, length, writable, |_| state)
+    }
+
+    /// Maps `[guest_address, guest_address + length)` as a new mapping with
+    /// declared protection `prot` (`PROT_READ`, `PROT_WRITE` and `PROT_EXEC`
+    /// bits) and no provider flags ([`DeclaredMapping`]). The pages are
+    /// accessible unless `prot` is `PROT_NONE`, and writable with
+    /// `PROT_WRITE`, as [`GuestMemory::map_user_permissions`] maps them.
+    pub fn map_user_protection(&self, guest_address: u64, length: u64, prot: u8) -> Result<()> {
+        let state = UserPageState::of(DeclaredMapping {
+            prot,
+            ..DeclaredMapping::default()
+        });
+        let writable = libc::c_int::from(prot) & libc::PROT_WRITE != 0;
+        self.set_user_pages(guest_address, length, writable, |_| state)
+    }
+
+    /// Changes the declared protection of the mapped range `[guest_address,
+    /// guest_address + length)` to `prot`, as `mprotect(2)` changes a
+    /// mapping's: each page keeps its provider flags, and a page whose
+    /// mapping was never declared stays undeclared, with the access `prot`
+    /// gives.
+    pub fn protect_user_range(&self, guest_address: u64, length: u64, prot: u8) -> Result<()> {
+        let writable = libc::c_int::from(prot) & libc::PROT_WRITE != 0;
+        self.set_user_pages(guest_address, length, writable, |old| {
+            match old.and_then(UserPageState::declared) {
+                Some(declared) => UserPageState::of(DeclaredMapping { prot, ..declared }),
+                None => UserPageState::undeclared(prot != 0, writable),
+            }
+        })
+    }
+
+    /// Sets the provider flags `set` and clears `clear`
+    /// ([`DeclaredMapping::flags`]) on each declared page of the user range
+    /// `[user_address, user_address + length)` that lies in the stack window
+    /// ([`GuestMemory::user_stack_window_pages`]), whose pages alone keep
+    /// flags. An undeclared page stays so, and an unmapped one is skipped.
+    pub fn flag_user_range(&self, user_address: u64, length: u64, set: u8, clear: u8) {
+        self.edit_stack_window_pages(user_address, length, |declared| DeclaredMapping {
+            flags: declared.flags & !clear | set,
+            ..declared
+        });
+    }
+
+    /// Sets the lineage ([`DeclaredMapping::lineage`]) of each declared page
+    /// of the user range `[user_address, user_address + length)` that lies in
+    /// the stack window to `lineage`. An undeclared page stays so, and an
+    /// unmapped one is skipped.
+    pub fn set_user_stack_window_lineage(&self, user_address: u64, length: u64, lineage: u16) {
+        self.edit_stack_window_pages(user_address, length, |declared| DeclaredMapping {
+            lineage,
+            ..declared
+        });
+    }
+
+    /// Replaces the declared mapping of each declared page of the user range
+    /// `[user_address, user_address + length)` that lies in the stack window
+    /// with `edit(its declared mapping)`, which keeps its protection.
+    fn edit_stack_window_pages(
+        &self,
+        user_address: u64,
+        length: u64,
+        edit: impl Fn(DeclaredMapping) -> DeclaredMapping,
+    ) {
+        let mut access = self
+            .mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned");
+        let Some(window) = access.stack_window() else {
+            return;
+        };
+        let page = PAGE_SIZE as u64;
+        let start = user_address.max(window.user_start);
+        let end = user_address.saturating_add(length).min(window.user_end);
+        for user in (start..end).step_by(PAGE_SIZE) {
+            let physical_page = window.physical(user & !(page - 1)) / page;
+            if let Some(declared) = access
+                .pages
+                .get(&physical_page)
+                .and_then(|state| state.declared())
+            {
+                access
+                    .pages
+                    .insert(physical_page, UserPageState::of(edit(declared)));
+            }
+        }
+    }
+
+    /// Sets each page of `[guest_address, guest_address + length)` to
+    /// `state(its old state)`, refusing a writable state on a page of an
+    /// ordinary file the guest may not write before anything changes.
+    fn set_user_pages(
+        &self,
+        guest_address: u64,
+        length: u64,
+        writable: bool,
+        state: impl Fn(Option<UserPageState>) -> UserPageState,
+    ) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
-        };
-        let state = if accessible {
-            UserPageState::Accessible { writable }
-        } else {
-            UserPageState::NoAccess
         };
         let mut access = self
             .mapping
@@ -2043,7 +2686,8 @@ impl GuestMemory {
             });
         }
         for page in first_page..=last_page {
-            access.pages.insert(page, state);
+            let new = state(access.pages.get(&page).copied());
+            access.pages.insert(page, new);
             access
                 .reservations
                 .edit()
@@ -2198,6 +2842,7 @@ impl GuestMemory {
             access.pages.remove(&page);
             access.file_pages.edit().remove(&page);
             access.shared_anonymous_pages.edit().remove(&page);
+            access.set_mapping_incarnation(page, None);
             if !access
                 .reservations
                 .get(&page)
@@ -2218,7 +2863,9 @@ impl GuestMemory {
 
     /// Records what a new mapping of physical `[guest_address, guest_address +
     /// length)` maps: a regular file from byte `offset` (or none), and whether
-    /// it is `MAP_SHARED | MAP_ANONYMOUS`. Whatever the range held before goes.
+    /// it is `MAP_SHARED | MAP_ANONYMOUS`. Whatever the range held before goes,
+    /// and the range takes an incarnation of its own (see
+    /// `AddressSpaceState::mapping_incarnations`).
     pub fn record_page_backing(
         &self,
         guest_address: u64,
@@ -2247,6 +2894,11 @@ impl GuestMemory {
             } else {
                 access.shared_anonymous_pages.edit().remove(&page);
             }
+        }
+        let incarnation = fresh_mapping_incarnation();
+        let incarnations = Arc::make_mut(&mut access.mapping_incarnations);
+        for page in first_page..=last_page {
+            incarnations.insert(page, incarnation);
         }
     }
 
@@ -2348,6 +3000,21 @@ impl GuestMemory {
             .lock()
             .expect("guest memory access map lock poisoned");
         (first_page..=last_page).all(|page| access.pages.contains_key(&page))
+    }
+
+    /// Whether any page of user `[address, address + length)` is mapped,
+    /// wherever the range lies. Unlike [`Self::user_range_to_guest`], the
+    /// range need not lie in one region (the identity addresses, or a window):
+    /// it may span several and the addresses between them, which are not user
+    /// addresses and are never mapped. A range that would pass the end of the
+    /// address space stops there. The cost grows with the number of regions,
+    /// not with the length.
+    pub fn user_range_reaches_mapping(&self, address: u64, length: u64) -> bool {
+        self.mapping
+            .address_space
+            .lock()
+            .expect("guest memory access map lock poisoned")
+            .user_range_reaches_mapping(address, address.saturating_add(length))
     }
 
     /// The highest page-aligned `length`-byte range of unmapped physical pages in
@@ -2498,10 +3165,21 @@ impl GuestMemory {
         let old_shared_anonymous = (old_first..=old_last)
             .map(|page| access.shared_anonymous_pages.contains(&page))
             .collect::<Vec<_>>();
+        // A moved mapping is the same mapping, and so are the pages a shrink
+        // keeps. The pages a grow adds are new, as on Linux, where they are
+        // fresh pages: they take an incarnation of their own, as a new mapping
+        // does, so a page that a shrink removed and a grow brought back is not
+        // the page it replaced (a vfork write-back compares them).
+        let old_incarnations = (old_first..=old_last)
+            .map(|page| access.mapping_incarnations.get(&page).copied())
+            .collect::<Vec<_>>();
+        let grown_incarnation =
+            (new_last - new_first > old_last - old_first).then(fresh_mapping_incarnation);
         for page in old_first..=old_last {
             access.pages.remove(&page);
             access.file_pages.edit().remove(&page);
             access.shared_anonymous_pages.edit().remove(&page);
+            access.set_mapping_incarnation(page, None);
             if !access
                 .reservations
                 .get(&page)
@@ -2539,6 +3217,13 @@ impl GuestMemory {
             } else {
                 access.shared_anonymous_pages.edit().remove(&page);
             }
+            access.set_mapping_incarnation(
+                page,
+                old_incarnations
+                    .get(index)
+                    .copied()
+                    .unwrap_or(grown_incarnation),
+            );
             if !access
                 .reservations
                 .get(&page)
@@ -2965,25 +3650,47 @@ impl GuestMemory {
             .host_access
             .lock()
             .expect("guest memory lock poisoned");
-        for chunk in chunks {
-            let address = chunk.mapping.as_ptr().expose_provenance();
-            // SAFETY: checked_offset proved that this complete page lies in a
-            // live MAP_SHARED memfd view. madvise consumes only its numeric
-            // address; Rust dereferences below retain the exact mmap pointer.
+        // Once a page has a backing of its own, the range comes back one chunk
+        // per page; an exec's discard of the whole user range then made one
+        // call per page of the arena. Consecutive chunks of one backing at
+        // consecutive host addresses go in one call instead.
+        let mut chunks = chunks.into_iter().peekable();
+        while let Some(first) = chunks.next() {
+            let mut run = vec![first];
+            while let Some(next) = chunks.peek() {
+                let last = run.last().expect("a run has a chunk");
+                if !Arc::ptr_eq(&next.backing, &last.backing)
+                    || last.mapping.as_ptr().addr() + last.length != next.mapping.as_ptr().addr()
+                {
+                    break;
+                }
+                run.push(chunks.next().expect("peeked"));
+            }
+            let address = run[0].mapping.as_ptr().expose_provenance();
+            let length: usize = run.iter().map(|chunk| chunk.length).sum();
+            #[cfg(test)]
+            tests::note_discard_call(length);
+            // SAFETY: checked_offset proved that every page of the run lies in a
+            // live MAP_SHARED memfd view, and the run's chunks are consecutive
+            // in host addresses. madvise consumes only its numeric address
+            // range; Rust dereferences below retain each chunk's exact mmap
+            // pointer.
             let result = unsafe {
                 libc::madvise(
                     std::ptr::with_exposed_provenance_mut::<u8>(address).cast(),
-                    chunk.length,
+                    length,
                     libc::MADV_REMOVE,
                 )
             };
             if result != 0 {
                 // MADV_REMOVE is an optimization. Preserve reset semantics on
-                // kernels that reject it by zeroing this exact mapping chunk.
-                // SAFETY: host_chunks supplied the current pointer and length,
-                // and the host-access guard serializes this write.
-                unsafe {
-                    std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+                // kernels that reject it by zeroing each exact mapping chunk.
+                for chunk in &run {
+                    // SAFETY: host_chunks supplied the current pointer and
+                    // length, and the host-access guard serializes this write.
+                    unsafe {
+                        std::ptr::write_bytes(chunk.mapping.as_ptr(), 0, chunk.length);
+                    }
                 }
             }
         }
@@ -3053,7 +3760,7 @@ impl GuestMemory {
                 if permissions.enabled
                     && !matches!(
                         permissions.pages.get(&page),
-                        Some(UserPageState::Accessible { writable: true })
+                        Some(UserPageState::Accessible { writable: true, .. })
                     )
                 {
                     continue;
@@ -3561,7 +4268,7 @@ impl UserMemory {
             if access.enabled
                 && !matches!(
                     access.pages.get(&(start / PAGE_SIZE as u64)),
-                    Some(UserPageState::Accessible { writable: true })
+                    Some(UserPageState::Accessible { writable: true, .. })
                 )
             {
                 return Err(denied);
@@ -3657,7 +4364,7 @@ impl UserMemory {
             if access.enabled
                 && !matches!(
                     access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                    Some(UserPageState::Accessible { writable: true })
+                    Some(UserPageState::Accessible { writable: true, .. })
                 )
             {
                 break;
@@ -3783,7 +4490,7 @@ impl UserMemory {
         while cursor < end {
             if !matches!(
                 access.pages.get(&(cursor / PAGE_SIZE as u64)),
-                Some(UserPageState::Accessible { writable: true })
+                Some(UserPageState::Accessible { writable: true, .. })
             ) {
                 break;
             }
@@ -4032,9 +4739,32 @@ fn create_memory_backing() -> io::Result<OwnedFd> {
 /// this slower. It must not report stored data as a hole. The caller falls
 /// back to a byte-for-byte mapping copy on every error or incomplete extent.
 fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Result<()> {
-    let end = libc::off_t::try_from(length)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "mapping exceeds off_t"))?;
-    let mut cursor: libc::off_t = 0;
+    copy_sparse_range(source, 0, destination, 0, length)
+}
+
+/// Copies the data extents (`SEEK_DATA`/`SEEK_HOLE`) of the `length` bytes of
+/// `source` at `source_start` to `destination` at `destination_start`, with
+/// `copy_file_range`, and skips the holes: the caller's destination range must
+/// already read as zeros, as a new file's does. An error can leave part of the
+/// range copied; the caller then overwrites the whole range.
+fn copy_sparse_range(
+    source: RawFd,
+    source_start: usize,
+    destination: RawFd,
+    destination_start: usize,
+    length: usize,
+) -> io::Result<()> {
+    let exceeds = || io::Error::new(io::ErrorKind::InvalidInput, "mapping exceeds off_t");
+    let offset = |value: usize| libc::off_t::try_from(value).map_err(|_| exceeds());
+    let start = offset(source_start)?;
+    let end = start.checked_add(offset(length)?).ok_or_else(exceeds)?;
+    let destination_base = offset(destination_start)?;
+    destination_base
+        .checked_add(offset(length)?)
+        .ok_or_else(exceeds)?;
+    // Where a source offset lands in the destination.
+    let shift = destination_base - start;
+    let mut cursor = start;
 
     while cursor < end {
         // SAFETY: source is a live descriptor owned by the source Mapping.
@@ -4065,12 +4795,13 @@ fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Res
         }
         let extent_end = hole.min(end);
         let mut source_offset = data;
-        let mut destination_offset = data;
+        let mut destination_offset = data + shift;
         while source_offset < extent_end {
             let remaining = usize::try_from(extent_end - source_offset)
                 .expect("nonnegative extent length must fit usize");
             // SAFETY: both descriptors are live for the call, the offsets are
-            // within their equal file sizes, and both offset pointers are valid.
+            // within the caller's ranges of the two files, and both offset
+            // pointers are valid.
             let copied = unsafe {
                 libc::copy_file_range(
                     source,
@@ -4090,7 +4821,7 @@ fn copy_sparse_file(source: RawFd, destination: RawFd, length: usize) -> io::Res
                     "copy_file_range stopped before the end of an extent",
                 ));
             }
-            if source_offset != destination_offset || source_offset > extent_end {
+            if destination_offset - source_offset != shift || source_offset > extent_end {
                 return Err(io::Error::other(
                     "copy_file_range returned inconsistent offsets",
                 ));
@@ -4203,6 +4934,7 @@ impl Drop for Mapping {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod user_copy_tests {
     use std::future::Future;
     use std::sync::atomic::AtomicBool;
@@ -5020,6 +5752,7 @@ impl MemoryAccess for UserMemory {
 
 #[cfg(test)]
 #[path = "memory/entry_snapshot_tests.rs"]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod entry_snapshot_tests;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -5036,10 +5769,37 @@ impl GuestMemory {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use reverie::syscalls::AddrMut;
 
     use super::*;
+
+    std::thread_local! {
+        static FAIL_SPARSE_SNAPSHOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static DISCARD_CALLS: std::cell::RefCell<Option<Vec<usize>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    /// The failure the plain snapshot's sparse copy of an arena with
+    /// separately backed pages reports, when a test asks for one on this
+    /// thread (`FAIL_SPARSE_SNAPSHOT`).
+    pub(super) fn injected_sparse_snapshot_failure() -> io::Result<()> {
+        if FAIL_SPARSE_SNAPSHOT.with(std::cell::Cell::get) {
+            Err(io::Error::other("injected sparse snapshot failure"))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Notes the length of one discard call, while a test records them on
+    /// this thread (`DISCARD_CALLS`).
+    pub(super) fn note_discard_call(length: usize) {
+        DISCARD_CALLS.with(|calls| {
+            if let Some(calls) = calls.borrow_mut().as_mut() {
+                calls.push(length);
+            }
+        });
+    }
 
     mod entry_copy_tests {
         use std::sync::atomic::AtomicUsize;
@@ -5760,6 +6520,459 @@ mod tests {
         assert_eq!(bytes, [[2; 8], [3; 8]].concat()[..]);
     }
 
+    /// A mapped page is found anywhere in a range that leaves one region: from
+    /// an identity address or from an address between the regions, into the
+    /// stack window, and past the end of the user addresses, however long the
+    /// range. A physical page with no user address is never found, and the
+    /// identity addresses find a window's physical page once they reach it.
+    #[test]
+    fn user_range_reaches_mapping_across_regions() {
+        let page = PAGE_SIZE as u64;
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        // An identity page, the window's third page, and the window's last
+        // physical page, which has no user address.
+        for physical in [4 * page, 8 * MIB + 2 * page, 16 * MIB - page] {
+            memory
+                .map_user_permissions(physical, page, true, true)
+                .unwrap();
+        }
+        let reaches = |start: u64, end: u64| memory.user_range_reaches_mapping(start, end - start);
+        // Within one region.
+        assert!(reaches(4 * page, 5 * page));
+        assert!(!reaches(5 * page, 8 * MIB));
+        assert!(reaches(window, window + 3 * page));
+        assert!(!reaches(window, window + 2 * page));
+        assert!(!reaches(window + 3 * page, USER_STACK_TOP));
+        // From an identity address, or from between the regions, into the
+        // window.
+        assert!(reaches(5 * page, window + 3 * page));
+        assert!(!reaches(5 * page, window + 2 * page));
+        assert!(reaches(8 * MIB, window + 3 * page));
+        assert!(!reaches(8 * MIB, window + 2 * page));
+        // Past the end of the user addresses, however long the range.
+        assert!(!reaches(window + 3 * page, window + 3 * page + (1 << 46)));
+        assert!(!memory.user_range_reaches_mapping(USER_STACK_TOP, u64::MAX));
+        assert!(memory.user_range_reaches_mapping(5 * page, 1 << 47));
+        assert!(memory.user_range_reaches_mapping(0, u64::MAX));
+        // Identity addresses that end above the window's physical start reach
+        // its pages there.
+        memory.set_user_identity_end(9 * MIB);
+        assert!(reaches(8 * MIB, 8 * MIB + 3 * page));
+        assert!(!reaches(8 * MIB, 8 * MIB + 2 * page));
+    }
+
+    const MIB: u64 = 1024 * 1024;
+    const R: u8 = libc::PROT_READ as u8;
+    const RW: u8 = (libc::PROT_READ | libc::PROT_WRITE) as u8;
+    const RWX: u8 = (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u8;
+
+    fn declared(prot: u8, flags: u8) -> DeclaredMapping {
+        DeclaredMapping {
+            prot,
+            flags,
+            lineage: 0,
+        }
+    }
+
+    /// The window's pages as extents of equal declared mapping, `(user
+    /// start, user end, declared)`, for brief assertions. A page that is not
+    /// declared or not reserved for the stack ends an extent and is not
+    /// shown. `None` while the window's record is not certain.
+    fn held(memory: &GuestMemory) -> Option<Vec<(u64, u64, DeclaredMapping)>> {
+        let page = PAGE_SIZE as u64;
+        let mut extents: Vec<(u64, u64, DeclaredMapping)> = Vec::new();
+        for window_page in memory.user_stack_window_pages()? {
+            let Some(declared) = window_page
+                .declared
+                .filter(|_| window_page.reservation == Some(RegionKind::Stack))
+            else {
+                continue;
+            };
+            match extents.last_mut() {
+                Some((_, end, last)) if *end == window_page.user_address && *last == declared => {
+                    *end += page;
+                }
+                _ => extents.push((
+                    window_page.user_address,
+                    window_page.user_address + page,
+                    declared,
+                )),
+            }
+        }
+        Some(extents)
+    }
+
+    /// A stack window mapped as a loader maps it: 16 MiB of memory, the top
+    /// 8 MiB reserved for the stack and mapped as one read-write mapping,
+    /// then watched. Returns the memory and the window's user start.
+    fn watched_stack_window() -> (GuestMemory, u64) {
+        let memory = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        let window = memory.establish_user_stack_window(8 * MIB).unwrap();
+        memory
+            .reserve_region(8 * MIB, 8 * MIB, RegionKind::Stack)
+            .unwrap()
+            .commit();
+        memory.map_user_protection(8 * MIB, 8 * MIB, RW).unwrap();
+        assert_eq!(memory.user_stack_window_pages(), None, "not watched");
+        memory.watch_user_stack_window();
+        assert_eq!(
+            held(&memory),
+            Some(vec![(window, USER_STACK_TOP, declared(RW, 0))])
+        );
+        (memory, window)
+    }
+
+    /// The window's pages hold the mapping declared for them: a protection
+    /// change keeps a page's flags and lineage, flags and lineages are set on
+    /// the window's declared pages only, an unmapped page leaves a gap, a move
+    /// in place keeps each page's mapping, and a new mapping has no flags and
+    /// lineage zero.
+    #[test]
+    fn the_stack_windows_pages_hold_their_declared_mappings() {
+        let page = PAGE_SIZE as u64;
+        // A page of the window, physically, and user addresses.
+        let inside = 12 * MIB;
+        let (memory, window) = watched_stack_window();
+        let user = |physical: u64| window + physical - 8 * MIB;
+        let (low, high) = (user(inside), user(inside) + page);
+        let around = |middle: DeclaredMapping| {
+            Some(vec![
+                (window, low, declared(RW, 0)),
+                (low, high, middle),
+                (high, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        };
+        let whole = Some(vec![(window, USER_STACK_TOP, declared(RW, 0))]);
+        for prot in [0, R, RWX] {
+            memory.protect_user_range(inside, page, prot).unwrap();
+            assert_eq!(held(&memory), around(declared(prot, 0)));
+        }
+        memory.protect_user_range(inside, page, RW).unwrap();
+        assert_eq!(held(&memory), whole);
+        // Flags and a lineage, which a protection change keeps.
+        memory.flag_user_range(low, page, 5, 0);
+        assert_eq!(held(&memory), around(declared(RW, 5)));
+        memory.set_user_stack_window_lineage(low, page, 7);
+        let lineaged = |prot: u8, flags: u8| DeclaredMapping {
+            prot,
+            flags,
+            lineage: 7,
+        };
+        assert_eq!(held(&memory), around(lineaged(RW, 5)));
+        memory.protect_user_range(inside, page, RWX).unwrap();
+        assert_eq!(held(&memory), around(lineaged(RWX, 5)));
+        memory.flag_user_range(low, page, 0, 5);
+        assert_eq!(held(&memory), around(lineaged(RWX, 0)));
+        memory.flag_user_range(low, page, 5, 0);
+        memory.protect_user_range(inside, page, RW).unwrap();
+        memory.set_user_stack_window_lineage(low, page, 0);
+        // Setting and clearing some flags keeps the others: the page's flag
+        // 4, which the call does not name, stays.
+        memory.flag_user_range(low - page, 3 * page, 2, 1);
+        assert_eq!(
+            held(&memory),
+            Some(vec![
+                (window, low - page, declared(RW, 0)),
+                (low - page, low, declared(RW, 2)),
+                (low, high, declared(RW, 6)),
+                (high, high + page, declared(RW, 2)),
+                (high + page, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        );
+        memory.flag_user_range(low - page, 3 * page, 0, 6);
+        assert_eq!(held(&memory), whole);
+        // Flags and lineages outside the window, and on unmapped pages,
+        // change nothing.
+        memory.flag_user_range(window - page, page, 1, 0);
+        memory.flag_user_range(USER_STACK_TOP, page, 1, 0);
+        memory.set_user_stack_window_lineage(window - page, page, 3);
+        memory.set_user_stack_window_lineage(USER_STACK_TOP, page, 3);
+        assert_eq!(held(&memory), whole);
+        // An unmapped page leaves the pages on either side.
+        memory.unmap_user_range(inside, page).unwrap();
+        let split = Some(vec![
+            (window, low, declared(RW, 0)),
+            (high, USER_STACK_TOP, declared(RW, 0)),
+        ]);
+        assert_eq!(held(&memory), split);
+        memory.flag_user_range(low, page, 1, 0);
+        memory.set_user_stack_window_lineage(low, page, 1);
+        assert_eq!(held(&memory), split);
+        // A move in place keeps each page's mapping.
+        memory
+            .remap_user_range(inside + page, page, inside + page, page)
+            .unwrap();
+        assert_eq!(held(&memory), split);
+        // A new mapping has no flags, and lineage zero.
+        memory.flag_user_range(high, page, 1, 0);
+        memory.set_user_stack_window_lineage(high, page, 4);
+        memory.map_user_protection(inside + page, page, RW).unwrap();
+        assert_eq!(held(&memory), split);
+        // With nothing mapped there is nothing to hold.
+        memory.clear_user_access();
+        assert_eq!(memory.user_stack_window_pages(), Some(Vec::new()));
+        // Without a stack window nothing is watched or held.
+        let plain = GuestMemory::new(0, (16 * MIB) as usize).unwrap();
+        plain.map_user_protection(8 * MIB, page, RW).unwrap();
+        plain.watch_user_stack_window();
+        plain.note_user_mapping_change(0, u64::MAX);
+        assert_eq!(plain.user_stack_window_pages(), None);
+    }
+
+    /// A page moved out of the window leaves a gap where it was, between the
+    /// pages on either side, and takes its declared mapping (protection,
+    /// flags and lineage) to where it goes.
+    #[test]
+    fn a_page_moved_out_of_the_window_takes_its_mapping_along() {
+        let page = PAGE_SIZE as u64;
+        let inside = 12 * MIB;
+        let below = 4 * MIB;
+        let (memory, window) = watched_stack_window();
+        let user = |physical: u64| window + physical - 8 * MIB;
+        let (low, high) = (user(inside), user(inside) + page);
+        memory.protect_user_range(inside, page, R).unwrap();
+        memory.flag_user_range(low, page, 3, 0);
+        memory.set_user_stack_window_lineage(low, page, 9);
+        let moved = DeclaredMapping {
+            prot: R,
+            flags: 3,
+            lineage: 9,
+        };
+        assert_eq!(memory.declared_mapping(inside), Some(moved));
+        memory.remap_user_range(inside, page, below, page).unwrap();
+        assert_eq!(
+            held(&memory),
+            Some(vec![
+                (window, low, declared(RW, 0)),
+                (high, USER_STACK_TOP, declared(RW, 0)),
+            ])
+        );
+        assert_eq!(memory.declared_mapping(inside), None);
+        assert_eq!(memory.declared_mapping(below), Some(moved));
+    }
+
+    /// The window's pages tell what this memory does not know: a page mapped
+    /// without a declared protection, reserved for another use, or exposed
+    /// as a Tool's scratch page reports so, and the pages around it are as
+    /// they were. A change the pages do not hold leaves them unknown.
+    #[test]
+    fn the_stack_windows_pages_tell_what_is_not_known() {
+        let page = PAGE_SIZE as u64;
+        let inside = 12 * MIB;
+        type Change = fn(&GuestMemory, u64);
+        let changes: [(&str, Change, Option<DeclaredMapping>, Option<RegionKind>); 4] = [
+            (
+                "undeclared",
+                |memory, inside| {
+                    memory
+                        .map_user_permissions(inside, PAGE_SIZE as u64, true, true)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::Stack),
+            ),
+            (
+                "protected undeclared",
+                |memory, inside| {
+                    memory
+                        .map_user_permissions(inside, PAGE_SIZE as u64, true, true)
+                        .unwrap();
+                    memory
+                        .protect_user_range(inside, PAGE_SIZE as u64, RW)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::Stack),
+            ),
+            (
+                "reserved for a mapping",
+                |memory, inside| {
+                    memory
+                        .reserve_region(inside, PAGE_SIZE as u64, RegionKind::Mmap)
+                        .unwrap()
+                        .commit();
+                },
+                Some(declared(RW, 0)),
+                Some(RegionKind::Mmap),
+            ),
+            (
+                "exposed as scratch",
+                |memory, inside| {
+                    memory
+                        .expose_tool_scratch(inside, PAGE_SIZE as u64)
+                        .unwrap();
+                },
+                None,
+                Some(RegionKind::ToolScratch),
+            ),
+        ];
+        for (name, change, declared_now, reservation) in changes {
+            let (memory, window) = watched_stack_window();
+            let user = |physical: u64| window + physical - 8 * MIB;
+            change(&memory, inside);
+            let pages = memory.user_stack_window_pages().unwrap();
+            assert_eq!(
+                pages.len() as u64,
+                (USER_STACK_TOP - window) / page,
+                "{name}"
+            );
+            let changed = pages
+                .iter()
+                .find(|window_page| window_page.user_address == user(inside))
+                .unwrap();
+            assert_eq!(changed.declared, declared_now, "{name}");
+            assert_eq!(changed.reservation, reservation, "{name}");
+            assert!(
+                pages
+                    .iter()
+                    .filter(|window_page| window_page.user_address != user(inside))
+                    .all(|window_page| window_page.declared == Some(declared(RW, 0))
+                        && window_page.reservation == Some(RegionKind::Stack)),
+                "{name}"
+            );
+        }
+        // A reservation changed without the page map's knowledge, as no path
+        // here changes one, is found all the same.
+        let (memory, window) = watched_stack_window();
+        memory
+            .mapping
+            .address_space
+            .lock()
+            .unwrap()
+            .reservations
+            .edit()
+            .insert(inside / page, RegionKind::Mmap);
+        let pages = memory.user_stack_window_pages().unwrap();
+        let found = pages
+            .iter()
+            .find(|window_page| window_page.user_address == window + inside - 8 * MIB)
+            .unwrap();
+        assert_eq!(found.reservation, Some(RegionKind::Mmap));
+        // A change the pages do not hold, noted where it reaches the window.
+        let (memory, window) = watched_stack_window();
+        memory.note_user_mapping_change(window - page, page);
+        memory.note_user_mapping_change(USER_STACK_TOP, page);
+        memory.note_user_mapping_change(window + page, 0);
+        assert_ne!(memory.user_stack_window_pages(), None);
+        memory.note_user_mapping_change(USER_STACK_TOP - 4096, 1);
+        assert_eq!(memory.user_stack_window_pages(), None);
+        // ... until a new watch, as a new image's loader takes.
+        memory.watch_user_stack_window();
+        assert_eq!(
+            held(&memory),
+            Some(vec![(window, USER_STACK_TOP, declared(RW, 0))])
+        );
+    }
+
+    /// A fork's copy of the memory keeps the window's pages, their lineages
+    /// included, and a record of its own: each holds its own changes, not
+    /// the other's. A copy that stands for the same address space, as a vfork
+    /// child's does (`snapshot_sharing_address_space`), shares the record with
+    /// its source, taken with the pages it copies: a change either makes to
+    /// the window leaves the other's pages unknown, while its own show the
+    /// change, until one takes a record of its own, as a new image does
+    /// before it clears the old one.
+    #[test]
+    fn a_copy_that_shares_the_address_space_shares_the_windows_record() {
+        let page = PAGE_SIZE as u64;
+        let inside = 12 * MIB;
+        // The memory that changes, and the other one.
+        fn sides<'a>(
+            copy_changes: bool,
+            memory: &'a GuestMemory,
+            copy: &'a GuestMemory,
+        ) -> (&'a GuestMemory, &'a GuestMemory) {
+            if copy_changes {
+                (copy, memory)
+            } else {
+                (memory, copy)
+            }
+        }
+        for copy_changes in [true, false] {
+            let label = format!("copy changes: {copy_changes}");
+            let (memory, window) = watched_stack_window();
+            let whole = Some(vec![(window, USER_STACK_TOP, declared(RW, 0))]);
+            let low = window + inside - 8 * MIB;
+            let changed = Some(vec![
+                (window, low, declared(RW, 0)),
+                (low, low + page, declared(R, 0)),
+                (low + page, USER_STACK_TOP, declared(RW, 0)),
+            ]);
+
+            // A fork's copy.
+            let copy = memory.snapshot().unwrap();
+            assert_eq!(held(&copy), whole, "{label}");
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.protect_user_range(inside, page, R).unwrap();
+            assert_eq!(held(changing), changed, "{label}");
+            assert_eq!(held(other), whole, "{label}");
+            // A fork of the changed memory starts with its change.
+            assert_eq!(held(&changing.snapshot().unwrap()), changed, "{label}");
+
+            // A sharing copy.
+            let (memory, _) = watched_stack_window();
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            assert_eq!(held(&copy), whole, "{label}");
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.protect_user_range(inside, page, R).unwrap();
+            assert_eq!(held(changing), changed, "{label}");
+            assert_eq!(other.user_stack_window_pages(), None, "{label}");
+            // A fork of the other memory inherits the unknown pages.
+            assert_eq!(other.snapshot().unwrap().user_stack_window_pages(), None);
+
+            // A sharing copy that took a record of its own.
+            let (memory, _) = watched_stack_window();
+            let copy = memory.snapshot_sharing_address_space().unwrap();
+            copy.detach_user_stack_window_watch();
+            let (changing, other) = sides(copy_changes, &memory, &copy);
+            changing.clear_user_access();
+            assert_eq!(held(other), whole, "{label}");
+        }
+        // A page of the window taken over for another use is a change too.
+        let (memory, _) = watched_stack_window();
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        copy.reserve_region(inside, page, RegionKind::Mmap)
+            .unwrap()
+            .commit();
+        assert_eq!(memory.user_stack_window_pages(), None);
+        // A copy keeps the lineages it is given, a fork's and a sharing one.
+        let (memory, window) = watched_stack_window();
+        let low = window + inside - 8 * MIB;
+        memory.set_user_stack_window_lineage(low, page, 2);
+        memory.set_user_stack_window_lineage(low + page, USER_STACK_TOP - low - page, 1);
+        let lineaged = |lineage: u16| DeclaredMapping {
+            prot: RW,
+            flags: 0,
+            lineage,
+        };
+        let given = Some(vec![
+            (window, low, lineaged(0)),
+            (low, low + page, lineaged(2)),
+            (low + page, USER_STACK_TOP, lineaged(1)),
+        ]);
+        assert_eq!(held(&memory), given);
+        assert_eq!(held(&memory.snapshot().unwrap()), given);
+        assert_eq!(
+            held(&memory.snapshot_sharing_address_space().unwrap()),
+            given
+        );
+        // A sharing copy of a memory that changed its window holds the change.
+        let (memory, _) = watched_stack_window();
+        memory.protect_user_range(inside, page, R).unwrap();
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        let listed = held(&memory);
+        assert_eq!(listed.as_ref().map(Vec::len), Some(3));
+        assert_eq!(held(&copy), listed);
+        // A sharing copy of a memory whose record is not certain starts so.
+        let (memory, _) = watched_stack_window();
+        memory.note_user_mapping_change(USER_STACK_TOP - page, page);
+        let copy = memory.snapshot_sharing_address_space().unwrap();
+        assert_eq!(copy.user_stack_window_pages(), None);
+        copy.detach_user_stack_window_watch();
+        assert_eq!(copy.user_stack_window_pages(), None);
+    }
+
     /// The stack window places the top of guest memory at the top of the user
     /// address space; its identity addresses stop being user addresses, and
     /// only addresses below Linux's TASK_SIZE are.
@@ -6475,6 +7688,261 @@ mod tests {
         let mut bytes = [0; 21];
         snapshot.read(PAGE_SIZE as u64, &mut bytes).unwrap();
         assert_eq!(&bytes, b"backed after dontneed");
+    }
+
+    /// The allocated bytes of the file behind `fd`.
+    fn allocated_bytes(fd: RawFd) -> u64 {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: stat points to writable storage and fd is a live descriptor.
+        assert_eq!(unsafe { libc::fstat(fd, stat.as_mut_ptr()) }, 0);
+        // SAFETY: fstat succeeded and initialized the structure.
+        unsafe { stat.assume_init() }.st_blocks as u64 * 512
+    }
+
+    const SEPARATE_BASE: u64 = 0x10000;
+    const SEPARATE_PAGES: u64 = 16384;
+
+    /// The address of page `index` of the arena of [`separately_backed_arena`].
+    fn separate_page(index: u64) -> u64 {
+        SEPARATE_BASE + index * PAGE_SIZE as u64
+    }
+
+    /// Gives `pages` pages of `memory` from `address` on a private backing of
+    /// their own, holding `contents` from its start.
+    fn give_own_backing(memory: &GuestMemory, address: u64, pages: usize, contents: Option<&[u8]>) {
+        memory
+            .publish_private_range(
+                memory.allocation_guard(),
+                PrivateRangePlan {
+                    address,
+                    length: pages * PAGE_SIZE,
+                    contents,
+                    permissions: Some((true, true)),
+                    cursors: None,
+                },
+            )
+            .unwrap();
+    }
+
+    /// A 64 MiB arena with every page mapped writable (`map_user_range`'s
+    /// last argument is "no access") and pages of every kind a fork must
+    /// copy, in three of its 32 huge-page-sized regions:
+    /// - base pages: page 1 written in full, page 7000 in part, page 9
+    ///   written with zeros (a data extent that holds zeros), and page 5
+    ///   written by the kernel, as `read(2)` into a guest buffer writes;
+    /// - separately backed pages: 3 and 4, two pages of one backing, of which
+    ///   only the first holds data; 9000, given a backing with no data and
+    ///   then written through the arena; and 15000, a hole of its backing;
+    /// - under 3 and 9000, base bytes the arena no longer shows, as an exec
+    ///   that retires a view over written pages leaves them;
+    /// - and every other page a hole.
+    fn separately_backed_arena() -> GuestMemory {
+        let memory = GuestMemory::new(SEPARATE_BASE, SEPARATE_PAGES as usize * PAGE_SIZE).unwrap();
+        memory
+            .map_user_range(SEPARATE_BASE, SEPARATE_PAGES * PAGE_SIZE as u64, false)
+            .unwrap();
+        memory.enable_user_access();
+        memory
+            .write_raw(separate_page(1), &[0x11; PAGE_SIZE])
+            .unwrap();
+        memory
+            .write_raw(separate_page(7000) + 100, b"partial")
+            .unwrap();
+        memory.write_raw(separate_page(9), &[0; PAGE_SIZE]).unwrap();
+        memory
+            .write_raw(separate_page(3), &[0x33; PAGE_SIZE])
+            .unwrap();
+        memory
+            .write_raw(separate_page(9000), &[0x20; PAGE_SIZE])
+            .unwrap();
+        // The kernel's write for the guest, through the writable alias.
+        let mut pipe = [0; 2];
+        // SAFETY: pipe points to two writable descriptors' storage.
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        let message = b"the kernel wrote this";
+        // SAFETY: the message is a live buffer of the given length.
+        assert_eq!(
+            unsafe { libc::write(pipe[1], message.as_ptr().cast(), message.len()) },
+            message.len() as isize
+        );
+        let alias = memory
+            .writable_alias(separate_page(5), message.len())
+            .unwrap();
+        // SAFETY: the alias is a writable kernel operand of message.len() bytes.
+        assert_eq!(
+            unsafe { libc::read(pipe[0], alias.address(), message.len()) },
+            message.len() as isize
+        );
+        alias.finish().unwrap();
+        // SAFETY: both descriptors are owned here and closed once.
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+        }
+        give_own_backing(&memory, separate_page(3), 2, Some(b"separate page 3"));
+        give_own_backing(&memory, separate_page(9000), 1, None);
+        memory
+            .write_raw(separate_page(9000) + 8, b"written later")
+            .unwrap();
+        give_own_backing(&memory, separate_page(15000), 1, None);
+        memory
+    }
+
+    /// The descriptors of `memory`'s separately backed pages' backings, one
+    /// for each backing.
+    fn separate_backing_fds(memory: &GuestMemory) -> Vec<RawFd> {
+        let state = memory.mapping.address_space.lock().unwrap();
+        let mut fds: Vec<RawFd> = state
+            .backing_pages
+            .values()
+            .map(|installed| installed._slice.backing.fd.as_raw_fd())
+            .collect();
+        fds.dedup();
+        fds
+    }
+
+    /// Every byte of `memory`'s arena, read through it (which commits holes,
+    /// so measure allocations first).
+    fn arena_bytes(memory: &GuestMemory) -> Vec<u8> {
+        let mut bytes = vec![0; memory.len()];
+        memory.read_raw(memory.guest_base(), &mut bytes).unwrap();
+        bytes
+    }
+
+    /// A fork's copy of an arena with separately backed pages copies only data
+    /// extents, of the base backing and of each page's own backing, and reads
+    /// no hole on either side, yet reads exactly as the arena does on every
+    /// page: base pages written in full, in part, with zeros and by the
+    /// kernel; separately backed pages with data, written later, and holes;
+    /// and holes. Before, one page with a backing of its own made the copy
+    /// read and write every byte of the arena, committing every hole on both
+    /// sides. The copy has no separately backed page, and the two are
+    /// independent afterwards.
+    #[test]
+    fn a_snapshot_with_separately_backed_pages_copies_data_and_reads_no_hole() {
+        let memory = separately_backed_arena();
+        let base = memory.mapping.slice.backing.fd.as_raw_fd();
+        let separate = separate_backing_fds(&memory);
+        assert_eq!(separate.len(), 3);
+        let before: Vec<u64> = std::iter::once(base)
+            .chain(separate.iter().copied())
+            .map(allocated_bytes)
+            .collect();
+        let snapshot = memory.snapshot().unwrap();
+        let after: Vec<u64> = std::iter::once(base)
+            .chain(separate.iter().copied())
+            .map(allocated_bytes)
+            .collect();
+        assert_eq!(after, before, "the copy committed a hole of the source");
+        // Pages 1, 3, 5, 7000, 9 and 9000 hold data, in 3 of the arena's 32
+        // huge-page-sized regions; the stale base bytes under 3 and 9000 are
+        // not copied, and nothing else is: neither the hole at 15000, alone
+        // in its region, nor any other. A shared-memory file may take a folio
+        // as large as a huge page for a write within its size, so a region's
+        // one page can cost 2 MiB; a copy of every byte costs 64.
+        let copied = allocated_bytes(snapshot.mapping.slice.backing.fd.as_raw_fd());
+        assert!(
+            copied <= 6 * 1024 * 1024,
+            "the copy allocated {copied} bytes for 6 pages of data in 3 regions"
+        );
+        assert!(
+            snapshot
+                .mapping
+                .address_space
+                .lock()
+                .unwrap()
+                .backing_pages
+                .is_empty()
+        );
+        let expected = arena_bytes(&memory);
+        assert_eq!(
+            &expected[3 * PAGE_SIZE..3 * PAGE_SIZE + 15],
+            b"separate page 3"
+        );
+        assert_eq!(&expected[4 * PAGE_SIZE..5 * PAGE_SIZE], &[0; PAGE_SIZE]);
+        assert_eq!(
+            &expected[5 * PAGE_SIZE..5 * PAGE_SIZE + 21],
+            b"the kernel wrote this"
+        );
+        assert_eq!(&expected[9000 * PAGE_SIZE..9000 * PAGE_SIZE + 8], &[0; 8]);
+        assert_eq!(
+            &expected[9000 * PAGE_SIZE + 8..9000 * PAGE_SIZE + 21],
+            b"written later"
+        );
+        assert_eq!(arena_bytes(&snapshot), expected);
+        // Independent afterwards.
+        snapshot.write_raw(separate_page(3), b"child").unwrap();
+        memory
+            .write_raw(separate_page(9000) + 8, b"parent")
+            .unwrap();
+        let mut bytes = [0; 15];
+        memory.read_raw(separate_page(3), &mut bytes).unwrap();
+        assert_eq!(&bytes, b"separate page 3");
+        snapshot
+            .read_raw(separate_page(9000) + 8, &mut bytes[..13])
+            .unwrap();
+        assert_eq!(&bytes[..13], b"written later");
+    }
+
+    /// A sparse copy that cannot finish falls back to copying every byte,
+    /// which gives the same copy.
+    #[test]
+    fn a_failed_sparse_snapshot_of_separately_backed_pages_falls_back_to_bytes() {
+        let memory = separately_backed_arena();
+        FAIL_SPARSE_SNAPSHOT.with(|fail| fail.set(true));
+        let snapshot = memory.snapshot();
+        FAIL_SPARSE_SNAPSHOT.with(|fail| fail.set(false));
+        let snapshot = snapshot.unwrap();
+        assert_eq!(arena_bytes(&snapshot), arena_bytes(&memory));
+    }
+
+    /// Discarding a range with separately backed pages makes one call for
+    /// each run of consecutive pages of one backing, not one for each page:
+    /// an exec's discard of the whole user range made one call per page of
+    /// the arena once a page had a backing of its own. Every page reads as
+    /// zeros afterwards.
+    #[test]
+    fn discarding_separately_backed_pages_coalesces_runs() {
+        let memory = separately_backed_arena();
+        DISCARD_CALLS.with(|calls| *calls.borrow_mut() = Some(Vec::new()));
+        let discarded = memory.discard_pages(SEPARATE_BASE, memory.len());
+        let calls = DISCARD_CALLS.with(|calls| calls.borrow_mut().take().unwrap());
+        discarded.unwrap();
+        let p = PAGE_SIZE;
+        assert_eq!(calls, [3 * p, 2 * p, 8995 * p, p, 5999 * p, p, 1383 * p]);
+        assert_eq!(arena_bytes(&memory), vec![0; memory.len()]);
+    }
+
+    /// Pages in huge-page folios, where the host gives shared memory huge
+    /// pages (shmem THP), copy as exactly as small ones, a separately backed
+    /// page inside such a folio's range included.
+    #[test]
+    fn a_snapshot_copies_huge_page_ranges_exactly() {
+        const HUGE: usize = 2 * 1024 * 1024;
+        let memory = GuestMemory::new(0, 4 * HUGE).unwrap();
+        memory.map_user_range(0, (4 * HUGE) as u64, false).unwrap();
+        memory.enable_user_access();
+        // SAFETY: the range is page-aligned and lies in the live arena mapping.
+        unsafe {
+            libc::madvise(
+                memory.mapping.mapping.as_ptr().add(HUGE).cast(),
+                2 * HUGE,
+                libc::MADV_HUGEPAGE,
+            );
+        }
+        let pattern: Vec<u8> = (0..HUGE).map(|byte| (byte % 251) as u8).collect();
+        memory.write_raw(HUGE as u64, &pattern).unwrap();
+        memory
+            .write_raw((2 * HUGE + 4096) as u64, b"second folio")
+            .unwrap();
+        give_own_backing(
+            &memory,
+            (HUGE + 64 * PAGE_SIZE) as u64,
+            1,
+            Some(b"own page in a folio"),
+        );
+        let snapshot = memory.snapshot().unwrap();
+        assert_eq!(arena_bytes(&snapshot), arena_bytes(&memory));
     }
 
     #[test]
@@ -8105,6 +9573,7 @@ mod tests {
 /// order and errors as the separate copies they replace, one admission each,
 /// and the same refusals by the entry gate.
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod one_admission_copy_tests {
     use std::time::Duration;
     use std::time::Instant;

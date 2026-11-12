@@ -201,6 +201,13 @@ async fn production_counter1_reports_rewritten_syscall_total() {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built e9tool/e9patch pair"]
 async fn production_counter2_reports_exit_lifecycle_totals() {
+    if std::env::var_os(COUNTER2_CHILD_ENV).is_none() {
+        let output = counter2_direct_child(true);
+        assert!(output.status.success(), "{output:?}");
+        assert_counter2_thread_report(&output.stderr);
+        return;
+    }
+
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);
     command.env("REVERIE_E9PATCH_EXPECT_RAW_GETPID", "1");
@@ -209,16 +216,61 @@ async fn production_counter2_reports_exit_lifecycle_totals() {
         .unwrap();
     assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");
-    // Counter2's per-thread exit hook logs from the in-guest tool, proving the
-    // direct AOT exit lifecycle reached `on_exit_thread` with the accumulated
-    // ThreadState (the two rewritten syscalls: raw getpid + exit_group).
+    // The same direct API returns the real GlobalState totals. Its thread
+    // report now belongs to controller stderr, captured by the parent test;
+    // guest stderr is not reconstructed to include that report.
+    assert!(output.stderr.is_empty(), "{output:?}");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("counter2-local thread="), "{stderr}");
-    assert!(stderr.contains("syscalls=2"), "{stderr}");
     // `totals()` is populated only by `on_exit_process`' single IncrMsg, so a
     // non-zero tuple proves the whole exit lifecycle ran through direct AOT:
     // (total_syscalls, exited_procs, exited_threads).
     assert_eq!(totals, (2, 1, 1), "{stderr}");
+}
+
+const COUNTER2_CHILD_ENV: &str = "REVERIE_E9PATCH_COUNTER2_DIRECT_TEST_CHILD";
+
+fn counter2_direct_child(capture_stderr: bool) -> std::process::Output {
+    ProcessCommand::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "production_counter2_reports_exit_lifecycle_totals",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(COUNTER2_CHILD_ENV, "1")
+        .stderr(if capture_stderr {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .output()
+        .unwrap()
+}
+
+fn assert_counter2_thread_report(stderr: &[u8]) {
+    let stderr = std::str::from_utf8(stderr).unwrap();
+    assert!(stderr.contains("counter2-local thread="), "{stderr}");
+    assert!(stderr.contains("syscalls=2"), "{stderr}");
+    let reports = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix("counter2-local thread="))
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 1, "{stderr}");
+    let (tid, count) = reports[0].split_once(" syscalls=").unwrap();
+    assert!(tid.parse::<i32>().unwrap() > 0, "{stderr}");
+    assert_eq!(count, "2", "{stderr}");
+}
+
+#[test]
+#[ignore = "requires a built e9tool/e9patch pair"]
+fn production_counter2_report_requires_controller_stderr() {
+    let output = counter2_direct_child(false);
+    // The child still checks the same direct API, guest status/stdout and
+    // exact (2, 1, 1) totals. Discarding only its controller output must make
+    // the identical thread-report oracle reject this observation.
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert!(std::panic::catch_unwind(|| assert_counter2_thread_report(&output.stderr)).is_err());
 }
 
 #[tokio::test(flavor = "current_thread")]

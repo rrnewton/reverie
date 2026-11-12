@@ -53,6 +53,8 @@ mod vdso_fail_closed_guest;
 #[path = "rpc_tool_guest/late_code.rs"]
 mod late_code_guest;
 
+#[path = "rpc_tool_guest/facility_admission.rs"]
+mod facility_admission_guest;
 #[path = "rpc_tool_guest/fixed_gates.rs"]
 mod fixed_gates_guest;
 #[path = "rpc_tool_guest/same_tool.rs"]
@@ -3440,6 +3442,15 @@ fn main() {
     let path = args.next().expect("socket path");
     match mode.to_str() {
         Some("coordinator") => coordinator(Path::new(&path)),
+        Some("facility-coordinator") => facility_admission_guest::coordinator(Path::new(&path)),
+        Some("facility-admission") => facility_admission_guest::run(
+            Path::new(&path),
+            args.next()
+                .expect("installer")
+                .to_str()
+                .expect("UTF-8 installer"),
+            args.next().expect("role").to_str().expect("UTF-8 role"),
+        ),
         Some("fixed-gates") => fixed_gates_guest::run(Path::new(&path)),
         Some("fixed-gate-collision") => fixed_gates_guest::collision(Path::new(&path)),
         Some("fixed-gate-inherited-filter") => {

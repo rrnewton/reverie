@@ -506,6 +506,12 @@ privload_map_private_image(const char *filename, size_t *size DR_PARAM_OUT,
 bool
 privload_has_private_owner(const privmod_t *mod);
 
+#    ifndef ANDROID
+
+void
+privload_errno_prepare_exit(void);
+#    endif
+
 void
 privload_release_private_image(private_image_reservation_t *reservation);
 #endif

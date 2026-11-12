@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use reverie::Pid;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::CoreRegs;
 use super::Error;
@@ -172,14 +173,18 @@ impl Inferior {
         Ok(())
     }
 
-    /// Wait for stop event reported by the target.
-    pub async fn wait_for_stop(&mut self) -> Result<StopReason, Error> {
+    /// Wait for stop event reported by the target. Returns the stop and, for
+    /// one whose reporter waits until gdb has its reply
+    /// (`StoppedInferior::replied`), the channel to tell it.
+    pub async fn wait_for_stop(
+        &mut self,
+    ) -> Result<(StopReason, Option<oneshot::Sender<()>>), Error> {
         let rx = self.stop_rx.as_mut().ok_or(Error::Detached)?;
         let stopped = rx.recv().await.ok_or(Error::GdbServerStopEventRecvError)?;
         // clear `resume_pending` flag as we got a new stop event, implying
         //  a new resume *is* to be expected.
         self.resume_pending = false;
-        Ok(stopped.reason)
+        Ok((stopped.reason, stopped.replied))
     }
 }
 
@@ -194,6 +199,11 @@ pub struct StoppedInferior {
     pub resume_tx: mpsc::Sender<ResumeInferior>,
     /// Where the stopped thread is when another thread is in a gdb stop.
     pub view: ThreadView,
+    /// Told once the stop reply is written to gdb. A process exit's reporter
+    /// waits for it: the run, and with it the connection, can end as soon as
+    /// the reporter returns, which could drop a reply not yet written. Dropped
+    /// unsent if the session goes away first, which releases the reporter too.
+    pub replied: Option<oneshot::Sender<()>>,
 }
 
 /// Inferior is in stopped state. send to reverie.

@@ -22,8 +22,9 @@ use serde::Deserialize;
 use serde::Serialize;
 
 // TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the production chaos config.
+/// Configuration shared by the public Chaos Tool and its caller runtime.
 #[derive(Parser, Debug, Serialize, Deserialize, Clone, Default, Eq, PartialEq)]
-pub(crate) struct ChaosOpts {
+pub struct ChaosOpts {
     /// Skips the first N syscalls of a process before doing any intervention.
     /// This is useful when you need to skip past an error caused by the tool.
     #[clap(long, value_name = "N", default_value = "0")]
@@ -61,8 +62,9 @@ impl ChaosOpts {
 }
 
 // TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the production chaos tool.
+/// The shared Chaos Tool, including its syscall count and intervention policy.
 #[derive(Debug, Default)]
-pub(crate) struct ChaosTool {
+pub struct ChaosTool {
     count: AtomicU64,
 }
 
@@ -75,8 +77,9 @@ impl Clone for ChaosTool {
 }
 
 // TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the chaos global state.
+/// Global state and typed configuration for the shared Chaos Tool.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct ChaosToolGlobal {}
+pub struct ChaosToolGlobal {}
 
 #[reverie::global_tool]
 impl GlobalTool for ChaosToolGlobal {

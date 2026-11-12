@@ -54,7 +54,7 @@ impl Drop for InputUntilBrokenPipe {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn coordinated_reader_releases_parent_readers_before_pumping() {
     let directory = tempfile::tempdir().unwrap();
-    let runner = DbtRunner::new(fake_drrun(directory.path()), fake_client()).unwrap();
+    let runner = fixture_runner(fake_drrun(directory.path()), fake_client()).unwrap();
     let child_ready = directory.path().join("child-ready");
     let source_dropped = directory.path().join("source-dropped");
     let chunks = Arc::new(AtomicUsize::new(0));

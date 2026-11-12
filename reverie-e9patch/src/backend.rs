@@ -991,6 +991,7 @@ async fn launch_direct<T>(
 where
     T: Tool + 'static,
 {
+    T::facility_admission(&config)?;
     if !preload.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,

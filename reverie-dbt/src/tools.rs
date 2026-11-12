@@ -151,34 +151,27 @@ impl HostedTool {
 }
 
 /// The hosted tool [`TOOL_ENV`] (or its two older flags) names. An unknown
-/// name ends the run by name rather than running no tool.
-static HOSTED_TOOL: LazyLock<Option<HostedTool>> = LazyLock::new(|| {
+/// name is retained as an initialization error, never as an absent selection.
+static HOSTED_TOOL: LazyLock<Result<Option<HostedTool>, String>> = LazyLock::new(|| {
     if let Some(name) = std::env::var_os(TOOL_ENV) {
         let name = name.to_string_lossy();
-        return Some(HostedTool::from_name(&name).unwrap_or_else(|| {
-            let line = format!(
-                "reverie-dbt: REFUSED: {TOOL_ENV}={name:?} names no tool the prototype runtime hosts with a coordinator (counter1, recorder)\n"
-            );
-            // This can run before DynamoRIO's emit callback is installed, so
-            // write to the program's stderr, which the launcher captures.
-            if !emit_raw(&EMITTER, line.as_bytes()) {
-                // SAFETY: writes a live buffer to descriptor 2.
-                unsafe { libc::write(2, line.as_ptr().cast(), line.len()) };
-            }
-            std::process::exit(127)
-        }));
+        return HostedTool::from_name(&name).map(Some).ok_or_else(|| {
+            format!(
+                "{TOOL_ENV}={name:?} names no tool the prototype runtime hosts with a coordinator (counter1, recorder)"
+            )
+        });
     }
-    if env_flag(COUNTER1_EXACT_ENV) {
+    Ok(if env_flag(COUNTER1_EXACT_ENV) {
         Some(HostedTool::Counter1)
     } else if env_flag(COUNTER2_EXACT_ENV) {
         Some(HostedTool::Counter2)
     } else {
         None
-    }
+    })
 });
 
-pub(crate) fn hosted_tool() -> Option<HostedTool> {
-    *HOSTED_TOOL
+pub(crate) fn hosted_tool() -> Result<Option<HostedTool>, &'static str> {
+    HOSTED_TOOL.as_ref().copied().map_err(String::as_str)
 }
 
 static COUNTER1_CONFIGURATION: OnceLock<ToolConfiguration<ExactCounter1Tool>> = OnceLock::new();
@@ -192,7 +185,7 @@ pub(crate) fn initialize_exact_configuration(
     mode: crate::DbtStartupMode,
     control: Option<&OsStr>,
 ) -> Result<bool, String> {
-    match hosted_tool() {
+    match hosted_tool()? {
         Some(HostedTool::Counter1) => retain_configuration(&COUNTER1_CONFIGURATION, mode, control)?,
         Some(HostedTool::Recorder) => retain_configuration(&RECORDER_CONFIGURATION, mode, control)?,
         _ => return Ok(false),
@@ -373,7 +366,7 @@ fn emit_raw(slot: &AtomicUsize, bytes: &[u8]) -> bool {
 
 /// Whether the exact backend-neutral counter1 tool is selected.
 pub(crate) fn counter1_exact_enabled() -> bool {
-    hosted_tool() == Some(HostedTool::Counter1)
+    hosted_tool() == Ok(Some(HostedTool::Counter1))
 }
 
 /// Exact counter1 process-local tool instance.
@@ -396,12 +389,12 @@ pub(crate) fn emit_counter1_exact_summary() {
 
 /// Whether the exact backend-neutral counter2 tool is selected.
 pub(crate) fn counter2_exact_enabled() -> bool {
-    hosted_tool() == Some(HostedTool::Counter2)
+    hosted_tool() == Ok(Some(HostedTool::Counter2))
 }
 
 /// Whether the shared pass-through recorder is selected.
 pub(crate) fn recorder_enabled() -> bool {
-    hosted_tool() == Some(HostedTool::Recorder)
+    hosted_tool() == Ok(Some(HostedTool::Recorder))
 }
 
 /// The recorder's process-local tool instance.

@@ -31,6 +31,23 @@ use crate::rdtsc::Rdtsc;
 #[cfg(target_arch = "x86_64")]
 use crate::rdtsc::RdtscResult;
 
+/// Static stream role of a Tool, independent of mutable run configuration.
+///
+/// This pure declaration is not serialized. A composing Tool must explicitly
+/// propagate its inner role; absence of a declaration is not a plain stream.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ToolStreamRole {
+    /// The stream contract is not known.
+    #[default]
+    Unknown,
+    /// No binary recording or replay stream is interpreted.
+    Plain,
+    /// Produces a binary stream.
+    BinaryRecord,
+    /// Interprets a binary stream.
+    BinaryReplay,
+}
+
 /// Whether code running in the observed address space creates execution only
 /// through the backend's managed runtime.
 ///
@@ -154,6 +171,44 @@ pub trait GlobalTool: Send + Sync + Default {
     /// Initialize the tool, allocating the global state.
     async fn init_global_state(_cfg: &Self::Config) -> Self {
         Default::default()
+    }
+
+    /// Install the backend-owned local input registry before guest creation.
+    /// The handle is never part of Config, RPC, or serialized thread state.
+    fn install_reserved_input_control(
+        &mut self,
+        _control: crate::reserved_input::ReservedInputControl,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Observe a native task incarnation before logical retirement can name it.
+    /// Called synchronously outside all registry locks.
+    fn on_reserved_input_task(
+        &self,
+        _task: crate::reserved_input::InputTaskRegistration,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Admit physical initial facts before callbacks can expose a target image.
+    /// The default does not certify an environment for private input.
+    fn admit_reserved_input_initial_state(
+        &self,
+        _facts: &crate::reserved_input::InputNativeFacts,
+    ) -> Result<crate::reserved_input::InputAdmission, Error> {
+        Ok(crate::reserved_input::InputAdmission::Unqualified(
+            crate::reserved_input::InputUnavailable::new("input-native-state-not-admitted"),
+        ))
+    }
+
+    /// Observe actual target-image setup, including unsuccessful qualification.
+    /// A launch bootstrap is not a target image. No default or Drop path emits it.
+    fn on_reserved_input_setup(
+        &self,
+        _receipt: crate::reserved_input::InputSetupReceipt,
+    ) -> Result<(), Error> {
+        Ok(())
     }
 
     /// Offer the actual launcher-created input before sharing this run's global
@@ -362,6 +417,32 @@ pub trait GlobalTool: Send + Sync + Default {
     /// must not panic, must not wait for guest progress, and must not modify
     /// the guest. The default does nothing. Only the ptrace backend calls it.
     fn on_fatal_signal_exit(&self, _exit: &FatalSignalExit) {}
+
+    /// Receives an access that a hardware watchpoint caught
+    /// ([`Guest::set_watchpoints`](crate::Guest::set_watchpoints)). Hits of
+    /// one thread arrive in the order the thread made the accesses.
+    ///
+    /// The call runs synchronously on the tracing thread of the accessing
+    /// thread while that thread is stopped, between two of its instructions,
+    /// so its host time stalls the guest. Hits of different threads can be
+    /// reported at the same time on different tracing threads, so their order
+    /// across threads is the host's unless the Tool runs one guest thread at
+    /// a time ([`Tool::enforces_serialized_execution`](crate::Tool::enforces_serialized_execution));
+    /// the method must be safe to call concurrently. It is not a Tool
+    /// callback: nothing is injected, no request is sent and the guest is not
+    /// modified. The method must be bounded, must not panic, must not wait
+    /// for guest progress and must not take a lock that a Tool callback holds
+    /// across an `await`; the default does nothing. Only the ptrace backend
+    /// calls it.
+    ///
+    /// [`WatchHit::sigtrap`](crate::WatchHit::sigtrap) says whether the hit's
+    /// SIGTRAP may have changed the guest's SIGTRAP mask bit or action.
+    ///
+    /// The hit's stop is one the Tool does not observe, so the thread's
+    /// timer event is finished as it would have been without it, where
+    /// [`Guest::watch_hits_keep_timer_events`](crate::Guest::watch_hits_keep_timer_events)
+    /// holds.
+    fn on_watchpoint_hit(&self, _hit: &crate::WatchHit) {}
 
     /// Waits until this run cannot continue faithfully. Each call must subscribe
     /// independently: multiple Tool callbacks and the scheduler may be waiting.
@@ -673,6 +754,44 @@ pub trait Tool: Send + Sync + Default {
     /// change.
     fn new(_pid: Pid, _cfg: &<Self::GlobalState as GlobalTool>::Config) -> Self {
         Default::default()
+    }
+
+    /// Pure static role of this Tool's stream, independent of Config booleans.
+    fn stream_role() -> ToolStreamRole {
+        ToolStreamRole::Unknown
+    }
+
+    /// Pure opt-in to synchronous final-native-call observations. The default
+    /// performs no additional native queries or descriptor pinning.
+    fn observes_native_syscalls(_cfg: &<Self::GlobalState as GlobalTool>::Config) -> bool {
+        false
+    }
+
+    /// Observe an actual request after all guest-capable preparation and before
+    /// native issue. The provider cannot inject, resume or await. Returned
+    /// cookies are retained by the backend, independently of callback lifetime.
+    fn observe_native_syscall(
+        &self,
+        _state: &Self::ThreadState,
+        _facts: &dyn crate::native_syscall::NativeSyscallFacts,
+        _call: &crate::native_syscall::NativeSyscallCall,
+    ) -> Result<Option<std::sync::Arc<dyn crate::native_syscall::NativeSyscallObserver>>, Error>
+    {
+        Ok(None)
+    }
+
+    /// Operational facility admission before global initialization or launch.
+    /// Backends call this explicitly; subscription queries must remain pure.
+    fn facility_admission(_cfg: &<Self::GlobalState as GlobalTool>::Config) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Pure request for one fixed private input page, or no mapping at all.
+    /// Backends additionally require serialized execution before enabling it.
+    fn reserved_input_requirement(
+        _cfg: &<Self::GlobalState as GlobalTool>::Config,
+    ) -> Option<crate::reserved_input::ReservedInputRequirement> {
+        None
     }
 
     /// Events the tool subscribes to. This is only called *once* for the entire

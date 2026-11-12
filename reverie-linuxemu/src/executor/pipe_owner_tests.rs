@@ -465,7 +465,7 @@ fn fcntl_owner_dup_close_reuse_and_snapshots_preserve_description_identity() {
         owner_test_call(&mut memory, &mut state, fd, libc::F_DUPFD_CLOEXEC, 30) as i32;
     assert_eq!(fcntl_duplicate, 30);
     let retained = state.pipe_owners[&fd].clone();
-    let snapshot = FileTableState::try_from_elf(&state).unwrap();
+    let mut snapshot = FileTableState::try_from_elf(&state).unwrap();
     snapshot.install(&mut state).unwrap();
     drop(snapshot);
     for alias in [fd, duplicate, fcntl_duplicate] {
@@ -647,7 +647,9 @@ fn fcntl_owner_threads_and_exec_preserve_creator_and_cloexec_filtering() {
     drop(thread);
     let creator = f.executor.state.pipe_owner_process.clone();
     let description = f.executor.state.pipe_owners[&fd].clone();
-    f.executor.replace_after_exec(test_state(&f.root.0));
+    f.executor
+        .replace_after_exec(test_state(&f.root.0))
+        .unwrap();
     assert!(Arc::ptr_eq(&creator, &f.executor.state.pipe_owner_process));
     assert!(Arc::ptr_eq(
         &description,

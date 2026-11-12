@@ -18,6 +18,11 @@
 
 pub mod backend_stats;
 mod branch_facts;
+pub mod caller_abi;
+mod caller_artifact;
+mod caller_effects;
+mod caller_exports;
+pub mod caller_runtime;
 pub mod counter;
 mod counter2_global;
 mod evidence;
@@ -60,6 +65,7 @@ pub use branch_facts::BranchFactQuery;
 pub use branch_facts::BranchFactUnavailable;
 pub use branch_facts::NativeBranchFact;
 pub use branch_facts::install_branch_fact_query;
+pub use caller_artifact::CallerArtifact;
 pub use counter2_global::Counter2Global;
 pub use evidence::CoordinatorEvidence;
 pub use evidence::DbtEvidence;
@@ -257,6 +263,7 @@ pub fn install_guest_compare_exchange(compare_exchange: MemoryCompareExchange) {
 pub struct DbtMemory {
     local: LocalMemory,
     compare_exchange: Option<MemoryCompareExchange>,
+    caller_effects: Option<Arc<caller_effects::CallerEffects>>,
 }
 
 impl Default for DbtMemory {
@@ -272,7 +279,15 @@ impl DbtMemory {
         Self {
             local: LocalMemory::new(),
             compare_exchange: GUEST_COMPARE_EXCHANGE.get().copied(),
+            caller_effects: None,
         }
+    }
+
+    fn check_access(&self) -> Result<(), Errno> {
+        if let Some(effects) = &self.caller_effects {
+            effects.check_memory()?;
+        }
+        Ok(())
     }
 }
 
@@ -282,6 +297,7 @@ impl MemoryAccess for DbtMemory {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.read_vectored(read_from, write_to)
     }
 
@@ -290,6 +306,7 @@ impl MemoryAccess for DbtMemory {
         read_from: &[std::io::IoSlice],
         write_to: &mut [std::io::IoSliceMut],
     ) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write_vectored(read_from, write_to)
     }
 
@@ -297,15 +314,50 @@ impl MemoryAccess for DbtMemory {
     where
         A: Into<reverie::syscalls::Addr<'a, u8>>,
     {
+        self.check_access()?;
         self.local.read(addr, buf)
     }
 
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write(addr, buf)
     }
 
     fn write_with_user_access(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        self.check_access()?;
         self.local.write_with_user_access(addr, buf)
+    }
+
+    fn write_native_user_vectored(
+        &mut self,
+        expected_tid: i32,
+        local: &[std::io::IoSlice],
+        remote: &[reverie_memory::RemoteIoVec],
+    ) -> Result<usize, Errno> {
+        self.check_access()?;
+        self.local
+            .write_native_user_vectored(expected_tid, local, remote)
+    }
+
+    fn read_exact<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        self.check_access()?;
+        self.local.read_exact(addr, buf)
+    }
+
+    fn read_exact_with_user_access<'a, A>(&self, addr: A, buf: &mut [u8]) -> Result<(), Errno>
+    where
+        A: Into<Addr<'a, u8>>,
+    {
+        self.check_access()?;
+        self.local.read_exact_with_user_access(addr, buf)
+    }
+
+    fn write_exact(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<(), Errno> {
+        self.check_access()?;
+        self.local.write_exact(addr, buf)
     }
 
     fn compare_exchange_u32(
@@ -314,6 +366,7 @@ impl MemoryAccess for DbtMemory {
         expected: u32,
         desired: u32,
     ) -> Result<u32, Errno> {
+        self.check_access()?;
         let Some(compare_exchange) = self.compare_exchange else {
             return Err(Errno::ENOSYS);
         };
@@ -372,7 +425,18 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// producer cannot write or validate the new pointee layout.
 /// Version 15 appends the prepared mapping-capture primitive at offset 80;
 /// the callback table is 88 bytes. Ownership snapshot and task layout stay fixed.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 15;
+/// Version 16 appends terminal admission at offset88 and RPC transport failure
+/// at offset96 (104-byte table), and
+/// versions image initialization, readiness and terminal notification records
+/// for an explicitly paired caller runtime. Legacy capabilities remain zero.
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 16;
+
+/// Nonreturning native-owner failure for a caller Tool's lost RPC transport.
+///
+/// The native owner validates the current callback context, records backend
+/// failure, and terminates using the shared transport failure status. It does
+/// not consume a normal guest exit or fabricate an RPC response.
+pub type RuntimeRpcTransportFatal = unsafe extern "C" fn(context: usize) -> !;
 
 /// Initialized native execution mode supplied by the version-6 startup bridge.
 ///
@@ -424,6 +488,7 @@ struct DbtRuntimeCallbacksV1 {
 // TODO-HUMAN-REVIEW(PR-66): Confirm the C-compatible callback layout.
 /// Callbacks supplied to an external Tool runtime on its background client thread.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct DbtRuntimeCallbacks {
     /// Emits already-formatted runtime output through DynamoRIO.
     pub emit: RuntimeEmitter,
@@ -463,6 +528,11 @@ pub struct DbtRuntimeCallbacks {
     pub branch_fact: BranchFactQuery,
     /// Prepared cooperative mapping capture, with native restoration ownership.
     pub mapping_capture: MappingCapture,
+    /// Native reservation of a caller's explicit exit without consuming state.
+    pub admit_terminal: caller_abi::TerminalAdmission,
+    /// Native termination on caller RPC failure. Capability-clear legacy
+    /// adapters may omit it; a caller runtime requires it before configuration.
+    pub rpc_transport_fatal: Option<RuntimeRpcTransportFatal>,
 }
 
 /// Reports the exact native-client/external-runtime ABI version.
@@ -626,6 +696,13 @@ impl<T: Tool> GuestRpc<'_, T> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CallerIntent {
+    Syscall,
+    ThreadStart,
+    Other,
+}
+
 /// In-process guest state passed to a Reverie tool handler.
 pub struct DbtGuest<'a, T>
 where
@@ -648,6 +725,11 @@ where
     signal_info_replacement: Option<[u8; reverie::SIGNAL_INFO_SIZE]>,
     /// Injections made through this guest ([`Guest::injected_syscalls`]).
     injected_syscalls: u64,
+    // Only the explicit caller adapter supplies this per-thread lifetime.
+    // Legacy constructors retain their existing behavior and authority.
+    caller_effects: Option<Arc<caller_effects::CallerEffects>>,
+    caller_intent: CallerIntent,
+    initial_stack_pointer: Option<u64>,
 }
 
 impl<'a, T> DbtGuest<'a, T>
@@ -754,7 +836,67 @@ where
             signal_info: None,
             signal_info_replacement: None,
             injected_syscalls: 0,
+            caller_effects: None,
+            caller_intent: CallerIntent::Other,
+            initial_stack_pointer: None,
         }
+    }
+
+    fn with_initial_stack_pointer(mut self, observed: Option<u64>) -> Self {
+        self.initial_stack_pointer = observed;
+        self
+    }
+
+    fn with_caller_effects(
+        mut self,
+        effects: Arc<caller_effects::CallerEffects>,
+        intent: CallerIntent,
+    ) -> Self {
+        self.caller_effects = Some(effects);
+        self.caller_intent = intent;
+        self
+    }
+
+    async fn wait_if_caller_stopped(&self) {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            std::future::pending::<()>().await;
+        }
+    }
+
+    async fn inject_async_for_purpose<S: SyscallInfo>(
+        &mut self,
+        syscall: S,
+        purpose: InjectionPurpose,
+    ) -> Result<i64, Errno> {
+        self.wait_if_caller_stopped().await;
+        let (number, args) = syscall.into_parts();
+        if self.caller_intent == CallerIntent::Syscall
+            && purpose == InjectionPurpose::Application
+            && matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group)
+            && let Some(effects) = &self.caller_effects
+        {
+            self.injected_syscalls += 1;
+            // The Guest contract makes terminal injection nonreturning. Reserve
+            // the existing terminal effect, then let the caller driver drop this
+            // future and its borrows before native consumes the exact request.
+            effects.admit_exit(
+                number.id() as i64,
+                [
+                    args.arg0 as u64,
+                    args.arg1 as u64,
+                    args.arg2 as u64,
+                    args.arg3 as u64,
+                    args.arg4 as u64,
+                    args.arg5 as u64,
+                ],
+            );
+            return std::future::pending().await;
+        }
+        self.inject_for_purpose(Syscall::from_raw(number, args), purpose)
     }
 
     fn inject_for_purpose<S: SyscallInfo>(
@@ -772,6 +914,12 @@ where
             args.arg4 as u64,
             args.arg5 as u64,
         ];
+        if let Some(effects) = &self.caller_effects
+            && caller_effects::unsupported_operation(number.id() as i64, &args, true)
+        {
+            effects.refuse("caller-returning-lifecycle-unsupported");
+            return Err(Errno::EOPNOTSUPP);
+        }
         if let Some(result) = sync_rpc::protect_guest_operation(
             self.context,
             self.invoke_syscall,
@@ -896,6 +1044,7 @@ where
     ) -> <T::GlobalState as GlobalTool>::Response {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(#121): Review cross-process GlobalState RPC routing.
+        self.wait_if_caller_stopped().await;
         self.rpc.endpoint().send_rpc(message).await
     }
 
@@ -904,6 +1053,13 @@ where
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> Result<<T::GlobalState as GlobalTool>::Response, <T::GlobalState as GlobalTool>::Request>
     {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return Err(message);
+        }
         self.rpc.try_send_rpc_sync(message)
     }
 
@@ -917,8 +1073,18 @@ impl<T> Guest<T> for DbtGuest<'_, T>
 where
     T: Tool,
 {
+    // This backend has no stopped-generation private input implementation.
+    // The typed default injection methods refuse without issuing a native call.
+    fn reserved_input_control(&self) -> Option<reverie::reserved_input::ReservedInputControl> {
+        None
+    }
+
     type Memory = DbtMemory;
     type Stack = DbtStack;
+
+    fn initial_stack_pointer(&self) -> Option<u64> {
+        self.initial_stack_pointer
+    }
 
     fn pidfd_self_spelling(&self) -> reverie::PidfdSelfSpelling {
         crate::pidfd_self::spelling()
@@ -1034,7 +1200,7 @@ where
     // `reverie_dbt_runtime_cpuid` (ABI version 9), which the runtime answers
     // through its Tool's `handle_cpuid_event`.
     fn has_cpuid_interception(&self) -> bool {
-        true
+        self.caller_effects.is_none()
     }
 
     fn injected_syscalls(&self) -> Option<u64> {
@@ -1042,7 +1208,10 @@ where
     }
 
     fn memory(&self) -> Self::Memory {
-        DbtMemory::new()
+        DbtMemory {
+            caller_effects: self.caller_effects.clone(),
+            ..DbtMemory::new()
+        }
     }
 
     // The application's own auxiliary vector, the one on its initial stack,
@@ -1072,6 +1241,17 @@ where
     }
 
     fn set_signal_info(&mut self, info: [u8; reverie::SIGNAL_INFO_SIZE]) -> Result<(), Errno> {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return Err(Errno::ESRCH);
+        }
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-replacement-unsupported");
+            return Err(Errno::ENOSYS);
+        }
         let original = self.signal_info.ok_or(Errno::EINVAL)?;
         if info[..4] != original[..4] {
             return Err(Errno::EINVAL);
@@ -1081,6 +1261,7 @@ where
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
+        self.wait_if_caller_stopped().await;
         let mut regs = unsafe { std::mem::zeroed() };
         let read = unsafe { (self.read_registers)(self.context, &mut regs) };
         assert_ne!(read, 0, "DynamoRIO failed to translate the guest registers");
@@ -1090,6 +1271,7 @@ where
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-167): Review the DBT guest register-write path.
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
         // The write counterpart to `regs()`: hand the tool-supplied register
         // file to the native `dr_set_mcontext` callback. DynamoRIO applies the
         // modified integer context when the guest resumes from this syscall
@@ -1110,7 +1292,8 @@ where
     async fn daemonize(&mut self) {}
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
-        self.inject_for_purpose(syscall, InjectionPurpose::Application)
+        self.inject_async_for_purpose(syscall, InjectionPurpose::Application)
+            .await
     }
 
     async fn inject_with_purpose<S: SyscallInfo>(
@@ -1118,24 +1301,117 @@ where
         syscall: S,
         purpose: InjectionPurpose,
     ) -> Result<i64, Error> {
-        self.inject_for_purpose(syscall, purpose)
+        self.inject_async_for_purpose(syscall, purpose)
+            .await
             .map_err(Error::from)
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-154): Review exact syscall deferral for DBT tail injection.
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
-        // A tail injection never resumes the handler, so execute it only after
-        // this future and every Rust state borrow have been dropped. Besides
-        // preserving DynamoRIO lifecycle bookkeeping, this keeps blocking calls
-        // such as futex out of `dr_invoke_syscall_as_app`.
+        self.wait_if_caller_stopped().await;
+        // Syscall-phase tails forward only after the future and its borrows
+        // are dropped, preserving native lifecycle/blocking-call ownership.
+        // Startup has no intercepted syscall; its distinct branch completes
+        // the admitted effect before abandoning the hook, as ptrace does.
         let (number, args) = syscall.into_parts();
+        if let Some(effects) = self.caller_effects.clone() {
+            let raw = [
+                args.arg0 as u64,
+                args.arg1 as u64,
+                args.arg2 as u64,
+                args.arg3 as u64,
+                args.arg4 as u64,
+                args.arg5 as u64,
+            ];
+            if self.caller_intent == CallerIntent::Other {
+                effects.refuse("caller-startup-terminal-unsupported");
+                return std::future::pending().await;
+            }
+            if self.caller_intent == CallerIntent::ThreadStart {
+                if caller_effects::unsupported_operation(number.id() as i64, &raw, true) {
+                    effects.refuse("caller-startup-tail-lifecycle-unsupported");
+                    return std::future::pending().await;
+                }
+                let completed = self
+                    .tail_inject_result
+                    .startup_completed
+                    .lock()
+                    .unwrap()
+                    .is_some();
+                if completed {
+                    effects.refuse("caller-startup-tail-already-completed");
+                    return std::future::pending().await;
+                }
+                let mut saved: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+                if unsafe { (self.read_registers)(self.context, &mut saved) } == 0 {
+                    effects.refuse("caller-startup-register-read-failed");
+                    return std::future::pending().await;
+                }
+                // Unlike syscall forwarding, startup has no intercepted call
+                // to resume. Match ptrace: execute while the hook is alive,
+                // retain its raw return, then abandon the enclosing future.
+                let result = self.inject_for_purpose(
+                    Syscall::from_raw(number, args),
+                    InjectionPurpose::Application,
+                );
+                let raw_result = match result {
+                    Ok(value) => value,
+                    Err(errno) => -i64::from(errno.into_raw()),
+                };
+                if effects.stopped() {
+                    return std::future::pending().await;
+                }
+                saved.rax = raw_result as u64;
+                if unsafe { (self.write_registers)(self.context, &saved) } == 0 {
+                    // The effect already happened. Admission must fail without
+                    // replay or guest activation when its writeback fails.
+                    effects.refuse("caller-startup-register-write-failed");
+                    return std::future::pending().await;
+                }
+                *self.tail_inject_result.startup_completed.lock().unwrap() = Some(raw_result);
+                return std::future::pending().await;
+            }
+            if caller_effects::unsupported_operation(number.id() as i64, &raw, false) {
+                effects.refuse("caller-tail-lifecycle-unsupported");
+                return std::future::pending().await;
+            }
+            if matches!(number.id() as i64, libc::SYS_exit | libc::SYS_exit_group) {
+                effects.admit_exit(number.id() as i64, raw);
+                return std::future::pending().await;
+            }
+        }
         self.tail_inject_result
             .set_execute_original(Syscall::from_raw(number, args));
         std::future::pending().await
     }
 
+    async fn defer_signal_delivery(&mut self, _event: reverie::SignalEvent) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-delivery-unsupported");
+        }
+        Err(Errno::ENOSYS.into())
+    }
+
+    async fn defer_signal_delivery_before_syscall(
+        &mut self,
+        _event: reverie::SignalEvent,
+    ) -> Result<(), Error> {
+        self.wait_if_caller_stopped().await;
+        if let Some(effects) = &self.caller_effects {
+            effects.refuse("caller-signal-delivery-unsupported");
+        }
+        Err(Errno::ENOSYS.into())
+    }
+
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
+        if let Some(effects) = &self.caller_effects {
+            if effects.stopped() {
+                return Err(Errno::ESRCH.into());
+            }
+            effects.refuse("caller-timer-unsupported");
+        }
         // A working timer needs a retired-conditional-branch threshold trap
         // installed in the native DynamoRIO client; the branch counter is
         // currently only sampled at syscall boundaries, never armed.
@@ -1145,6 +1421,12 @@ where
     }
 
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
+        if let Some(effects) = &self.caller_effects {
+            if effects.stopped() {
+                return Err(Errno::ESRCH.into());
+            }
+            effects.refuse("caller-precise-timer-unsupported");
+        }
         // Precise timers additionally require single-stepping to the exact
         // instruction, which the native client does not implement.
         // TODO-STUB(#31): add RCB + single-step delivery in the native client.
@@ -1163,6 +1445,13 @@ where
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-ratchet16): Review the DBT in-process guest backtrace.
     fn backtrace(&mut self) -> Option<Backtrace> {
+        if self
+            .caller_effects
+            .as_ref()
+            .is_some_and(|effects| effects.stopped())
+        {
+            return None;
+        }
         // The DBT Tool runs *in-process*, in the guest's own address space, so a
         // backtrace needs no remote unwinder (unlike ptrace, which unwinds the
         // tracee over `/proc/pid/mem` with libunwind): the guest stack is
@@ -1449,10 +1738,14 @@ enum TailInjectAction {
 #[derive(Debug, Default)]
 struct TailInjectResult {
     action: Mutex<Option<TailInjectAction>>,
+    // Independent of the enclosing future's Poll: only startup execution plus
+    // successful writeback publishes this consumed-once cancellation fact.
+    startup_completed: Mutex<Option<i64>>,
 }
 
 impl TailInjectResult {
     fn clear(&self) {
+        *self.startup_completed.lock().unwrap() = None;
         *self
             .action
             .lock()
@@ -1934,6 +2227,155 @@ fn run_tool_syscall_on_prepared_guest<T: Tool>(
     }
 }
 
+/// Outcome from the admitted caller Tool's shared completion policy.
+/// Legacy Detcore and prototype dispatch do not use this policy implicitly.
+#[derive(Debug)]
+pub enum CallerSyscallOutcome {
+    /// Return the handler's value without forwarding the original call.
+    Suppress(i64),
+    /// Forward exactly one unadmitted ordinary tail after dropping the future.
+    ExecuteOriginal(Syscall),
+    /// Finish the exact native reservation after all Guest borrows are dropped.
+    Terminal(caller_abi::TerminalFact),
+}
+
+fn caller_error(reason: &'static str) -> Error {
+    std::io::Error::other(reason).into()
+}
+
+// Reuse the existing DBT waker/parking engine. Only this caller entry and the
+// trap consume the common completion policy; the legacy result mapper above
+// deliberately remains byte-for-byte unchanged.
+fn run_caller_callback<F: Future>(
+    future: F,
+    tail: &TailInjectResult,
+    effects: &caller_effects::CallerEffects,
+    phase: reverie::CallbackPhase,
+) -> reverie::CallbackDecision<F::Output, caller_abi::TerminalFact> {
+    let mut future = pin!(future);
+    let driver_tail = TailInjectResult::default();
+    run_ready(
+        std::future::poll_fn(|cx| {
+            let polled = future.as_mut().poll(cx);
+            let fact = if let Some(ending) = effects.ending() {
+                Some(reverie::TailFact::Established(ending))
+            } else if let Some(value) = tail.startup_completed.lock().unwrap().take() {
+                Some(reverie::TailFact::Completed(value))
+            } else {
+                tail.take().map(|action| match action {
+                    TailInjectAction::ExecuteOriginal(syscall) => {
+                        let (number, args) = syscall.into_parts();
+                        reverie::TailFact::Deferred {
+                            number: number.id() as i64,
+                            args: [
+                                args.arg0 as u64,
+                                args.arg1 as u64,
+                                args.arg2 as u64,
+                                args.arg3 as u64,
+                                args.arg4 as u64,
+                                args.arg5 as u64,
+                            ],
+                        }
+                    }
+                })
+            };
+            match reverie::classify_callback(phase, polled, fact, effects.refusal()) {
+                reverie::CallbackDecision::Wait => Poll::Pending,
+                outcome => Poll::Ready(outcome),
+            }
+        }),
+        &driver_tail,
+    )
+    .expect("caller classifier always resolves through its explicit outcome")
+}
+
+/// Drive an admitted caller's syscall through the shared Tool process owner.
+///
+/// This entry requires the caller adapter's per-thread effect state. It neither
+/// adopts a legacy Guest nor changes the legacy drivers' errno/fatal policy.
+/// The caller retains native admission, primary RPC ownership and final forward
+/// preparation; an established terminal result is not kernel completion.
+pub fn run_caller_syscall_with_guest<T: Tool>(
+    process: &reverie::ToolProcess<T>,
+    mut guest: DbtGuest<'_, T>,
+    syscall: Syscall,
+) -> Result<CallerSyscallOutcome, Error> {
+    let effects = guest
+        .caller_effects
+        .clone()
+        .ok_or_else(|| caller_error("caller driver requires admitted thread ownership"))?;
+    if let Some(result) = protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, true) {
+        return Ok(CallerSyscallOutcome::Suppress(result));
+    }
+    let tail = Arc::clone(&guest.tail_inject_result);
+    loop {
+        tail.clear();
+        let outcome = run_caller_callback(
+            process.handle_syscall_event(&mut guest, syscall),
+            &tail,
+            &effects,
+            reverie::CallbackPhase::Syscall,
+        );
+        match outcome {
+            reverie::CallbackDecision::Ready(result) => {
+                match reverie::classify_syscall_result(result) {
+                    reverie::SyscallResult::Value(value) => {
+                        return Ok(CallerSyscallOutcome::Suppress(value));
+                    }
+                    reverie::SyscallResult::Restart => continue,
+                    reverie::SyscallResult::Fatal(error) => return Err(error),
+                }
+            }
+            reverie::CallbackDecision::Completed(value) => {
+                return Ok(CallerSyscallOutcome::Suppress(value));
+            }
+            reverie::CallbackDecision::Established(fact) => {
+                return Ok(CallerSyscallOutcome::Terminal(fact));
+            }
+            reverie::CallbackDecision::Deferred { number, args } => {
+                // Tgkill is admitted only for a completed Tool answer. Refuse
+                // before descriptor protection can execute a rewritten call.
+                // Established terminal owners were handled above.
+                if matches!(syscall, Syscall::Tgkill(_)) {
+                    return Err(caller_error(
+                        "caller-suppression-only-forwarding-unsupported",
+                    ));
+                }
+                let number = reverie::syscalls::Sysno::from(
+                    i32::try_from(number)
+                        .map_err(|_| caller_error("caller deferred an invalid syscall"))?,
+                );
+                let syscall = Syscall::from_raw(
+                    number,
+                    reverie::syscalls::SyscallArgs::new(
+                        args[0] as usize,
+                        args[1] as usize,
+                        args[2] as usize,
+                        args[3] as usize,
+                        args[4] as usize,
+                        args[5] as usize,
+                    ),
+                );
+                return Ok(
+                    match protect_tool_syscall(guest.context, guest.invoke_syscall, syscall, false)
+                    {
+                        Some(value) => CallerSyscallOutcome::Suppress(value),
+                        None => CallerSyscallOutcome::ExecuteOriginal(syscall),
+                    },
+                );
+            }
+            reverie::CallbackDecision::Refused(reason) => return Err(caller_error(reason)),
+            reverie::CallbackDecision::StartupCompleted(_)
+            | reverie::CallbackDecision::ForkChild { .. }
+            | reverie::CallbackDecision::Wait => {
+                return Err(caller_error(
+                    "caller driver received an impossible transition",
+                ));
+            }
+        }
+    }
+}
+
 fn protect_tool_syscall(
     context: usize,
     invoke_syscall: SyscallInvoker,
@@ -2104,9 +2546,9 @@ static PROCESS_CLONE_RESULT_PROBE: AtomicBool = AtomicBool::new(false);
 /// Begins a new DynamoRIO application image and returns its generation.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_image_init() -> u64 {
+pub extern "C" fn reverie_dbt_runtime_image_init() -> caller_abi::ImageDescriptor {
     READY_IMAGE_GENERATION.store(0, Ordering::Release);
-    IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+    caller_abi::ImageDescriptor::legacy(IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1)
 }
 
 /// Initializes the prototype state for the current application thread.
@@ -2226,7 +2668,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_exit(
     _context: *mut c_void,
     tid: i32,
     _invoke_syscall: SyscallInvoker,
-) {
+    _fact: *const caller_abi::TerminalFact,
+) -> i32 {
     if tools::counter2_exact_enabled() {
         let thread_syscalls = unsafe { (*counters).observed_syscalls };
         let _ = run_tool_thread_exit(
@@ -2238,6 +2681,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_exit(
             ExitStatus::SUCCESS,
         );
     }
+    0
 }
 
 /// Restores prototype state after an exec syscall returns with an error.
@@ -2307,7 +2751,6 @@ pub extern "C" fn reverie_dbt_runtime_copied_syscall(_sysnum: i64, _args: *const
 }
 
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
-#[cfg(any(feature = "prototype-runtime", test))]
 unsafe fn write_deferred_syscall(syscall: Syscall, number: *mut i64, args: *mut u64) {
     let (sysno, syscall_args) = syscall.into_parts();
     unsafe { number.write(sysno.id() as i64) };
@@ -2935,12 +3378,30 @@ pub extern "C" fn reverie_dbt_runtime_process_exit() {
 }
 
 /// Reports whether the built-in prototype runtime is ready for callbacks.
+///
+/// # Safety
+///
+/// A nonnull `snapshot` must point to writable, properly aligned storage for a
+/// complete `ReadySnapshot` and must not be accessed concurrently during this call.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_ready(image_generation: u64) -> i32 {
-    i32::from(
+pub unsafe extern "C" fn reverie_dbt_runtime_ready(
+    image_generation: u64,
+    snapshot: *mut caller_abi::ReadySnapshot,
+) -> i32 {
+    let ready = i32::from(
         image_generation != 0 && READY_IMAGE_GENERATION.load(Ordering::Acquire) == image_generation,
-    )
+    );
+    if ready == 1 && !snapshot.is_null() {
+        unsafe {
+            snapshot.write(caller_abi::ReadySnapshot {
+                size: std::mem::size_of::<caller_abi::ReadySnapshot>() as u32,
+                owner_generation: image_generation,
+                ..Default::default()
+            });
+        }
+    }
+    ready
 }
 
 /// Returns the name of the built-in DBT runtime for native summary evidence.
@@ -3008,6 +3469,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_totals(
 mod tests {
     use super::*;
 
+    mod caller_contract;
     mod rpc_owner;
     mod tool_configuration;
 
@@ -3452,6 +3914,7 @@ mod tests {
         let mut memory = DbtMemory {
             local: LocalMemory::new(),
             compare_exchange: Some(fake_compare_exchange),
+            caller_effects: None,
         };
         assert_eq!(memory.compare_exchange_u32(address, 7, 9), Ok(7));
         assert_eq!(word.load(Ordering::SeqCst), 9);
@@ -3476,6 +3939,7 @@ mod tests {
         let mut memory = DbtMemory {
             local: LocalMemory::new(),
             compare_exchange: None,
+            caller_effects: None,
         };
         assert_eq!(
             memory.compare_exchange_u32(address, 7, 9),
@@ -3486,11 +3950,19 @@ mod tests {
 
     #[test]
     fn startup_abi_preserves_layout_and_requires_initialized_native_mode() {
-        assert_eq!(reverie_dbt_runtime_abi_version(), 15);
+        assert_eq!(reverie_dbt_runtime_abi_version(), 16);
         assert_eq!(std::mem::size_of::<DbtSignalEvent>(), 200);
         assert_eq!(std::mem::align_of::<DbtSignalEvent>(), 8);
-        assert_eq!(reverie_dbt_runtime_callbacks_size(), 88);
-        assert_eq!(std::mem::size_of::<DbtRuntimeCallbacks>(), 88);
+        assert_eq!(reverie_dbt_runtime_callbacks_size(), 104);
+        assert_eq!(std::mem::size_of::<DbtRuntimeCallbacks>(), 104);
+        assert_eq!(
+            std::mem::offset_of!(DbtRuntimeCallbacks, rpc_transport_fatal),
+            96
+        );
+        assert_eq!(
+            std::mem::offset_of!(DbtRuntimeCallbacks, admit_terminal),
+            88
+        );
         assert_eq!(std::mem::offset_of!(DbtRuntimeCallbacks, branch_fact), 72);
         assert_eq!(std::mem::size_of::<NativeBranchFact>(), 48);
         assert_eq!(
@@ -3628,7 +4100,136 @@ mod tests {
     #[derive(Default)]
     struct RecordedCallback {
         calls: Vec<(i64, [u64; 6], u32)>,
+        admissions: Vec<caller_abi::TerminalFact>,
+        admission_requests: Vec<(i64, [u64; 6])>,
+        admission_fault: AdmissionFault,
         result: i64,
+    }
+
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    enum AdmissionFault {
+        #[default]
+        None,
+        CallbackFailure,
+        Context,
+        Pid,
+        Tid,
+        Image,
+        ZeroCookie,
+        Origin,
+        Syscall,
+        Operands,
+        Size,
+        Kind,
+        Reserved,
+    }
+
+    const ASYNC_EXIT_ARGS: [u64; 6] = [0x117, 17, 34, 51, 68, 85];
+
+    fn async_exit_call(number: Sysno) -> Syscall {
+        Syscall::from_raw(number, SyscallArgs::new(0x117, 17, 34, 51, 68, 85))
+    }
+
+    fn async_exit_fact(context: usize, number: i64, args: [u64; 6]) -> caller_abi::TerminalFact {
+        caller_abi::TerminalFact {
+            size: std::mem::size_of::<caller_abi::TerminalFact>() as u32,
+            kind: 1,
+            image: 7,
+            context: context as u64,
+            pid: 10,
+            tid: 10,
+            sysno: number,
+            args,
+            cookie: 1,
+            origin: 2,
+            reserved: 0,
+        }
+    }
+
+    unsafe extern "C" fn record_async_admit(
+        context: usize,
+        number: i64,
+        args: *const u64,
+        output: *mut caller_abi::TerminalFact,
+    ) -> i32 {
+        let record = unsafe { &mut *(context as *mut RecordedCallback) };
+        let args = unsafe { args.cast::<[u64; 6]>().read() };
+        record.admission_requests.push((number, args));
+        let mut fact = async_exit_fact(context, number, args);
+        match record.admission_fault {
+            AdmissionFault::None | AdmissionFault::CallbackFailure => {}
+            AdmissionFault::Context => fact.context += 1,
+            AdmissionFault::Pid => fact.pid += 1,
+            AdmissionFault::Tid => fact.tid += 1,
+            AdmissionFault::Image => fact.image += 1,
+            AdmissionFault::ZeroCookie => fact.cookie = 0,
+            AdmissionFault::Origin => fact.origin = 1,
+            AdmissionFault::Syscall => fact.sysno = libc::SYS_getpid,
+            AdmissionFault::Operands => fact.args[5] += 1,
+            AdmissionFault::Size => fact.size -= 1,
+            AdmissionFault::Kind => fact.kind = 0,
+            AdmissionFault::Reserved => fact.reserved = 1,
+        }
+        record.admissions.push(fact);
+        unsafe { output.write(fact) };
+        i32::from(record.admission_fault != AdmissionFault::CallbackFailure)
+    }
+
+    fn caller_injection_guest<'a>(
+        native: &mut RecordedCallback,
+        counters: &'a mut PrototypeCounters,
+        intent: CallerIntent,
+    ) -> (
+        DbtGuest<'a, PrototypeTool>,
+        Arc<caller_effects::CallerEffects>,
+    ) {
+        // Each test keeps this local recorder at a stable address until every
+        // Guest future and the Guest itself have been dropped.
+        let context = native as *mut _ as usize;
+        let effects = Arc::new(caller_effects::CallerEffects::new(
+            context,
+            10,
+            10,
+            7,
+            record_async_admit,
+        ));
+        let guest = DbtGuest::new(
+            context,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            record_callback,
+            read_regs,
+            write_regs_noop,
+        )
+        .with_caller_effects(Arc::clone(&effects), intent);
+        (guest, effects)
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum InjectionApi {
+        Ordinary,
+        Purpose(InjectionPurpose),
+        Synchronous(InjectionPurpose),
+    }
+
+    async fn invoke_test_injection(
+        guest: &mut DbtGuest<'_, PrototypeTool>,
+        syscall: Syscall,
+        api: InjectionApi,
+    ) -> Result<i64, Errno> {
+        match api {
+            InjectionApi::Ordinary => guest.inject(syscall).await,
+            InjectionApi::Purpose(purpose) => guest
+                .inject_with_purpose(syscall, purpose)
+                .await
+                .map_err(|error| error.into_errno().expect("exact errno conversion")),
+            InjectionApi::Synchronous(purpose) => guest.inject_for_purpose(syscall, purpose),
+        }
     }
 
     unsafe extern "C" fn record_callback(
@@ -4257,6 +4858,421 @@ mod tests {
     }
 
     #[test]
+    fn caller_async_exit_injection_admits_before_suspending() {
+        const IMAGE: u64 = 7;
+
+        unsafe extern "C" fn record_admit(
+            context: usize,
+            number: i64,
+            args: *const u64,
+            output: *mut caller_abi::TerminalFact,
+        ) -> i32 {
+            let record = unsafe { &mut *(context as *mut RecordedCallback) };
+            let fact = caller_abi::TerminalFact {
+                size: std::mem::size_of::<caller_abi::TerminalFact>() as u32,
+                kind: 1,
+                image: IMAGE,
+                context: context as u64,
+                pid: 10,
+                tid: 10,
+                sysno: number,
+                args: unsafe { args.cast::<[u64; 6]>().read() },
+                cookie: 1,
+                origin: 2,
+                reserved: 0,
+            };
+            record.admissions.push(fact);
+            unsafe { output.write(fact) };
+            1
+        }
+
+        host_linux::take_observed();
+        let mut native = RecordedCallback::default();
+        let context = &mut native as *mut _ as usize;
+        let effects = Arc::new(caller_effects::CallerEffects::new(
+            context,
+            10,
+            10,
+            IMAGE,
+            record_admit,
+        ));
+        let mut counters = PrototypeCounters::default();
+        let mut guest = DbtGuest::<PrototypeTool>::new(
+            context,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            record_callback,
+            read_regs,
+            write_regs_noop,
+        )
+        .with_caller_effects(Arc::clone(&effects), CallerIntent::Syscall);
+        let args = [0x117, 17, 34, 51, 68, 85];
+        let syscall = Syscall::from_raw(
+            Sysno::exit_group,
+            SyscallArgs::new(0x117, 17, 34, 51, 68, 85),
+        );
+        let expected = caller_abi::TerminalFact {
+            size: std::mem::size_of::<caller_abi::TerminalFact>() as u32,
+            kind: 1,
+            image: IMAGE,
+            context: context as u64,
+            pid: 10,
+            tid: 10,
+            sysno: libc::SYS_exit_group,
+            args,
+            cookie: 1,
+            origin: 2,
+            reserved: 0,
+        };
+
+        // Poll the actual Guest API once. Dropping the owned future releases
+        // its mutable Guest borrow without polling a completed future again.
+        let mut future = Box::pin(guest.inject(syscall));
+        let polled = future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()));
+        drop(future);
+        let injected_syscalls = guest.injected_syscalls();
+        let refusal = effects.refusal();
+        let ending = effects.ending();
+        let provider_calls = host_linux::take_observed();
+        let poll_errno = match &polled {
+            Poll::Ready(Err(errno)) => Some(errno.into_raw()),
+            _ => None,
+        };
+        eprintln!(
+            "caller_async_terminal_observation: poll={polled:?}; errno={poll_errno:?}; injected_syscalls={injected_syscalls:?}; refusal={refusal:?}; ending={ending:?}; admissions={:?}; invoker_calls={:?}; provider_calls={provider_calls:?}",
+            native.admissions, native.calls,
+        );
+
+        assert!(
+            polled.is_pending(),
+            "caller-backed asynchronous exit injection must admit then suspend"
+        );
+        assert_eq!(injected_syscalls, Some(1));
+        assert_eq!(refusal, None);
+        assert_eq!(ending, Some(expected));
+        assert_eq!(native.admissions, [expected]);
+        assert!(native.calls.is_empty());
+        assert!(provider_calls.is_empty());
+    }
+
+    #[test]
+    fn caller_async_terminal_injection_reserves_once_after_first_poll() {
+        for api in [
+            InjectionApi::Ordinary,
+            InjectionApi::Purpose(InjectionPurpose::Application),
+        ] {
+            for number in [Sysno::exit, Sysno::exit_group] {
+                host_linux::take_observed();
+                let mut native = RecordedCallback::default();
+                let mut counters = PrototypeCounters::default();
+                let (mut guest, effects) =
+                    caller_injection_guest(&mut native, &mut counters, CallerIntent::Syscall);
+                let call = async_exit_call(number);
+                match api {
+                    InjectionApi::Ordinary => drop(Box::pin(guest.inject(call))),
+                    InjectionApi::Purpose(purpose) => {
+                        drop(Box::pin(guest.inject_with_purpose(call, purpose)));
+                    }
+                    InjectionApi::Synchronous(_) => unreachable!("async-only cases"),
+                }
+                assert_eq!(guest.injected_syscalls(), Some(0));
+                assert_eq!(effects.ending(), None);
+                assert_eq!(effects.refusal(), None);
+                assert!(native.admissions.is_empty());
+                assert!(native.admission_requests.is_empty());
+                assert!(native.calls.is_empty());
+                assert!(host_linux::take_observed().is_empty());
+
+                let mut future = Box::pin(invoke_test_injection(&mut guest, call, api));
+                let first = future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()));
+                assert_eq!(first, Poll::Pending, "{api:?}/{number:?}");
+                assert_eq!(
+                    native.admission_requests,
+                    [(number.id() as i64, ASYNC_EXIT_ARGS)]
+                );
+                let second = future
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()));
+                drop(future);
+                let expected = async_exit_fact(guest.context, number.id() as i64, ASYNC_EXIT_ARGS);
+                eprintln!(
+                    "caller_async_terminal_once: api={api:?}; syscall={number:?}; first={first:?}; second={second:?}; count={:?}; ending={:?}; refusal={:?}; requests={:?}; admissions={:?}; invocations={:?}",
+                    guest.injected_syscalls(),
+                    effects.ending(),
+                    effects.refusal(),
+                    native.admission_requests,
+                    native.admissions,
+                    native.calls,
+                );
+                assert_eq!(second, Poll::Pending);
+                assert_eq!(guest.injected_syscalls(), Some(1));
+                assert_eq!(effects.ending(), Some(expected));
+                assert_eq!(effects.refusal(), None);
+                assert_eq!(
+                    native.admission_requests,
+                    [(number.id() as i64, ASYNC_EXIT_ARGS)]
+                );
+                assert_eq!(native.admissions, [expected]);
+                assert!(native.calls.is_empty());
+                assert!(host_linux::take_observed().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn caller_async_terminal_admission_rejects_invalid_facts() {
+        for api in [
+            InjectionApi::Ordinary,
+            InjectionApi::Purpose(InjectionPurpose::Application),
+        ] {
+            for number in [Sysno::exit, Sysno::exit_group] {
+                for fault in [
+                    AdmissionFault::CallbackFailure,
+                    AdmissionFault::Context,
+                    AdmissionFault::Pid,
+                    AdmissionFault::Tid,
+                    AdmissionFault::Image,
+                    AdmissionFault::ZeroCookie,
+                    AdmissionFault::Origin,
+                    AdmissionFault::Syscall,
+                    AdmissionFault::Operands,
+                    AdmissionFault::Size,
+                    AdmissionFault::Kind,
+                    AdmissionFault::Reserved,
+                ] {
+                    host_linux::take_observed();
+                    let mut native = RecordedCallback {
+                        admission_fault: fault,
+                        ..Default::default()
+                    };
+                    let mut counters = PrototypeCounters::default();
+                    let (mut guest, effects) =
+                        caller_injection_guest(&mut native, &mut counters, CallerIntent::Syscall);
+                    let mut future = Box::pin(invoke_test_injection(
+                        &mut guest,
+                        async_exit_call(number),
+                        api,
+                    ));
+                    let first = future
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()));
+                    // A refused eligible terminal attempt must also stay suspended.
+                    assert_eq!(first, Poll::Pending, "{api:?}/{number:?}/{fault:?}");
+                    let second = future
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()));
+                    drop(future);
+                    eprintln!(
+                        "caller_async_terminal_refused_admission: api={api:?}; syscall={number:?}; fault={fault:?}; first={first:?}; second={second:?}; count={:?}; ending={:?}; refusal={:?}; requests={:?}; admissions={:?}; invocations={:?}",
+                        guest.injected_syscalls(),
+                        effects.ending(),
+                        effects.refusal(),
+                        native.admission_requests,
+                        native.admissions,
+                        native.calls,
+                    );
+                    assert_eq!(second, Poll::Pending);
+                    assert_eq!(guest.injected_syscalls(), Some(1));
+                    assert_eq!(effects.ending(), None);
+                    assert_eq!(effects.refusal(), Some("caller-terminal-admission-refused"));
+                    assert_eq!(
+                        native.admission_requests,
+                        [(number.id() as i64, ASYNC_EXIT_ARGS)]
+                    );
+                    assert_eq!(native.admissions.len(), 1);
+                    assert!(native.calls.is_empty());
+                    assert!(host_linux::take_observed().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caller_returning_injection_refusals_remain_exact() {
+        let application = InjectionPurpose::Application;
+        let validation = InjectionPurpose::Pselect6WrapperValidation;
+        for number in [
+            Sysno::exit,
+            Sysno::exit_group,
+            Sysno::clone,
+            Sysno::execve,
+            Sysno::tgkill,
+        ] {
+            for intent in [
+                CallerIntent::ThreadStart,
+                CallerIntent::Other,
+                CallerIntent::Syscall,
+            ] {
+                for api in [
+                    InjectionApi::Ordinary,
+                    InjectionApi::Purpose(application),
+                    InjectionApi::Purpose(validation),
+                    InjectionApi::Synchronous(application),
+                    InjectionApi::Synchronous(validation),
+                ] {
+                    // The eligible async terminal cells have their own success
+                    // and admission-refusal tables; every remaining cell stays
+                    // an immediate returning-lifecycle refusal.
+                    if intent == CallerIntent::Syscall
+                        && matches!(number, Sysno::exit | Sysno::exit_group)
+                        && matches!(
+                            api,
+                            InjectionApi::Ordinary
+                                | InjectionApi::Purpose(InjectionPurpose::Application)
+                        )
+                    {
+                        continue;
+                    }
+                    host_linux::take_observed();
+                    let mut native = RecordedCallback::default();
+                    let mut counters = PrototypeCounters::default();
+                    let (mut guest, effects) =
+                        caller_injection_guest(&mut native, &mut counters, intent);
+                    let mut future = Box::pin(invoke_test_injection(
+                        &mut guest,
+                        async_exit_call(number),
+                        api,
+                    ));
+                    let result = future
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()));
+                    drop(future);
+                    eprintln!(
+                        "caller_returning_refusal: api={api:?}; syscall={number:?}; intent={intent:?}; result={result:?}; count={:?}; ending={:?}; refusal={:?}; requests={:?}; invocations={:?}",
+                        guest.injected_syscalls(),
+                        effects.ending(),
+                        effects.refusal(),
+                        native.admission_requests,
+                        native.calls,
+                    );
+                    assert_eq!(result, Poll::Ready(Err(Errno::EOPNOTSUPP)));
+                    assert_eq!(guest.injected_syscalls(), Some(1));
+                    assert_eq!(effects.ending(), None);
+                    assert_eq!(
+                        effects.refusal(),
+                        Some("caller-returning-lifecycle-unsupported")
+                    );
+                    assert!(native.admission_requests.is_empty());
+                    assert!(native.admissions.is_empty());
+                    assert!(native.calls.is_empty());
+                    assert!(host_linux::take_observed().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caller_async_stopped_injection_preserves_latched_state() {
+        for established in [false, true] {
+            for api in [
+                InjectionApi::Ordinary,
+                InjectionApi::Purpose(InjectionPurpose::Application),
+                InjectionApi::Purpose(InjectionPurpose::Pselect6WrapperValidation),
+            ] {
+                for number in [Sysno::exit, Sysno::exit_group, Sysno::getpid] {
+                    host_linux::take_observed();
+                    let mut native = RecordedCallback::default();
+                    let mut counters = PrototypeCounters::default();
+                    let (mut guest, effects) =
+                        caller_injection_guest(&mut native, &mut counters, CallerIntent::Syscall);
+                    if established {
+                        let mut fact =
+                            async_exit_fact(guest.context, libc::SYS_exit_group, ASYNC_EXIT_ARGS);
+                        fact.origin = 1;
+                        assert!(effects.establish_final(fact));
+                    } else {
+                        effects.refuse("retained-test-refusal");
+                    }
+                    let before = (effects.ending(), effects.refusal());
+                    let mut future = Box::pin(invoke_test_injection(
+                        &mut guest,
+                        async_exit_call(number),
+                        api,
+                    ));
+                    let result = future
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()));
+                    drop(future);
+                    assert_eq!(result, Poll::Pending, "{established}/{api:?}/{number:?}");
+                    assert_eq!(guest.injected_syscalls(), Some(0));
+                    assert_eq!((effects.ending(), effects.refusal()), before);
+                    assert!(native.admission_requests.is_empty());
+                    assert!(native.admissions.is_empty());
+                    assert!(native.calls.is_empty());
+                    assert!(host_linux::take_observed().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn caller_async_nonterminal_and_legacy_routing_is_unchanged() {
+        for caller in [false, true] {
+            for number in [Sysno::getpid, Sysno::exit, Sysno::exit_group] {
+                if caller && number != Sysno::getpid {
+                    continue;
+                }
+                for api in [
+                    InjectionApi::Ordinary,
+                    InjectionApi::Purpose(InjectionPurpose::Application),
+                ] {
+                    for raw in [73, -i64::from(libc::EINTR)] {
+                        host_linux::take_observed();
+                        let mut native = RecordedCallback {
+                            result: raw,
+                            ..Default::default()
+                        };
+                        let mut counters = PrototypeCounters::default();
+                        let (mut guest, effects) = caller_injection_guest(
+                            &mut native,
+                            &mut counters,
+                            CallerIntent::Syscall,
+                        );
+                        if !caller {
+                            guest.caller_effects = None;
+                        }
+                        let call = async_exit_call(number);
+                        let provider =
+                            expected_provider_call(&guest, call, InjectionPurpose::Application);
+                        let mut future = Box::pin(invoke_test_injection(&mut guest, call, api));
+                        let result = future
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop()));
+                        drop(future);
+                        assert_eq!(
+                            result,
+                            Poll::Ready(if raw == 73 { Ok(73) } else { Err(Errno::EINTR) })
+                        );
+                        assert_eq!(guest.injected_syscalls(), Some(1));
+                        assert_eq!(effects.ending(), None);
+                        assert_eq!(effects.refusal(), None);
+                        assert!(native.admission_requests.is_empty());
+                        assert!(native.admissions.is_empty());
+                        assert_eq!(
+                            native.calls,
+                            [(
+                                number.id() as i64,
+                                ASYNC_EXIT_ARGS,
+                                InjectionPurpose::Application as u32
+                            )]
+                        );
+                        assert_eq!(host_linux::take_observed(), [provider]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn tail_inject_defers_exact_syscall_and_suspends() {
         host_linux::take_observed();
         let mut native = RecordedCallback::default();
@@ -4329,6 +5345,31 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "DynamoRIO failed to translate the guest registers")]
+    fn regs_rejects_a_failed_native_reader() {
+        unsafe extern "C" fn fail_read(_context: usize, _out: *mut libc::user_regs_struct) -> i32 {
+            0
+        }
+        let mut counters = PrototypeCounters::default();
+        let mut guest: DbtGuest<'_, PrototypeTool> = DbtGuest::new(
+            0,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            fail_read,
+            write_regs_fail,
+        );
+        // This covers the Rust failure contract, not native signal provenance
+        // or whether unwinding can be caught inside DynamoRIO.
+        let _ = run_ready(guest.regs(), &TailInjectResult::default());
+    }
+
+    #[test]
     fn set_regs_forwards_exact_register_file_to_native_writer() {
         let mut counters = PrototypeCounters::default();
         let mut captured: Option<libc::user_regs_struct> = None;
@@ -4351,6 +5392,8 @@ mod tests {
         regs.r15 = 0xDEAD_BEEF_CAFE_F00D;
         regs.rdi = 0x1111_2222_3333_4444;
         regs.rip = 0x5555_6666_7777_8888;
+        regs.rax = 0x5A5A_0001;
+        regs.orig_rax = 59;
         let tail_result = TailInjectResult::default();
         let outcome = run_ready(guest.set_regs(regs), &tail_result)
             .expect("set_regs must resolve without suspending");
@@ -4360,13 +5403,25 @@ mod tests {
         assert_eq!(written.r15, 0xDEAD_BEEF_CAFE_F00D);
         assert_eq!(written.rdi, 0x1111_2222_3333_4444);
         assert_eq!(written.rip, 0x5555_6666_7777_8888);
+        assert_eq!(written.rax, 0x5A5A_0001);
+        assert_eq!(written.orig_rax, 59);
     }
 
     #[test]
     fn set_regs_surfaces_writer_failure_as_errno() {
+        unsafe extern "C" fn refuse_write(
+            context: usize,
+            regs: *const libc::user_regs_struct,
+        ) -> i32 {
+            let observed = unsafe { &mut *(context as *mut Option<(u64, u64)>) };
+            let regs = unsafe { &*regs };
+            *observed = Some((regs.rax, regs.orig_rax));
+            0
+        }
         let mut counters = PrototypeCounters::default();
+        let mut observed: Option<(u64, u64)> = None;
         let mut guest: DbtGuest<'_, PrototypeTool> = DbtGuest::new(
-            0,
+            &mut observed as *mut Option<(u64, u64)> as usize,
             Pid::from_raw(10),
             Pid::from_raw(10),
             None,
@@ -4376,10 +5431,12 @@ mod tests {
             &CONFIG,
             invoke,
             read_regs,
-            write_regs_fail,
+            refuse_write,
         );
 
-        let regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        regs.rax = 0x5A5A_0001;
+        regs.orig_rax = 59;
         let tail_result = TailInjectResult::default();
         let outcome = run_ready(guest.set_regs(regs), &tail_result)
             .expect("set_regs must resolve without suspending");
@@ -4387,6 +5444,7 @@ mod tests {
             matches!(outcome, Err(Error::Errno(Errno::EIO))),
             "a failing native writer must surface EIO, got {outcome:?}"
         );
+        assert_eq!(observed, Some((0x5A5A_0001, 59)));
     }
 
     #[test]

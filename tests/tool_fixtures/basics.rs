@@ -8,6 +8,7 @@
 
 //! Caller-owned Tools shared by the basic conformance tests.
 
+use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -32,6 +33,7 @@ impl Tool for NoopTool {
 #[derive(Debug, Default)]
 pub struct CounterGlobal {
     pub num_syscalls: AtomicU64,
+    pub syscall_sequence: Mutex<Vec<(Pid, Sysno)>>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -48,7 +50,10 @@ impl GlobalTool for CounterGlobal {
     type Response = ();
     type Config = ();
 
-    async fn receive_rpc(&self, _from: Pid, _: IncrMsg) -> Self::Response {
+    async fn receive_rpc(&self, from: Pid, IncrMsg(sysno): IncrMsg) -> Self::Response {
+        // Retain controller receive order, not syscall completion order.
+        let mut sequence = self.syscall_sequence.lock().unwrap();
+        sequence.push((from, sysno));
         AtomicU64::fetch_add(&self.num_syscalls, 1, Ordering::SeqCst);
     }
 }

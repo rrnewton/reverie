@@ -11,6 +11,15 @@ if(NOT DEFINED REVERIE_DBT_RUNTIME)
 endif()
 
 add_library(reverie_dbt_client SHARED client.c)
+if(DEFINED REVERIE_DBT_CALLER_INPUT_IDENTITY)
+  string(LENGTH "${REVERIE_DBT_CALLER_INPUT_IDENTITY}" caller_identity_length)
+  if(NOT caller_identity_length EQUAL 64 OR
+     NOT REVERIE_DBT_CALLER_INPUT_IDENTITY MATCHES "^[0-9a-f]+$")
+    message(FATAL_ERROR "REVERIE_DBT_CALLER_INPUT_IDENTITY must be exactly 64 lowercase hex characters")
+  endif()
+  target_compile_definitions(reverie_dbt_client PRIVATE
+    "REVERIE_DBT_CALLER_INPUT_IDENTITY=\"${REVERIE_DBT_CALLER_INPUT_IDENTITY}\"")
+endif()
 configure_DynamoRIO_client(reverie_dbt_client)
 
 # DynamoRIO's private x86 loader does not implement R_X86_64_TLSDESC.

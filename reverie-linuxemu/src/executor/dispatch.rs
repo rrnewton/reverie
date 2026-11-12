@@ -28,6 +28,88 @@ pub(crate) fn is_process_syscall(number: u64) -> bool {
         || number == libc::SYS_waitid as u64
 }
 
+/// Why a vfork child may not move its program break before it execs
+/// ([`vfork_child_moves_break`]).
+pub(super) const VFORK_CHILD_BREAK_REASON: &str = concat!(
+    "a vfork child shares its parent's address space until it execs or exits, and runs on ",
+    "a copy here whose changes to private memory go back to the parent, but whose program ",
+    "break cannot: on Linux this call would move the parent's break too"
+);
+
+/// Whether this call is a `brk` by which a vfork child's copy of its parent's
+/// address space ([`GuestMemory::shares_parent_address_space`]) would move
+/// the program break before the child execs. The break is the address
+/// space's, so on Linux the parent's moves too, even by less than a page,
+/// which changes no mapping; the copy cannot carry it back. `brk(0)`, and a
+/// request below the minimum break, which Linux answers with the old break,
+/// go on. The copy's other mapping changes are checked when its window ends
+/// (`GuestMemory::return_vfork_changes`), so a mapping the child creates and
+/// removes in between, as a tool's scratch page is, goes on.
+pub(super) fn vfork_child_moves_break(
+    owner: &GuestMemory,
+    state: &LoadedStaticElf,
+    number: u64,
+    args: &[u64; 6],
+) -> bool {
+    owner.shares_parent_address_space()
+        && number == libc::SYS_brk as u64
+        && args[0] >= state.min_break
+        && args[0] != state.program_break
+}
+
+/// Why a vfork child may not create a thread before it execs
+/// ([`vfork_child_creates_thread`]).
+pub(super) const VFORK_CHILD_THREAD_REASON: &str = concat!(
+    "a vfork child shares its parent's address space until it execs or exits, and runs on ",
+    "a copy here whose changes go back to the parent when its window ends; Linux ends that ",
+    "window when the creating task execs or exits, whatever threads of the child still run, ",
+    "and a copy cannot go back while another thread still changes it"
+);
+
+/// Whether this call creates a thread (`CLONE_THREAD`) in a vfork child's
+/// copy of its parent's address space
+/// ([`GuestMemory::shares_parent_address_space`]) before the child execs.
+/// The window ends, on Linux, at the creating task's exec or exit
+/// (`mm_release()` completes the vfork whatever other users of the mm
+/// remain), while here the copy's changes can go back only once nothing
+/// else runs in it, so the thread is refused before task-ID allocation,
+/// child copyout or any process action. A multithreaded parent is not
+/// affected, and a nested vfork-style child (`CLONE_VM|CLONE_VFORK`) goes on.
+/// `clone3`'s flags are read here and again by the call itself: nothing else
+/// runs in the copy, whose only thread is this caller, so the two reads agree.
+pub(super) fn vfork_child_creates_thread(
+    memory: &GuestMemory,
+    number: u64,
+    args: &[u64; 6],
+) -> bool {
+    if !memory.shares_parent_address_space() {
+        return false;
+    }
+    let flags = if number == libc::SYS_clone as u64 {
+        args[0]
+    } else if number == libc::SYS_clone3 as u64 {
+        match read_clone3(&ProviderMemory(memory), args[0], args[1]) {
+            Ok(clone) => clone.flags,
+            // The call itself answers a bad argument.
+            Err(_) => return false,
+        }
+    } else {
+        return false;
+    };
+    flags & libc::CLONE_THREAD as u64 != 0
+}
+
+/// Whether a `clone` or `clone3` with `flags` would run its child in the
+/// caller's address space beside the caller: a thread (`CLONE_THREAD`), or a
+/// `CLONE_VM` process that the caller does not wait for (no `CLONE_VFORK`).
+/// A vfork-style child (`CLONE_VM|CLONE_VFORK`) is not one: its caller waits
+/// until the child execs or exits, and the backend runs it on a copy of the
+/// arena (`GuestMemory::snapshot_sharing_address_space`).
+pub(super) fn clone_runs_beside_caller_in_its_arena(flags: u64) -> bool {
+    let shares = flags & (libc::CLONE_VM | libc::CLONE_VFORK) as u64;
+    flags & libc::CLONE_THREAD as u64 != 0 || shares == libc::CLONE_VM as u64
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-216): Review direct-worker classification for CLONE_THREAD.
 // CLONE_THREAD is no longer treated as backend-owned (workers now run through
@@ -124,7 +206,8 @@ fn execute_basic_syscall_dispatch(
     let mutates_layout = matches!(request.number(), number if
         number == libc::SYS_brk as u64 || number == libc::SYS_mmap as u64
         || number == libc::SYS_mremap as u64 || number == libc::SYS_munmap as u64
-        || number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64);
+        || number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64
+        || number == libc::SYS_pkey_mprotect as u64);
     if !mutates_layout {
         return execute_basic_syscall_inner(
             memory,
@@ -150,6 +233,13 @@ fn execute_basic_syscall_dispatch(
     state.mmap_limit = cursors.mmap_limit;
     let number = request.number();
     let args = request.args();
+    if vfork_child_moves_break(&owner, state, number, args) {
+        drop(transaction);
+        return SyscallAction::Failure(crate::Error::VforkChildCapability {
+            operation: "brk in a vfork child",
+            reason: VFORK_CHILD_BREAK_REASON,
+        });
+    }
     let new_shared_file = number == libc::SYS_mmap as u64
         && args[3] & libc::MAP_ANONYMOUS as u64 == 0
         && args[3] & libc::MAP_SHARED as u64 != 0;
@@ -272,12 +362,20 @@ fn execute_basic_syscall_inner(
         vectored_io(memory, state, args, libc::SYS_writev, output)
     } else if number == libc::SYS_readv as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
+        // A blocking inotify instance is refused before any host call: its
+        // read would wait in the host (inotify.rs).
+        if let Some(error) = blocking_inotify_vectored_read(state, number, args) {
+            return SyscallAction::Failure(error);
+        }
         vectored_io(memory, state, args, libc::SYS_readv, output)
     } else if number == libc::SYS_preadv as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         vectored_io(memory, state, args, libc::SYS_preadv, output)
     } else if number == libc::SYS_preadv2 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
+        if let Some(error) = blocking_inotify_vectored_read(state, number, args) {
+            return SyscallAction::Failure(error);
+        }
         vectored_io(memory, state, args, libc::SYS_preadv2, output)
     } else if number == libc::SYS_pwritev as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -449,12 +547,12 @@ fn execute_basic_syscall_inner(
         // AUTONOMOUS-BOT-IMPLEMENTED
         fcntl(memory, state, args)
     } else if number == libc::SYS_open as u64 {
-        open(memory, state, args, capture_output)
+        open(memory, state, args)
     } else if number == libc::SYS_openat as u64 {
-        openat(memory, state, args, capture_output)
+        openat(memory, state, args)
     } else if number == libc::SYS_creat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        creat(memory, state, args, capture_output)
+        creat(memory, state, args)
     } else if number == libc::SYS_memfd_create as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         memfd_create(memory, state, args)
@@ -712,7 +810,21 @@ fn execute_basic_syscall_inner(
     } else if number == libc::SYS_mprotect as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         mprotect(&ProviderMemory(memory), args)
+    } else if number == libc::SYS_pkey_mprotect as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        pkey_mprotect(&ProviderMemory(memory), args)
+    } else if number == libc::SYS_pkey_alloc as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        pkey_alloc(state, args)
+    } else if number == libc::SYS_pkey_free as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        pkey_free(args)
     } else if number == libc::SYS_madvise as u64 {
+        // Advice answered as a hint that changes the flags Linux keeps on the
+        // mappings it covers: the pages keep them (`DeclaredMapping::flags`).
+        if let Some((start, length, set, clear)) = madvise_flag_change(args) {
+            memory.flag_user_range(start, length, set, clear);
+        }
         madvise(&ProviderMemory(memory), args)
     } else if number == libc::SYS_munlock as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -836,13 +948,21 @@ impl ElfExecutor {
         // leave it for the next caller's injection to report.
         self.unsupported_refusal = None;
         self.state.signal_refusal = None;
+        // The copies this call reaches stay its own until it returns, and
+        // any whose entries another thread retired meanwhile are replaced
+        // then, before the guest continues (`PrivateCopies`); a replacement
+        // that fails there ends the run by name (`CallScope::end`).
+        let call = self.state.private_copy_gate.call_scope();
         let result = self
             .execute_checked_dispatch(request, memory, terminal_read)
             .map_err(|error| memory.capture_shared_file_error(error));
+        let ended = call.end(self.state.tid);
         if let Some(failure) = memory.entry_gate().pending_failure() {
             return Err(failure.error());
         }
-        result
+        let value = result?;
+        ended?;
+        Ok(value)
     }
 
     fn execute_checked_dispatch(
@@ -863,8 +983,20 @@ impl ElfExecutor {
         self.bind_address_space(memory);
         self.parent_death_injection_preflight(request)?;
         // A fork gets a separate arena/gate and inherits the real shared VMAs.
-        // CLONE_VM still creates another owner of this arena and is refused
-        // before task-ID allocation, child copyout or ProcessAction.
+        // So does a vfork-style child (vfork, or a process clone with
+        // CLONE_VM|CLONE_VFORK): it runs on a copy of this arena with a gate
+        // of its own (`GuestMemory::snapshot_sharing_address_space`), which
+        // refuses changes to the inherited views until the child execs, and
+        // adds no participant to this gate. A thread, or a CLONE_VM process
+        // without CLONE_VFORK, would be another owner of this arena running
+        // beside the caller, and is refused before task-ID allocation, child
+        // copyout or ProcessAction.
+        if vfork_child_creates_thread(memory, request.number(), request.args()) {
+            return Err(crate::Error::VforkChildCapability {
+                operation: "thread creation in a vfork child",
+                reason: VFORK_CHILD_THREAD_REASON,
+            });
+        }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-919): Review shared-file fork admission.
         if memory.entry_gate().single_member_domain_active() {
@@ -874,10 +1006,7 @@ impl ElfExecutor {
                 operation: "CLONE_VM/thread creation",
                 reason: "ordinary shared-file views require one vCPU per address space",
             };
-            if number == libc::SYS_vfork as u64
-                || (number == libc::SYS_clone as u64
-                    && args[0] & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0)
-            {
+            if number == libc::SYS_clone as u64 && clone_runs_beside_caller_in_its_arena(args[0]) {
                 return Err(refusal());
             }
             if number == libc::SYS_clone3 as u64 {
@@ -885,19 +1014,22 @@ impl ElfExecutor {
                 // to create the ProcessAction, not a second mutable copyin.
                 let clone = match read_clone3(&ProviderMemory(memory), args[0], args[1]) {
                     Ok(clone) => clone,
-                    Err(error) => return Ok(error),
+                    Err(error) => return Ok(self.refuse_clone3_fields(error)),
                 };
-                if clone.flags & (libc::CLONE_VM | libc::CLONE_THREAD) as u64 != 0 {
+                if clone_runs_beside_caller_in_its_arena(clone.flags) {
                     return Err(refusal());
                 }
-                if let Err(error) = validate_process_clone_flags(clone.flags) {
-                    return Ok(error);
+                if let Err(refused) = validate_process_clone_flags(clone.flags) {
+                    return Ok(self.refuse_clone_flags(refused));
                 }
                 if clone.flags & PROCESS_CLONE_TID_FLAGS != 0
                     || clone.parent_tid.is_some()
                     || clone.child_tid.is_some()
                 {
-                    return Ok(negative_errno(libc::ENOTSUP));
+                    return Ok(self.refuse_clone_flags(CloneFlagsRefused::unsupported(
+                        libc::ENOTSUP,
+                        CLONE_FLAGS_REFUSAL,
+                    )));
                 }
                 return Ok(self.prepare_fork(
                     clone.child_stack,
@@ -905,7 +1037,7 @@ impl ElfExecutor {
                     None,
                     None,
                     clone.flags & CLONE_CLEAR_SIGHAND != 0,
-                    false,
+                    clone.flags & libc::CLONE_VM as u64 != 0,
                 ));
             }
         }
@@ -921,7 +1053,7 @@ impl ElfExecutor {
             return result;
         }
         if let Some(result) = self.execute_accept(request, memory) {
-            return Ok(result);
+            return result;
         }
         // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
         // Thread children retain private executor state, but synchronize their
@@ -937,7 +1069,7 @@ impl ElfExecutor {
         let mut notifications = Some(memory.defer_notifications());
         let mut shared_files = Some(file_table.lock().expect("KVM file-table lock poisoned"));
         if let Err(error) = shared_files
-            .as_ref()
+            .as_mut()
             .expect("file-table guard disappeared")
             .install(&mut self.state)
         {
@@ -952,6 +1084,8 @@ impl ElfExecutor {
             shared_files.take();
             drop(notifications.take());
             self.state.file_retirement.drain_unlocked();
+            #[cfg(test)]
+            run_one_shot_test_hook(&TABLE_RELEASED_TEST_HOOK);
         }
         if self.parent_death_enrolled()
             && matches!(
@@ -959,8 +1093,13 @@ impl ElfExecutor {
                 libc::SYS_execve | libc::SYS_execveat
             )
         {
-            let retained = self.take_parent_death_exec(request)?;
-            return Ok(self.prepare_exec(memory, request, Some(retained)));
+            return Ok(match self.take_parent_death_exec(request)? {
+                Ok(retained) => self.prepare_exec(memory, request, Some(retained)),
+                Err(refusal) => {
+                    self.unsupported_refusal = Some(refusal);
+                    negative_errno(libc::ENOMEM)
+                }
+            });
         }
         if let Some(result) = self.execute_process_action(request, memory) {
             return Ok(result);
@@ -989,9 +1128,7 @@ impl ElfExecutor {
             }
         }
         if let Some(mut shared_files) = shared_files {
-            shared_files
-                .update_from_elf(&self.state)
-                .expect("clone updated KVM file table");
+            shared_files.update_from_elf(&self.state)?;
         }
         // The mutating path has now updated and released its table guard.
         // Accounting retired at each copy; callbacks may run only now.
@@ -1011,6 +1148,7 @@ impl ElfExecutor {
                     .or_else(|| tool_decided_refusal(request, result))
                     .or_else(|| madvise_refusal(request, result))
                     .or_else(|| signalfd_refusal(&self.state, request, result))
+                    .or_else(|| userfaultfd_refusal(request, result))
                 {
                     self.unsupported_refusal = Some(refusal);
                 }

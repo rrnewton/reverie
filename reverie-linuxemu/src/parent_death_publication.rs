@@ -289,9 +289,11 @@ impl ProcessSignalControl {
                             result.error = Some(failure.errno);
                             break;
                         }
-                        // Death or exec of an exact receiver does not retarget
-                        // a reused pid. Image replacement retains the same
-                        // process; an unexpected image race fails visibly.
+                        // The death of an exact receiver does not retarget a
+                        // reused pid: its signal is discarded. An exec keeps
+                        // the same process, so it never yields StaleProcess;
+                        // one that overlaps this publication is ChangedImage
+                        // (`current_image_signals`), which fails visibly below.
                         ProcessPublication::Rejected(PublicationRejection::StaleProcess) => {
                             result.signals.push(effect(snapshot, None))
                         }

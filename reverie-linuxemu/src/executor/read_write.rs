@@ -149,16 +149,40 @@ pub(super) struct ResolvedExecutable {
     pub(super) image: Vec<u8>,
 }
 
+/// Reads the executable at `path` for an exec. Every host resource this
+/// process spends doing so is its own: the descriptors that open the file,
+/// and the buffer the image is read into, which is as large as the file. One
+/// that the host refuses (EMFILE, ENFILE, ENOMEM, or a buffer this process
+/// cannot allocate) is answered ENOMEM, with `refusal` recording the typed
+/// refusal that names it, so that the exec is refused by name rather than
+/// answered with an errno Linux would give for the guest's own reasons. Every
+/// other failure is the errno Linux gives the guest.
 pub(super) fn read_executable_file(
     state: &LoadedStaticElf,
     path: &std::path::Path,
+    refusal: &mut Option<reverie::UnsupportedRefusal>,
 ) -> Result<ResolvedExecutable, i64> {
     use std::io::Read;
-    let pinned = open_metadata_path(state, libc::AT_FDCWD, path.as_os_str().as_bytes(), false)?;
-    let mut file =
-        std::fs::File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd())).map_err(io_error)?;
+    const OPENING: &str = "opening the new program";
+    let pinned = open_metadata_path(state, libc::AT_FDCWD, path.as_os_str().as_bytes(), false)
+        .map_err(|errno| exec_step_errno(errno, OPENING, refusal))?;
+    let mut file = std::fs::File::open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))
+        .map_err(|error| exec_step_io_error(error, OPENING, refusal))?;
     let mut image = Vec::new();
-    file.read_to_end(&mut image).map_err(io_error)?;
+    // Reserved whole and up front, so that a buffer this process cannot
+    // allocate is refused naming the request. read_to_end's own growth, for a
+    // file that grew since, is fallible too: it reports OutOfMemory.
+    if let Some(length) = file
+        .metadata()
+        .ok()
+        .and_then(|metadata| usize::try_from(metadata.len()).ok())
+        && image.try_reserve_exact(length).is_err()
+    {
+        *refusal = Some(exec_allocation_refusal(length, "the new program's image"));
+        return Err(negative_errno(libc::ENOMEM));
+    }
+    file.read_to_end(&mut image)
+        .map_err(|error| exec_step_io_error(error, "reading the new program's image", refusal))?;
     Ok(ResolvedExecutable {
         path: path.to_owned(),
         file: Some(Arc::new(file)),
@@ -166,10 +190,16 @@ pub(super) fn read_executable_file(
     })
 }
 
+/// Resolves and reads the image an exec of the guest's `path` runs, as
+/// [`read_executable_file`] reads it; `refusal` records the typed refusal of
+/// a host resource this process ran out of. An exec of the caller's own
+/// `/proc/self/exe` runs the image the caller was loaded from, which this
+/// copies into a buffer allocated fallibly: it is as large as that image.
 pub(super) fn resolve_guest_exec_image(
     state: &LoadedStaticElf,
     path: Vec<u8>,
     envp: &[String],
+    refusal: &mut Option<reverie::UnsupportedRefusal>,
 ) -> Result<ResolvedExecutable, i64> {
     match guest_proc_exe_path(state, &path) {
         Some(true) => {
@@ -189,10 +219,22 @@ pub(super) fn resolve_guest_exec_image(
             if result != 0 {
                 return Err(io_error(std::io::Error::last_os_error()));
             }
+            let mut image = Vec::new();
+            if image
+                .try_reserve_exact(state.executable_image.len())
+                .is_err()
+            {
+                *refusal = Some(exec_allocation_refusal(
+                    state.executable_image.len(),
+                    "a copy of the running program's image (/proc/self/exe)",
+                ));
+                return Err(negative_errno(libc::ENOMEM));
+            }
+            image.extend_from_slice(&state.executable_image);
             return Ok(ResolvedExecutable {
                 path: std::path::PathBuf::from(std::ffi::OsString::from_vec(path)),
                 file: Some(file.clone()),
-                image: state.executable_image.to_vec(),
+                image,
             });
         }
         Some(false) => return Err(negative_errno(libc::ENOENT)),
@@ -225,22 +267,27 @@ pub(super) fn resolve_guest_exec_image(
             Err(_) => return Err(negative_errno(libc::ENOENT)),
         }
     };
-    read_executable_file(state, &path)
+    read_executable_file(state, &path, refusal)
 }
 
 /// Maximum `#!` interpreter indirection levels, matching the Linux kernel's
 /// `BINPRM_MAX_RECURSION` limit for chained script interpreters.
 pub(super) const MAX_SHEBANG_DEPTH: usize = 4;
 
-/// Resolve `#!` interpreter scripts for in-guest `execve(2)`, mirroring the
-/// kernel's `binfmt_script` loader (`fs/binfmt_script.c`).
+/// Resolve `#!` interpreter scripts for in-guest `execve(2)`, as the kernel's
+/// script loader does (`load_script`, fs/binfmt_script.c).
 ///
 /// The reverie-kvm ELF loader can only map ELF images, so a guest that execs a
 /// `#!`-script (for example a `sh` wrapper that execs another wrapper) must have
-/// its interpreter resolved here. On success the returned image is the
+/// its interpreter resolved here. Each line is read as Linux reads it
+/// ([`crate::elf::parse_script_line`]): only its first 256 bytes, the
+/// interpreter, then at most one optional argument, the rest of the line,
+/// never split on its spaces. On success the returned image is the
 /// interpreter's file contents and `argv` is rewritten in kernel order:
-/// `[interp, shebang_args.., script_path, <original argv[1..]>]`. Errors are
-/// returned as negative errnos.
+/// `[interp, optional argument, script_path, <original argv[1..]>]`. Each
+/// level therefore replaces `argv[0]` with at most two entries made from at
+/// most 253 bytes of the line each, and the script's path, and there are at
+/// most [`MAX_SHEBANG_DEPTH`] levels. Errors are returned as negative errnos.
 pub(super) fn resolve_exec_shebang(
     mut path: std::path::PathBuf,
     mut image: Vec<u8>,
@@ -253,35 +300,31 @@ pub(super) fn resolve_exec_shebang(
         if depth > MAX_SHEBANG_DEPTH {
             return Err(negative_errno(libc::ELOOP));
         }
-        let line_end = image
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap_or(image.len());
-        // Skip "#!" and any leading blanks, then take the interpreter token.
-        let mut start = 2;
-        while start < line_end && matches!(image[start], b' ' | b'\t') {
-            start += 1;
+        let Some(line) =
+            crate::elf::parse_script_line(&image).map_err(|()| negative_errno(libc::ENOEXEC))?
+        else {
+            unreachable!("the image starts with #!");
+        };
+        let interpreter = std::path::PathBuf::from(std::ffi::OsString::from_vec(line.interpreter));
+        // The guest's argv was read under the executor's limits (4096 entries,
+        // 128 KiB in all); this level replaces argv[0] with at most two entries
+        // made from at most 253 bytes of the line each, and the script's path,
+        // and moves the rest. Allocated fallibly all the same: one this process
+        // cannot allocate is ENOMEM, which an exec refuses as this backend's
+        // own (`exec_host_memory_refusal`). An empty argv still gets all three.
+        let mut rewritten = Vec::new();
+        rewritten
+            .try_reserve_exact(argv.len().max(1) + 2)
+            .map_err(exec_out_of_memory)?;
+        rewritten.push(
+            try_lossy_string(interpreter.as_os_str().as_bytes()).map_err(exec_out_of_memory)?,
+        );
+        if let Some(argument) = line.argument {
+            rewritten.push(try_lossy_string(&argument).map_err(exec_out_of_memory)?);
         }
-        let mut end = start;
-        while end < line_end && !matches!(image[end], b' ' | b'\t' | b'\r') {
-            end += 1;
-        }
-        if start == end {
-            return Err(negative_errno(libc::ENOEXEC));
-        }
-        let interpreter = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&image[start..end]));
-        // Remaining tokens on the directive line become interpreter arguments.
-        let mut shebang_args: Vec<String> = String::from_utf8_lossy(&image[end..line_end])
-            .split_ascii_whitespace()
-            .map(str::to_owned)
-            .collect();
-
-        let mut rewritten = Vec::with_capacity(argv.len() + shebang_args.len() + 2);
-        rewritten.push(interpreter.to_string_lossy().into_owned());
-        rewritten.append(&mut shebang_args);
-        rewritten.push(path.to_string_lossy().into_owned());
+        rewritten.push(try_lossy_string(path.as_os_str().as_bytes()).map_err(exec_out_of_memory)?);
         if argv.len() > 1 {
-            rewritten.extend_from_slice(&argv[1..]);
+            rewritten.extend(argv.drain(1..));
         }
         argv = rewritten;
 
@@ -289,6 +332,29 @@ pub(super) fn resolve_exec_shebang(
         image = read_interpreter(&path)?;
     }
     Ok((path, image, argv))
+}
+
+/// The answer of an exec preparation to an allocation this process could not
+/// make.
+fn exec_out_of_memory(_: std::collections::TryReserveError) -> i64 {
+    negative_errno(libc::ENOMEM)
+}
+
+/// `bytes` as UTF-8 with each invalid sequence replaced, exactly as
+/// `String::from_utf8_lossy` replaces it, in a buffer allocated fallibly.
+fn try_lossy_string(bytes: &[u8]) -> Result<String, std::collections::TryReserveError> {
+    let mut text = String::new();
+    for chunk in bytes.utf8_chunks() {
+        let replacement = if chunk.invalid().is_empty() {
+            ""
+        } else {
+            "\u{FFFD}"
+        };
+        text.try_reserve(chunk.valid().len() + replacement.len())?;
+        text.push_str(chunk.valid());
+        text.push_str(replacement);
+    }
+    Ok(text)
 }
 
 pub(super) fn ensure_read_capable(file: &std::fs::File) -> Result<(), i64> {
@@ -325,7 +391,7 @@ pub(super) fn write(
         return negative_errno(libc::EBADF);
     }
     let descriptor = if standard && fd == libc::STDIN_FILENO {
-        state.stdin.as_ref()
+        state.stdin_copy()
     } else if standard {
         None
     } else {
@@ -396,8 +462,7 @@ pub(super) fn write(
         "an owned descriptor writes through the staged path"
     );
     state
-        .stdin
-        .as_mut()
+        .stdin_copy_mut()
         .expect("open standard input disappeared")
         .write(&bytes)
         .map_or_else(io_error, |count| count as i64)
@@ -732,18 +797,6 @@ std::thread_local! {
     };
 }
 
-/// Refuse unsupported external waits before creating a reader or injecting a
-/// host read. Detcore currently retains its runnable turn around zero-count
-/// injection, so a guest peer cannot supply data or commit group exit:
-/// https://github.com/rrnewton/hermit/issues/3498.
-///
-/// This checks the owned endpoint selected by the shared-table snapshot, not
-/// its guest fd number or modeled stdin type. O_NONBLOCK is deliberately not an
-/// admission proof: another alias of the same open-file description can change
-/// it after F_GETFL. Even a currently nonblocking inotify is therefore
-/// outside this supported surface. Known local regular files retain the
-/// backend's existing filesystem-I/O contract; arbitrary pseudo/FUSE files and
-/// unknown drivers are not assumed to have regular-file zero-read semantics.
 /// Whether the host's random pool is initialized, so that reading
 /// /dev/random cannot wait: getrandom of zero bytes with GRND_NONBLOCK fails
 /// with EAGAIN until then.
@@ -752,6 +805,22 @@ fn host_random_pool_ready() -> bool {
     unsafe { libc::getrandom(std::ptr::null_mut(), 0, libc::GRND_NONBLOCK) == 0 }
 }
 
+/// Refuse unsupported external waits before creating a reader or injecting a
+/// host read. A zero-count read that waited in the host would hold the
+/// executor's task there, out of the Tool's sight, where a Tool that keeps its
+/// turn around the injection also keeps a guest peer from supplying data or
+/// committing group exit: https://github.com/rrnewton/hermit/issues/3498.
+///
+/// This checks the owned endpoint selected by the shared-table snapshot, not
+/// its guest fd number or modeled stdin type. O_NONBLOCK is deliberately not an
+/// admission proof: another alias of the same open-file description can change
+/// it after F_GETFL. Even a currently nonblocking inotify is therefore
+/// outside this supported surface, including every instance this executor
+/// created nonblocking (inotify.rs): the executor never clears O_NONBLOCK on
+/// one, but an alias outside the guest, to which the guest sent it, can. Known
+/// local regular files retain the backend's existing filesystem-I/O contract;
+/// arbitrary pseudo/FUSE files and unknown drivers are not assumed to have
+/// regular-file zero-read semantics.
 fn admit_host_read_zero(file: &std::fs::File, guest_fd: i32, address: u64) -> crate::Result<()> {
     let host_fd = file.as_raw_fd();
     #[cfg(any(test, feature = "test-support"))]
@@ -896,25 +965,25 @@ fn finish_host_read(memory: &mut GuestMemory, address: u64, bytes: &[u8], count:
 /// exact File on success, error, or unwind without changing entry metadata or
 /// publishing a stale entry back into the authoritative shared file table.
 pub(super) struct ReadEndpoint<'a> {
-    pub(super) files: &'a mut std::collections::BTreeMap<i32, std::fs::File>,
+    pub(super) files: &'a mut PrivateFiles,
     pub(super) fd: i32,
     pub(super) endpoint: Option<std::fs::File>,
+    /// The lent copy's host descriptor, which stays the reader's when it
+    /// keeps the File (`PrivateFiles::mark_foreign`).
+    host: RawFd,
 }
 
 impl<'a> ReadEndpoint<'a> {
-    pub(super) fn take(
-        files: &'a mut std::collections::BTreeMap<i32, std::fs::File>,
-        fd: i32,
-    ) -> Self {
-        let endpoint = Some(
-            files
-                .remove(&fd)
-                .expect("prechecked read descriptor disappeared"),
-        );
+    pub(super) fn take(files: &'a mut PrivateFiles, fd: i32) -> Self {
+        let endpoint = files
+            .remove(&fd)
+            .expect("prechecked read descriptor disappeared");
+        let host = endpoint.as_raw_fd();
         Self {
             files,
             fd,
-            endpoint,
+            endpoint: Some(endpoint),
+            host,
         }
     }
 }
@@ -924,9 +993,12 @@ impl Drop for ReadEndpoint<'_> {
         if let Some(endpoint) = self.endpoint.take() {
             // The exclusive map borrow prevents a competing local insertion.
             self.files.insert(self.fd, endpoint);
+        } else {
+            // None means the registry still owns the actual File because
+            // physical retirement was not proven. Never duplicate, close, or
+            // replace it: nor may another thread's retirement.
+            self.files.mark_foreign(self.host);
         }
-        // None means the registry still owns the actual File because physical
-        // retirement was not proven. Never duplicate, close, or replace it.
     }
 }
 
@@ -953,12 +1025,13 @@ pub(super) fn read(
         if fd != libc::STDIN_FILENO {
             return Ok(negative_errno(libc::EBADF));
         }
-        let Some(stdin) = state.stdin.as_ref() else {
+        let Some(stdin) = state.stdin_copy() else {
             return Ok(negative_errno(libc::EBADF));
         };
         if requested_length == 0 {
             admit_host_read_zero(stdin, fd, args[1])?;
             if let Some((context, identity)) = terminal_read {
+                let host = stdin.as_raw_fd();
                 // Preserve the owned C reader's cancellation and join protocol.
                 // Adapt only its host operand; retain the original request and
                 // let the kernel enforce descriptor-before-address ordering.
@@ -968,7 +1041,13 @@ pub(super) fn read(
                     *request,
                     zero_read_host_address(args[1]),
                     0,
-                )?;
+                );
+                if state.stdin.is_none() {
+                    // The reader kept the copy, as for a lent descriptor
+                    // (`ReadEndpoint`).
+                    state.files.mark_foreign(host);
+                }
+                let returned = returned?;
                 return Ok(if returned.count < 0 {
                     io_error(std::io::Error::from_raw_os_error(returned.errno))
                 } else {
@@ -1042,8 +1121,11 @@ pub(super) fn read(
     }
     match host_fd_mode_is_inotify(host_fd, mode) {
         // Linux's readv calls inotify's read once with the same buffer and
-        // count, so the staged readv path applies scalar read semantics.
+        // count, so the staged readv path applies scalar read semantics. An
+        // instance that is blocking on the host is refused first: its read
+        // would wait there (inotify.rs).
         Ok(true) => {
+            refuse_blocking_inotify_read(host_fd, fd)?;
             return Ok(staged_vectored_transfer(
                 &mut ProviderMemory(memory),
                 state,
@@ -1884,9 +1966,6 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
     } else {
         false
     };
-    if inotify && let Err(error) = ensure_inotify_nonblocking(host_fd) {
-        return error;
-    }
     let staging_alignment = direct_io_memory_alignment(host_fd);
 
     // Give the host one iovec for every bounded guest iovec, with the same
@@ -1919,17 +1998,6 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         staged_vectors.push(staged);
     }
 
-    // Inotify cookie virtualization restores an EFAULT read's partly written
-    // cookie from the first nonempty vector's prior contents.
-    let inotify_original = if inotify {
-        staged_vectors
-            .iter()
-            .find(|vector| vector.guest.length != 0)
-            .map(|vector| vector.accessible_slice(vector.accessible_length).to_vec())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
     let mut host_iovecs = staged_host_iovecs(&mut staged_vectors);
     if !reading {
         let (written, sigpipe) =
@@ -1937,10 +2005,21 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         return with_guest_sigpipe(state, written, sigpipe);
     }
 
+    // A vectored inotify read can leave bytes past its count: see
+    // vector_faulted_after_count. The host instance's count of queued bytes
+    // before and after the read says whether it did.
+    let inotify_queued = if inotify
+        && staged_vectors
+            .iter()
+            .filter(|vector| vector.guest.length != 0)
+            .count()
+            > 1
+    {
+        host_inotify_queued(host_fd).ok()
+    } else {
+        None
+    };
     let result = invoke_vectored_read(number, host_fd, &mut host_iovecs, args);
-    if inotify {
-        virtualize_staged_inotify_cookies(&mut staged_vectors, result, &inotify_original, state);
-    }
     if result >= 0 {
         let mut remaining = result as usize;
         for vector in &staged_vectors {
@@ -1959,6 +2038,35 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
             }
         }
         debug_assert_eq!(remaining, 0, "host returned more bytes than requested");
+        // The read took events past its count only when the read of the
+        // vector after it copied them before a fault: inotify_read dequeues an
+        // event before it copies it. Those events stay in that vector, as on
+        // Linux; publish its accessible prefix, all of which the kernel wrote
+        // (it copies events from the vector's start up to the first byte it
+        // cannot write, the end of that prefix).
+        //
+        // The two counts measure this read alone only while no other task
+        // reads the same instance between them. A guest that reads one
+        // instance from two threads at once (possible only where the Tool lets
+        // guest threads run concurrently) can raise the measured loss; the
+        // vector is then published as it was staged before the read, which
+        // can overwrite bytes an overlapping earlier vector received. A rename
+        // in a watched directory by a process outside the guest can only lower
+        // the measured loss, which withholds a publication but never causes a
+        // wrong one.
+        if let Some(before) = inotify_queued
+            && let Some(vector) = vector_faulted_after_count(&staged_vectors, result as usize)
+            && host_inotify_queued(host_fd)
+                .is_ok_and(|after| i64::from(before) - i64::from(after) > result)
+            && memory
+                .write_exact(
+                    vector.guest.base,
+                    vector.accessible_slice(vector.accessible_length),
+                )
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
     } else if result == negative_errno(libc::EFAULT) {
         // Linux may modify an accessible prefix before reporting EFAULT. In
         // particular eventfd consumes its counter and datagram sockets discard
@@ -1983,6 +2091,50 @@ fn staged_vectored_transfer<M: GuestMemoryAccess<Error = crate::Error> + Address
         }
     }
     result
+}
+
+/// The staged vector into which a successful vectored read of `count` bytes
+/// from a file without `read_iter`, such as an inotify instance, may have
+/// copied bytes past its count: the nonempty vector after the ones the count
+/// fills, when the count ends exactly at its start and the vector has an
+/// accessible prefix followed by an inaccessible suffix.
+///
+/// Linux reads such a file one iovec at a time (`do_loop_readv_writev`,
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/read_write.c#L835-L866>,
+/// chosen at
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/read_write.c#L1017-L1020>).
+/// When the read of an iovec fails after an earlier one succeeded, it returns
+/// the earlier iovecs' count and drops the error, and whatever the failed read
+/// copied stays in that iovec. `inotify_read`
+/// (<https://github.com/torvalds/linux/blob/v6.17/fs/notify/inotify/inotify_user.c#L249-L299>)
+/// copies whole events from the start of its buffer and fails with EFAULT at
+/// the event whose copy faults, having dequeued it first (`get_one_event`,
+/// <https://github.com/torvalds/linux/blob/v6.17/fs/notify/inotify/inotify_user.c#L170-L191>).
+/// Only a vector with an inaccessible suffix can fault, and one whose
+/// accessible prefix is empty faults at its first byte, copying nothing.
+fn vector_faulted_after_count(
+    staged_vectors: &[StagedIoVector],
+    count: usize,
+) -> Option<&StagedIoVector> {
+    if count == 0 {
+        return None;
+    }
+    let mut filled = 0usize;
+    for vector in staged_vectors {
+        if vector.guest.length == 0 {
+            continue;
+        }
+        if filled == count {
+            return (vector.accessible_length != 0
+                && vector.accessible_length < vector.guest.length)
+                .then_some(vector);
+        }
+        filled = filled.checked_add(vector.guest.length)?;
+        if filled > count {
+            return None;
+        }
+    }
+    None
 }
 
 /// A host file backs a regular (or memfd) object when its mode is `S_IFREG`.
@@ -2056,7 +2208,7 @@ fn validate_sendfile_rejected_input(
         // Stdin has a separate modeled backing until it is closed or rebound.
         // Check that backing, never the executor's own host descriptor zero.
         if in_fd == libc::STDIN_FILENO && is_open_standard(state, in_fd) {
-            state.stdin.as_ref()
+            state.stdin_copy()
         } else {
             None
         }
@@ -2121,10 +2273,7 @@ pub(super) fn sendfile(
             Some(file) => (Some(file), ensure_writable(file).err()),
             None if is_open_standard(state, out_fd) => {
                 let error = if out_fd == libc::STDIN_FILENO {
-                    let stdin = state
-                        .stdin
-                        .as_ref()
-                        .expect("open standard input disappeared");
+                    let stdin = state.stdin_copy().expect("open standard input disappeared");
                     ensure_writable(stdin).err()
                 } else {
                     None
@@ -2286,10 +2435,7 @@ pub(super) fn sendfile(
             }
         }
         None => {
-            let mut stdin = state
-                .stdin
-                .as_ref()
-                .expect("open standard input disappeared");
+            let mut stdin = state.stdin_copy().expect("open standard input disappeared");
             stdin
                 .write(&bytes)
                 .map_or_else(io_error, |count| count as i64)

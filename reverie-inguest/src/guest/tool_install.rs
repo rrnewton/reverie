@@ -170,6 +170,10 @@ where
         coordinator,
         crate::guest::protect::replace_coordinator_fd,
     )?;
+    // The coordinator supplies the actual typed configuration. Admit this
+    // concrete Tool before selecting subscriptions, constructing it or
+    // publishing its runtime; Config flags cannot substitute for its role.
+    T::facility_admission(rpc.config()).map_err(io::Error::other)?;
     crate::guest::protect::reserve_coordinator_fd(rpc.raw_fd())?;
     let stats = if let Some(stats_coordinator) = crate::bootstrap::bootstrap_stats_coordinator() {
         crate::stats::initialize_guest_stats(stats_coordinator)?

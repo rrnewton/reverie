@@ -4693,6 +4693,34 @@ async fn a_sibling_can_never_map_over_the_sealed_repair_page() {
     }
 }
 
+/// A precise timer's single-steps in an execute-only page, which
+/// `process_vm_readv` cannot read, with trace logging on: the trace line that
+/// decodes each stepped instruction must not fail the step. Its read failed
+/// with EFAULT and ended the run whenever a trace-level subscriber was
+/// installed, as `testing::run_tokio_test` installs one for the whole
+/// process. The subscriber here is this test's thread's own.
+#[tokio::test(flavor = "current_thread")]
+async fn timer_steps_in_an_execute_only_page_survive_trace_logging() {
+    if !crate::perf::is_perf_supported() {
+        eprintln!("skipping: perf counters are not supported here");
+        return;
+    }
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter("reverie_ptrace::timer=trace")
+        .with_writer(std::io::sink)
+        .finish();
+    let _trace = tracing::subscriber::set_default(subscriber);
+    let run = run_guest("timer_execute_only", false).await;
+    assert_eq!(run.status, ExitStatus::Exited(0), "{}", run.report);
+    let lines: Vec<&str> = run
+        .report
+        .lines()
+        .filter(|line| line.starts_with("xo "))
+        .collect();
+    assert_eq!(lines, ["xo c=4", "xo c=8", "xo c=12"], "{}", run.report);
+    assert!(!timer_events(&run).is_empty(), "{}", run.report);
+}
+
 /// A guest's SIGTRAP state survives a precise timer's single-steps
 /// (<https://github.com/rrnewton/hermit/issues/4409>). For each of five states
 /// (ignored or caught, blocked or not, and default blocked) the timer fires

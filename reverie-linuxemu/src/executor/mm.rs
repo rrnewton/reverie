@@ -61,8 +61,11 @@ pub(super) fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, request
             else {
                 return state.program_break as i64;
             };
+            let prot = (libc::PROT_READ | libc::PROT_WRITE) as u8;
             if memory.zero_raw(physical, length).is_err()
-                || memory.map_user_range(physical, end - first, false).is_err()
+                || memory
+                    .map_user_protection(physical, end - first, prot)
+                    .is_err()
             {
                 return state.program_break as i64;
             }
@@ -524,13 +527,9 @@ pub(super) fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
             }
         }
     }
+    // The protection bits were validated above, so they fit a byte.
     if memory
-        .map_user_permissions(
-            address,
-            length as u64,
-            prot != libc::PROT_NONE as u64,
-            prot & libc::PROT_WRITE as u64 != 0,
-        )
+        .map_user_protection(address, length as u64, prot as u8)
         .is_err()
     {
         return abandon_mapping(
@@ -560,6 +559,11 @@ pub(super) fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: 
 /// validates them).
 pub(crate) const MMAP_PROT_BITS: u64 =
     (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u64;
+
+/// `PROT_SEM` (include/uapi/asm-generic/mman-common.h), which the libc
+/// crate does not export for this target. mprotect accepts it, and on
+/// x86-64 it changes no mapping.
+pub(crate) const PROT_SEM: u64 = 0x8;
 
 /// Flags a host mmap probe clears from the guest's request: they choose where
 /// a mapping goes, or ask for work beyond creating it (population, locking).
@@ -814,20 +818,49 @@ pub(super) fn munmap_shared_file(
 }
 
 // TODO-HUMAN-REVIEW(PR-132): Review KVM mprotect user-copy enforcement.
-pub(super) fn mprotect<M: AddressSpace>(memory: &M, args: &[u64; 6]) -> i64 {
+pub(super) fn mprotect(memory: &ProviderMemory<'_>, args: &[u64; 6]) -> i64 {
     let address = args[0];
     let requested_length = args[1];
-    let protection = args[2];
-    let allowed_protection = (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u64;
-    if !address.is_multiple_of(PAGE_SIZE) || protection & !allowed_protection != 0 {
+    let grows_down = libc::PROT_GROWSDOWN as u64;
+    let grows_up = libc::PROT_GROWSUP as u64;
+    let grows = args[2] & (grows_down | grows_up);
+    let protection = args[2] & !(grows_down | grows_up);
+    // do_mprotect_pkey's checks, in its order (mm/mprotect.c): both grows
+    // flags, or a start that is not page-aligned (EINVAL); a zero length
+    // (0); a range that wraps, `PAGE_ALIGN(len)` and `start + len` both
+    // modulo 2^64 (ENOMEM); and only then the protection bits, of which
+    // arch_validate_prot accepts PROT_READ, PROT_WRITE, PROT_EXEC and
+    // PROT_SEM (include/linux/mman.h).
+    if grows == grows_down | grows_up || !address.is_multiple_of(PAGE_SIZE) {
         return negative_errno(libc::EINVAL);
     }
     if requested_length == 0 {
         return 0;
     }
-    let Some(length) = align_up(requested_length, PAGE_SIZE) else {
+    let length = requested_length.wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if address.wrapping_add(length) <= address {
         return negative_errno(libc::ENOMEM);
-    };
+    }
+    if protection & !(MMAP_PROT_BITS | PROT_SEM) != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if grows != 0 {
+        // Linux takes the first mapping that ends above the start and begins
+        // below the end (vma_find): none is ENOMEM, and so, with
+        // PROT_GROWSUP, is one that begins above the start. Either flag then
+        // needs a mapping that grows that way, and no mapping here does
+        // (EINVAL). The range may leave the arena or a window, which `query`
+        // answers as a whole, so the search does not depend on it.
+        let searched = if grows == grows_down {
+            length
+        } else {
+            PAGE_SIZE
+        };
+        let found = memory.0.user_range_reaches_mapping(address, searched);
+        return negative_errno(if found { libc::EINVAL } else { libc::ENOMEM });
+    }
+    // PROT_SEM changes no mapping on x86-64: calc_vm_prot_bits drops it.
+    let protection = protection & MMAP_PROT_BITS;
     // The protection bits were validated above, so they fit a c_int.
     match memory.protect(address, length, protection as libc::c_int) {
         Ok(()) => 0,
@@ -1044,6 +1077,67 @@ pub(super) const MADVISE_KNOWN: [libc::c_int; 27] = [
     103, // MADV_GUARD_REMOVE
 ];
 
+/// Linux's argument checks for madvise(2) (mm/madvise.c): an advice outside
+/// [`MADVISE_KNOWN`] is EINVAL, the start must be page aligned, the length is
+/// rounded up to whole pages, and a length that rounds to zero or a range
+/// that wraps is EINVAL. `Err` holds the refusal, `Ok(None)` stands for a zero
+/// length, which succeeds, and otherwise the advice and the rounded range.
+fn madvise_arguments(args: &[u64; 6]) -> Result<Option<(libc::c_int, u64, u64)>, i64> {
+    let advice = args[2] as libc::c_int;
+    if !MADVISE_KNOWN.contains(&advice) {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let start = args[0];
+    if !start.is_multiple_of(PAGE_SIZE) {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let length = args[1].wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    if args[1] != 0 && length == 0 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if start.checked_add(length).is_none() {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    if length == 0 {
+        return Ok(None);
+    }
+    Ok(Some((advice, start, length)))
+}
+
+// The mapping flags of the hints this backend accepts, as it keeps them on
+// the pages (`DeclaredMapping::flags`): Linux's VM_RAND_READ, VM_SEQ_READ,
+// VM_HUGEPAGE, VM_NOHUGEPAGE and VM_MERGEABLE.
+pub(super) const FLAG_RANDOM: u8 = 1;
+pub(super) const FLAG_SEQUENTIAL: u8 = 2;
+pub(super) const FLAG_HUGEPAGE: u8 = 4;
+pub(super) const FLAG_NOHUGEPAGE: u8 = 8;
+pub(super) const FLAG_MERGEABLE: u8 = 16;
+
+/// The flags a madvise(2) call that this backend accepts as a hint sets and
+/// clears on the mappings it covers, as `(start, length, set, clear)` with
+/// the range rounded as Linux rounds it (`madvise_vma_behavior`, with
+/// `hugepage_madvise` and `ksm_madvise`, Linux 7.1.3). Linux applies it to
+/// the mapped part of the range even when it reports a hole. `None` for any
+/// other call: advice that acts on the pages without changing the mapping's
+/// flags (`MADV_WILLNEED`, `MADV_DONTNEED`, `MADV_FREE`, `MADV_COLD` and
+/// `MADV_PAGEOUT`, which Linux applies without `madvise_update_vma`, so
+/// they never split a mapping), advice this backend refuses, and arguments
+/// Linux refuses.
+pub(super) fn madvise_flag_change(args: &[u64; 6]) -> Option<(u64, u64, u8, u8)> {
+    let (advice, start, length) = madvise_arguments(args).ok().flatten()?;
+    let (set, clear) = match advice {
+        libc::MADV_NORMAL => (0, FLAG_RANDOM | FLAG_SEQUENTIAL),
+        libc::MADV_RANDOM => (FLAG_RANDOM, FLAG_SEQUENTIAL),
+        libc::MADV_SEQUENTIAL => (FLAG_SEQUENTIAL, FLAG_RANDOM),
+        libc::MADV_HUGEPAGE => (FLAG_HUGEPAGE, FLAG_NOHUGEPAGE),
+        libc::MADV_NOHUGEPAGE => (FLAG_NOHUGEPAGE, FLAG_HUGEPAGE),
+        libc::MADV_MERGEABLE => (FLAG_MERGEABLE, 0),
+        libc::MADV_UNMERGEABLE => (0, FLAG_MERGEABLE),
+        _ => return None,
+    };
+    Some((start, length, set, clear))
+}
+
 /// madvise(2). `MADV_DONTNEED` drops the range's private anonymous pages,
 /// which then read as zeros, and leaves shared pages (shared anonymous memory
 /// and shared file views) as they are, as Linux keeps their contents. A private
@@ -1061,26 +1155,11 @@ pub(super) const MADVISE_KNOWN: [libc::c_int; 27] = [
 /// aligned, the length is rounded up to whole pages, and a zero length
 /// succeeds.
 pub(super) fn madvise<M: AddressSpace>(memory: &M, args: &[u64; 6]) -> i64 {
-    let advice = args[2] as libc::c_int;
-    if !MADVISE_KNOWN.contains(&advice) {
-        return negative_errno(libc::EINVAL);
-    }
-    let start = args[0];
-    if !start.is_multiple_of(PAGE_SIZE) {
-        return negative_errno(libc::EINVAL);
-    }
-    // Linux rounds the length up to whole pages: a length that rounds to zero
-    // or a range that wraps is EINVAL, and a zero length succeeds.
-    let length = args[1].wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    if args[1] != 0 && length == 0 {
-        return negative_errno(libc::EINVAL);
-    }
-    if start.checked_add(length).is_none() {
-        return negative_errno(libc::EINVAL);
-    }
-    if length == 0 {
-        return 0;
-    }
+    let (advice, start, length) = match madvise_arguments(args) {
+        Ok(Some(call)) => call,
+        Ok(None) => return 0,
+        Err(error) => return error,
+    };
     if MADVISE_UNIMPLEMENTED.contains(&advice) {
         return negative_errno(libc::ENOSYS);
     }
@@ -1103,20 +1182,34 @@ pub(super) fn madvise<M: AddressSpace>(memory: &M, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-145): Review flat guest-memory munlock validation semantics.
 pub(super) fn munlock_guest_range<M: AddressSpace>(memory: &M, address: u64, length: u64) -> i64 {
-    let page_start = address & !(PAGE_SIZE - 1);
-    let page_offset = address - page_start;
-    let page_length =
-        length.wrapping_add(page_offset).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let page_end = page_start.wrapping_add(page_length);
-    if page_end < page_start {
+    let Some((page_start, page_length)) = munlock_range(address, length) else {
         return negative_errno(libc::EINVAL);
-    }
+    };
     if page_length != 0 && !range_is_valid(memory, page_start, page_length) {
         return negative_errno(libc::ENOMEM);
     }
     0
 }
 
+/// The whole pages munlock(2) of `[address, address + length)` covers, as
+/// Linux rounds them (the start down, the end up), or `None` when they wrap.
+pub(super) fn munlock_range(address: u64, length: u64) -> Option<(u64, u64)> {
+    let page_start = address & !(PAGE_SIZE - 1);
+    let page_offset = address - page_start;
+    let page_length =
+        length.wrapping_add(page_offset).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    (page_start.wrapping_add(page_length) >= page_start).then_some((page_start, page_length))
+}
+
+/// `mincore(2)` range validation only. Residency is the Tool's decision,
+/// because host page residency is nondeterministic: a Tool that answers
+/// mincore writes the residency bytes after this call. LinuxEmu keeps
+/// Linux's pointer and mapping validation (EINVAL for a bad address or
+/// length, ENOMEM for an unmapped range, EFAULT for a vector it cannot
+/// write) and leaves the residency bytes untouched, so the Tool's answer
+/// is the only one the guest sees. A run with no Tool that answers
+/// residency therefore gets no residency bytes from LinuxEmu; that is
+/// the named cost of keeping the policy in one place.
 pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>(
     memory: &mut M,
     args: &[u64; 6],
@@ -1132,15 +1225,17 @@ pub(super) fn mincore<M: GuestMemoryAccess<Error = crate::Error> + AddressSpace>
         RangeState::Unaddressable => return negative_errno(libc::EINVAL),
         RangeState::Unmapped | RangeState::Mixed => return negative_errno(libc::ENOMEM),
     }
+    // Linux faults a residency vector it cannot write (EFAULT), including
+    // one on a PROT_NONE or read-only page, without deciding any residency
+    // byte. Probe the whole vector's writability and write nothing.
     let Some(page_count) = length.checked_add(PAGE_SIZE - 1).map(|n| n / PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
     let Ok(page_count) = usize::try_from(page_count) else {
         return negative_errno(libc::ENOMEM);
     };
-    let residency = vec![1_u8; page_count];
-    match memory.write_exact(args[2], &residency) {
-        Ok(()) => 0,
-        Err(_) => negative_errno(libc::EFAULT),
+    match memory.accessible_prefix(args[2], page_count, Access::Write) {
+        Ok(writable) if writable == page_count => 0,
+        _ => negative_errno(libc::EFAULT),
     }
 }

@@ -9,7 +9,9 @@ license = "BSD-2-Clause AND BSD-3-Clause AND LGPL-2.1-only AND BSD-4-Clause"
 build = "build.rs"
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# Keep dependency artifacts keyed by Cargo's full compilation-unit identity.
+# The native prototype producer requests its cdylib explicitly.
+crate-type = ["rlib"]
 
 [features]
 default = ["prototype-runtime"]
@@ -23,6 +25,7 @@ reverie-memory = { version = "0.5.4", path = "../reverie-memory" }
 reverie-rpc-transport = { version = "0.5.4", path = "../reverie-rpc-transport" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["alloc"] }
+sha2 = "0.10.9"
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "time"] }
 tracing = "0.1.41"

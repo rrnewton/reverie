@@ -427,10 +427,10 @@ impl SharedAdapter {
                     }
                 },
             ),
-            ToolKind::Debug => Self::Debug(ReverieAdapter::new(ExactDebugTool, (), ())),
-            ToolKind::Strace => Self::Strace(ReverieAdapter::new(StraceTool { quiet }, (), ())),
+            ToolKind::Debug => Self::Debug(admitted_adapter(ReverieAdapter::new(ExactDebugTool, (), ()))),
+            ToolKind::Strace => Self::Strace(admitted_adapter(ReverieAdapter::new(StraceTool { quiet }, (), ()))),
             ToolKind::StraceMinimal => {
-                Self::StraceMinimal(ReverieAdapter::new(ExactStraceMinimalTool::default(), (), ()))
+                Self::StraceMinimal(admitted_adapter(ReverieAdapter::new(ExactStraceMinimalTool::default(), (), ())))
             }
             ToolKind::Counter1 => coordinator_socket().map_or_else(
                 Self::counter1_local,
@@ -481,7 +481,7 @@ impl SharedAdapter {
                     }
                 },
             ),
-            ToolKind::Noop => Self::Noop(ReverieAdapter::new(NoopTool, (), ())),
+            ToolKind::Noop => Self::Noop(admitted_adapter(ReverieAdapter::new(NoopTool, (), ()))),
             // The record is the launcher's GlobalState; a process-local copy
             // would be lost, so there is no fallback.
             ToolKind::Recorder => match coordinator_socket() {
@@ -502,27 +502,31 @@ impl SharedAdapter {
     }
 
     fn counter1_local() -> Self {
-        Self::Counter1Local(ReverieAdapter::new(
+        Self::Counter1Local(admitted_adapter(ReverieAdapter::new(
             Counter1Tool,
             Counter1Global::default(),
             CounterConfig::process_local(),
-        ))
+        )))
     }
 
     fn counter1_exact_local() -> Self {
         let global = ExactCounter1Global::default();
         Self::Counter1ExactLocal(
-            ReverieAdapter::new(ExactCounter1Tool::default(), global.clone(), ()),
+            admitted_adapter(ReverieAdapter::new(
+                ExactCounter1Tool::default(),
+                global.clone(),
+                (),
+            )),
             global,
         )
     }
 
     fn counter2_local() -> Self {
-        Self::Counter2Local(ReverieAdapter::new(
+        Self::Counter2Local(admitted_adapter(ReverieAdapter::new(
             Counter2Tool,
             Counter2Global::default(),
             CounterConfig::process_local(),
-        ))
+        )))
     }
 
     pub(crate) fn handle_syscall(&self, syscall: Syscall) -> Result<usize, Errno> {
@@ -672,12 +676,21 @@ impl SharedAdapter {
     }
 }
 
+fn admitted_adapter<T: ReverieTool>(
+    result: Result<ReverieAdapter<T>, reverie::Error>,
+) -> ReverieAdapter<T> {
+    match result {
+        Ok(adapter) => adapter,
+        Err(error) => refuse(format_args!("Tool facility admission failed: {error}")),
+    }
+}
+
 fn local_adapter<T>(config: <T::GlobalState as GlobalTool>::Config) -> ReverieAdapter<T>
 where
     T: ReverieTool,
 {
     let tool = T::new(Pid::from_raw(unsafe { libc::getpid() }), &config);
-    ReverieAdapter::new(tool, T::GlobalState::default(), config)
+    admitted_adapter(ReverieAdapter::new(tool, T::GlobalState::default(), config))
 }
 
 /// End this guest process before it runs: the selected tool cannot run here.

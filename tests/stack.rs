@@ -8,6 +8,13 @@
 
 //! Tests for process and thread state.
 
+#[cfg(all(not(sanitized), test))]
+#[path = "support/stack_rust_guest.rs"]
+mod stack_rust_guest;
+#[cfg(all(not(sanitized), test))]
+#[path = "tool_fixtures/stack.rs"]
+mod stack_tool;
+
 use reverie::Error;
 use reverie::Guest;
 use reverie::Stack;
@@ -131,50 +138,12 @@ impl Tool for LocalState2 {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct LocalState3;
-
-#[reverie::tool]
-impl Tool for LocalState3 {
-    type GlobalState = ();
-    type ThreadState = ();
-
-    async fn handle_syscall_event<T: Guest<Self>>(
-        &self,
-        guest: &mut T,
-        syscall: Syscall,
-    ) -> Result<i64, Error> {
-        let exit_success = ExitGroup::new().with_status(0);
-        match syscall.number() {
-            Sysno::exit_group => {
-                {
-                    let mut stack = guest.stack().await;
-                    let ptr1: AddrMut<u64> = stack.reserve();
-                    let _guard1 = stack.commit().unwrap();
-                    guest.memory().write_value(ptr1, &3333).unwrap();
-                    let v1 = guest.memory().read_value(ptr1).unwrap();
-                    assert_eq!(v1, 3333);
-                }
-
-                {
-                    let mut stack = guest.stack().await;
-                    let ptr2: AddrMut<u64> = stack.reserve();
-                    let _guard2 = stack.commit().unwrap();
-                    guest.memory().write_value(ptr2, &4444).unwrap();
-                    let v2 = guest.memory().read_value(ptr2).unwrap();
-                    assert_eq!(v2, 4444);
-                }
-
-                guest.tail_inject(exit_success).await
-            }
-            _ => guest.tail_inject(syscall).await,
-        }
-    }
-}
-
 #[cfg(all(not(sanitized), test))]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use reverie_ptrace::testing::check_fn;
+    use stack_tool::LocalState3;
 
     use super::*;
 
@@ -204,8 +173,95 @@ mod tests {
     /// In contrast, this is ok because the guard is dropped.
     #[test]
     fn stack_two_allocs_good() {
-        check_fn::<LocalState3, _>(|| {
-            unsafe { libc::syscall(libc::SYS_exit_group, 0) };
-        });
+        let state = check_fn::<LocalState3, _>(stack_rust_guest::guest);
+        let observed = state.observed.load(Ordering::SeqCst);
+        eprintln!("stack good function: observed={observed}");
+        assert!(observed);
+
+        #[cfg(feature = "dbt")]
+        rust_command_test();
+    }
+
+    #[cfg(feature = "dbt")]
+    fn caller_manifest() -> std::path::PathBuf {
+        let executable = std::env::current_exe().unwrap();
+        executable
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("reverie-dbt-callers")
+            .join("stack-two-allocs-good")
+            .join("manifest.json")
+    }
+
+    #[cfg(feature = "dbt")]
+    fn assert_command_output(
+        label: &str,
+        output: &reverie::process::Output,
+        state: &stack_tool::StackObserved,
+    ) {
+        let observed = state.observed.load(Ordering::SeqCst);
+        eprintln!(
+            "stack good Rust command {label}: status={:?} stdout={:02x?} stderr={:02x?} observed={observed}",
+            output.status, output.stdout, output.stderr,
+        );
+        assert_eq!(output.status, reverie::ExitStatus::Exited(0));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert!(observed);
+    }
+
+    #[cfg(feature = "dbt")]
+    fn rust_command_test() {
+        let manifest = caller_manifest();
+        reverie_dbt::CallerArtifact::load(&manifest).unwrap();
+        let program = env!("CARGO_BIN_EXE_stack-rust-command-guest");
+        eprintln!("stack good Rust command image={program}");
+
+        let native = std::process::Command::new(program).output().unwrap();
+        eprintln!(
+            "stack good Rust command native: status={:?} stdout={:02x?} stderr={:02x?}",
+            native.status, native.stdout, native.stderr,
+        );
+        assert_eq!(native.status.code(), Some(0));
+        assert!(native.stdout.is_empty());
+        assert!(native.stderr.is_empty());
+
+        let (output, state) =
+            reverie_test_support::test_cmd_with_config::<LocalState3>(program, &[], ()).unwrap();
+        assert_command_output("ptrace", &output, &state);
+        let (output, state) = reverie_test_support::test_dbt_cmd_with_config::<LocalState3>(
+            program,
+            &[],
+            (),
+            &manifest,
+        )
+        .unwrap();
+        assert_command_output("dbt", &output, &state);
+    }
+
+    #[cfg(feature = "dbt")]
+    #[test]
+    fn dbt_stack_missing_artifact_refuses() {
+        let manifest = caller_manifest();
+        let _valid_default = reverie_dbt::CallerArtifact::load(&manifest).unwrap();
+        let missing = manifest.with_file_name("missing-stack-two-allocs-good-manifest.json");
+        assert!(!missing.exists());
+        let error = reverie_test_support::test_dbt_cmd_with_config::<LocalState3>(
+            "/bin/true",
+            &[],
+            (),
+            &missing,
+        )
+        .unwrap_err();
+        eprintln!(
+            "explicit missing stack artifact {}: {error}",
+            missing.display()
+        );
+        let reverie::Error::Io(error) = error else {
+            panic!("expected missing manifest I/O error: {error}");
+        };
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 }

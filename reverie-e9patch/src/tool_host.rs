@@ -123,6 +123,8 @@ where
     let startup_runtime_text = startup_runtime_text_ranges()?;
     let signal_state = prepare_guest_signal_state()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
+    // This is the first typed configuration in an already-loaded image.
+    T::facility_admission(rpc.config()).map_err(io::Error::other)?;
     let pid = Pid::from_raw(raw_pid(libc::SYS_getpid).as_raw());
     let subscriptions = T::subscriptions(rpc.config()).iter_syscalls().collect();
     if remove_legacy_environment {
@@ -450,6 +452,12 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for E9patchGuest<'_, T> {
 
 #[reverie::tool]
 impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
+    // This backend has no stopped-generation private input implementation.
+    // The typed default injection methods refuse without issuing a native call.
+    fn reserved_input_control(&self) -> Option<reverie::reserved_input::ReservedInputControl> {
+        None
+    }
+
     type Memory = LocalMemory;
     type Stack = LocalStack;
 

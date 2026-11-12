@@ -241,6 +241,9 @@ loader_exit(void)
 {
     /* We must unload for detach so can't leave them loaded */
     acquire_recursive_lock(&privload_lock);
+#if defined(LINUX) && !defined(ANDROID)
+    privload_errno_prepare_exit();
+#endif
     /* The list is kept in reverse-dependent order so we can unload from the
      * front without breaking dependencies.
      */

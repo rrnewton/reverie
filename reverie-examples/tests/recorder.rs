@@ -239,6 +239,13 @@ fn compile_descriptor_fixture() -> (tempfile::TempDir, std::path::PathBuf) {
         source.display(),
         String::from_utf8_lossy(&output.stderr)
     );
+    eprintln!(
+        "descriptor fixture: compiler={:?} source={} guest={} image={:02x?}",
+        std::env::var_os("CC").unwrap_or_else(|| "cc".into()),
+        source.display(),
+        guest.display(),
+        std::fs::read(&guest).expect("retain compiled descriptor image")
+    );
     (directory, guest)
 }
 
@@ -249,13 +256,11 @@ struct DescriptorRecord {
     text: String,
 }
 
-fn descriptor_command(backend: &str, guest: &Path, mode: &str, output_path: &Path) -> Command {
+fn descriptor_frontend(backend: &str, output_path: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_recorder"));
     command
         .args(["--backend", backend, "--output"])
-        .arg(output_path)
-        .arg(guest)
-        .arg(mode);
+        .arg(output_path);
     // The backend adapter selects recorder itself. Ambient test tools must
     // not replace it, including the named selector that precedes older flags.
     for selector in [
@@ -282,6 +287,12 @@ fn descriptor_command(backend: &str, guest: &Path, mode: &str, output_path: &Pat
     command
 }
 
+fn descriptor_command(backend: &str, guest: &Path, mode: &str, output_path: &Path) -> Command {
+    let mut command = descriptor_frontend(backend, output_path);
+    command.arg(guest).arg(mode);
+    command
+}
+
 fn record_descriptors(
     backend: &str,
     guest: &Path,
@@ -291,6 +302,26 @@ fn record_descriptors(
     let output = descriptor_command(backend, guest, mode, output_path)
         .output()
         .expect("run raw-entry recorder fixture");
+    parse_descriptor_output(backend, mode, output_path, output)
+}
+
+fn retain_recorder_output(label: &str, output: &std::process::Output, path: &Path) {
+    eprintln!(
+        "recorder bytes {label}: status={:?} stdout={:02x?} stderr={:02x?} record={:02x?}",
+        output.status.code(),
+        output.stdout,
+        output.stderr,
+        std::fs::read(path)
+    );
+}
+
+fn parse_descriptor_output(
+    backend: &str,
+    mode: &str,
+    output_path: &Path,
+    output: std::process::Output,
+) -> DescriptorRecord {
+    retain_recorder_output(&format!("{backend}/{mode}"), &output, output_path);
     let text = std::fs::read_to_string(output_path);
     // Keep successful controls and failed guest output in --nocapture receipts
     // before the fixture/record TempDir is dropped.
@@ -343,6 +374,10 @@ fn check_first_descriptor(mode: &str) {
     let (directory, guest) = compile_descriptor_fixture();
     let native = record_descriptors("native", &guest, mode, &directory.path().join("native"));
     let dbt = record_descriptors("dbt", &guest, mode, &directory.path().join("dbt"));
+    assert_descriptor_records(mode, native, dbt);
+}
+
+fn assert_descriptor_records(mode: &str, native: DescriptorRecord, dbt: DescriptorRecord) {
     let mut expected = vec!["openat", "openat", "write", "close", "close", "exit_group"];
     if mode == "warm" {
         expected.insert(0, "getpid");
@@ -662,4 +697,266 @@ async fn dbt_counter1_fork_reconnect_preserves_parent_descriptors() {
 #[ignore = "requires the DBT client built by reverie-dbt/scripts/build-client.sh; run with --ignored"]
 async fn dbt_counter1_copied_vfork_preserves_parent_descriptors() {
     check_counter1_descriptor_lifetime("vfork").await;
+}
+
+fn check_ptrace_first_descriptor(mode: &str) {
+    let (directory, guest) = compile_descriptor_fixture();
+    let native = record_descriptors("native", &guest, mode, &directory.path().join("native"));
+    let mut ptrace = record_descriptors("ptrace", &guest, mode, &directory.path().join("ptrace"));
+    // Require the complete native report before making a post-launch view.
+    assert_eq!(ptrace.text, native.text, "{ptrace:?}\n{native:?}");
+    assert_eq!(ptrace.threads[0].remove(0), "execve=ok", "{ptrace:?}");
+    assert_descriptor_records(mode, native, ptrace);
+}
+
+#[test]
+fn ptrace_recorder_cold_open_keeps_the_first_linux_descriptor() {
+    check_ptrace_first_descriptor("cold");
+}
+
+#[test]
+fn ptrace_recorder_prior_rpc_keeps_the_first_linux_descriptor() {
+    check_ptrace_first_descriptor("warm");
+}
+
+fn recorder_caller_artifact() -> std::path::PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_recorder"))
+        .parent()
+        .unwrap()
+        .join("reverie-dbt-callers/recorder/manifest.json")
+}
+
+#[test]
+fn dbt_recorder_caller_cold_open_keeps_the_first_linux_descriptor() {
+    let artifact = recorder_caller_artifact();
+    let _validated = reverie_dbt::CallerArtifact::load(&artifact)
+        .expect("build the current Recorder caller with build-client.sh --caller-manifest");
+    let (directory, guest) = compile_descriptor_fixture();
+    let native = record_descriptors("native", &guest, "cold", &directory.path().join("native"));
+    let path = directory.path().join("caller");
+    let output = descriptor_frontend("dbt", &path)
+        .arg("--dbt-artifact")
+        .arg(&artifact)
+        .arg(&guest)
+        .arg("cold")
+        .output()
+        .expect("run Recorder with its explicit caller artifact");
+    let dbt = parse_descriptor_output("dbt", "cold", &path, output);
+    assert_descriptor_records("cold", native, dbt);
+}
+
+#[test]
+fn recorder_default_dbt_lifecycle_consumers_are_preserved() {
+    let directory = tempfile::tempdir().unwrap();
+    for (label, program, expected) in [
+        (
+            "sh-fork",
+            &["/bin/sh", "-c", "/bin/true; /bin/echo b"][..],
+            &b"b\n"[..],
+        ),
+        (
+            "sh-pipe",
+            &["/bin/sh", "-c", "/bin/seq 1 100 | /bin/wc -l"],
+            &b"100\n"[..],
+        ),
+        (
+            "env-python",
+            &["/bin/env", "PYTHONHASHSEED=0", "/bin/python3", "-c", "pass"],
+            &b""[..],
+        ),
+    ] {
+        let path = directory.path().join(label);
+        let output = record("dbt", program, &path);
+        retain_recorder_output(label, &output, &path);
+        assert!(output.status.success(), "{label}: {output:?}");
+        let report = std::fs::read_to_string(&path).expect("read complete legacy Recorder report");
+        assert_eq!(report.lines().next(), Some("exit 0"), "{label}: {report}");
+        assert_eq!(output.stdout, expected, "{label}: {output:?}");
+    }
+}
+
+#[test]
+fn dbt_recorder_caller_prior_rpc_keeps_the_first_linux_descriptor() {
+    let artifact = recorder_caller_artifact();
+    let _validated = reverie_dbt::CallerArtifact::load(&artifact)
+        .expect("build the current Recorder caller with build-client.sh --caller-manifest");
+    let (directory, guest) = compile_descriptor_fixture();
+    let native = record_descriptors("native", &guest, "warm", &directory.path().join("native"));
+    let path = directory.path().join("caller");
+    let output = descriptor_frontend("dbt", &path)
+        .arg("--dbt-artifact")
+        .arg(&artifact)
+        .arg(&guest)
+        .arg("warm")
+        .output()
+        .expect("run Recorder with its explicit caller artifact");
+    let dbt = parse_descriptor_output("dbt", "warm", &path, output);
+    assert_descriptor_records("warm", native, dbt);
+}
+
+#[test]
+fn dbt_recorder_caller_noop_fails_the_descriptor_oracle() {
+    let noop = Path::new(env!("CARGO_BIN_EXE_recorder"))
+        .parent()
+        .unwrap()
+        .join("reverie-dbt-callers/basics-noop/manifest.json");
+    reverie_dbt::CallerArtifact::load(&noop).expect("build the real basics-Noop caller");
+    let (directory, guest) = compile_descriptor_fixture();
+    let native = record_descriptors("native", &guest, "cold", &directory.path().join("native"));
+    let path = directory.path().join("noop");
+    let output = descriptor_frontend("dbt", &path)
+        .arg("--dbt-artifact")
+        .arg(&noop)
+        .arg(&guest)
+        .arg("cold")
+        .output()
+        .expect("run the descriptor guest with the actual Noop caller");
+    retain_recorder_output("noop/cold", &output, &path);
+    assert!(output.status.success(), "{output:?}");
+    let expected: Vec<_> = [3_i64, 4].into_iter().flat_map(i64::to_le_bytes).collect();
+    assert_eq!(output.stdout, expected, "{output:?}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "exit 0\n");
+    // The real guest succeeded with the right descriptors. The unchanged
+    // positive oracle must still reject its missing recorded thread/events.
+    assert!(
+        std::panic::catch_unwind(|| {
+            let dbt = parse_descriptor_output("dbt", "cold", &path, output);
+            assert_descriptor_records("cold", native, dbt);
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn dbt_recorder_caller_missing_or_malformed_artifact_refuses() {
+    let directory = tempfile::tempdir().unwrap();
+    let malformed = directory.path().join("malformed.json");
+    std::fs::write(&malformed, b"{}").unwrap();
+    for artifact in [directory.path().join("missing.json"), malformed] {
+        for existing_report in [false, true] {
+            let path = directory.path().join("report");
+            if existing_report {
+                std::fs::write(&path, b"existing report\n").unwrap();
+            }
+            let output = descriptor_frontend("dbt", &path)
+                .arg("--dbt-artifact")
+                .arg(&artifact)
+                .args(["/bin/echo", "must-not-run"])
+                .output()
+                .expect("run Recorder with an invalid supplied artifact");
+            retain_recorder_output("invalid-artifact", &output, &path);
+            assert!(!output.status.success(), "{output:?}");
+            assert!(output.stdout.is_empty(), "{output:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(artifact.to_str().unwrap()), "{stderr}");
+            assert!(
+                stderr.contains("cannot load Recorder caller artifact"),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("build-client.sh --caller-manifest"),
+                "{stderr}"
+            );
+            if existing_report {
+                assert_eq!(std::fs::read(&path).unwrap(), b"existing report\n");
+                std::fs::remove_file(&path).unwrap();
+            } else {
+                assert!(!path.exists(), "refused run created a report");
+            }
+        }
+    }
+}
+
+#[test]
+fn recorder_caller_artifact_requires_dbt_backend() {
+    let artifact = recorder_caller_artifact();
+    reverie_dbt::CallerArtifact::load(&artifact).expect("build the current Recorder caller");
+    let directory = tempfile::tempdir().unwrap();
+    for backend in [
+        "native",
+        "ptrace",
+        "kvm",
+        "liteinst",
+        "in-guest-trap",
+        "e9patch",
+        "sabre",
+    ] {
+        let path = directory.path().join(backend);
+        let output = descriptor_frontend(backend, &path)
+            .arg("--dbt-artifact")
+            .arg(&artifact)
+            .args(["/bin/echo", "must-not-run"])
+            .output()
+            .expect("run Recorder with an incompatible backend option");
+        retain_recorder_output(backend, &output, &path);
+        assert!(!output.status.success(), "{backend}: {output:?}");
+        assert!(output.stdout.is_empty(), "{backend}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("--dbt-artifact requires --backend dbt"),
+            "{backend}: {output:?}"
+        );
+        assert!(!path.exists(), "refused run created a report");
+    }
+}
+
+#[test]
+fn dbt_recorder_caller_preserves_nonzero_guest_exit() {
+    let artifact = recorder_caller_artifact();
+    reverie_dbt::CallerArtifact::load(&artifact).expect("build the current Recorder caller");
+    let (directory, guest) = compile_descriptor_fixture();
+    let path = directory.path().join("nonzero");
+    let output = descriptor_frontend("dbt", &path)
+        .arg("--dbt-artifact")
+        .arg(&artifact)
+        .arg(&guest)
+        .arg("invalid")
+        .output()
+        .expect("run the existing fixture's nonzero mode");
+    retain_recorder_output("caller/nonzero", &output, &path);
+    // Recorder reports the completed guest's status without adopting it as
+    // the frontend's own exit status.
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "exit 3\nthread 0\nexit_group=?\n"
+    );
+}
+
+#[test]
+fn recorder_caller_inherited_stdin_is_explicit() {
+    use std::io::Write as _;
+
+    let artifact = recorder_caller_artifact();
+    reverie_dbt::CallerArtifact::load(&artifact).expect("build the current Recorder caller");
+    let directory = tempfile::tempdir().unwrap();
+    for (label, backend, use_caller, expected) in [
+        ("ptrace", "ptrace", false, &b"hello\n"[..]),
+        ("caller", "dbt", true, &b"hello\n"[..]),
+        ("legacy", "dbt", false, &b""[..]),
+    ] {
+        let path = directory.path().join(label);
+        // std::io::pipe creates close-on-exec descriptors. A new pipe for
+        // each run supplies exactly six bytes and EOF before the spawn.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        writer.write_all(b"hello\n").unwrap();
+        drop(writer);
+        let mut command = descriptor_frontend(backend, &path);
+        if use_caller {
+            command.arg("--dbt-artifact").arg(&artifact);
+        }
+        let output = command
+            .stdin(reader)
+            .arg("/bin/cat")
+            .output()
+            .expect("run Recorder with fresh inherited input");
+        retain_recorder_output(label, &output, &path);
+        assert!(output.status.success(), "{label}: {output:?}");
+        let report = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(report.lines().next(), Some("exit 0"), "{label}: {report}");
+        assert_eq!(output.stdout, expected, "{label}: {output:?}");
+        assert!(output.stderr.is_empty(), "{label}: {output:?}");
+    }
 }

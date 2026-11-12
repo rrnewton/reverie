@@ -21,6 +21,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 
+use anyhow::Context as _;
 use clap::Parser;
 use reverie::syscalls::Sysno;
 
@@ -63,6 +64,10 @@ struct Opts {
     /// by default `libreverie_examples.so` beside this binary.
     #[clap(long)]
     preload: Option<PathBuf>,
+    /// Authenticated Recorder caller manifest, valid only with --backend dbt.
+    /// Inherits the guest's streams; without it, keep the legacy DBT route.
+    #[clap(long, value_name = "MANIFEST")]
+    dbt_artifact: Option<PathBuf>,
     #[clap(value_name = "PROGRAM")]
     program: PathBuf,
     #[clap(
@@ -250,6 +255,23 @@ fn reverie_backend(target: Target) -> BackendKind {
 
 fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
+    if opts.dbt_artifact.is_some() && opts.backend != Target::Dbt {
+        anyhow::bail!("--dbt-artifact requires --backend dbt");
+    }
+    let caller = opts
+        .dbt_artifact
+        .as_deref()
+        .map(|path| {
+            reverie_dbt::CallerArtifact::load(path).with_context(|| {
+                format!(
+                    "cannot load Recorder caller artifact {}; build it with \
+                     reverie-dbt/scripts/build-client.sh --caller-manifest \
+                     reverie-examples/recorder-dbt-runtime/Cargo.toml --check",
+                    path.display()
+                )
+            })
+        })
+        .transpose()?;
     let report = if opts.backend == Target::Native {
         run_native(&opts.program, &opts.args)?
     } else {
@@ -282,12 +304,22 @@ fn main() -> anyhow::Result<()> {
                 .map(|arg| utf8(arg))
                 .collect::<anyhow::Result<_>>()?,
         };
-        let run = runtime.block_on(backend::run::<Recorder>(
-            reverie_backend(opts.backend),
-            &common,
-            (),
-            preload,
-        ));
+        let run = if let Some(caller) = caller.as_ref() {
+            runtime.block_on(backend::run_with_caller::<Recorder>(
+                reverie_backend(opts.backend),
+                &common,
+                (),
+                preload,
+                Some(caller),
+            ))
+        } else {
+            runtime.block_on(backend::run::<Recorder>(
+                reverie_backend(opts.backend),
+                &common,
+                (),
+                preload,
+            ))
+        };
         match run {
             Ok(run) => {
                 // The program's output, where the backend captured it, goes

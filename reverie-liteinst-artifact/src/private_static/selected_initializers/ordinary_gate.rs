@@ -12,6 +12,8 @@ const BODY: [u8; 44] = [
     0x05, 0x41, 0xff, 0xe4, 0xf3, 0x0f, 0x1e, 0xfa, 0x41, 0x5c, 0xc3,
 ];
 const TRAP_SHA: &str = "5c9249419574f00c540dec767359181c8ac03a47aa2df0f19e5cef0a59b5755b";
+const DEDICATED_TRAP_SHA: &str = "91c07be60ab719c9d353991a0230c058b22a457676d05f3866aab943ea55d6eb";
+const DEDICATED_SECTION: &str = ".text.reverie_inguest_trusted_syscall";
 const FIXED_SHA: &str = "ff3f6f6c46e872734ae921e869dbccc0ce1aeefe4bc3af8f29363cf276501e54";
 #[cfg(test)]
 const MEMBER: &str =
@@ -20,12 +22,13 @@ const MEMBER: &str =
 const GATE_MEMBER: &str =
     "reverie_inguest-ba5b7b992d5b00fd.reverie_inguest.5d82eb07abf40ef1-cgu.14.rcgu.o";
 const PAGE_SHA: &str = "a852d01cbc01ae5487ff539e229e2ab203d16b22e5f4f6736ee3584d971a8380";
-// Closed measured input cohorts. These are not caller-configurable offsets.
-// The checker may advance independently of the runtime's selected source pin.
+// Historical measured containers and the source-owned complete function section.
+// Source identity selects the permitted geometry; offsets are not caller inputs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 enum Cohort {
     LegacyE3,
     CheckedHandoff5b3,
+    DedicatedFunction,
 }
 impl Cohort {
     #[cfg(test)]
@@ -55,11 +58,14 @@ impl Cohort {
                 65099178,
                 "d843bf6b45591ce5267f80bbf598abaa1924706d3900439d684bf18df94643f9",
             ),
+            (Self::DedicatedFunction, _) => {
+                panic!("dedicated function has no historical physical member fixture")
+            }
         }
     }
     fn owner_offset(self) -> u64 {
         match self {
-            Self::LegacyE3 => 0,
+            Self::LegacyE3 | Self::DedicatedFunction => 0,
             Self::CheckedHandoff5b3 => 112,
         }
     }
@@ -67,6 +73,13 @@ impl Cohort {
         match self {
             Self::LegacyE3 => 177,
             Self::CheckedHandoff5b3 => 289,
+            Self::DedicatedFunction => 44,
+        }
+    }
+    fn input_section(self) -> &'static str {
+        match self {
+            Self::LegacyE3 | Self::CheckedHandoff5b3 => ".text",
+            Self::DedicatedFunction => DEDICATED_SECTION,
         }
     }
     fn entry(self, contribution: u64) -> Result<u64> {
@@ -169,7 +182,11 @@ fn closed_input_shape(object: &ObjectInput<'_>) -> Result<Cohort> {
     // One semantic validator serves both historical fixture checks and the
     // private live-owner path. Unknown offsets/extents remain refusals.
     let mut found = Vec::new();
-    for shape in [Cohort::LegacyE3, Cohort::CheckedHandoff5b3] {
+    for shape in [
+        Cohort::LegacyE3,
+        Cohort::CheckedHandoff5b3,
+        Cohort::DedicatedFunction,
+    ] {
         if input(object, false, shape).is_ok() {
             found.push(shape);
         }
@@ -234,6 +251,13 @@ fn source_digest(actual: &str, gate: bool) -> Result<()> {
         "ordinary actual source differs",
     )
 }
+fn source_cohort(actual: &str, cohort: Cohort) -> Result<()> {
+    let expected = match cohort {
+        Cohort::LegacyE3 | Cohort::CheckedHandoff5b3 => TRAP_SHA,
+        Cohort::DedicatedFunction => DEDICATED_TRAP_SHA,
+    };
+    require(actual == expected, "ordinary source/input cohort differs")
+}
 fn code_bytes(bytes: &[u8], gate: bool) -> Result<()> {
     if gate {
         require(
@@ -284,7 +308,7 @@ fn input(object: &ObjectInput<'_>, gate: bool, cohort: Cohort) -> Result<usize> 
     let name = if gate {
         ".reverie_inguest_mapped_gate_page"
     } else {
-        ".text"
+        cohort.input_section()
     };
     let sections = elf
         .section_headers
@@ -324,7 +348,11 @@ fn input(object: &ObjectInput<'_>, gate: bool, cohort: Cohort) -> Result<usize> 
     let actual = elf
         .syms
         .iter()
-        .filter(|s| s.st_shndx == index && begin <= s.st_value && s.st_value < limit)
+        .filter(|s| {
+            s.st_shndx == index
+                && ((!gate && cohort == Cohort::DedicatedFunction)
+                    || (begin <= s.st_value && s.st_value < limit))
+        })
         .map(|s| alias(elf, s))
         .collect::<Result<Vec<_>>>()?;
     // The actual input has no SECTION symbol in this section. Do not ignore one.
@@ -348,6 +376,14 @@ fn input(object: &ObjectInput<'_>, gate: bool, cohort: Cohort) -> Result<usize> 
         vec![OWNER, NATIVE, POST]
     } {
         let _ = sole_named(elf, name)?;
+    }
+    if !gate && cohort == Cohort::DedicatedFunction {
+        require(
+            elf.shdr_relocs.iter().all(|(relocs, rows)| {
+                elf.section_headers[*relocs].sh_info as usize != index || rows.is_empty()
+            }),
+            "ordinary dedicated function has input relocations",
+        )?;
     }
     no_writers(elf, index, begin, end)?;
     Ok(index)
@@ -762,7 +798,8 @@ impl VerifiedStaticSource {
     }
 
     /// Derive the complete physical members from this live source-built archive.
-    /// Only the two closed ordinary44 semantic shapes are admitted; historical
+    /// The current source requires its complete ordinary44 input section. The
+    /// two historical container shapes require their historical source identity;
     /// whole-container constants remain strict fixture controls, not live identity.
     /// The source/archive/build-output/file/tool guards close on every Result,
     /// including callback errors; no supplied paths or names construct a role.
@@ -792,14 +829,12 @@ impl VerifiedStaticSource {
                 .map(|(path, _)| path)
                 .collect::<Vec<_>>();
             require(roots.len() == 1, "ordinary resolved source ambiguous")?;
-            for (relative, digest) in [
-                ("reverie-inguest/src/trap.rs", TRAP_SHA),
-                ("reverie-inguest/src/trap/fixed_gates.rs", FIXED_SHA),
-            ] {
-                let source = FileIdentity::read(&roots[0].join(relative))?;
-                files.push(source.clone());
-                source_digest(&source.sha256, digest == FIXED_SHA)?;
-            }
+            let trap_source = FileIdentity::read(&roots[0].join("reverie-inguest/src/trap.rs"))?;
+            files.push(trap_source.clone());
+            let fixed_source =
+                FileIdentity::read(&roots[0].join("reverie-inguest/src/trap/fixed_gates.rs"))?;
+            files.push(fixed_source.clone());
+            source_digest(&fixed_source.sha256, true)?;
             let members = extract_objects(&archive.file, 0)?;
             let (member_index, page_index) = defining_members(&members)?;
             let m = &members[member_index];
@@ -821,6 +856,7 @@ impl VerifiedStaticSource {
                 elf: Elf::parse(&g.bytes).map_err(|e| e.to_string())?,
             };
             let cohort = closed_input_shape(&object)?;
+            source_cohort(&trap_source.sha256, cohort)?;
             let section = input(&object, false, cohort)?;
             let gate_section = input(&gate, true, cohort)?;
             require(
@@ -1337,6 +1373,223 @@ mod tests {
             gate,
             cohort,
         )
+    }
+    // Structural control only: the new source section has no invented measured
+    // archive hash, member name, ordinal, or header coordinate.
+    fn dedicated_input_fixture() -> MemberBytes {
+        let mut member = input_fixture(false, Cohort::LegacyE3);
+        let elf = Elf::parse(&member.bytes).unwrap();
+        let names = elf.section_headers[5].sh_size as usize;
+        put(&mut member.bytes, 0x6000 + 2 * 64, names as u64, 4);
+        put(&mut member.bytes, 0x6000 + 2 * 64 + 32, 44, 8);
+        let begin = 0x5800 + names;
+        member.bytes[begin..begin + DEDICATED_SECTION.len()]
+            .copy_from_slice(DEDICATED_SECTION.as_bytes());
+        member.bytes[begin + DEDICATED_SECTION.len()] = 0;
+        put(
+            &mut member.bytes,
+            0x6000 + 5 * 64 + 32,
+            (names + DEDICATED_SECTION.len() + 1) as u64,
+            8,
+        );
+        member.name = "structural-dedicated-owner.o".into();
+        member.ordinal = 7;
+        member.header = 1024;
+        member
+    }
+    #[test]
+    fn ordinary44_dedicated_source_and_historical_geometries_do_not_mix() {
+        for cohort in [Cohort::LegacyE3, Cohort::CheckedHandoff5b3] {
+            source_cohort(TRAP_SHA, cohort).unwrap();
+            assert_eq!(
+                source_cohort(DEDICATED_TRAP_SHA, cohort).unwrap_err(),
+                "ordinary source/input cohort differs"
+            );
+        }
+        source_cohort(DEDICATED_TRAP_SHA, Cohort::DedicatedFunction).unwrap();
+        for source in [TRAP_SHA, FIXED_SHA, "unknown"] {
+            assert_eq!(
+                source_cohort(source, Cohort::DedicatedFunction).unwrap_err(),
+                "ordinary source/input cohort differs"
+            );
+        }
+    }
+    #[test]
+    fn ordinary44_dedicated_input_joins_actual_member_and_complete_map_extent() {
+        let members = [
+            dedicated_input_fixture(),
+            input_fixture(true, Cohort::LegacyE3),
+        ];
+        assert_eq!(defining_members(&members).unwrap(), (0, 1));
+        let member = &members[0];
+        let object = ObjectInput {
+            archive_path: Path::new("/actual/runtime.a"),
+            member_name: &member.name,
+            ordinal: member.ordinal,
+            header_offset: member.header,
+            bytes: &member.bytes,
+            elf: Elf::parse(&member.bytes).unwrap(),
+        };
+        assert_eq!(
+            closed_input_shape(&object).unwrap(),
+            Cohort::DedicatedFunction
+        );
+        assert_eq!(input(&object, false, Cohort::DedicatedFunction).unwrap(), 2);
+        assert_eq!(
+            input_member(&members[1], true, Cohort::DedicatedFunction).unwrap(),
+            1
+        );
+        let map = format!(
+            "6000e1002000 6000e1002000 2c 16 /actual/runtime.a({}):({DEDICATED_SECTION})",
+            member.name
+        );
+        assert_eq!(mapped_section(&map, &object, 2).unwrap(), GATE + 4096);
+        for bad in [
+            map.replace(" 2c ", " 2b "),
+            map.replace(" 2c ", " 2d "),
+            map.replace("/actual/runtime.a", "/foreign/runtime.a"),
+            map.replace(&member.name, "foreign.o"),
+            map.replace(DEDICATED_SECTION, ".text"),
+            format!("{map}\n{map}"),
+        ] {
+            assert!(mapped_section(&bad, &object, 2).is_err());
+        }
+        for cohort in [Cohort::LegacyE3, Cohort::CheckedHandoff5b3] {
+            assert!(input_member(member, false, cohort).is_err());
+            assert!(
+                input_member(
+                    &input_fixture(false, cohort),
+                    false,
+                    Cohort::DedicatedFunction
+                )
+                .is_err()
+            );
+        }
+        let mut duplicate = dedicated_input_fixture();
+        duplicate.name = "other-owner.o".into();
+        let mut all = Vec::from(members);
+        all.push(duplicate);
+        assert_eq!(
+            defining_members(&all).unwrap_err(),
+            "ordinary archive defining roles absent/duplicate"
+        );
+    }
+    #[test]
+    fn ordinary44_dedicated_input_refuses_unknown_bytes_aliases_extents_and_relocations() {
+        for byte in 0..44 {
+            let mut bad = dedicated_input_fixture();
+            bad.bytes[0x2000 + byte] ^= 1;
+            assert_eq!(
+                input_member(&bad, false, Cohort::DedicatedFunction).unwrap_err(),
+                "ordinary complete body differs"
+            );
+        }
+        for (delta, value, width) in [
+            (4, 8, 4),
+            (8, 7, 8),
+            (16, 1, 8),
+            (32, 43, 8),
+            (32, 45, 8),
+            (48, 8, 8),
+        ] {
+            let mut bad = dedicated_input_fixture();
+            put(&mut bad.bytes, 0x6000 + 2 * 64 + delta, value, width);
+            assert_eq!(
+                input_member(&bad, false, Cohort::DedicatedFunction).unwrap_err(),
+                "ordinary section geometry differs"
+            );
+        }
+        for (at, value, width) in [
+            (0x5418 + 4, 0x11, 1),
+            (0x5418 + 8, 1, 8),
+            (0x5418 + 16, 43, 8),
+            (0x5430 + 8, 31, 8),
+            (0x5448 + 8, 35, 8),
+        ] {
+            let mut bad = dedicated_input_fixture();
+            put(&mut bad.bytes, at, value, width);
+            assert_eq!(
+                input_member(&bad, false, Cohort::DedicatedFunction).unwrap_err(),
+                "ordinary exact alias/label set differs"
+            );
+        }
+        for value in [0, 44, 45] {
+            let mut bad = dedicated_input_fixture();
+            put(&mut bad.bytes, 0x6000 + 4 * 64 + 32, 5 * 24, 8);
+            put(&mut bad.bytes, 0x5460 + 4, 0x10, 1);
+            put(&mut bad.bytes, 0x5460 + 6, 2, 2);
+            put(&mut bad.bytes, 0x5460 + 8, value, 8);
+            assert_eq!(
+                input_member(&bad, false, Cohort::DedicatedFunction).unwrap_err(),
+                "ordinary exact alias/label set differs"
+            );
+        }
+        for (offset, kind) in [(0, 0), (44, 0), (0, 1), (43, 1), (44, 1), (0, 0xffff)] {
+            let mut bad = dedicated_input_fixture();
+            put(&mut bad.bytes, 60, 7, 2);
+            let header = 0x6000 + 6 * 64;
+            for (delta, value, width) in [
+                (0, 46, 4),
+                (4, 4, 4),
+                (24, 0x5700, 8),
+                (32, 24, 8),
+                (40, 4, 4),
+                (44, 2, 4),
+                (48, 8, 8),
+                (56, 24, 8),
+            ] {
+                put(&mut bad.bytes, header + delta, value, width);
+            }
+            put(&mut bad.bytes, 0x5700, offset, 8);
+            put(&mut bad.bytes, 0x5708, (1u64 << 32) | kind, 8);
+            let error = input_member(&bad, false, Cohort::DedicatedFunction).unwrap_err();
+            if offset == 43 || (offset == 44 && kind == 1) {
+                assert_eq!(error, "relocation field escapes declared target section");
+            } else {
+                assert_eq!(error, "ordinary dedicated function has input relocations");
+            }
+        }
+    }
+    #[test]
+    fn ordinary44_dedicated_final_preserves_complete_body_page_boundary_and_slot() {
+        let (mut raw, mut role) = fixture();
+        role.cohort = Cohort::DedicatedFunction;
+        put(&mut raw, 0x6000 + 2 * 64 + 32, 44, 8);
+        let elf = Elf::parse(&raw).unwrap();
+        role.verify_final_shape(&elf, &raw).unwrap();
+        role.verify_slot_shape(&elf, &raw, GATE + 0x3000).unwrap();
+        for byte in 0..44 {
+            let mut bad = raw.clone();
+            bad[0x2000 + byte] ^= 1;
+            assert!(
+                role.verify_final_shape(&Elf::parse(&bad).unwrap(), &bad)
+                    .is_err()
+            );
+        }
+        for (at, value, width) in [
+            (0x6000 + 2 * 64 + 16, role.contribution + 16, 8),
+            (0x6000 + 2 * 64 + 32, 43, 8),
+            (0x5400 + 4 * 24 + 8, role.entry + 31, 8),
+            (0x5400 + 5 * 24 + 8, role.entry + 35, 8),
+        ] {
+            let mut bad = raw.clone();
+            put(&mut bad, at, value, width);
+            assert!(
+                role.verify_final_shape(&Elf::parse(&bad).unwrap(), &bad)
+                    .is_err()
+            );
+        }
+        let mut wrong_slot = raw.clone();
+        put(&mut wrong_slot, 0x4000, role.entry + 1, 8);
+        assert_eq!(
+            role.verify_slot_shape(
+                &Elf::parse(&wrong_slot).unwrap(),
+                &wrong_slot,
+                GATE + 0x3000
+            )
+            .unwrap_err(),
+            "ordinary GOT target is not exact provider entry"
+        );
     }
     #[test]
     fn ordinary44_closed_structural_et_rel_inputs_do_not_mint_physical_authority() {

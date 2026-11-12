@@ -215,10 +215,79 @@ rust_library(
                 "description": "Command helpers for generic Reverie conformance tests.",
                 "publish": False,
             },
-            "test": [{"name": "basics", "path": "../tests/basics.rs"}],
+            # DBT caller artifacts use the explicit OSS producer. Buck's
+            # generic conformance targets retain their ptrace selections.
+            "features": {"default": [], "dbt": ["dep:reverie-dbt"]},
+            "test": [
+                {"name": "basics", "path": "../tests/basics.rs"},
+                {"name": "exit", "path": "../tests/exit.rs"},
+                {"name": "stat", "path": "../tests/stat.rs"},
+                {"name": "vdso", "path": "../tests/vdso.rs"},
+                {"name": "inject_then_tail", "path": "../tests/inject_then_tail.rs"},
+                {"name": "at_random", "path": "../tests/at_random.rs"},
+                {"name": "initial_stack_pointer", "path": "../tests/initial_stack_pointer.rs"},
+                {"name": "thread_start", "path": "../tests/thread_start.rs"},
+                {"name": "stack", "path": "../tests/stack.rs"},
+                {"name": "suppression", "path": "../tests/suppression.rs"},
+                {"name": "dbt_command", "path": "tests/dbt_command.rs", "required-features": ["dbt"]},
+            ],
+            "bin": [
+                {"name": "stat-rust-command-guest", "path": "../tests/fixtures/stat-rust-command.rs", "test": False, "bench": False, "required-features": ["dbt"]},
+            {
+                "name": "exit-rust-command-guest",
+                "path": "../tests/fixtures/exit-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "basics-rust-command-guest",
+                "path": "../tests/fixtures/basics-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "vdso-rust-command-guest",
+                "path": "../tests/fixtures/vdso-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "inject-then-tail-rust-command-guest",
+                "path": "../tests/fixtures/inject-then-tail-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "at-random-rust-command-guest",
+                "path": "../tests/fixtures/at-random-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "thread-start-rust-command-guest",
+                "path": "../tests/fixtures/thread-start-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "stack-rust-command-guest",
+                "path": "../tests/fixtures/stack-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }, {
+                "name": "suppression-rust-command-guest",
+                "path": "../tests/fixtures/suppression-rust-command.rs",
+                "test": False,
+                "bench": False,
+                "required-features": ["dbt"],
+            }],
             "dependencies_override": {
-                "dev-dependencies": {
+                "dependencies": {
                     "nix": {"features": ["fs", "process", "signal"]},
+                    "reverie-dbt": {"version": "0.5.4", "path": "../reverie-dbt", "default-features": False, "optional": True},
+                },
+                "dev-dependencies": {
                     "reverie-ptrace": {"features": ["nightly"]},
                     "serde": {"features": ["derive"]},
                 },
@@ -236,12 +305,15 @@ rust_library(
     },
     test_deps = [
         "fbsource//third-party/rust:close-err",
-        "fbsource//third-party/rust:libc",
-        "fbsource//third-party/rust:nix",
         "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tracing",
         ":reverie-ptrace",
     ],
     deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:syscalls",
         ":reverie",
         ":reverie-ptrace",
     ],
@@ -249,7 +321,12 @@ rust_library(
 
 rust_unittest(
     name = "generic-basics",
-    srcs = ["tests/basics.rs", "tests/tool_fixtures/basics.rs"],
+    srcs = [
+        "tests/basics.rs",
+        "tests/support/basics_commands.rs",
+        "tests/support/basics_rust_guest.rs",
+        "tests/tool_fixtures/basics.rs",
+    ],
     crate_root = "tests/basics.rs",
     rustc_flags = sanitized_feature,
     deps = [
@@ -257,6 +334,171 @@ rust_unittest(
         "fbsource//third-party/rust:libc",
         "fbsource//third-party/rust:nix",
         "fbsource//third-party/rust:serde",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-exit",
+    srcs = [
+        "tests/exit.rs",
+        "tests/fixtures/exit-command.S",
+        "tests/support/exit_command.rs",
+        "tests/support/exit_rust_guest.rs",
+        "tests/tool_fixtures/exit.rs",
+    ],
+    crate_root = "tests/exit.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-stat",
+    srcs = [
+        "tests/stat.rs",
+        "tests/fixtures/stat-command.c",
+        "tests/fixtures/statx-command.c",
+        "tests/support/stat_command.rs",
+        "tests/support/stat_rust_guest.rs",
+        "tests/tool_fixtures/stat.rs",
+    ],
+    crate_root = "tests/stat.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-vdso",
+    srcs = [
+        "tests/vdso.rs",
+        "tests/fixtures/vdso-command.c",
+        "tests/support/vdso_command.rs",
+        "tests/support/vdso_rust_guest.rs",
+        "tests/tool_fixtures/vdso.rs",
+    ],
+    crate_root = "tests/vdso.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-inject-then-tail",
+    srcs = [
+        "tests/inject_then_tail.rs",
+        "tests/fixtures/inject-then-tail-command.c",
+        "tests/support/inject_then_tail_command.rs",
+        "tests/tool_fixtures/inject_then_tail.rs",
+    ],
+    crate_root = "tests/inject_then_tail.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tracing",
+        ":reverie",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-thread-start",
+    srcs = [
+        "tests/thread_start.rs",
+        "tests/support/thread_start_guest.rs",
+        "tests/tool_fixtures/thread_start.rs",
+        "tests/tool_fixtures/thread_start_tail.rs",
+        "tests/tool_fixtures/thread_start_tail_witness.rs",
+    ],
+    crate_root = "tests/thread_start.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-initial-stack-pointer",
+    srcs = [
+        "tests/initial_stack_pointer.rs",
+        "tests/tool_fixtures/initial_stack_pointer.rs",
+    ],
+    crate_root = "tests/initial_stack_pointer.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:serde",
+        ":reverie",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-at-random",
+    srcs = [
+        "tests/at_random.rs",
+        "tests/fixtures/at-random-command.c",
+        "tests/support/at_random_command.rs",
+        "tests/tool_fixtures/at_random.rs",
+    ],
+    crate_root = "tests/at_random.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:tempfile",
+        ":reverie",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-stack",
+    srcs = [
+        "tests/stack.rs",
+        "tests/support/stack_rust_guest.rs",
+        "tests/tool_fixtures/stack.rs",
+    ],
+    crate_root = "tests/stack.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        ":reverie",
+        ":reverie-ptrace",
+        ":reverie-test-support",
+    ],
+)
+
+rust_unittest(
+    name = "generic-suppression",
+    srcs = [
+        "tests/suppression.rs",
+        "tests/support/suppression_rust_guest.rs",
+        "tests/tool_fixtures/suppression.rs",
+    ],
+    crate_root = "tests/suppression.rs",
+    rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:syscalls",
         ":reverie",
         ":reverie-ptrace",
         ":reverie-test-support",

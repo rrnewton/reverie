@@ -14,9 +14,18 @@
 //! The in-guest backends (LiteInst, in-guest-trap, e9patch) host a tool
 //! through a preload that compiles it in: the example preload,
 //! `libreverie_examples.so` (`src/lib.rs`), selects the tool by the name the
-//! caller passes. DBT's prototype runtime (reverie-dbt) selects a tool it
-//! compiles in by the same name (`reverie_dbt::TOOL_ENV`), and the tool's
-//! GlobalState lives here, served over DBT's coordinator socket. SaBRe's
+//! caller passes. Counter1, Counter2, Strace, minimal Strace, ChromeTrace,
+//! ChunkyPrint and Chaos select
+//! verified DBT caller artifacts through `run_blocking_with_caller`, with the tool's GlobalState
+//! served here by the caller owner. These public DBT callers inherit stdin,
+//! stdout and stderr, so guest and controller writes reach the same streams
+//! when issued. Captured-output APIs keep their separate capture contract.
+//! Recorder also accepts an explicit authenticated caller through
+//! `run_with_caller`, with the same inherited-stream contract. Its default
+//! route retains captured output and null stdin. Other examples use DBT's prototype runtime
+//! (reverie-dbt), which selects a compiled-in tool by the same name
+//! (`reverie_dbt::TOOL_ENV`) and serves its GlobalState here over DBT's
+//! coordinator socket. SaBRe's
 //! plugin for the example tools (experimental/reverie-sabre-strace) selects a
 //! tool by the same name, and its GlobalState lives here too
 //! (`reverie_host::run_with_global_state`).
@@ -173,6 +182,24 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    run_with_caller::<T>(backend, args, config, preload, None).await
+}
+
+/// Run with an explicitly verified external caller artifact on DBT.
+/// Other callers retain [`run`]'s existing preload/prototype selection.
+pub async fn run_with_caller<T>(
+    backend: BackendKind,
+    args: &CommonToolArguments,
+    config: <T::GlobalState as GlobalTool>::Config,
+    preload: Option<Preload<'_>>,
+    caller: Option<&reverie_dbt::CallerArtifact>,
+) -> Result<Run<T::GlobalState>, RunError>
+where
+    T: Tool + 'static,
+    T::ThreadState: 'static,
+    T::GlobalState: 'static,
+    <T::GlobalState as GlobalTool>::Config: 'static,
+{
     match backend {
         BackendKind::Ptrace => run_ptrace::<T>(args, config).await,
         BackendKind::Kvm => run_kvm::<T>(args, config).await,
@@ -186,6 +213,9 @@ where
             run_in_guest::<T>(backend, args, config, preload).await
         }
         BackendKind::Dbt => {
+            if let Some(caller) = caller {
+                return run_dbt_caller::<T>(args, config, caller).await;
+            }
             let preload = preload.ok_or_else(|| {
                 RunError::Refused("the DBT backend hosts a tool only by name".to_owned())
             })?;
@@ -218,6 +248,24 @@ where
     T::GlobalState: 'static,
     <T::GlobalState as GlobalTool>::Config: 'static,
 {
+    run_blocking_with_caller::<T>(backend, args, config, tool, preload, None)
+}
+
+/// Blocking launch with an optional, already verified caller artifact.
+pub fn run_blocking_with_caller<T>(
+    backend: BackendKind,
+    args: &CommonToolArguments,
+    config: <T::GlobalState as GlobalTool>::Config,
+    tool: &str,
+    preload: Option<PathBuf>,
+    caller: Option<reverie_dbt::CallerArtifact>,
+) -> anyhow::Result<Run<T::GlobalState>>
+where
+    T: Tool + 'static,
+    T::ThreadState: 'static,
+    T::GlobalState: 'static,
+    <T::GlobalState as GlobalTool>::Config: 'static,
+{
     if backend == BackendKind::E9patch {
         // SAFETY: no other thread runs yet; the runtime starts below.
         unsafe { use_bundled_e9patch() };
@@ -232,7 +280,13 @@ where
         .enable_all()
         .build()?;
     let run = runtime
-        .block_on(run::<T>(backend, args, config, preload))
+        .block_on(run_with_caller::<T>(
+            backend,
+            args,
+            config,
+            preload,
+            caller.as_ref(),
+        ))
         .map_err(|error| anyhow::anyhow!("{error}"))?;
     if let Some((stdout, stderr)) = &run.captured {
         use std::io::Write as _;
@@ -335,6 +389,40 @@ where
         exit_code: exit_code(status),
         global_state,
         captured: Some((output.stdout, output.stderr)),
+    })
+}
+
+async fn run_dbt_caller<T>(
+    args: &CommonToolArguments,
+    config: <T::GlobalState as GlobalTool>::Config,
+    artifact: &reverie_dbt::CallerArtifact,
+) -> Result<Run<T::GlobalState>, RunError>
+where
+    T: Tool + 'static,
+    T::GlobalState: 'static,
+{
+    let runner =
+        reverie_dbt::DbtRunner::new(reverie_dbt::bundled_drrun_path(), artifact.native_client())?;
+    let command: reverie::process::Command = args.clone().into();
+    // Capture the shared inheritance/clear/remove policy before converting to
+    // std::Command, whose getters cannot reveal whether env_clear was used.
+    let environment = command.get_captured_envs();
+    let command = command.try_into_std().map_err(anyhow::Error::new)?;
+    let (status, global_state) = runner
+        .status_with_captured_environment_and_caller_tool::<T::GlobalState>(
+            &command,
+            &environment,
+            config,
+        )
+        .await
+        .map_err(anyhow::Error::new)?;
+    use std::os::unix::process::ExitStatusExt as _;
+    let status = ExitStatus::from_raw(status.into_raw());
+    Ok(Run {
+        status,
+        exit_code: exit_code(status),
+        global_state,
+        captured: None,
     })
 }
 

@@ -55,3 +55,30 @@ reverie-examples/e2e/run.sh                      # every backend this host has
 reverie-examples/e2e/run.sh --backends kvm
 reverie-examples/e2e/run.sh --report-only --write-ledger /tmp/ledger.tsv
 ```
+
+Recorder also supports an explicitly supplied authenticated DBT caller:
+
+```sh
+reverie-dbt/scripts/build-client.sh \
+  --caller-manifest reverie-examples/recorder-dbt-runtime/Cargo.toml \
+  --profile debug --jobs 8 --check
+target/debug/recorder --backend dbt --output /tmp/record \
+  --dbt-artifact target/debug/reverie-dbt-callers/recorder/manifest.json \
+  /bin/echo hello
+```
+
+This packages the same `Recorder` Tool and returns its real `Recorded` global
+state through the existing per-syscall RPC route. `--dbt-artifact` is valid only
+with `--backend dbt`; an invalid supplied manifest refuses without falling back
+or overwriting the report. Put the option before PROGRAM. This opt-in route
+inherits stdin, stdout and stderr. A completed guest's status is written as
+`exit N` in the report; the frontend still exits successfully when that guest
+exits nonzero.
+
+Without the option, DBT keeps its existing prototype selection, captured output
+and null stdin. The corpus continues using that default route, including its
+fork, pipe and exec workloads. The caller's initial-process support does not
+replace that lifecycle domain: process creation/exec and signal termination
+remain unsupported or errors. Retiring the default route requires separate
+support and regression evidence for those behaviors. No record, stream-order,
+or cross-backend parity is implied by selecting the authenticated caller.

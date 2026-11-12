@@ -131,13 +131,8 @@ fn retained_configuration_is_shared_by_rpc_host_and_fork_constructor() {
     let selection = owner.subscriptions().iter_syscalls().collect();
     let host = ToolHost::with_configuration(tool, rpc, pid, owner, selection, Runtime);
     assert!(std::ptr::eq(host.rpc().config(), Arc::as_ptr(&original)));
-    assert!(matches!(
-        host.process_configuration,
-        ProcessConfiguration::Selected(_)
-    ));
-    let child = host
-        .process_configuration
-        .new_process(child_pid, host.rpc());
+    assert!(host.tool.lock().selected_configuration().is_some());
+    let child = host.tool.lock().new_process(child_pid, host.rpc().config());
     let state = child.init_thread_state(child_tid, Some((tid, &parent)));
     assert_eq!(parent, (31, 37, 71));
     assert_eq!(state, (41, 43, 72));
@@ -155,15 +150,15 @@ fn retained_configuration_is_shared_by_rpc_host_and_fork_constructor() {
     let address = rpc.config() as *const u64 as usize;
     EVENTS.lock().unwrap().clear();
     let host = ToolHost::new(Probe { pid: 97 }, rpc, pid, HashSet::new(), false, Runtime);
-    assert!(matches!(
-        host.process_configuration,
-        ProcessConfiguration::Legacy
-    ));
+    assert!(host.tool.lock().selected_configuration().is_none());
     assert!(EVENTS.lock().unwrap().is_empty());
     assert_eq!(host.tool.lock().as_ref().unwrap().pid, 97);
     assert_eq!(
-        host.process_configuration
-            .new_process(child_pid, host.rpc())
+        host.tool
+            .lock()
+            .new_process(child_pid, host.rpc().config())
+            .as_ref()
+            .unwrap()
             .pid,
         41
     );

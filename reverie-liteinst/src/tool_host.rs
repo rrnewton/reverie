@@ -995,6 +995,8 @@ where
         coordinator,
         runtime::replace_coordinator_fd
     ));
+    // The typed launcher is the pre-spawn guard; this is an image-side defense.
+    install_try!(T::facility_admission(rpc.config()).map_err(io::Error::other));
     install_try!(runtime::reserve_coordinator_fd(rpc.raw_fd()));
     let stats = if private_initial {
         #[cfg(feature = "exec-private-init")]

@@ -648,7 +648,8 @@ static app_pc
 gnu_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
                 char *strtab, Elf_Symndx *buckets, Elf_Symndx *chain, ELF_ADDR *bitmask,
                 ptr_uint_t bitidx, ptr_uint_t shift, size_t num_buckets,
-                size_t dynstr_size, bool *is_indirect_code)
+                size_t dynstr_size, bool *is_indirect_code,
+                ELF_SYM_TYPE **selected_symbol)
 {
     Elf_Symndx sidx;
     Elf_Symndx hidx;
@@ -679,6 +680,8 @@ gnu_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
                     if (sym->st_value == 0 && ELF_ST_TYPE(sym->st_info) != STT_TLS)
                         continue; /* no value */
                     if (elf_sym_matches(sym, strtab, name, is_indirect_code)) {
+                        if (selected_symbol != NULL)
+                            *selected_symbol = sym;
                         res = (app_pc)(symtab[sidx].st_value + load_delta);
                         break;
                     }
@@ -695,7 +698,8 @@ gnu_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
 static app_pc
 elf_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
                 char *strtab, Elf_Symndx *buckets, Elf_Symndx *chain, size_t num_buckets,
-                size_t dynstr_size, bool *is_indirect_code)
+                size_t dynstr_size, bool *is_indirect_code,
+                ELF_SYM_TYPE **selected_symbol)
 {
     Elf_Symndx sidx;
     Elf_Symndx hidx;
@@ -717,18 +721,23 @@ elf_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
         if (elf_sym_matches(sym, strtab, name, is_indirect_code))
             break;
     }
-    if (sidx != STN_UNDEF)
+    if (sidx != STN_UNDEF) {
+        if (selected_symbol != NULL)
+            *selected_symbol = sym;
         res = (app_pc)(sym->st_value + load_delta);
-    else
+    } else
         res = NULL;
     return res;
 }
 
 /* get the address by using the hashtable information in os_module_data_t */
-app_pc
-get_proc_address_from_os_data(os_module_data_t *os_data, ptr_int_t load_delta,
-                              const char *name, DR_PARAM_OUT bool *is_indirect_code)
+static app_pc
+get_proc_address_from_os_data_with_symbol(os_module_data_t *os_data, ptr_int_t load_delta,
+                                         const char *name, bool *is_indirect_code,
+                                         ELF_SYM_TYPE **selected_symbol)
 {
+    if (selected_symbol != NULL)
+        *selected_symbol = NULL;
     if (os_data->hashtab != NULL) {
         Elf_Symndx *buckets = (Elf_Symndx *)os_data->buckets;
         Elf_Symndx *chain = (Elf_Symndx *)os_data->chain;
@@ -741,14 +750,22 @@ get_proc_address_from_os_data(os_module_data_t *os_data, ptr_int_t load_delta,
                                    (ELF_ADDR *)os_data->gnu_bitmask,
                                    (ptr_uint_t)os_data->gnu_bitidx,
                                    (ptr_uint_t)os_data->gnu_shift, num_buckets,
-                                   os_data->dynstr_size, is_indirect_code);
+                                   os_data->dynstr_size, is_indirect_code, selected_symbol);
         } else {
             /* ELF hash scheme */
             return elf_hash_lookup(name, load_delta, symtab, strtab, buckets, chain,
-                                   num_buckets, os_data->dynstr_size, is_indirect_code);
+                                   num_buckets, os_data->dynstr_size, is_indirect_code, selected_symbol);
         }
     }
     return NULL;
+}
+
+app_pc
+get_proc_address_from_os_data(os_module_data_t *os_data, ptr_int_t load_delta,
+                              const char *name, DR_PARAM_OUT bool *is_indirect_code)
+{
+    return get_proc_address_from_os_data_with_symbol(os_data, load_delta, name,
+                                                     is_indirect_code, NULL);
 }
 
 /* if we add any more values, switch to a globally-defined dr_export_info_t
@@ -1098,30 +1115,27 @@ module_get_relro(app_pc base, DR_PARAM_OUT app_pc *relro_base,
     return true;
 }
 
-static app_pc
-module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
+/* Query exactly the relocation namespace without executing an IFUNC.  The
+ * private libc ABI adapters use this to authenticate their errno provider. */
+app_pc
+module_lookup_export_by_name(os_privmod_data_t *pd, const char *name,
+                             bool *is_ifunc, private_export_t *selected)
 {
     app_pc res;
-    const char *name;
-    bool is_ifunc;
-    dcontext_t *dcontext = get_thread_private_dcontext();
-
-    /* no name, do not search */
-    if (sym->st_name == 0 || pd == NULL)
+    ELF_SYM_TYPE *symbol = NULL;
+    *is_ifunc = false;
+    if (selected != NULL)
+        memset(selected, 0, sizeof(*selected));
+    if (pd == NULL || name == NULL || name[0] == '\0')
         return NULL;
-
-    name = (char *)pd->os_data.dynstr + sym->st_name;
     LOG(GLOBAL, LOG_LOADER, 3, "sym lookup for %s from %s\n", name, pd->soname);
     /* check my current module */
-    res = get_proc_address_from_os_data(&pd->os_data, pd->load_delta, name, &is_ifunc);
+    res = get_proc_address_from_os_data_with_symbol(
+        &pd->os_data, pd->load_delta, name, is_ifunc, &symbol);
     if (res != NULL) {
-        if (is_ifunc) {
-            TRY_EXCEPT_ALLOW_NO_DCONTEXT(
-                dcontext, { res = ((app_pc (*)(void))(res))(); },
-                { /* EXCEPT */
-                  ASSERT_CURIOSITY(false && "crashed while executing ifunc");
-                  res = NULL;
-                });
+        if (selected != NULL) {
+            selected->defining_module = pd;
+            selected->symbol = symbol;
         }
         return res;
     }
@@ -1166,22 +1180,38 @@ module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
             LOG(GLOBAL, LOG_LOADER, 3, "NOT using libpthread's non-pthread symbol\n");
             res = NULL;
         } else {
-            res = get_proc_address_from_os_data(&pd->os_data, pd->load_delta, name,
-                                                &is_ifunc);
+            res = get_proc_address_from_os_data_with_symbol(
+                &pd->os_data, pd->load_delta, name, is_ifunc, &symbol);
         }
         if (res != NULL) {
-            if (is_ifunc) {
-                TRY_EXCEPT_ALLOW_NO_DCONTEXT(
-                    dcontext, { res = ((app_pc (*)(void))(res))(); },
-                    { /* EXCEPT */
-                      ASSERT_CURIOSITY(false && "crashed while executing ifunc");
-                      res = NULL;
-                    });
+            if (selected != NULL) {
+                selected->defining_module = pd;
+                selected->symbol = symbol;
             }
             return res;
         }
     }
     return NULL;
+}
+
+static app_pc
+module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
+{
+    if (sym->st_name == 0 || pd == NULL)
+        return NULL;
+    bool is_ifunc;
+    app_pc res = module_lookup_export_by_name(
+        pd, (char *)pd->os_data.dynstr + sym->st_name, &is_ifunc, NULL);
+    if (res != NULL && is_ifunc) {
+        dcontext_t *dcontext = get_thread_private_dcontext();
+        TRY_EXCEPT_ALLOW_NO_DCONTEXT(
+            dcontext, { res = ((app_pc (*)(void))(res))(); },
+            { /* EXCEPT */
+              ASSERT_CURIOSITY(false && "crashed while executing ifunc");
+              res = NULL;
+            });
+    }
+    return res;
 }
 
 static void

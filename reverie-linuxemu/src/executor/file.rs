@@ -263,29 +263,11 @@ pub(super) fn sync_file_range(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
 }
 
-pub(super) fn open(
-    memory: &GuestMemory,
-    state: &mut LoadedStaticElf,
-    args: &[u64; 6],
-    capture_output: bool,
-) -> i64 {
-    open_file(
-        memory,
-        state,
-        libc::AT_FDCWD,
-        args[0],
-        args[1],
-        args[2],
-        capture_output,
-    )
+pub(super) fn open(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    open_file(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
 }
 
-pub(super) fn openat(
-    memory: &GuestMemory,
-    state: &mut LoadedStaticElf,
-    args: &[u64; 6],
-    capture_output: bool,
-) -> i64 {
+pub(super) fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     open_file(
         memory,
         state,
@@ -293,7 +275,6 @@ pub(super) fn openat(
         args[1],
         args[2],
         args[3],
-        capture_output,
     )
 }
 
@@ -305,22 +286,9 @@ pub(super) fn openat(
 // previously fell through to `ENOSYS`. Delegating to `open_file` reuses the
 // existing create/procfs/umask handling so the behavior matches the equivalent
 // `open`/`openat` call exactly.
-pub(super) fn creat(
-    memory: &GuestMemory,
-    state: &mut LoadedStaticElf,
-    args: &[u64; 6],
-    capture_output: bool,
-) -> i64 {
+pub(super) fn creat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64;
-    open_file(
-        memory,
-        state,
-        libc::AT_FDCWD,
-        args[0],
-        flags,
-        args[1],
-        capture_output,
-    )
+    open_file(memory, state, libc::AT_FDCWD, args[0], flags, args[1])
 }
 
 fn open_file(
@@ -330,7 +298,6 @@ fn open_file(
     path_address: u64,
     raw_flags: u64,
     raw_mode: u64,
-    capture_output: bool,
 ) -> i64 {
     let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
     let path_only = flags & libc::O_PATH as u64 != 0;
@@ -356,33 +323,6 @@ fn open_file(
     }
     let path = path.as_slice();
     let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
-    if let Some(target) = fdinfo_path_target(state, path) {
-        return match target {
-            FdinfoPathTarget::Target { tid, fd } => {
-                open_fdinfo(state, (tid, fd), flags, capture_output)
-            }
-            FdinfoPathTarget::EmptyFinal { tid } => {
-                if let Err(error) = fdinfo_task_generation(state, tid) {
-                    return error;
-                }
-                if !path_only
-                    && state.regular_create_directory_policy
-                        == RegularCreateDirectoryPolicy::LegacyLookup
-                    && flags & (libc::O_CREAT | libc::O_DIRECTORY) as u64
-                        == (libc::O_CREAT | libc::O_DIRECTORY) as u64
-                {
-                    // Linux v6.3 fs/namei.c:3460-3469 preserves the trailing
-                    // slash and rejects O_CREAT on the fdinfo directory itself.
-                    negative_errno(libc::EISDIR)
-                } else {
-                    negative_errno(libc::ENOENT)
-                }
-            }
-            FdinfoPathTarget::MissingFinal { tid } => fdinfo_task_generation(state, tid)
-                .map_or_else(|error| error, |_| negative_errno(libc::ENOENT)),
-            FdinfoPathTarget::InvalidTask => negative_errno(libc::ENOENT),
-        };
-    }
     // Serve the synthetic /proc surface before touching the host filesystem, so
     // deterministic content replaces the deliberately-refused real procfs.
     if let Some(content) = synthetic_proc_content(state, path) {
@@ -1791,7 +1731,7 @@ pub(super) fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
 
 pub(super) fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // Linux consumes the low descriptor word, ignoring the upper register bits.
-    // Allocated guest fds are in 0..GUEST_NOFILE_LIMIT, so signed-negative low
+    // Allocated guest fds are in 0..guest_nofile_limit(), so signed-negative low
     // words miss this table just like Linux's out-of-range unsigned descriptors.
     let fd = args[0] as libc::c_int;
     let Some(file) = state.files.get(&fd) else {
@@ -1960,7 +1900,7 @@ pub(super) fn getdents64<M: GuestMemoryAccess<Error = crate::Error>>(
 
 pub(super) fn is_open_standard(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     (0..=2).contains(&guest_fd)
-        && (guest_fd != libc::STDIN_FILENO || state.stdin.is_some())
+        && (guest_fd != libc::STDIN_FILENO || state.stdin_copy().is_some())
         && !state.closed_standard_fds.contains(&guest_fd)
         && !state.files.contains_key(&guest_fd)
 }
@@ -1974,7 +1914,7 @@ pub(super) fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<
             if !is_open_standard(state, guest_fd) {
                 None
             } else if guest_fd == libc::STDIN_FILENO {
-                state.stdin.as_ref().map(AsRawFd::as_raw_fd)
+                state.stdin_copy().map(AsRawFd::as_raw_fd)
             } else {
                 Some(guest_fd)
             }
@@ -2123,19 +2063,23 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
                 }
                 return result;
             }
-            if flags & libc::O_NONBLOCK == 0 {
-                // Blocking inotify waits are refused the same way.
+            // An inotify instance's host description stays nonblocking
+            // (inotify.rs): the other flags apply, and the blocking mode the
+            // guest asks for is the Tool's to keep.
+            let host_flags = if flags & libc::O_NONBLOCK == 0 {
                 match host_fd_is_inotify(host_fd) {
-                    Ok(true) => return negative_errno(libc::ENOSYS),
-                    Ok(false) => {}
+                    Ok(true) => flags | libc::O_NONBLOCK,
+                    Ok(false) => flags,
                     Err(error) => return error,
                 }
-            }
+            } else {
+                flags
+            };
             // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
             if let Some(owner) = source_pipe_owner {
-                owner.set_flags(host_fd, flags)
+                owner.set_flags(host_fd, host_flags)
             } else {
-                zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+                zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, host_flags) })
             }
         }
         // AUTONOMOUS-BOT-IMPLEMENTED

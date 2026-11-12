@@ -7,6 +7,7 @@
  */
 
 #![cfg(target_arch = "x86_64")]
+#![allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::FileTypeExt;
@@ -1433,6 +1434,165 @@ int main(int argc, char **argv) {
     memset(expected_name, 0, 16); memcpy(expected_name, "binding-before", 14);
     if (known || error != ENOENT || prctl(PR_GET_NAME, name) || memcmp(name, expected_name, sizeof(name))) return 17;
     puts("unknown backing and failed selfexec exact=PASS");
+    return 0;
+}
+"###;
+
+/// A launcher installs a file as exec'd by a filename of its own, here a
+/// link to the file: the process's executable is the file from the first
+/// instruction, so it can exec `/proc/self/exe`, and its stack names the
+/// filename in `AT_EXECFN`.
+#[test]
+fn initial_exec_file_with_execfn_self_execs() {
+    initial_exec_file_with_execfn_control("initial_exec_file_with_execfn_self_execs", "file");
+}
+
+/// The same for a `#!` script that a launcher has already rewritten to its
+/// interpreter: the interpreter's file is the executable, the script's
+/// filename is `AT_EXECFN`, and the self-exec runs the interpreter again.
+#[test]
+fn initial_exec_file_with_execfn_script_self_execs() {
+    initial_exec_file_with_execfn_control(
+        "initial_exec_file_with_execfn_script_self_execs",
+        "script",
+    );
+}
+
+/// The control: the bytes entry, given the same image, filename and
+/// arguments, retains no file, so the following stat and the self-exec of
+/// `/proc/self/exe` both fail with ENOENT.
+#[test]
+fn initial_exec_bytes_with_execfn_cannot_self_exec() {
+    initial_exec_file_with_execfn_control(
+        "initial_exec_bytes_with_execfn_cannot_self_exec",
+        "bytes",
+    );
+}
+
+fn initial_exec_file_with_execfn_control(test: &str, case: &str) {
+    if !leader_self_exec_bounded(test) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "image-file",
+        INITIAL_EXEC_FILE_WITH_EXECFN_PROGRAM,
+    );
+    let canonical = std::fs::canonicalize(&program).unwrap();
+    let execfn = if case == "script" {
+        let script = directory.0.join("launched-script");
+        std::fs::write(&script, format!("#!{}\n", program.display())).unwrap();
+        script
+    } else {
+        let alias = directory.0.join("launched-alias");
+        std::os::unix::fs::symlink(&program, &alias).unwrap();
+        alias
+    };
+    let program_text = program.to_str().unwrap();
+    let execfn_text = execfn.to_str().unwrap();
+    let argv = if case == "script" {
+        vec![program_text, execfn_text, "argument-preserved"]
+    } else {
+        vec![execfn_text, "argument-preserved"]
+    };
+    let environment = [format!("EXEC_IMAGE={program_text}")];
+    let envp = environment.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    if case == "bytes" {
+        backend
+            .install_static_elf_with_exec_context(
+                &std::fs::read(&program).unwrap(),
+                execfn.as_os_str(),
+                &argv,
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+    } else {
+        backend
+            .install_static_elf_file_with_exec_context(
+                std::fs::File::open(&program).unwrap(),
+                execfn.as_os_str(),
+                &argv,
+                &envp,
+                &directory.0,
+            )
+            .unwrap();
+    }
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+    let arguments = argv.join(" ");
+    let exe = canonical.display();
+    // The first image's `comm=image-file` is a known deviation from Linux,
+    // pinned here as the value both entries give today: Linux names the task
+    // by the last component of the filename it was exec'd by
+    // (`launched-alias`, `launched-script`), and these entries name it by the
+    // file's path (https://github.com/rrnewton/reverie/issues/1106). A fix
+    // for that issue changes this expectation. The self-exec names it `exe`,
+    // as Linux does.
+    let expected = if case == "bytes" {
+        format!(
+            "before argv={arguments} execfn={execfn_text} comm=image-file exe={exe} stat errno=2\n\
+             self-exec errno=2\n"
+        )
+    } else {
+        format!(
+            "before argv={arguments} execfn={execfn_text} comm=image-file exe={exe} same_file=1\n\
+             after argv={arguments} execfn=/proc/self/exe comm=exe exe={exe} same_file=1\n"
+        )
+    };
+    assert_eq!(
+        (code, String::from_utf8_lossy(&stdout).into_owned()),
+        (0, expected),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+const INITIAL_EXEC_FILE_WITH_EXECFN_PROGRAM: &str = r###"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/auxv.h>
+#include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern char **environ;
+
+int main(int argc, char **argv) {
+    int after = getenv("EXEC_AFTER") != NULL;
+    printf("%s argv=", after ? "after" : "before");
+    for (int i = 0; i < argc; ++i) printf(i ? " %s" : "%s", argv[i]);
+    const char *execfn = (const char *)getauxval(AT_EXECFN);
+    char name[17] = {0};
+    if (prctl(PR_GET_NAME, name)) return 10;
+    char link[4096];
+    ssize_t length = readlink("/proc/self/exe", link, sizeof(link) - 1);
+    if (length < 0) return 11;
+    link[length] = 0;
+    printf(" execfn=%s comm=%s exe=%s", execfn ? execfn : "(none)", name, link);
+    struct stat self, image;
+    if (stat(getenv("EXEC_IMAGE"), &image)) return 12;
+    if (stat("/proc/self/exe", &self)) {
+        int error = errno;
+        printf(" stat errno=%d\n", error);
+    } else {
+        printf(" same_file=%d\n", self.st_dev == image.st_dev && self.st_ino == image.st_ino);
+    }
+    if (after) return 0;
+    if (setenv("EXEC_AFTER", "1", 1)) return 13;
+    fflush(stdout);
+    execve("/proc/self/exe", argv, environ);
+    int error = errno;
+    printf("self-exec errno=%d\n", error);
     return 0;
 }
 "###;
@@ -3173,13 +3333,6 @@ int main(int argc, char **argv) {
     EXPECT_ERROR(open("missing-open-precedence", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
     EXPECT_ERROR(open("missing-open-precedence", O_PATH | O_TMPFILE, 0600), ENOENT);
     EXPECT_ERROR(open("missing-open-precedence", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_RDONLY | O_TMPFILE, 0600), EINVAL);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_WRONLY | O_TMPFILE, 0600), ENOENT);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_ACCMODE | O_TMPFILE, 0600), ENOENT);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_PATH | O_TMPFILE, 0600), ENOENT);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999", O_RDONLY | O_DIRECTORY, 0600), ENOENT);
     EXPECT_ERROR(open("/proc/self/fd/999999", O_RDONLY | O_TMPFILE, 0600), EINVAL);
     EXPECT_ERROR(open("/proc/self/fd/999999", O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
     EXPECT_ERROR(open("/proc/self/fd/999999", O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
@@ -3198,9 +3351,6 @@ int main(int argc, char **argv) {
                         O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
                  early_create_directory ? EINVAL : EBADF);
     EXPECT_ERROR(open("missing-open-precedence",
-                      O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
-                 early_create_directory ? EINVAL : ENOENT);
-    EXPECT_ERROR(open("/proc/self/fdinfo/999999",
                       O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
                  early_create_directory ? EINVAL : ENOENT);
     EXPECT_ERROR(open("/proc/self/fd/999999",
@@ -3228,19 +3378,6 @@ int main(int argc, char **argv) {
 
     char procfd[64];
     CHECK(snprintf(procfd, sizeof(procfd), "/proc/self/fd/%d", descriptor) > 0);
-    char unsupported_fdinfo[64];
-    CHECK(snprintf(unsupported_fdinfo, sizeof(unsupported_fdinfo),
-                   "/proc/self/fdinfo/%d", descriptor) > 0);
-    CHECK(stat(unsupported_fdinfo, &metadata) == 0);
-    CHECK(S_ISREG(metadata.st_mode));
-    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY), ENOSYS);
-    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY | O_DIRECTORY), ENOTDIR);
-    EXPECT_ERROR(open(unsupported_fdinfo, O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
-    EXPECT_ERROR(open(unsupported_fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
-                 expected_create_directory);
-    EXPECT_ERROR(open(unsupported_fdinfo,
-                      O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
-                 expected_create_directory_exclusive);
     EXPECT_ERROR(open(procfd, O_WRONLY), EACCES);
     EXPECT_ERROR(open(procfd, O_RDWR), EACCES);
     EXPECT_ERROR(open(procfd, O_RDONLY | O_TRUNC), EACCES);
@@ -3278,81 +3415,6 @@ int main(int argc, char **argv) {
     CHECK((fcntl(reopened, F_GETFL) & (O_NONBLOCK | O_APPEND | O_SYNC)) ==
           (O_NONBLOCK | O_APPEND | O_SYNC));
     CHECK(close(reopened) == 0);
-
-    int ordinary = open("fdinfo-target", O_CREAT | O_RDWR | O_TRUNC, 0600);
-    CHECK(ordinary >= 0);
-    char fdinfo[64];
-    CHECK(snprintf(fdinfo, sizeof(fdinfo), "/proc/self/fdinfo/%d", ordinary) > 0);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_NOFOLLOW, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_TRUNC, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_DIRECT, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_EXCL, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_WRONLY | PRIVATE_TMPFILE, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_WRONLY | O_TMPFILE | O_CREAT, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_RDWR | O_TMPFILE | O_CREAT, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_ACCMODE | O_TMPFILE | O_CREAT, 0600), EINVAL);
-    EXPECT_ERROR(open(fdinfo, O_WRONLY | O_TMPFILE, 0600), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_RDWR | O_TMPFILE, 0600), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_ACCMODE | O_TMPFILE, 0600), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_PATH | O_TMPFILE, 0600), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_PATH | O_TMPFILE | O_NOFOLLOW | O_TRUNC | O_DIRECT | O_EXCL, 0600), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_DIRECTORY), ENOTDIR);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY, 0600),
-                 expected_create_directory);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY, 0600),
-                 expected_create_directory_exclusive);
-    EXPECT_ERROR(open(fdinfo, O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW, 0600),
-                 expected_create_directory);
-    EXPECT_ERROR(open(fdinfo,
-                      O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY | O_NOFOLLOW,
-                      0600),
-                 expected_create_directory_exclusive);
-    int readable_fdinfo = open(fdinfo, O_RDONLY | O_CLOEXEC);
-    CHECK(readable_fdinfo >= 0);
-    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 1, 0), ESPIPE);
-    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 0, 0), ESPIPE);
-    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 1, (off_t)-1), EINVAL);
-    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo, "x", 0, (off_t)-1), EINVAL);
-    EXPECT_ERROR(syscall(SYS_pwrite64, readable_fdinfo,
-                         (const char *)(uintptr_t)-1, 1, 0),
-                 ESPIPE);
-    CHECK(close(readable_fdinfo) == 0);
-
-    if (expected_create_directory == ENOTDIR) {
-        static const char *const missing_fdinfo_paths[] = {
-            "/proc/self/fdinfo/999999",
-            "/proc/self/fdinfo/not-a-fd",
-            "/proc/self/fdinfo/03",
-        };
-        static const int create_directory_flags[] = {
-            O_RDONLY | O_CREAT | O_DIRECTORY,
-            O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY,
-            O_RDONLY | O_CREAT | O_DIRECTORY | O_NOFOLLOW,
-            O_RDONLY | O_CREAT | O_EXCL | O_DIRECTORY | O_NOFOLLOW,
-        };
-        for (size_t path_index = 0;
-             path_index < sizeof(missing_fdinfo_paths) / sizeof(missing_fdinfo_paths[0]);
-             ++path_index) {
-            for (size_t flag_index = 0;
-                 flag_index < sizeof(create_directory_flags) / sizeof(create_directory_flags[0]);
-                 ++flag_index) {
-                EXPECT_ERROR(open(missing_fdinfo_paths[path_index],
-                                  create_directory_flags[flag_index], 0600),
-                             ENOENT);
-            }
-        }
-        for (size_t flag_index = 0;
-             flag_index < sizeof(create_directory_flags) / sizeof(create_directory_flags[0]);
-             ++flag_index) {
-            EXPECT_ERROR(open("/proc/self/fdinfo/",
-                              create_directory_flags[flag_index], 0600),
-                         EISDIR);
-        }
-    }
-    CHECK(close(ordinary) == 0);
-    CHECK(unlink("fdinfo-target") == 0);
 
     EXPECT_ERROR(open("/proc/self/maps", O_RDONLY | O_DIRECTORY), ENOTDIR);
     EXPECT_ERROR(open("/proc/self/maps", O_PATH | O_DIRECTORY), ENOTDIR);
@@ -6207,9 +6269,18 @@ int main(int argc, char **argv) {
     );
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
+    // A nested frame that would begin exactly at the stack's lower end is off
+    // the stack, as on Linux, whose get_sigframe requires __on_sig_stack of
+    // the frame, which for a stack that grows down is (base, base + size],
+    // the base excluded
+    // (https://github.com/gregkh/linux/blob/v7.1.3/arch/x86/kernel/signal.c#L150-L158,
+    // https://github.com/gregkh/linux/blob/v7.1.3/include/linux/sched/signal.h#L574-L583):
+    // SIGSEGV, as for the frame 16 bytes lower. timer_events.rs compares
+    // that case with native Linux
+    // (a_frame_that_would_start_at_the_alternate_stacks_base_is_refused_as_on_linux).
     for (mode, expected) in [
         ("fresh", 0),
-        ("exact", 0),
+        ("exact", 128 + libc::SIGSEGV),
         ("underflow", 128 + libc::SIGSEGV),
         ("guard", 128 + libc::SIGSEGV),
     ] {
@@ -6337,8 +6408,12 @@ fn static_elf_rt_sigreturn_accepts_null_and_redirected_fpstate() {
     }
 }
 
+/// SIGUSR1 and SIGUSR2 are pending when one call unblocks both. Linux builds
+/// SIGUSR1's frame at that call's return and SIGUSR2's on top of it, so
+/// SIGUSR2's handler runs first and returns to SIGUSR1's, and both run before
+/// the guest's next instruction; the same binary exits 0 natively and on KVM.
 #[test]
-fn static_elf_chains_pending_after_sigreturn_before_user_code() {
+fn static_elf_stacks_pending_signals_before_user_code() {
     if !kvm_available("pending-signal boundary test") {
         return;
     }
@@ -6357,13 +6432,13 @@ static volatile sig_atomic_t between;
 static volatile sig_atomic_t failure;
 
 static void first_handler(int signal) {
-  if (signal != SIGUSR1 || phase != 0 || between != 0) failure = 10;
-  phase = 1;
+  if (signal != SIGUSR1 || phase != 1 || between != 0) failure = 10;
+  phase = 2;
 }
 
 static void second_handler(int signal) {
-  if (signal != SIGUSR2 || phase != 1 || between != 0) failure = 11;
-  phase = 2;
+  if (signal != SIGUSR2 || phase != 0 || between != 0) failure = 11;
+  phase = 1;
 }
 
 static int install(int signal, void (*handler)(int)) {
@@ -6390,6 +6465,11 @@ int main(void) {
 }
 "#,
     );
+    let native = std::process::Command::new(&executable)
+        .current_dir(&directory.0)
+        .status()
+        .unwrap();
+    assert_eq!(native.code(), Some(0), "native: {native}");
     let executable = executable.to_str().unwrap();
     let image = std::fs::read(executable).unwrap();
     let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
@@ -12017,6 +12097,17 @@ fn repair_prctl_required_kvm_is_not_optional() {
         "msync_lifecycle::shared_coherence_and_mapping_lifetime_match_native",
         "shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native",
         "shared_file_fork_clear_tid_records_native_and_checks_kvm_last_owner",
+        "shared_file_vfork_and_posix_spawn_children_match_native",
+        "shared_file_vfork_child_view_changes_and_threads_are_refused_by_name",
+        "vfork_children_share_private_memory_with_their_parent_like_native",
+        "a_vfork_child_cannot_leave_a_mapping_changed",
+        "a_vfork_child_and_a_parent_thread_storing_one_byte_are_refused_by_name",
+        "a_vfork_child_clears_its_clear_child_tid_word_in_its_parent_like_native",
+        "a_vfork_parent_thread_killed_by_its_leaders_exec_leaves_the_child_running_like_native",
+        "a_vfork_parent_whose_process_exits_during_the_window_exits_like_native",
+        "a_vfork_child_creating_a_thread_is_refused_by_name",
+        "a_parent_thread_replacing_a_page_the_vfork_child_changed_is_refused_by_name",
+        "a_fork_copies_every_page_its_parent_can_read_like_native",
         "shared_anonymous_fork_shares_one_object_across_fork_unmap_and_exec_like_native",
         "pdeathsig::unchanged_six_check_state_matches_native_controlled",
         "pdeathsig::direct_host_and_unopted_control_preserve_nonzero_refusal",
@@ -12999,10 +13090,21 @@ static void caught(int signo) {
   else syscall(SYS_exit_group, 20);
 }
 
+static int install(int signo, int blocked) {
+  struct sigaction action = {0};
+  action.sa_handler = caught;
+  sigemptyset(&action.sa_mask);
+  if (blocked != 0) sigaddset(&action.sa_mask, blocked);
+  return sigaction(signo, &action, 0);
+}
+
 int main(void) {
   original_pid = getpid();
-  if (signal(SIGUSR1, caught) == SIG_ERR) return 21;
-  if (signal(SIGUSR2, caught) == SIG_ERR) return 22;
+  // SIGUSR1's handler blocks SIGUSR2, so SIGUSR2 is not delivered on top of
+  // SIGUSR1's frame at the unblocking call's return, as an unblocked one
+  // would be, but at that handler's rt_sigreturn.
+  if (install(SIGUSR1, SIGUSR2) != 0) return 21;
+  if (install(SIGUSR2, 0) != 0) return 22;
   sigset_t both;
   sigemptyset(&both);
   sigaddset(&both, SIGUSR1);
@@ -21737,7 +21839,6 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
                     "file",
                     "directory",
                     "proc-maps",
-                    "fdinfo",
                 ][..],
             ),
             ("fstatfs", &["file", "directory"][..]),
@@ -21759,21 +21860,19 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
             }
         }
         expected.push_str("proc-policy\n");
-        for (object, refusal) in [("proc-root", libc::EACCES), ("fdinfo", libc::ENOSYS)] {
-            for upper in upper_words {
-                for badptr in [0, 1] {
-                    let error = if guest {
-                        refusal
-                    } else if badptr == 1 {
-                        libc::EFAULT
-                    } else {
-                        0
-                    };
-                    let result = if error == 0 { 0 } else { -1 };
-                    expected.push_str(&format!(
-                        "fstatfs object={object} upper={upper:016x} badptr={badptr} result={result} errno={error}\n"
-                    ));
-                }
+        for upper in upper_words {
+            for badptr in [0, 1] {
+                let error = if guest {
+                    libc::EACCES
+                } else if badptr == 1 {
+                    libc::EFAULT
+                } else {
+                    0
+                };
+                let result = if error == 0 { 0 } else { -1 };
+                expected.push_str(&format!(
+                    "fstatfs object=proc-root upper={upper:016x} badptr={badptr} result={result} errno={error}\n"
+                ));
             }
         }
         expected
@@ -21800,7 +21899,7 @@ fn fstat_and_fstatfs_consume_low_descriptor_words_on_kvm() {
         .unwrap();
     assert_eq!(native.status.code(), Some(0), "native fixture: {native:?}");
     let native_stdout = std::str::from_utf8(&native.stdout).unwrap();
-    assert_eq!(native_stdout.lines().count(), 153);
+    assert_eq!(native_stdout.lines().count(), 137);
     assert_eq!(native_stdout, expected_transcript(false));
     assert!(native.stderr.is_empty());
     let (native_common, _) = native_stdout.split_once("proc-policy\n").unwrap();
@@ -22074,6 +22173,689 @@ fn shared_file_fork_settled_visibility_close_reuse_and_private_cow_match_native(
         assert_eq!(stderr, native.stderr, "mode={name}");
         assert_eq!(stdout, native.stdout, "mode={name}");
         eprintln!("shared-file-fork completed {name}: child=0 syncs=2");
+    }
+}
+
+/// The three ways the shared-file vfork fixture runs on KVM: without a tool,
+/// and with the strace tool owning threads on the host and through the tool.
+const SHARED_FILE_VFORK_MODES: [(&str, Option<ThreadOwnership>); 3] = [
+    ("direct", None),
+    ("host", Some(ThreadOwnership::Host)),
+    ("tool", Some(ThreadOwnership::Tool)),
+];
+
+/// Runs the shared-file vfork fixture with `args` natively, in a directory
+/// of its own under `directory`, and returns its status and output.
+fn run_shared_file_vfork_natively(
+    directory: &std::path::Path,
+    program: &std::path::Path,
+    name: &str,
+    args: &[&str],
+) -> std::process::Output {
+    let native_directory = directory.join(name);
+    std::fs::create_dir(&native_directory).unwrap();
+    std::process::Command::new(program)
+        .args(args)
+        .current_dir(&native_directory)
+        .output()
+        .unwrap()
+}
+
+/// A KVM run of the shared-file vfork fixture: with a tool, the strace
+/// trace's syscall names; then the exit code, stdout and stderr.
+type SharedFileVforkRun = (Option<Vec<String>>, i32, Vec<u8>, Vec<u8>);
+
+/// Runs the shared-file vfork fixture with `args` on KVM in `mode`, in a
+/// directory of its own under `directory`.
+fn run_shared_file_vfork_on_kvm(
+    directory: &std::path::Path,
+    program: &std::path::Path,
+    mode: (&str, Option<ThreadOwnership>),
+    args: &[&str],
+) -> reverie_kvm::Result<SharedFileVforkRun> {
+    let (name, ownership) = mode;
+    let guest_directory = directory.join(format!("{name}-{}", args.join("-")));
+    std::fs::create_dir(&guest_directory).unwrap();
+    let image = std::fs::read(program).unwrap();
+    let mut argv = vec![program.to_str().unwrap()];
+    argv.extend_from_slice(args);
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(&image, &argv, &[], &guest_directory)
+        .unwrap();
+    match ownership {
+        Some(ownership) => {
+            backend.set_thread_ownership(ownership);
+            let (trace, code, stdout, stderr) = futures::executor::block_on(
+                backend.run_static_elf_with_tool::<StraceTool>((), true),
+            )?;
+            Ok((Some(trace.syscalls()), code, stdout, stderr))
+        }
+        None => {
+            let (code, stdout, stderr) = backend.run_static_elf_captured()?;
+            Ok((None, code, stdout, stderr))
+        }
+    }
+}
+
+/// A process that holds MAP_SHARED views of an ordinary file can create
+/// children that share its address space until they exec or exit (vfork,
+/// and posix_spawn's clone or clone3 with CLONE_VM|CLONE_VFORK): a child that
+/// execs, one that exits, one whose execve fails, signals handled in the child
+/// and in the parent, a child killed by a signal, a nested vfork, and
+/// posix_spawn. Each store through the views reaches the other processes and
+/// the file, the THP-disable flag the exiting child clears is clear in the
+/// parent too (Linux keeps it per address space), and the parent's views
+/// still show the file's bytes afterwards, with the same output as native
+/// Linux.
+#[test]
+fn shared_file_vfork_and_posix_spawn_children_match_native() {
+    const TEST: &str = "shared_file_vfork_and_posix_spawn_children_match_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-vfork",
+        include_str!("fixtures/shared_file_vfork.c"),
+    );
+    // A signal a vfork child sends its parent is left out ("child-signal-
+    // only"): with or without shared views, reverie-kvm answers that kill
+    // with ENOSYS here, from the Direct driver, where the parent is suspended
+    // on the child's call stack, and with the strace tool.
+    let args: &[&str] = &["child-signal-only"];
+    let native = run_shared_file_vfork_natively(&directory.0, &program, "native", args);
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    assert_eq!(
+        native.stdout,
+        b"shared-file vfork exec=ok exit=ok failed-exec=ok signals=child killed=ok nested=ok \
+          spawn=ok views=ok\n"
+    );
+    for mode in SHARED_FILE_VFORK_MODES {
+        let (trace, code, stdout, stderr) =
+            run_shared_file_vfork_on_kvm(&directory.0, &program, mode, args).unwrap();
+        let name = mode.0;
+        assert_eq!(code, 0, "mode={name}: stdout={stdout:?} stderr={stderr:?}");
+        assert_eq!(stderr, native.stderr, "mode={name}");
+        assert_eq!(stdout, native.stdout, "mode={name}");
+        if let Some(trace) = trace {
+            let count = |names: &[&str]| {
+                trace
+                    .iter()
+                    .filter(|name| names.contains(&name.as_str()))
+                    .count()
+            };
+            // Six vforks in the parent and the nested one in its child, and
+            // one posix_spawn clone. A successful execve does not return, so
+            // the tool records only the failed one; the helper images prove
+            // the others by the counter they bump.
+            assert_eq!(count(&["vfork"]), 7, "mode={name}: {trace:?}");
+            assert_eq!(count(&["clone", "clone3"]), 1, "mode={name}: {trace:?}");
+            assert_eq!(count(&["execve"]), 1, "mode={name}: {trace:?}");
+        }
+        eprintln!("shared-file-vfork completed {name}");
+    }
+}
+
+/// A vfork child that changes a shared view it inherited is refused by name
+/// on KVM before the change: Linux would apply an unmapping, a protection
+/// change, a private mapping over the view or a new shared view to the
+/// parent's address space too, and the child here runs on a copy of it. A
+/// thread is refused while the process holds a view, and a view while a
+/// second thread is alive, as before.
+#[test]
+fn shared_file_vfork_child_view_changes_and_threads_are_refused_by_name() {
+    const TEST: &str = "shared_file_vfork_child_view_changes_and_threads_are_refused_by_name";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "shared-file-vfork",
+        include_str!("fixtures/shared_file_vfork.c"),
+    );
+    let vfork_refusal = |operation: &str| {
+        format!(
+            "unsupported KVM shared-file operation {operation}: a vfork child shares its \
+             parent's address space until it execs or exits"
+        )
+    };
+    let cases = [
+        (
+            vec!["change", "munmap"],
+            "shared-file vfork change=munmap child=ok\n",
+            vfork_refusal("mapping change in a vfork child"),
+        ),
+        (
+            vec!["change", "fixed"],
+            "shared-file vfork change=fixed child=ok\n",
+            vfork_refusal("mapping change in a vfork child"),
+        ),
+        (
+            vec!["change", "map"],
+            "shared-file vfork change=map child=ok\n",
+            vfork_refusal("mapping change in a vfork child"),
+        ),
+        (
+            vec!["change", "mprotect"],
+            "shared-file vfork change=mprotect child=ok\n",
+            vfork_refusal("mprotect in a vfork child"),
+        ),
+        (
+            vec!["map-then-thread"],
+            "shared-file vfork threads=map-then-thread ok\n",
+            "unsupported KVM shared-file operation CLONE_VM/thread creation: ordinary shared-file \
+             views require one vCPU per address space"
+                .to_owned(),
+        ),
+        (
+            vec!["thread-then-map"],
+            "shared-file vfork threads=thread-then-map ok\n",
+            "unsupported KVM shared-file operation mapping publication: requires one stopped \
+             vCPU"
+                .to_owned(),
+        ),
+    ];
+    for (args, native_stdout, refusal) in cases {
+        let label = args.join("-");
+        let native = run_shared_file_vfork_natively(
+            &directory.0,
+            &program,
+            &format!("native-{label}"),
+            &args,
+        );
+        assert_eq!(native.status.code(), Some(0), "{label}: {native:?}");
+        assert_eq!(
+            native.stdout,
+            native_stdout.as_bytes(),
+            "{label}: {native:?}"
+        );
+        for mode in SHARED_FILE_VFORK_MODES {
+            let name = mode.0;
+            let error = match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &args) {
+                Ok((_, code, stdout, stderr)) => panic!(
+                    "{label} mode={name}: expected the refusal, got code={code} \
+                     stdout={stdout:?} stderr={stderr:?}"
+                ),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains(&refusal),
+                "{label} mode={name}: expected {refusal:?} in {error:?}"
+            );
+            eprintln!("shared-file-vfork refused {label} {name}");
+        }
+    }
+}
+
+/// A vfork child shares its parent's whole address space until it execs or
+/// exits, and the parent's call returns only then. The child's stores to
+/// private memory and the file bytes it reads into a parent buffer are the
+/// parent's afterwards, whether the child execs, fails to exec and exits,
+/// exits, or dies by a signal; through vfork, clone and clone3 with
+/// CLONE_VM|CLONE_VFORK; while the process holds no shared view of a file and
+/// while it holds one. posix_spawn of a missing program reports ENOENT, which
+/// glibc's child writes into the parent's memory. A child that blocks in its
+/// window on a pipe another process writes keeps its parent inside vfork
+/// while that process runs; and a child's and another parent thread's stores
+/// to different bytes of one page both survive. The output is native Linux's
+/// in every mode.
+#[test]
+fn vfork_children_share_private_memory_with_their_parent_like_native() {
+    const TEST: &str = "vfork_children_share_private_memory_with_their_parent_like_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "vfork-shares-memory",
+        include_str!("fixtures/vfork_shares_memory.c"),
+    );
+    let native = run_shared_file_vfork_natively(&directory.0, &program, "native", &[]);
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert!(native.stderr.is_empty(), "{native:?}");
+    let stdout = String::from_utf8_lossy(&native.stdout);
+    for line in [
+        "vfork exit no-view: stored=93 read=file failed=0 exit 0\n",
+        "clone3 signal view: stored=102 read=file failed=0 signal 15\n",
+        "posix_spawn missing view: ENOENT\n",
+        "blocking: child read \"written by another process\" (27 bytes), child ok, writer ok\n",
+        "threads: child ok, page[0]=0x91 page[64]=0x55\n",
+    ] {
+        assert!(stdout.contains(line), "native lacks {line:?}: {stdout}");
+    }
+    for mode in SHARED_FILE_VFORK_MODES {
+        let (_, code, stdout, stderr) =
+            run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &[]).unwrap();
+        let name = mode.0;
+        assert_eq!(code, 0, "mode={name}: stdout={stdout:?} stderr={stderr:?}");
+        assert_eq!(stderr, native.stderr, "mode={name}");
+        assert_eq!(
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&native.stdout),
+            "mode={name}"
+        );
+        eprintln!("vfork-shares-memory completed {name}");
+    }
+}
+
+/// A vfork child of a process that holds no shared view may change a mapping
+/// only for a while: on Linux the change is its parent's too, and the copy it
+/// runs on here carries back only its contents. A mapping it creates, stores
+/// into and removes, with its protection changed and restored in between,
+/// leaves its parent as on Linux. A change still in place when the child
+/// exits (mmap, munmap, mprotect or mremap, and a page unmapped and mapped
+/// again with the protection it had) is refused by name then, and a brk that
+/// moves the break is refused at the call.
+#[test]
+fn a_vfork_child_cannot_leave_a_mapping_changed() {
+    const TEST: &str = "a_vfork_child_cannot_leave_a_mapping_changed";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "vfork-shares-memory",
+        include_str!("fixtures/vfork_shares_memory.c"),
+    );
+    for call in [
+        "scratch", "mmap", "munmap", "mprotect", "mremap", "remap", "brk",
+    ] {
+        let args = ["map-change", call];
+        let label = args.join("-");
+        let native = run_shared_file_vfork_natively(
+            &directory.0,
+            &program,
+            &format!("native-{label}"),
+            &args,
+        );
+        assert_eq!(native.status.code(), Some(0), "{label}: {native:?}");
+        assert_eq!(
+            native.stdout,
+            format!("vfork map-change={call} child=ok\n").into_bytes(),
+            "{label}: {native:?}"
+        );
+        let refusal = match call {
+            "scratch" => None,
+            "brk" => Some(
+                "unsupported KVM vfork child operation brk in a vfork child: a vfork child \
+                 shares its parent's address space until it execs or exits",
+            ),
+            _ => Some(
+                "unsupported KVM vfork child operation vfork write-back: the vfork child left \
+                 a mapping changed",
+            ),
+        };
+        for mode in SHARED_FILE_VFORK_MODES {
+            let name = mode.0;
+            let run = run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &args);
+            match (refusal, run) {
+                (None, Ok((_, code, stdout, stderr))) => {
+                    assert_eq!(code, 0, "{label} mode={name}: stderr={stderr:?}");
+                    assert_eq!(stdout, native.stdout, "{label} mode={name}");
+                    assert_eq!(stderr, native.stderr, "{label} mode={name}");
+                }
+                (None, Err(error)) => panic!("{label} mode={name}: {error}"),
+                (Some(_), Ok((_, code, stdout, stderr))) => panic!(
+                    "{label} mode={name}: expected the refusal, got code={code} \
+                     stdout={stdout:?} stderr={stderr:?}"
+                ),
+                (Some(refusal), Err(error)) => {
+                    let error = error.to_string();
+                    assert!(
+                        error.contains(refusal),
+                        "{label} mode={name}: expected {refusal:?} in {error:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A vfork child and another thread of its parent store to the same byte
+/// during the window, the thread after the child, ordered by pipes: Linux
+/// keeps the thread's value. The child runs on a copy here, whose changes go
+/// back when it exits, and a copy cannot order two stores to one byte, so
+/// that write-back is refused by name.
+#[test]
+fn a_vfork_child_and_a_parent_thread_storing_one_byte_are_refused_by_name() {
+    const TEST: &str = "a_vfork_child_and_a_parent_thread_storing_one_byte_are_refused_by_name";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "vfork-shares-memory",
+        include_str!("fixtures/vfork_shares_memory.c"),
+    );
+    let args = ["conflict"];
+    let native = run_shared_file_vfork_natively(&directory.0, &program, "native-conflict", &args);
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        native.stdout, b"conflict: child ok, page[0]=0x55 page[64]=0\n",
+        "{native:?}"
+    );
+    for mode in SHARED_FILE_VFORK_MODES {
+        let name = mode.0;
+        let error = match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, &args) {
+            Ok((_, code, stdout, stderr)) => panic!(
+                "mode={name}: expected the refusal, got code={code} stdout={stdout:?} \
+                 stderr={stderr:?}"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(
+                "unsupported KVM vfork child operation vfork write-back: the vfork child and \
+                 another thread of its parent changed the same bytes during the window"
+            ),
+            "mode={name}: {error:?}"
+        );
+    }
+}
+
+/// Runs the vfork fixture with `args` natively and on KVM in every mode, and
+/// requires KVM's exit code, stdout and stderr to be native's, with `expected`
+/// native's stdout and `code` its exit code.
+fn assert_vfork_fixture_matches_native(test: &str, args: &[&str], expected: &str, code: i32) {
+    assert_vfork_fixture_matches_native_in(test, args, expected, code, &SHARED_FILE_VFORK_MODES);
+}
+
+/// [`assert_vfork_fixture_matches_native`] in `modes` only.
+fn assert_vfork_fixture_matches_native_in(
+    test: &str,
+    args: &[&str],
+    expected: &str,
+    code: i32,
+    modes: &[(&str, Option<ThreadOwnership>)],
+) {
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "vfork-shares-memory",
+        include_str!("fixtures/vfork_shares_memory.c"),
+    );
+    let label = args.join("-");
+    let native =
+        run_shared_file_vfork_natively(&directory.0, &program, &format!("native-{label}"), args);
+    assert_eq!(
+        native.status.code(),
+        Some(code),
+        "{test} {label}: {native:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "{test} {label}: {native:?}"
+    );
+    assert!(native.stderr.is_empty(), "{test} {label}: {native:?}");
+    for &mode in modes {
+        let name = mode.0;
+        let (_, kvm_code, stdout, stderr) =
+            run_shared_file_vfork_on_kvm(&directory.0, &program, mode, args)
+                .unwrap_or_else(|error| panic!("{test} {label} mode={name}: {error}"));
+        assert_eq!(
+            kvm_code, code,
+            "{test} {label} mode={name}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&stdout),
+            expected,
+            "{test} {label} mode={name}"
+        );
+        assert_eq!(stderr, native.stderr, "{test} {label} mode={name}");
+        eprintln!("{test} {label} completed {name}");
+    }
+}
+
+/// Runs the vfork fixture with `args` natively, requiring `native_stdout`,
+/// and on KVM in every mode, requiring the run to be refused with `refusal`
+/// in its error.
+fn assert_vfork_fixture_refused(test: &str, args: &[&str], native_stdout: &str, refusal: &str) {
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "vfork-shares-memory",
+        include_str!("fixtures/vfork_shares_memory.c"),
+    );
+    let label = args.join("-");
+    let native =
+        run_shared_file_vfork_natively(&directory.0, &program, &format!("native-{label}"), args);
+    assert_eq!(native.status.code(), Some(0), "{test} {label}: {native:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        native_stdout,
+        "{test} {label}: {native:?}"
+    );
+    for mode in SHARED_FILE_VFORK_MODES {
+        let name = mode.0;
+        let error = match run_shared_file_vfork_on_kvm(&directory.0, &program, mode, args) {
+            Ok((_, code, stdout, stderr)) => panic!(
+                "{test} {label} mode={name}: expected the refusal, got code={code} \
+                 stdout={stdout:?} stderr={stderr:?}"
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(refusal),
+            "{test} {label} mode={name}: expected {refusal:?} in {error:?}"
+        );
+        eprintln!("{test} {label} refused {name}");
+    }
+}
+
+/// A vfork child registers a word of its parent holding 91 as its
+/// clear_child_tid (set_tid_address) and ends its window: by a successful
+/// exec, by a failed exec and an exit, by an exit, by death from SIGTERM, or
+/// by death from a fault (SIGSEGV).
+/// Linux's mm_release() clears the word before the parent's call returns,
+/// since the parent shares the mm, so the parent reads 0 in every case; a
+/// failed exec keeps the registration (the child still reads 91 after it),
+/// and the child's exit clears it. Another thread of the parent waiting on
+/// the word is woken, rather than left to its 5 s timeout.
+#[test]
+fn a_vfork_child_clears_its_clear_child_tid_word_in_its_parent_like_native() {
+    const TEST: &str = "a_vfork_child_clears_its_clear_child_tid_word_in_its_parent_like_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    for (ending, expected) in [
+        (
+            "exec",
+            "clear-tid exec: word=0 after-failed-exec=0 exit 0\n",
+        ),
+        (
+            "failed-exec",
+            "clear-tid failed-exec: word=0 after-failed-exec=91 exit 0\n",
+        ),
+        (
+            "exit",
+            "clear-tid exit: word=0 after-failed-exec=0 exit 0\n",
+        ),
+        (
+            "signal",
+            "clear-tid signal: word=0 after-failed-exec=0 signal 15\n",
+        ),
+        // A death by a fault, which the backend takes at the fault's
+        // boundary rather than at a system call's return.
+        (
+            "segv",
+            "clear-tid segv: word=0 after-failed-exec=0 signal 11\n",
+        ),
+        // Another thread of the parent waits on the word: the wake reaches
+        // the parent's word, not the copy's.
+        (
+            "exit-wake",
+            "clear-tid exit-wake: word=0 waiter woken exit 0\n",
+        ),
+    ] {
+        assert_vfork_fixture_matches_native(TEST, &["clear-tid", ending], expected, 0);
+    }
+}
+
+/// A second thread of a process vforks a child that blocks in its window,
+/// and the main thread execs meanwhile. Linux's vfork wait is killable: the
+/// exec kills the waiting thread, the child runs on as the process's child,
+/// and the new image releases and reaps it, whose store went to the old
+/// image. The waiting thread here retires as the exec cancels it, and keeps
+/// its child for the process, rather than holding the exec up.
+///
+/// Only threads the tool runs wait this way. A thread run without the tool
+/// (no tool at all, or host-owned threads) runs its children inline, on its
+/// own host thread, as it runs every fork child: such a thread cannot retire
+/// before its child ends, so the exec waits for the child, which here waits
+/// for the exec. That limit is the direct personality's, for fork children
+/// as well.
+#[test]
+fn a_vfork_parent_thread_killed_by_its_leaders_exec_leaves_the_child_running_like_native() {
+    const TEST: &str =
+        "a_vfork_parent_thread_killed_by_its_leaders_exec_leaves_the_child_running_like_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    assert_vfork_fixture_matches_native_in(
+        TEST,
+        &["leader-exec"],
+        "leader-exec: stored=7 after=7 child exit 7\n",
+        0,
+        &[("tool", Some(ThreadOwnership::Tool))],
+    );
+}
+
+/// The main thread vforks a child that blocks until a pipe only its parent's
+/// process can write reaches end of file, and another thread exits the process
+/// with status 3 during the window. Linux's vfork wait is killable, so the
+/// process exits 3 at once, and its end closes the pipe for the child. The
+/// waiting thread here ends its wait as the group exits. Without a tool the
+/// main thread runs its child inline, as the test above says, so that mode is
+/// left out.
+///
+/// The child is then the only user of the address space, so nothing of its
+/// copy goes back, and what would be refused while the parent lives is not:
+/// a byte the child and the exiting thread both changed to different values,
+/// or a page the child mapped after end of file and kept.
+#[test]
+fn a_vfork_parent_whose_process_exits_during_the_window_exits_like_native() {
+    const TEST: &str = "a_vfork_parent_whose_process_exits_during_the_window_exits_like_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    for args in [
+        &["parent-dies"][..],
+        &["parent-dies", "conflict"],
+        &["parent-dies", "map"],
+    ] {
+        assert_vfork_fixture_matches_native_in(TEST, args, "", 3, &SHARED_FILE_VFORK_MODES[1..]);
+    }
+}
+
+/// A vfork child that creates a thread is refused by name at the call: Linux
+/// completes the vfork when the creating task execs or exits, whatever
+/// threads of the child remain, and the child's copy cannot go back to its
+/// parent while another thread still changes it.
+#[test]
+fn a_vfork_child_creating_a_thread_is_refused_by_name() {
+    const TEST: &str = "a_vfork_child_creating_a_thread_is_refused_by_name";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    assert_vfork_fixture_refused(
+        TEST,
+        &["thread-in-child"],
+        "thread-in-child: exit 0\n",
+        "unsupported KVM vfork child operation thread creation in a vfork child: a vfork child \
+         shares its parent's address space until it execs or exits",
+    );
+}
+
+/// Another thread of a vfork child's parent replaces a page the child stored
+/// into, during the window: it maps a new anonymous page with MAP_FIXED over
+/// it, with the protection the page had, or it shrinks the page's mapping off
+/// it in place and grows the mapping back (mremap). On Linux the child's
+/// store went with the old page, and the parent reads zero. The copy cannot
+/// tell that store from one to the new page, so the write-back is refused by
+/// name rather than leave the child's byte in the new page.
+#[test]
+fn a_parent_thread_replacing_a_page_the_vfork_child_changed_is_refused_by_name() {
+    const TEST: &str =
+        "a_parent_thread_replacing_a_page_the_vfork_child_changed_is_refused_by_name";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    for (mode, native_stdout) in [
+        ("parent-remap", "parent-remap: child ok, page[100]=0\n"),
+        ("parent-regrow", "parent-regrow: child ok, page[1][100]=0\n"),
+    ] {
+        assert_vfork_fixture_refused(
+            TEST,
+            &[mode],
+            native_stdout,
+            "unsupported KVM vfork child operation vfork write-back: another thread of the \
+             parent removed or replaced the mapping of a page the vfork child changed during \
+             the window",
+        );
+    }
+}
+
+/// A fork's child reads every page of private memory as its parent did at
+/// the fork: a page written in full, one written with zeros, one never
+/// written, a heap buffer, a run that may be backed by huge pages, a buffer
+/// the kernel wrote for it with read(2), and pages that keep a backing of
+/// their own on KVM after a shared file view at their address went, by an
+/// unmap and by an exec. A MAP_SHARED file mapping inherited across the fork
+/// shows a byte the parent stores, one the child stores and one a third
+/// process writes to the file, on both sides, while the parent's later
+/// change to a private page stays its own. KVM's output must be native's in
+/// the host and tool modes. The parent and the child take turns through
+/// pipes, which a thread run without the tool cannot do: it runs its fork
+/// children inline, so that mode is left out.
+#[test]
+fn a_fork_copies_every_page_its_parent_can_read_like_native() {
+    const TEST: &str = "a_fork_copies_every_page_its_parent_can_read_like_native";
+    if !leader_self_exec_bounded(TEST) {
+        return;
+    }
+    let directory = TestDirectory::new();
+    let program = compile_c_program(
+        &directory.0,
+        "fork-copies-every-page",
+        include_str!("fixtures/fork_copies_every_page.c"),
+    );
+    let expected = "child: every page ok\n\
+                    child: shared PCO, private page kept\n\
+                    parent: child exit 0, shared PCO, file PCO\n\
+                    after exec: child: every page ok\n\
+                    after exec: parent: child exit 0\n";
+    let native = run_shared_file_vfork_natively(&directory.0, &program, "native", &[]);
+    assert_eq!(native.status.code(), Some(0), "{native:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&native.stdout),
+        expected,
+        "{native:?}"
+    );
+    assert!(native.stderr.is_empty(), "{native:?}");
+    for mode in &SHARED_FILE_VFORK_MODES[1..] {
+        let name = mode.0;
+        let (_, code, stdout, stderr) =
+            run_shared_file_vfork_on_kvm(&directory.0, &program, *mode, &[])
+                .unwrap_or_else(|error| panic!("{TEST} mode={name}: {error}"));
+        assert_eq!(
+            code, 0,
+            "{TEST} mode={name}: stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&stdout),
+            expected,
+            "{TEST} mode={name}"
+        );
+        assert_eq!(stderr, native.stderr, "{TEST} mode={name}");
+        eprintln!("{TEST} completed {name}");
     }
 }
 

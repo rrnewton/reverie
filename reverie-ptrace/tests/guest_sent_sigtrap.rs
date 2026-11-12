@@ -198,8 +198,9 @@ fn a_sigtrap_from_another_process_kills_its_target() {
                 libc::_exit(0);
             }
             libc::close(fds[0]);
-            // Let the child reach its `read`; a signal sent sooner kills it
-            // just the same.
+            // Let the child reach its `read` first. A signal sent sooner could
+            // meet the child's startup injections, which this test does not
+            // cover.
             libc::usleep(50_000);
             assert_eq!(libc::kill(child, libc::SIGTRAP), 0);
             libc::close(fds[1]);
