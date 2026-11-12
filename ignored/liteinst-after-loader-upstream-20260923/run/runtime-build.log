@@ -1,0 +1,4 @@
+   Compiling safeptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/safeptrace)
+   Compiling reverie-ptrace v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-ptrace)
+   Compiling reverie-liteinst v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/liteinst-reverie-replay-20260922/reverie-liteinst)
+    Finished `release` profile [optimized] target(s) in 16.57s
