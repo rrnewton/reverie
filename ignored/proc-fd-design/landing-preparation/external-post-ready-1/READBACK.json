@@ -1,0 +1,43 @@
+{
+  "utc": "2026-09-17T05:55:03.414236+00:00",
+  "external_comment_url": "https://github.com/rrnewton/reverie/pull/565#issuecomment-5709626304",
+  "external_body_sha256": "f737c3dc0b8ad55cf1b50e0b320d450a7aca52f0efc5922bdd4cea483288b539",
+  "external_public_bytes_equal": true,
+  "native_comment_url": "https://github.com/rrnewton/reverie/pull/565#issuecomment-5709597673",
+  "native_public_bytes_equal": true,
+  "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "state": "OPEN",
+  "isDraft": false,
+  "public_reviews": [],
+  "observed_main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "authority_exit": 1,
+  "authority_state": "drift",
+  "agent_snapshot_captured_at": 1789624163.7647312,
+  "agent_snapshot_captured_at_utc": "2026-09-17T05:49:23.764731+00:00",
+  "snapshot_age_at_action_preflight_seconds": 336.052182,
+  "own_claim": {
+    "id": "kvm-lane-to-full-determinism-and-parity",
+    "landed": false,
+    "owner": "Ensure deterministic KVM parity | dev-hermit",
+    "status": "IN_PROGRESS",
+    "tags": [
+      "owner-directive",
+      "kvm"
+    ],
+    "title": "KVM backend lane: drive to 100 percent determinism and 100 percent parity"
+  },
+  "unrelated_counts": {
+    "actually_active": 3,
+    "awaiting_land": 373,
+    "busy_agents": 3,
+    "claimed": 5,
+    "in_progress": 22,
+    "lifecycle_violations": 10,
+    "live_agents": 10,
+    "misrouted": 17,
+    "off_book": 0,
+    "orphaned": 0,
+    "owned_active": 20,
+    "stale": 0
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-05",
+  "test": "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "8d39503a0e63e20466ac04394c726449dbf10ec15b499dacb98c3b70e4ce2f0e",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "59d326da871d4df13c053b371a6552947fca258182032be7d875ab95a0349357",
+  "cpu_nsec": 382752000,
+  "wall_seconds": 0.982448481
+}

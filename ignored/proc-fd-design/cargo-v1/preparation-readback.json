@@ -1,0 +1,37 @@
+{
+  "scope": "Read-only preparation checks; caller functions were not executed",
+  "caller_ast_parse": "success",
+  "plan_sha256": "465afcfc42cd95f78b86fa163e5e14ef5bcab1674d56b33ba78cd9284151c554",
+  "caller_sha256": "8f5f7485179d5bac28cc5e72820b2726ebf7a9e3c6c55e2608b37fc3c8c7b60e",
+  "bound_inputs_checked": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/unit_reference.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+    "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+    "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+    "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+    "/usr/bin/busctl",
+    "/usr/bin/systemctl",
+    "/usr/bin/python3",
+    "/usr/lib64/libsystemd.so.0.43.0",
+    "/usr/bin/cc",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/binding.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/tracked-source-manifest.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/selected-tests.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/NATIVE-PLAN.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v1/REVIEW-GUIDE.md",
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc"
+  ],
+  "all_six_source_files_unchanged": true,
+  "absent_roots": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/run-1",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v1",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1"
+  ],
+  "no_build_or_test_execution": true
+}

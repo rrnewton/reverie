@@ -1,0 +1,40 @@
+{
+  "base_commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "scope": "stale protected skill guidance; no skill edits and no implementation gate",
+  "files": {
+    ".claude/skills/code-elegance/SKILL.md": [
+      {
+        "line": 430,
+        "text": "- **`--unsafe-strip-lines` and similar diagnostic-only normalizations**, used"
+      }
+    ],
+    ".claude/skills/determinism-regression-debugging/SKILL.md": [
+      {
+        "line": 77,
+        "text": "`--unsafe-strip-lines` is only a non-parity localization aid. It erases the"
+      }
+    ],
+    ".claude/skills/hermit-debugging/SKILL.md": [
+      {
+        "line": 263,
+        "text": "| `--unsafe-strip-lines` | **Non-parity diagnostic only.** Erases timestamps and syscall values; using it to make a failing parity diff pass is cheating. |"
+      },
+      {
+        "line": 265,
+        "text": "| `--ignore-lines <substr>` | Drop lines containing a substring before comparing (repeatable). |"
+      },
+      {
+        "line": 266,
+        "text": "| `--skip-commit` / `--skip-detlog` | Compare only DETLOG, or only COMMIT, to tell a *scheduling* divergence from a *syscall/data* divergence. |"
+      },
+      {
+        "line": 267,
+        "text": "| `--include-detlogs syscall,syscallresult,other` | Narrow which DETLOG classes count. |"
+      },
+      {
+        "line": 337,
+        "text": "- `detcore/src/logdiff.rs` \u2014 the log comparator: `strip_log_entry`"
+      }
+    ]
+  }
+}

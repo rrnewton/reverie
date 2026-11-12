@@ -1,0 +1,46 @@
+{
+  "name": "mount-02-parser",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2318065-1789626079600126783.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 5.306212,
+  "wall_seconds": 3.901821245905012,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "f43b1f54ce9463d8b94f169448b2064e3d6f709a1f0f6b03f71f28990271913c",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "procfs::tests::mount_id_subset_requires_unique_members_in_captured_order",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::fdinfo_mount_id_is_strict_and_unique",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::mountinfo_parser_accepts_empty_and_refuses_malformed_or_duplicate_rows",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 74
+    }
+  ]
+}

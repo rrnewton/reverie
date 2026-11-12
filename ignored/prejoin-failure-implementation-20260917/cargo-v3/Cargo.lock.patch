@@ -1,0 +1,11 @@
+--- Cargo.lock.before
++++ Cargo.lock.after
+@@ -1014,7 +1014,7 @@
+ [[package]]
+ name = "liteinst2"
+ version = "0.1.0"
+-source = "git+https://github.com/rrnewton/liteinst2?rev=95ee5e6917fa33191eb41c3f1606ea8b03c1b78c#95ee5e6917fa33191eb41c3f1606ea8b03c1b78c"
++source = "git+https://github.com/rrnewton/liteinst2?rev=4dab7f01d4d6d394e968fbfad842019f72743c81#4dab7f01d4d6d394e968fbfad842019f72743c81"
+ dependencies = [
+  "iced-x86",
+  "libc",

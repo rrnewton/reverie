@@ -1,0 +1,643 @@
+diff --git a/ci/manifest-plan/src/ledger.rs b/ci/manifest-plan/src/ledger.rs
+index aff793c33..aa0c72d46 100644
+--- a/ci/manifest-plan/src/ledger.rs
++++ b/ci/manifest-plan/src/ledger.rs
+@@ -589,6 +589,9 @@ pub enum ValidatePath {
+     Quick,
+     Full,
+     Super,
++    /// Evidence for the selected cell owner and dependencies, not the full suite.
++    #[serde(rename = "cell-requalification")]
++    CellRequalification,
+ }
+ 
+ impl ValidatePath {
+@@ -597,6 +600,7 @@ impl ValidatePath {
+             Self::Quick => "quick",
+             Self::Full => "full",
+             Self::Super => "super",
++            Self::CellRequalification => "cell-requalification",
+         }
+     }
+ }
+diff --git a/ci/manifest-plan/src/ledger/schema10/tests.rs b/ci/manifest-plan/src/ledger/schema10/tests.rs
+index 7cc79ff62..e475ca50c 100644
+--- a/ci/manifest-plan/src/ledger/schema10/tests.rs
++++ b/ci/manifest-plan/src/ledger/schema10/tests.rs
+@@ -102,6 +102,13 @@ fn parity(attempts: Vec<BackendParityCellAttempt>) -> CellBackendParity {
+ }
+ 
+ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>) {
++    fixture_with_path(parity, ValidatePath::Full)
++}
++
++fn fixture_with_path(
++    parity: CellBackendParity,
++    path: ValidatePath,
++) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>) {
+     let id = identity();
+     let tag = "e2e.manifest_backend_parity_c_on_host";
+     let cfg = dag_from_json(&serde_json::json!({ "steps": [{
+@@ -119,7 +126,7 @@ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>)
+         schema: 1,
+         run_id: run_id.clone(),
+         hermit_sha: hermit_sha.clone(),
+-        path: ValidatePath::Full,
++        path,
+         compatibility_selected: false,
+         dag_json: dag_to_json(&cfg),
+         expected_e2e_plan_json: serde_json::json!({"schema":1,"cells":[id]}).to_string(),
+@@ -143,7 +150,7 @@ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>)
+     let selected = vec![id.clone()];
+     let population = serde_json::to_vec(&serde_json::to_value(&selected).unwrap()).unwrap();
+     let cells = CellResultsEvidenceV10 {
+-        path: ValidatePath::Full,
++        path,
+         run_id: run_id.clone(),
+         hermit_sha: hermit_sha.clone(),
+         source_tree_dirty: false,
+@@ -162,7 +169,7 @@ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>)
+     let test_row = TestResultArtifactRow {
+         run_id: run_id.clone(),
+         hermit_sha: hermit_sha.clone(),
+-        path: ValidatePath::Full,
++        path,
+         producer: TestResultProducer::Node {
+             node: tag.into(),
+             outer_attempt: 1,
+@@ -184,7 +191,7 @@ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>)
+         filtered_tests: 0,
+     };
+     let tests = TestResultsEvidenceV9 {
+-        path: ValidatePath::Full,
++        path,
+         run_id: run_id.clone(),
+         hermit_sha: hermit_sha.clone(),
+         source_tree_dirty: false,
+@@ -206,7 +213,7 @@ fn fixture(parity: CellBackendParity) -> (HistoryRow, Vec<u8>, Vec<u8>, Vec<u8>)
+             row_count: 1,
+         },
+     };
+-    let row = serde_json::from_value(serde_json::json!({"schema_version":10,"run_id":run_id,"commit":hermit_sha,"profile":"full","tree_dirty":false,
++    let row = serde_json::from_value(serde_json::json!({"schema_version":10,"run_id":run_id,"commit":hermit_sha,"profile":path.as_str(),"tree_dirty":false,
+         "executed_tests":1,"passed_tests":1,"filtered_tests":0,"cell_results":cells,"test_results":tests,
+         "constructed_plan":ConstructedPlanArtifact {path:format!("ignored/validate/artifacts/{run_id}/constructed-plan.json"),sha256:hex_digest(&plan_bytes),bytes:plan_bytes.len() as u64}
+     })).unwrap();
+@@ -860,3 +867,83 @@ fn generated_plan_populations_preserve_command_policy() {
+         }
+     }
+ }
++
++#[test]
++fn focused_profile_round_trips_without_accepting_unknown_spellings() {
++    for name in ["quick", "full", "super", "cell-requalification"] {
++        let encoded = serde_json::to_string(name).unwrap();
++        let path: ValidatePath = serde_json::from_str(&encoded).unwrap();
++        assert_eq!(path.as_str(), name);
++        assert_eq!(serde_json::to_string(&path).unwrap(), encoded);
++    }
++    for unknown in ["cellrequalification", "targeted", "unknown-profile"] {
++        assert!(serde_json::from_value::<ValidatePath>(unknown.into()).is_err());
++    }
++}
++
++#[test]
++fn focused_artifacts_require_the_same_profile_at_every_identity_boundary() {
++    let path = serde_json::from_value::<ValidatePath>("cell-requalification".into()).unwrap();
++    let (mut row, plan, cells, tests) = fixture_with_path(
++        parity(vec![completed(1, BackendParityVerdict::Matched)]),
++        path,
++    );
++    row.selection_mode = Some("targeted".into());
++    let verified = row
++        .verify_schema10_artifact_bytes(&plan, &cells, &tests)
++        .unwrap()
++        .unwrap();
++    assert!(verified.full_backend_parity && verified.full_test_results);
++    assert_eq!(verified.observations.len(), 3);
++    assert!(verified.missing_cells.is_empty() && verified.missing_backend_parity.is_empty());
++    assert_eq!(row.profile.as_deref(), Some("cell-requalification"));
++    retain_fixture("matched-requalification", &row, &plan, &cells, &tests);
++
++    for boundary in [
++        "row",
++        "plan",
++        "cell-summary",
++        "test-summary",
++        "test-artifact",
++    ] {
++        let mut changed_row = serde_json::to_value(&row).unwrap();
++        let mut changed_plan = plan.clone();
++        let mut changed_tests = tests.clone();
++        match boundary {
++            "row" => changed_row["profile"] = "full".into(),
++            "plan" => {
++                let mut value: Value = serde_json::from_slice(&plan).unwrap();
++                value["path"] = "full".into();
++                changed_plan = serde_json::to_vec(&value).unwrap();
++                changed_row["constructed_plan"]["sha256"] = hex_digest(&changed_plan).into();
++                changed_row["constructed_plan"]["bytes"] = (changed_plan.len() as u64).into();
++            }
++            "cell-summary" => changed_row["cell_results"]["path"] = "full".into(),
++            "test-summary" => changed_row["test_results"]["path"] = "full".into(),
++            "test-artifact" => {
++                let mut value: TestResultArtifactRow = serde_json::from_slice(&tests).unwrap();
++                value.path = ValidatePath::Full;
++                changed_tests = serde_json::to_vec(&value).unwrap();
++                changed_tests.push(b'\n');
++                changed_row["test_results"]["artifact"]["sha256"] =
++                    hex_digest(&changed_tests).into();
++            }
++            _ => unreachable!(),
++        }
++        let changed_row: HistoryRow = serde_json::from_value(changed_row).unwrap();
++        let expected = match boundary {
++            "row" | "plan" => "schema 10 constructed plan differs from its row identity",
++            "cell-summary" => "schema 10 cell evidence differs from the exact clean row identity",
++            "test-summary" => "schema 9 test_results path differs from row profile",
++            "test-artifact" => "schema 9 test-results artifact row 1 has wrong validation path",
++            _ => unreachable!(),
++        };
++        assert_eq!(
++            changed_row
++                .verify_schema10_artifact_bytes(&changed_plan, &cells, &changed_tests)
++                .expect_err("mismatched profile must be refused"),
++            expected,
++            "wrong refusal for {boundary} profile"
++        );
++    }
++}
+diff --git a/scripts/lib/validate_evidence.rs b/scripts/lib/validate_evidence.rs
+index 8f1434064..fbad2aea9 100644
+--- a/scripts/lib/validate_evidence.rs
++++ b/scripts/lib/validate_evidence.rs
+@@ -366,52 +366,156 @@ mod tests {
+ 
+     #[test]
+     fn plan_publication_binds_compatibility_and_rechecks_source_before_execution() {
+-        let root = tempfile::tempdir().unwrap();
+-        std::fs::create_dir_all(root.path().join("ci/dag")).unwrap();
+-        let cfg = super::super::dag_from_json(
+-            &serde_json::json!({"steps":[{
+-                "group":"check", "job":"fixture", "cmd":"true",
+-                "result_manifests":[{"kind":"structured-test-results","schema":2,
+-                    "path_env":"DAGRUN_TEST_COUNTS_PATH","owner":"check.fixture"}]
+-            }]})
+-            .to_string(),
+-        )
++        for profile in ["full", "cell-requalification"] {
++            let root = tempfile::tempdir().unwrap();
++            std::fs::create_dir_all(root.path().join("ci/dag")).unwrap();
++            let cfg = super::super::dag_from_json(
++                &serde_json::json!({"steps":[{
++                    "group":"check", "job":"fixture", "cmd":"true",
++                    "result_manifests":[{"kind":"structured-test-results","schema":2,
++                        "path_env":"DAGRUN_TEST_COUNTS_PATH","owner":"check.fixture"}]
++                }]})
++                .to_string(),
++            )
++            .unwrap();
++            let dag = super::super::dag_to_json(&cfg);
++            let path = root.path().join("ci/dag/validate.json");
++            std::fs::write(&path, &dag).unwrap();
++            let expected = root.path().join("ci/expected-e2e-plan.json");
++            std::fs::write(&expected, "{\"schema\":1,\"cells\":[]}").unwrap();
++            let mut plan = super::super::finish_committed_selection(
++                Plan {
++                    cfg,
++                    profile: profile.into(),
++                    ..Plan::default()
++                },
++                path,
++                dag.into_bytes(),
++            );
++            let selected = SelectedEvidence::capture(root.path(), &plan).unwrap();
++            let prepared = selected
++                .publish(root.path(), &plan, "synthetic-plan", &"a".repeat(40))
++                .unwrap();
++            assert!(!prepared.plan.compatibility_selected);
++            assert_eq!(prepared.plan.path.as_str(), profile);
++            assert_eq!(
++                std::fs::read(root.path().join(&prepared.reference.path)).unwrap(),
++                prepared.bytes
++            );
++            let changed = SelectedEvidence::capture(root.path(), &plan).unwrap();
++            std::fs::write(&expected, "{\"schema\":1,\"cells\":[]}\n").unwrap();
++            assert!(
++                changed
++                    .publish(root.path(), &plan, "changed-plan", &"a".repeat(40))
++                    .is_err()
++            );
++            assert!(
++                !root
++                    .path()
++                    .join("ignored/validate/artifacts/changed-plan/constructed-plan.json")
++                    .exists()
++            );
++            plan.profile = "cellrequalification".into();
++            let unknown = SelectedEvidence::capture(root.path(), &plan)
++                .err()
++                .expect("unknown profile must remain refused");
++            assert!(unknown.contains("unsupported cumulative evidence profile"));
++        }
++    }
++
++    #[test]
++    fn requalification_captures_and_publishes_the_committed_owner_without_full_authority() {
++        use super::super::DagManifest;
++        use super::super::build_plan;
++        use super::super::dag_to_json;
++        use super::super::parse_argv;
++
++        let root = Path::new(file!())
++            .parent()
++            .and_then(Path::parent)
++            .and_then(Path::parent)
++            .unwrap();
++        let scratch = tempfile::tempdir().unwrap();
++        let args = parse_argv(&[
++            "--requalify-cell".into(),
++            "backend-parity-c/pid-probe".into(),
++            "verify".into(),
++            "liteinst".into(),
++            "--no-label-pr".into(),
++        ])
+         .unwrap();
+-        let dag = super::super::dag_to_json(&cfg);
+-        let path = root.path().join("ci/dag/validate.json");
+-        std::fs::write(&path, &dag).unwrap();
+-        let expected = root.path().join("ci/expected-e2e-plan.json");
+-        std::fs::write(&expected, "{\"schema\":1,\"cells\":[]}").unwrap();
+-        let plan = super::super::finish_committed_selection(
+-            Plan {
+-                cfg,
+-                profile: "full".into(),
+-                ..Plan::default()
+-            },
+-            path,
+-            dag.into_bytes(),
+-        );
+-        let selected = SelectedEvidence::capture(root.path(), &plan).unwrap();
+-        let prepared = selected
+-            .publish(root.path(), &plan, "synthetic-plan", &"a".repeat(40))
++        let plan = build_plan(root, &args, scratch.path()).unwrap();
++        assert_eq!(plan.profile, "cell-requalification");
++        assert_eq!(plan.selection_mode, "targeted");
++        assert!(!plan.suite_complete);
++        assert!(plan.second.is_none());
++
++        let requested = DagManifest {
++            lane: "portable".into(),
++            category: "backend-parity-c".into(),
++            test: Some("backend-parity-c/pid-probe".into()),
++            mode: Some("verify".into()),
++            backend: Some("liteinst".into()),
++        };
++        let committed = super::super::validate_plan::validation_config(root).unwrap();
++        let lane =
++            dagrun::select_steps_by_labels(&committed, std::slice::from_ref(&requested.lane))
++                .unwrap();
++        let owner = dagrun::result_manifest_owner(&lane.steps, &requested).unwrap();
++        let selected = dagrun::select_steps_by_tags(&lane, &[owner.tag()], false).unwrap();
++        // Exact bytes cover resource bounds, command argv and dependency order.
++        assert_eq!(dag_to_json(&plan.cfg), dag_to_json(&selected));
++        let prepared = SelectedEvidence::capture(root, &plan)
++            .unwrap()
++            .publish(
++                scratch.path(),
++                &plan,
++                "requalification-pid-probe",
++                &"a".repeat(40),
++            )
+             .unwrap();
+-        assert!(!prepared.plan.compatibility_selected);
++        assert_eq!(prepared.plan.path.as_str(), plan.profile);
++        assert_eq!(prepared.plan.dag_json, dag_to_json(&selected));
+         assert_eq!(
+-            std::fs::read(root.path().join(&prepared.reference.path)).unwrap(),
+-            prepared.bytes
++            prepared.plan.expected_e2e_plan_json.as_bytes(),
++            std::fs::read(root.join("ci/expected-e2e-plan.json")).unwrap()
+         );
+-        let changed = SelectedEvidence::capture(root.path(), &plan).unwrap();
+-        std::fs::write(&expected, "{\"schema\":1,\"cells\":[]}\n").unwrap();
++        let mut expected: Vec<hermit_manifest_plan::ledger::CellIdentity> =
++            serde_json::from_value(serde_json::to_value(&plan.cell_evidence_expected).unwrap())
++                .unwrap();
++        expected.sort();
++        assert_eq!(prepared.plan.planned_cells().unwrap(), expected);
+         assert!(
+-            changed
+-                .publish(root.path(), &plan, "changed-plan", &"a".repeat(40))
+-                .is_err()
++            prepared
++                .plan
++                .planned_backend_parity_relations()
++                .unwrap()
++                .iter()
++                .any(|relation| {
++                    relation.candidate.test == "backend-parity-c/pid-probe"
++                        && relation.candidate.mode == "verify"
++                        && relation.candidate.backend == "liteinst"
++                        && relation.reference_backend == "ptrace"
++                })
+         );
+-        assert!(
+-            !root
+-                .path()
+-                .join("ignored/validate/artifacts/changed-plan/constructed-plan.json")
+-                .exists()
++        assert_eq!(
++            std::fs::read(scratch.path().join(&prepared.reference.path)).unwrap(),
++            prepared.bytes
++        );
++        let refusal = super::super::validate_receipt::eligible(
++            0,
++            0,
++            true,
++            true,
++            false,
++            prepared.plan.path.as_str(),
++        )
++        .unwrap_err();
++        assert_eq!(
++            refusal,
++            "profile is cell-requalification, not the full suite"
+         );
++        // Preserve the existing ptrace selection and mutation controls as well.
++        super::super::requalification_plan_bracket(root).unwrap();
+     }
+ }
+diff --git a/scripts/lib/validate_receipt.rs b/scripts/lib/validate_receipt.rs
+index 15fa8d4b4..f497e3776 100644
+--- a/scripts/lib/validate_receipt.rs
++++ b/scripts/lib/validate_receipt.rs
+@@ -234,6 +234,10 @@ pub fn self_test() -> Result<String, String> {
+         ("envelope-only profile", eligible(0, 0, true, true, false, "envelope-only")),
+         ("selective profile", eligible(0, 0, true, true, false, "selective")),
+         ("focused compat profile", eligible(0, 0, true, true, false, "strict-compat-only")),
++        (
++            "cell requalification profile",
++            eligible(0, 0, true, true, false, "cell-requalification"),
++        ),
+     ];
+     let mut refused = 0usize;
+     for (why, r) in &negatives {
+@@ -250,6 +254,14 @@ pub fn self_test() -> Result<String, String> {
+             return Err(format!("receipt: super must be refused BY THE PROFILE gate, got: {e}"));
+         }
+     }
++    let focused_error = eligible(0, 0, true, true, false, "cell-requalification")
++        .err()
++        .ok_or("focused evidence must not authorize a full-suite receipt")?;
++    if focused_error != "profile is cell-requalification, not the full suite" {
++        return Err(format!(
++            "receipt: requalification must be refused BY THE PROFILE gate, got: {focused_error}"
++        ));
++    }
+     accepted += 0;
+     Ok(format!(
+         "receipt: eligibility bracketed {accepted} accept / {refused} refuse (no label was \
+diff --git a/scripts/validate.rs b/scripts/validate.rs
+index 47bd4267f..33ddccd7c 100755
+--- a/scripts/validate.rs
++++ b/scripts/validate.rs
+@@ -2433,8 +2433,13 @@ fn self_test() -> Result<(), String> {
+         host: "fixture-host",
+         toolchain: "fixture-toolchain",
+     };
++    let current_cache_schema = if validate_evidence::ENABLED {
++        10
++    } else {
++        validate_cell_results::CELL_RESULTS_LEDGER_SCHEMA_VERSION
++    };
+     let cache_row = serde_json::json!({
+-        "schema_version": validate_cell_results::CELL_RESULTS_LEDGER_SCHEMA_VERSION,
++        "schema_version": current_cache_schema,
+         "tree": cache_tree,
+         "profile": "full",
+         "host": "fixture-host",
+@@ -2510,6 +2515,17 @@ fn self_test() -> Result<(), String> {
+             return Err(format!("summary: {label} cached count refusal was unclear: {refusal}"));
+         }
+     }
++    if validate_evidence::ENABLED {
++        let mut schema7_cache_row = cache_row.clone();
++        schema7_cache_row["schema_version"] =
++            serde_json::json!(7);
++        let refusal = cache_summary(&schema7_cache_row).err().ok_or_else(|| {
++            "summary: a schema-7 cache row produced a current service-result PASS".to_string()
++        })?;
++        if !refusal.contains("cannot publish a current validation service result") {
++            return Err(format!("summary: schema-7 cache refusal was unclear: {refusal}"));
++        }
++    }
+     let mut legacy_cache_row = cache_row.clone();
+     legacy_cache_row["schema_version"] = serde_json::json!(
+         validate_cell_results::CELL_RESULTS_LEDGER_SCHEMA_VERSION - 1
+@@ -12096,6 +12112,7 @@ fn manifest_command_policy(tag: &str, command: &str) -> Result<(Selection, bool)
+     }
+     let mut selection = Selection::default();
+     let mut prebuilt = false;
++    let mut parity_reference = None;
+     let mut seen = BTreeSet::new();
+     let mut index = 2;
+     while let Some(option) = argv.get(index) {
+@@ -12109,7 +12126,7 @@ fn manifest_command_policy(tag: &str, command: &str) -> Result<(Selection, bool)
+             "--prebuilt" => prebuilt = true,
+             "--allow-empty" => {}
+             "--lane" | "--category" | "--test" | "--mode" | "--backend" | "--results"
+-            | "--junit" | "--jobs" => {
++            | "--junit" | "--jobs" | "--parity-reference" => {
+                 index += 1;
+                 let value = argv
+                     .get(index)
+@@ -12120,6 +12137,7 @@ fn manifest_command_policy(tag: &str, command: &str) -> Result<(Selection, bool)
+                     "--test" => selection.test = Some(value.clone()),
+                     "--mode" => selection.mode = Some(value.clone()),
+                     "--backend" => selection.backend = Some(value.clone()),
++                    "--parity-reference" => parity_reference = Some(value.as_str()),
+                     _ => {}
+                 }
+             }
+@@ -12136,6 +12154,26 @@ fn manifest_command_policy(tag: &str, command: &str) -> Result<(Selection, bool)
+             "retry bounds: {tag} must select a named lane with --ci-only"
+         ));
+     }
++    if let Some(reference) = parity_reference {
++        if reference != "ptrace" {
++            return Err(format!(
++                "retry bounds: {tag} --parity-reference currently requires ptrace"
++            ));
++        }
++        if selection.mode.as_deref().is_some_and(|mode| mode != "verify") {
++            return Err(format!(
++                "retry bounds: {tag} --parity-reference requires --mode verify when a mode is explicit"
++            ));
++        }
++        if selection.backend.as_deref() == Some(reference) {
++            return Err(format!(
++                "retry bounds: {tag} --parity-reference must differ from the explicit candidate --backend"
++            ));
++        }
++    }
++    // run_cell_inner shares one execution deadline and remaining CPU budget
++    // across candidate, reference, and comparison. Parity changes neither the
++    // selection nor the prebuilt/non-prebuilt timeout-window accounting.
+     Ok((selection, prebuilt))
+ }
+ 
+@@ -13169,6 +13207,52 @@ fn retry_timeout_bound_bracket(root: &Path) -> Result<String, String> {
+         cpu: 1.25,
+         wall: 1.5,
+     };
++    let parity_command =
++        "target/debug/test-harness run --ci-only --lane portable --category c-programs";
++    for filters in ["", " --mode verify --backend liteinst"] {
++        for prebuilt_flag in ["", " --prebuilt"] {
++            let command = format!("{parity_command}{filters}{prebuilt_flag}");
++            let (ordinary, ordinary_prebuilt) = manifest_command_policy("parity-control", &command)?;
++            let (parity, parity_prebuilt) = manifest_command_policy(
++                "parity-control",
++                &format!("{command} --parity-reference ptrace"),
++            )?;
++            let ordinary_cells = manifests.select(&ordinary)?;
++            let parity_cells = manifests.select(&parity)?;
++            if ordinary_cells.is_empty()
++                || ordinary_prebuilt != parity_prebuilt
++                || ordinary_cells.iter().map(|cell| &cell.id).collect::<Vec<_>>()
++                    != parity_cells.iter().map(|cell| &cell.id).collect::<Vec<_>>()
++            {
++                return Err("retry bounds: parity changed the selected cells or prebuilt policy".into());
++            }
++            let headroom = |selection: &Selection, prebuilt| {
++                require_manifest_selection_headroom(
++                    &manifests, "parity-control", quick.timeout, selection,
++                    representative_multipliers, prebuilt, attempts,
++                    MANIFEST_TERMINATION_GRACE_S as u64,
++                )
++            };
++            if headroom(&ordinary, ordinary_prebuilt)? != headroom(&parity, parity_prebuilt)? {
++                return Err("retry bounds: parity changed shared execution-window headroom".into());
++            }
++        }
++    }
++    for (suffix, expected) in [
++        (" --parity-reference", "lacks a value for --parity-reference"),
++        (" --parity-reference ptrace --parity-reference ptrace", "supplies --parity-reference more than once"),
++        (" --parity-reference sabre", "currently requires ptrace"),
++        (" --parity-reference --prebuilt", "currently requires ptrace"),
++        (" --parity-reference ptrace --mode run", "requires --mode verify"),
++        (" --parity-reference ptrace --backend ptrace", "must differ from the explicit candidate"),
++        (" --parity-reference ptrace --unknown", "unmodeled harness argument"),
++    ] {
++        let refusal = manifest_command_policy("parity-control", &format!("{parity_command}{suffix}"))
++            .expect_err("invalid parity command must be refused");
++        if !refusal.contains(expected) {
++            return Err(format!("retry bounds: parity control failed for the wrong reason: {refusal}"));
++        }
++    }
+     for step in committed.steps.iter()
+         .filter(|step| step.cmd.contains("target/debug/test-harness run "))
+     {
+@@ -16914,6 +16998,16 @@ fn requalification_plan_bracket(root: &Path) -> Result<(), String> {
+     }
+     require_committed_scheduler_input(&plan)?;
+ 
++    let evidence_root = tempfile::tempdir().map_err(|error| {
++        format!("requalification plan: cannot create evidence fixture: {error}")
++    })?;
++    validate_evidence::SelectedEvidence::capture(root, &plan)?.publish(
++        evidence_root.path(),
++        &plan,
++        "requalification-plan-bracket",
++        &"a".repeat(40),
++    )?;
++
+     let selected_owner = plan
+         .cfg
+         .steps
+diff --git a/tests/e2e/manifests/backend-parity-c.yaml b/tests/e2e/manifests/backend-parity-c.yaml
+index c5530883c..92e6eae31 100644
+--- a/tests/e2e/manifests/backend-parity-c.yaml
++++ b/tests/e2e/manifests/backend-parity-c.yaml
+@@ -5431,6 +5431,8 @@ test:
+             - workdir
+           kvm:
+             - workdir
++          liteinst:
++            - "workdir"
+         assert:
+           bitwise_parity: true
+         backends_disabled:
+diff --git a/tests/e2e/manifests/c-programs.yaml b/tests/e2e/manifests/c-programs.yaml
+index a684b0213..f15286fc2 100644
+--- a/tests/e2e/manifests/c-programs.yaml
++++ b/tests/e2e/manifests/c-programs.yaml
+@@ -2552,6 +2552,8 @@ test:
+             - pipe-order
+           kvm:
+             - pipe-order
++          liteinst:
++            - "pipe-order"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+@@ -2990,6 +2992,8 @@ test:
+             - threads
+           kvm:
+             - threads
++          liteinst:
++            - "threads"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+@@ -5215,6 +5219,8 @@ test:
+             - "8192"
+           sabre:
+             - "8192"
++          liteinst:
++            - "8192"
+         assert:
+           bitwise_parity: true
+         backends_disabled:
+@@ -7026,6 +7032,8 @@ test:
+             - README.md
+           sabre:
+             - README.md
++          liteinst:
++            - "README.md"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+@@ -8062,6 +8070,8 @@ test:
+             - itimer-delivery
+           kvm:
+             - itimer-delivery
++          liteinst:
++            - "itimer-delivery"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+@@ -10024,6 +10034,8 @@ test:
+             - cancellation
+           kvm:
+             - cancellation
++          liteinst:
++            - "cancellation"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           sabre: Cancellation reaches one raw libc syscall site per execution; trusted shared-object native execution is not SaBRe support
+diff --git a/tests/e2e/manifests/determinism-stress-c.yaml b/tests/e2e/manifests/determinism-stress-c.yaml
+index a3f87e151..086c2fe6e 100644
+--- a/tests/e2e/manifests/determinism-stress-c.yaml
++++ b/tests/e2e/manifests/determinism-stress-c.yaml
+@@ -595,6 +595,8 @@ test:
+             - contention
+           kvm:
+             - contention
++          liteinst:
++            - "contention"
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately

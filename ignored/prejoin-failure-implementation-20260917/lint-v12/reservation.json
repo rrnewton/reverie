@@ -1,0 +1,26 @@
+{
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v12/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v12/launch.py",
+    "bytes": 4710,
+    "mode": 420,
+    "sha256": "58381f3d4103de09af91587050d83d4b309944d696f8e457160450b79cd14fbb"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v12/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v12/plan.json",
+    "bytes": 19062,
+    "mode": 420,
+    "sha256": "e8e3bceadf61f5492883aeb2b8becb35cd7d9acb78e092cc0d4d7fec39792b89"
+  },
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v12/launch.py"
+  ],
+  "outputs": {
+    "format": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v12/format",
+    "clippy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v12/clippy"
+  },
+  "scope": "Preparation only; no execution."
+}

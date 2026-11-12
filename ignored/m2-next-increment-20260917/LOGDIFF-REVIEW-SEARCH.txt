@@ -1,0 +1,259 @@
+53:/// Versioned policy token for lossless host-address ordinalization.
+54:pub const CANON_ADDRESS_ORDINAL_V1: &str = "host-address-to-first-appearance-ordinal/v1";
+95:    #[default]
+97:    /// Compare every captured log message without filtering.
+125:    fn default() -> Self {
+133:    /// Canonicalize host memory addresses before comparison WITHOUT erasing them.
+135:    /// Only addresses a producer has explicitly marked with the
+137:    /// distinct marked address is rewritten to an ordinal placeholder
+139:    /// (see `canonicalize_addresses_in_line`). This
+141:    /// identity (same address -> same ordinal), ordering (introduction
+142:    /// sequence), and aliasing (two names for one address collapse to one
+147:    /// wholesale stripping throws away.
+155:    /// a "softer strip" and exactly the fake-green this policy exists to prevent.
+157:    pub canonicalize_addresses: bool,
+164:    /// retain the historical defaults; verification paths bind their own.
+181:    #[clap(long, default_value = "20")]
+186:    #[clap(long, default_value = "0")]
+196:    Canonical,
+212:        let normalization = if options.canonicalize_addresses {
+213:            LogNormalization::Canonical
+226:            (LogComparisonMode::Info, LogNormalization::Canonical) => "Canonical",
+228:            (LogComparisonMode::FullTrace, LogNormalization::Canonical) => {
+229:                "FullTrace with Canonical host-address normalization"
+235:/// N.B. we don't want to specify two different notions of "default", so we use the
+238:    fn default() -> Self {
+244:/// Wrap a host memory address so `canonicalize_addresses_in_line` will
+248:/// `0x...` literal. Only marked addresses are canonicalized, so reproducible hex
+252:/// pointer -- guest addresses are determinized and every logged `0x...` value is
+260:/// Rewrite each MARKED host memory address (`<hostaddr 0x...>`, see
+267:/// Canonical parity strips the wall-clock prefix, canonicalizes these marked
+268:/// addresses, and compares everything else exactly. This step differs
+270:/// every address to a single token, so two runs that allocate in a DIFFERENT
+271:/// ORDER, or that ALIAS differently (one address printed twice vs. two distinct
+272:/// addresses), compare EQUAL -- the exact defect parity exists to catch. An
+283:fn canonicalize_addresses_in_line(
+288:    // Match ONLY the explicit host-address marker emitted by `host_addr`; the
+315:        LogNormalization::Canonical => {
+316:            let mut addresses = HashMap::new();
+317:            let mut next_address = 1usize;
+321:                    canonicalize_addresses_in_line(message.text, &mut addresses, &mut next_address)
+334:    canonical_info_from_str_with_filter(contents, |_| true)
+337:fn canonical_info_from_str_with_filter(
+341:    let info = filter_infos(
+344:            .filter(|record| keep_record(record.text))
+348:        canonicalize_addresses: true,
+350:        ..Default::default()
+362:/// host addresses to first-appearance ordinals. It does not run the lossy
+363:/// `--unsafe-strip-lines` transformation: scheduler turns, virtual time, syscall
+366:    write_canonical_info_with_filter(file, writer, |_| true)
+396:    let info = filter_infos(&records);
+405:/// Print canonical INFO messages after applying a caller-supplied record filter.
+412:pub fn write_canonical_info_with_filter(
+424:    let messages = canonical_info_from_str_with_filter(contents, keep_record)?;
+432:/// stripping off the timestamps in the process.  Return lines tagged with their
+508:        .filter(|(_, s)| !s.is_empty())
+628:fn filter_infos<'a>(v: &[LogMessage<'a>]) -> Vec<LogMessage<'a>> {
+630:        .filter(|message| is_info(message))
+635:fn filter_detcore<'a>(v: &[LogMessage<'a>]) -> Vec<LogMessage<'a>> {
+637:        .filter(|message| is_detcore(message))
+665:        .filter(|message| match message.event {
+733:        .filter(|entry| is_detlog_syscall(entry))
+880:        .filter(|message| message.index <= message_index)
+921:        .filter(|message| message.index <= message_index)
+989:            .filter(|entry| entry.index < history_boundary && is_detlog_syscall_result(entry))
+1041:/// control over how to present the (stripped/unstripped) differences, and to focus on the
+1090:        if opts.canonicalize_addresses {
+1162:    writeln!(writer, "Comparison policy: {}", policy.name())?;
+1243:///  * Some stripping of nondeterministic information is needed for direct comparability.
+1252:// alignment. There's also no reason we can't output the stripped relevant lines and use a separate
+1271:    try_log_diff_detailed_with_filter(file_a, file_b, opts, |_| true)
+1280:/// addresses to first-appearance ordinals, and otherwise compares the selected
+1291:/// Canonical comparison plus total complete-record counts from both inputs.
+1302:/// Canonical comparison over bytes already captured by the caller.
+1312:        BitwiseInfoV1Diagnostics::default(),
+1335:    fn default() -> Self {
+1345:/// Canonical file comparison with caller-selected diagnostic output.
+1364:/// Canonical file comparison with caller-selected diagnostic output.
+1382:/// Canonical comparison over captured bytes with output-only diagnostics.
+1409:    let summary = log_diff_summary_from_strs_with_filter(str_a, str_b, &options, writer, |_| true)?;
+1416:        canonicalize_addresses: true,
+1427:/// Fallible log comparison with a caller-supplied record filter.
+1429:/// Existing callers keep the unfiltered behavior through
+1434:pub fn try_log_diff_detailed_with_filter(
+1449:    log_diff_summary_from_strs_with_filter(str_a, str_b, opts, &mut std::io::stderr(), keep_record)
+1466:    try_log_diff_with_records_and_filter(file_a, file_b, opts, |_| true)
+1469:/// Compare two logs with a caller-supplied record filter and report source counts.
+1472:pub fn try_log_diff_with_records_and_filter(
+1486:    let summary = log_diff_summary_from_strs_with_filter(
+1535:    compare_complete_prefix_with_filter(contents_a, contents_b, opts, w, |_| true)
+1616:        log_diff_summary_from_strs_with_filter(prefix_a, prefix_b, &options, w, |_| true)?;
+1625:/// Compare the complete common prefix after applying a caller-supplied record filter.
+1628:pub fn compare_complete_prefix_with_filter(
+1643:    let summary = log_diff_summary_from_strs_with_filter(prefix_a, prefix_b, opts, w, keep_record)?;
+1671:    log_diff_summary_from_strs_with_filter(file_a_str, file_b_str, opts, w, |_| true)
+1674:/// Compare two in-memory logs after applying a caller-supplied record filter.
+1677:/// consulted, so filtering cannot turn malformed input into a successful
+1681:pub fn log_diff_summary_from_strs_with_filter(
+1741:        .filter(|record| keep_record(record.text))
+1745:        .filter(|record| keep_record(record.text))
+1755:    let detcore_a = filter_detcore(&all_a);
+1756:    let detcore_b = filter_detcore(&all_b);
+1757:    let infos_a = filter_infos(&all_a);
+1758:    let infos_b = filter_infos(&all_b);
+1775:    if policy.normalization == LogNormalization::Canonical {
+1778:            "Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly..."
+1960:            ..Default::default()
+1988:            let options = super::LogDiffOpts::default();
+1990:                super::try_log_diff_detailed_with_filter(
+2001:                super::try_log_diff_with_records_and_filter(
+2019:        assert!(options.canonicalize_addresses);
+2100:            super::ComparisonSideLabels::default(),
+2106:            super::ComparisonSideLabels::default(),
+2127:            super::ComparisonSideLabels::default(),
+2138:                super::ComparisonSideLabels::default(),
+2147:                super::ComparisonSideLabels::default(),
+2173:            super::ComparisonSideLabels::default(),
+2219:            super::BitwiseInfoV1Diagnostics::default(),
+2497:            ..Default::default()
+2526:            ..Default::default()
+2582:        assert_eq!(super::filter_infos(&[internal]).len(), 1);
+2583:        assert_eq!(super::filter_infos(&[maps_read]).len(), 1);
+2604:    fn legacy_comparison_options_are_deleted_and_default_is_canonical_info() {
+2605:        let defaults = super::LogDiffOpts::try_parse_from(["log-diff"]).unwrap();
+2606:        assert_eq!(defaults.comparison, super::LogComparisonMode::Info);
+2607:        assert!(defaults.canonicalize_addresses);
+2609:            "--strip-lines",
+2610:            "--unsafe-strip-lines",
+2670:            ..Default::default()
+2740:            ..Default::default()
+2830:                canonicalize_addresses: false,
+2832:                side_labels: super::ComparisonSideLabels::default(),
+2861:            ..Default::default()
+2897:            ..Default::default()
+2961:            ..Default::default()
+3003:            ..Default::default()
+3011:        assert!(output.contains("Comparison policy: Canonical\n"));
+3025:        let log = "2026-08-15T01:02:03.000000Z INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\n2026-08-15T01:02:03.000001Z DEBUG unrelated: diagnostic=2";
+3026:        for (comparison, canonicalize_addresses, expected_name, expected_log) in [
+3031:                "INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\n",
+3036:                "Canonical",
+3037:                "INFO detcore: DETLOG stable=1 address=<addr1>\n",
+3043:                "INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\nDEBUG unrelated: diagnostic=2\n",
+3048:                "FullTrace with Canonical host-address normalization",
+3049:                "INFO detcore: DETLOG stable=1 address=<addr1>\nDEBUG unrelated: diagnostic=2\n",
+3054:                canonicalize_addresses,
+3057:                ..Default::default()
+3063:            assert!(output.contains(&format!("Comparison policy: {expected_name}\n")));
+3071:    fn printed_canonical_policy_uses_the_info_scope_and_address_ordinals() -> std::io::Result<()> {
+3073:2026-08-15T01:02:03.000001Z INFO unrelated: value=101 address=<hostaddr 0xaaaa>";
+3075:2026-08-15T04:05:06.000001Z INFO unrelated: value=202 address=<hostaddr 0xbbbb>";
+3079:            canonicalize_addresses: true,
+3082:            ..Default::default()
+3089:        assert!(output.contains("Comparison policy: Canonical\n"));
+3092:            b"INFO detcore: DETLOG stable=1\nINFO unrelated: value=101 address=<addr1>\n"
+3096:            b"INFO detcore: DETLOG stable=1\nINFO unrelated: value=202 address=<addr1>\n"
+3107:            ..Default::default()
+3121:            ..Default::default()
+3153:            ..Default::default()
+3174:            ..Default::default()
+3199:            ..Default::default()
+3228:        let v = super::filter_infos(&input);
+3248:        let v = super::filter_infos(&input);
+3256:    /// outside the default observation scope.
+3277:        let v = super::filter_infos(&input);
+3296:        let v = super::filter_infos(&input);
+3312:        let v = super::filter_infos(&input);
+3329:            ..Default::default()
+3350:    /// Canonical parity positive control: two runs that differ ONLY in their raw
+3351:    /// host addresses -- same structure, same introduction order, same aliasing
+3353:    /// inputs compared RAW (neither stripped nor canonicalized) diverge, proving
+3356:    fn canonical_address_only_difference_compares_equal() -> std::io::Result<()> {
+3366:            canonicalize_addresses: true,
+3368:            ..Default::default()
+3372:            "address-only (ASLR-shift) difference must compare EQUAL under canonicalization"
+3375:        // Positive control: raw comparison (no strip, no canonicalize) diverges on
+3379:            canonicalize_addresses: false,
+3381:            ..Default::default()
+3385:            "raw comparison must still see the differing addresses"
+3390:    /// Canonical parity negative control (allocation order): two runs whose only
+3391:    /// difference is the ORDER in which two addresses are introduced must compare
+3392:    /// UNEQUAL. This is exactly the divergence wholesale stripping hides -- it is
+3396:        // Both runs: alloc, alloc, then a line pairing the two addresses. In run_b
+3397:        // the two addresses are introduced in the opposite order, so the ordinals
+3408:            canonicalize_addresses: true,
+3410:            ..Default::default()
+3417:        // The default canonical policy must retain the same distinction.
+3418:        let default = super::LogDiffOpts {
+3421:            ..Default::default()
+3424:            super::log_diff_from_strs(run_a, run_b, &default, &mut Vec::new())?,
+3425:            "the default comparison must preserve allocation order"
+3430:    /// Canonical parity negative control (aliasing): a run that prints ONE address
+3431:    /// twice (aliased) must not match a run that prints TWO distinct addresses in
+3440:            canonicalize_addresses: true,
+3442:            ..Default::default()
+3451:    /// Canonical parity exact-value control: a reproducible
+3453:    /// NOT a host address and must be compared EXACTLY. Two runs differing only
+3456:    /// and does not become a "softer strip" that swallows syscall-argument
+3457:    /// divergence. A marked host address on the SAME line, differing only by an
+3466:            canonicalize_addresses: true,
+3468:            ..Default::default()
+3473:             it is reproducible and NOT a host address"
+3476:        // Positive control: with ONLY the marked host address differing (same
+3479:        // the address.
+3484:            "an address-only difference alongside an identical syscall arg must compare EQUAL"
+3489:    /// Canonical parity exact-value control: a single virtual-time timestamp difference (a
+3490:    /// decimal value, NOT a `0x` address) must compare UNEQUAL -- canonicalization
+3491:    /// touches only host addresses and leaves every other byte for exact
+3493:    /// though the wall-clock PREFIX is stripped.
+3501:            canonicalize_addresses: true,
+3503:            ..Default::default()
+3512:    /// Canonical parity wall-clock control: runs that differ ONLY in the real wall-clock
+3513:    /// timestamp PREFIX compare EQUAL -- the prefix is stripped by
+3526:            canonicalize_addresses: true,
+3528:            ..Default::default()
+3538:    fn one_log_canonical_info_preserves_values_and_only_rewrites_marked_addresses() {
+3561:            canonicalize_addresses: true,
+3563:            ..Default::default()
+3597:            canonicalize_addresses: true,
+3599:            ..Default::default()
+3667:            canonicalize_addresses: true,
+3669:            ..Default::default()
+3692:            canonicalize_addresses: true,
+3694:            ..Default::default()
+3715:            canonicalize_addresses: true,
+3717:            ..Default::default()
+3731:    fn test_filter_infos() {
+3732:        let v = super::filter_infos(&[
+3772:    fn test_canonicalize_addresses_in_line() {
+3776:        // First appearance numbers marked addresses by order; a repeated address
+3780:            super::canonicalize_addresses_in_line(
+3787:        // State threads across lines within one run: a known address keeps its
+3790:            super::canonicalize_addresses_in_line(
+3798:        // marked address seen earlier: reproducible hex is compared exactly.
+3800:            super::canonicalize_addresses_in_line("bare 0x1111", &mut map, &mut next),
+3806:    fn default_comparison_preserves_numeric_values() -> std::io::Result<()> {
+3814:            let options = super::LogDiffOpts::default();
+3830:    fn default_comparison_preserves_fields_after_tmp_paths() -> std::io::Result<()> {
+3837:            let options = super::LogDiffOpts::default();
+3853:    fn default_comparison_preserves_differing_tmp_paths() -> std::io::Result<()> {
+3860:            let options = super::LogDiffOpts::default();
+3876:    fn default_comparison_preserves_each_tmp_path() -> std::io::Result<()> {
+3889:            let options = super::LogDiffOpts::default();
+3909:            canonicalize_addresses: true,
+3911:            ..Default::default()
+4007:            canonicalize_addresses: true,
+4010:            ..Default::default()
+4080:    /// The default INFO scope compares kick asymmetry and preserves diagnostic
+4083:    fn both_records_are_retained_under_the_default_comparison_mode() -> std::io::Result<()> {
+4084:        let default_opts = super::LogDiffOpts {
+4086:            ..Default::default()
+4089:            default_opts.comparison,
+4091:            "this test exists to cover the default mode; if the default changes \
+4099:            &default_opts,
+4104:            "the default INFO comparison must include the kick asymmetry"
+4112:            super::log_diff_summary_from_strs(&scanned, &scanned, &default_opts, &mut out)?;
+4120:            "both runs' values must be printed under the default mode, \
+4126:    /// Different committed virtual times must diverge under the default policy.
+4128:    fn default_comparison_rejects_diverging_map_read_times() -> std::io::Result<()> {
+4131:            ..Default::default()

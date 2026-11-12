@@ -1,0 +1,227 @@
+{
+  "schema": 1,
+  "group": "integration",
+  "phase_name": "native-m2-hermit-reports",
+  "context": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-context.json",
+    "bytes": 173398,
+    "mode": 420,
+    "sha256": "29df7d9a9e7d19092d2c7e3e5c5f3fed5c80e6bdf4691634f24a92cd8a3e0b99"
+  },
+  "frozen_template": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-template.json",
+    "bytes": 65597,
+    "mode": 420,
+    "sha256": "e328de2997d1a5c929464cbc02eb983c31be46d337dcc66a45cbb0957ff89d0b"
+  },
+  "phase": {
+    "name": "native-m2-hermit-reports",
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "aggregate_cpu_usec": 30000000,
+    "wall_seconds": 60,
+    "lethal_stderr_bytes": 1048576,
+    "postread_limit_per_stream_bytes": 1048576,
+    "runtime_stdio_guard_bytes": 67108864,
+    "memory_bytes": 17179869184,
+    "swap_bytes": 0,
+    "expected_selected": [
+      "canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings",
+      "canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse",
+      "canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none",
+      "canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason",
+      "canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable",
+      "canonical_verdict::tests::a_report_without_the_divergence_position_still_parses",
+      "canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position",
+      "canonical_verdict::tests::brackets_every_canonical_match_requirement",
+      "canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history",
+      "canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused",
+      "canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name",
+      "canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields",
+      "canonical_verdict::tests::divergence_position_survives_the_parse",
+      "canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count",
+      "canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused",
+      "canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse",
+      "canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused",
+      "canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type"
+    ],
+    "expected": "Every exact selected native identity must pass once; actual complete ELF inventory supplies filtered count.",
+    "selected_names": [
+      "canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings",
+      "canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse",
+      "canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none",
+      "canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason",
+      "canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable",
+      "canonical_verdict::tests::a_report_without_the_divergence_position_still_parses",
+      "canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position",
+      "canonical_verdict::tests::brackets_every_canonical_match_requirement",
+      "canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history",
+      "canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused",
+      "canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name",
+      "canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields",
+      "canonical_verdict::tests::divergence_position_survives_the_parse",
+      "canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count",
+      "canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused",
+      "canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse",
+      "canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused",
+      "canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type"
+    ],
+    "argv": [
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/compile-native/retained-hermit",
+      "--exact",
+      "canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings",
+      "canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse",
+      "canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none",
+      "canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason",
+      "canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable",
+      "canonical_verdict::tests::a_report_without_the_divergence_position_still_parses",
+      "canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position",
+      "canonical_verdict::tests::brackets_every_canonical_match_requirement",
+      "canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history",
+      "canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused",
+      "canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name",
+      "canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields",
+      "canonical_verdict::tests::divergence_position_survives_the_parse",
+      "canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count",
+      "canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused",
+      "canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse",
+      "canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused",
+      "canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type",
+      "--nocapture",
+      "--test-threads=1"
+    ]
+  },
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917/target",
+    "CARGO_BUILD_JOBS": "2",
+    "THIRD_PARTY_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_NET_GIT_FETCH_WITH_CLI": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "CARGO_TERM_COLOR": "never",
+    "TMPDIR": "/tmp/hermit-prejoin-integration-20260917-v7",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "XDG_CACHE_HOME": "/tmp/hermit-prejoin-commit-cache-20260917"
+  },
+  "output": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports",
+  "admission": false,
+  "phase_bindings": {
+    "ready": true,
+    "reader": "native",
+    "selected_names": [
+      "canonical_verdict::tests::a_located_record_does_not_require_its_bounding_siblings",
+      "canonical_verdict::tests::a_malformed_comparison_object_is_still_refused_at_parse",
+      "canonical_verdict::tests::a_missing_comparison_field_is_refused_rather_than_defaulting_to_none",
+      "canonical_verdict::tests::a_no_result_report_is_still_inadmissible_and_names_the_real_reason",
+      "canonical_verdict::tests::a_real_no_result_report_parses_instead_of_reading_as_unreadable",
+      "canonical_verdict::tests::a_report_without_the_divergence_position_still_parses",
+      "canonical_verdict::tests::an_earlier_divergence_reports_a_smaller_position",
+      "canonical_verdict::tests::brackets_every_canonical_match_requirement",
+      "canonical_verdict::tests::canonical_match_rejects_unequal_counts_without_rewriting_history",
+      "canonical_verdict::tests::comparison_record_envelope_is_required_and_unknown_values_are_refused",
+      "canonical_verdict::tests::current_comparison_requires_every_producer_field_by_name",
+      "canonical_verdict::tests::current_raw_reports_reject_duplicates_and_preserve_required_fields",
+      "canonical_verdict::tests::divergence_position_survives_the_parse",
+      "canonical_verdict::tests::infrastructure_error_is_distinct_from_no_result_and_requires_a_positive_count",
+      "canonical_verdict::tests::readable_object_with_unreadable_nested_predicate_is_refused",
+      "canonical_verdict::tests::runtime_totals_survive_the_typed_report_parse",
+      "canonical_verdict::tests::typed_no_result_reason_round_trips_and_unknown_values_are_refused",
+      "canonical_verdict::tests::unknown_verdict_is_refused_by_the_shared_type"
+    ],
+    "inventory_record": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit/result.json",
+      "bytes": 34779,
+      "mode": 420,
+      "sha256": "ae176ddbf9b1a5137471909afb57278330a9a843a300addac1fc868a312dd3df"
+    },
+    "inputs": [],
+    "runtime_executables": [
+      {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/compile-native/retained-hermit",
+        "bytes": 374606576,
+        "mode": 493,
+        "sha256": "44ceb9cb742f65d838969db0c2668896c2c4649ea2f92f325804519658a0228b"
+      }
+    ],
+    "dependencies": [
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/compile-native/result.json",
+          "bytes": 16843,
+          "mode": 420,
+          "sha256": "3a703d79dd8394ad6345316f961ee3beee967809ad605887246eb6fa94e77f89"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-detcore/result.json",
+          "bytes": 60267,
+          "mode": 420,
+          "sha256": "82b7fb6e7e11da9c661298700d21d75b07249282db51ff4b05210a780c8d3a6b"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-syscaller/result.json",
+          "bytes": 3412,
+          "mode": 420,
+          "sha256": "80b33c6ec778d869fc42c9c5f516de27a61dd3eb718ff3ddedc9b89714d828ae"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit/result.json",
+          "bytes": 34779,
+          "mode": 420,
+          "sha256": "ae176ddbf9b1a5137471909afb57278330a9a843a300addac1fc868a312dd3df"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-bin/result.json",
+          "bytes": 27126,
+          "mode": 420,
+          "sha256": "68e976b9751329b1b355efecd1a494824ea6c0aa91b62beed869a5d27a75bbfd"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-dap/result.json",
+          "bytes": 3600,
+          "mode": 420,
+          "sha256": "bcbfea4a01ee96509f3942c1f767d45cf939671d2c39369ddcfbcb4cd56cd447"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-verification-report/result.json",
+          "bytes": 3503,
+          "mode": 420,
+          "sha256": "ad4f1781347d94783b31a5955a4d025c94d78c8ef82fe2171cd57b600ee378c7"
+        }
+      },
+      {
+        "record": {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/result.json",
+          "bytes": 9155,
+          "mode": 420,
+          "sha256": "723916d57cb56a69faef815a20b8696c9906351efe11d800651ebce9f29b150f"
+        }
+      }
+    ]
+  },
+  "adaptations": [],
+  "validation_scope": "Actual selected phase only; inventory is not execution, native is not guest, per-backend repeat is not cross-backend INFO parity."
+}

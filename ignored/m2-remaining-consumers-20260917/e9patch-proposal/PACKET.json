@@ -1,0 +1,88 @@
+{
+  "scope": "ignored e9patch corpus proposal and disjoint native transport controls",
+  "base_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "base_tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+  "execution": false,
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/CHANGED-FILES.json",
+      "bytes": 1030,
+      "sha256": "0a2ed54ab6fe099a756e5832519faadd5c3dbb52e53178fe6fdeca47edc1b84d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/IMPLEMENTATION-DELTA.json",
+      "bytes": 1572,
+      "sha256": "4f06eb10391fe116ee2dbdb62be11d836f754dfba8c63bad8be3cca2cb63ec6f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/INPUTS.json",
+      "bytes": 2492,
+      "sha256": "64fe6910c591eff03904adfbc9a5da4c147c08e85654b9b49ba89611fa4bee8d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/PATCH-READBACK.json",
+      "bytes": 441,
+      "sha256": "6d85bdbfdbd0ebf8545f543362378ceaaac9fa1c44d14056a86863eb3fc7796a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/REPORT.md",
+      "bytes": 6666,
+      "sha256": "a73b349cecf205a999d56a9a1b80b669294804bc6768e2d24ebd5cf569a78471"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/RUNNER-INPUTS.json",
+      "bytes": 1016,
+      "sha256": "a719c24099d38b2e7cd9f5131f4a1a981e7d5f57d5c9aab8d56dc97bc4eab77b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/SOURCE-CHECKS.json",
+      "bytes": 1121,
+      "sha256": "b1b20f16899e66964d5bd3ea4d0c38db5b79f53b7bff4f65341c144f1fd6a7b6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/e9patch_corpus.py",
+      "bytes": 16102,
+      "sha256": "8e6e1aebf8796c84c37d39d97b5950cbe02dde085f96b72856ae6aeec4593266"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/test_parallel_validate_paths.py",
+      "bytes": 15072,
+      "sha256": "7c327fc6bace5fb9365104975f73b8b81d790b448522ea7cd7dc7f160d2dfd72"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/base/tests/backend-parity/test_verify_tier_evidence.py",
+      "bytes": 28550,
+      "sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/candidate.patch",
+      "bytes": 14720,
+      "sha256": "4d013dcefd2c936cffd29d180e62f66067d3177bfc2da1650121be1b104291f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/parent-REPORT.md",
+      "bytes": 16449,
+      "sha256": "5fae5504402725ffcfcd425bf65876fbd03721e6c346d3127569f429b2ae6664"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/preview/tests/backend-parity/e9patch_corpus.py",
+      "bytes": 16631,
+      "sha256": "d0c31729b8bcbea446cc8d5f6c127ad75e55658cb0fb5b6fd7e0cd727c70cc75"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/preview/tests/backend-parity/test_e9patch_corpus_verification.py",
+      "bytes": 12186,
+      "sha256": "dc706509947a86109d8c8988e9c5f86f893d722ecabb8f30ba8b1b9200dd14f4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/runner-inputs/ci/dag/validate.json",
+      "bytes": 2858049,
+      "sha256": "c776274a95d165d40cce5212a4331240d55b6e90061962430f449b11ea010983"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/e9patch-proposal/runner-inputs/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 349470,
+      "sha256": "29b449fa36f7eee28a8d264465c8bd8f86b4b4bd1777b46d5d7a179036945d7c"
+    }
+  ]
+}

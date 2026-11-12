@@ -1,0 +1,50 @@
+[
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-current-20260917-1350/hermit-open.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/00-hermit-open.json",
+    "size": 9267,
+    "sha256": "ed87643f9f6089dec2a98102b39a2d2a44c3da022a01bc1bab44ab9cee5c5d52"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-current-20260917-1350/reverie-open.json",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/01-reverie-open.json",
+    "size": 790,
+    "sha256": "c4c5ba63462ac45f9ae8bbb2f59781147d484c8b527c8a9ac901722881eedc86"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-delta-20260917-1157/REPORT.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/02-REPORT.md",
+    "size": 7262,
+    "sha256": "a4a9bf03c482111a10c23761b3d92b1725b8de9cd884c35d5168db17cf54f54c"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-delta-20260917-1157/baseline-queue-report.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/03-baseline-queue-report.md",
+    "size": 14376,
+    "sha256": "f379531b417d929663c283bba436c79f31bd76d3a0c1964da7b661fe20fc069f"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/kvm-queue-delta-20260917-1157/baseline-donor-plan.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/04-baseline-donor-plan.md",
+    "size": 16870,
+    "sha256": "857a993489c4dd3eec7c66552d8df25b59f0e0ca09ae391ec578e9dd0111f7d0"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-2302-follow-up/REPORT.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/05-REPORT.md",
+    "size": 9196,
+    "sha256": "8745c1ceb5196867954f73639cceaafbf9a7c6040934f174795a2da43bb11654"
+  },
+  {
+    "source": "/home/newton/.codex/skills/github-with-proxy/SKILL.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/06-SKILL.md",
+    "size": 5096,
+    "sha256": "8e553a46bde7f6a52b589e960efca122481822d72d045c9d193a8374c8ccc5d1"
+  },
+  {
+    "source": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/07-SKILL.md",
+    "size": 3617,
+    "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+  }
+]

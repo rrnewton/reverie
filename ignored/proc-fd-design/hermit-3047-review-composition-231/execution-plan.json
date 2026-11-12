@@ -1,0 +1,93 @@
+{
+  "default_launcher_refuses_without_execution_argument": true,
+  "argument_is_not_authorization": "Root must review the exact prompt/caller/input binding and release the command before use.",
+  "review_command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "900s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config"
+  ],
+  "wall_seconds": 900,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864,
+  "no_test_or_guest_execution": true,
+  "no_source_or_ref_or_pr_operations": true,
+  "tools_current_metadata": [
+    {
+      "entrypoint": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.9",
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "timeout",
+      "resolved_path": "/usr/bin/timeout",
+      "path": "/usr/bin/timeout",
+      "bytes": 36848,
+      "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "with-proxy",
+      "resolved_path": "/usr/bin/with-proxy",
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "claude",
+      "resolved_path": "/usr/local/bin/claude_code/os/claude",
+      "path": "/usr/local/bin/claude_code/os/claude",
+      "bytes": 669,
+      "sha256": "36f36c0fe279c7077e3e48c8813344d1db59741766923bec9ec2308fa3d278d9",
+      "mode": "0o755"
+    }
+  ],
+  "read_tools_only": true,
+  "state": "prepared_only_not_released_or_executed",
+  "proposed_released_argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/launch-review.py",
+    "--execute-reviewed-4392560a"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/source/hermit",
+  "hermit_base": "231228c010541561a81dcb1353ac200f5c791b1a",
+  "hermit_head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "hermit_tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
+  "candidate_binding_sha256": "dba36b7620d32fb99c7f575fbb47518cc7ec2eabc075f16c88891e9402be0030",
+  "outputs": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/launch.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/stdout.jsonl",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/stderr.log",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/exit.json"
+  ],
+  "source_scope": "Exact three-commit source-preserving rebase onto main231: two regular count sites and LiteInst PID assertion/comment; full authored patch and whole union bound.",
+  "prior_literal_source_approval": {
+    "head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+    "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/prior-a88-REVIEW.md",
+    "sha256": "ca36cfc5135f6d664195e456067936967e5a748449b4eee4e449b3c9d709ed07"
+  },
+  "actual_evidence_cutoff": "aa7 measured native19/fmt/Clippy634/build and2descriptor+3complete-mode passes. Original24-method current run pending; actual1839 zero-node tool-root refusal retained. Reverie426/1 unchanged.",
+  "raw_private_transcript_not_input": true,
+  "no_rebuild_or_relist_or_retest": true
+}

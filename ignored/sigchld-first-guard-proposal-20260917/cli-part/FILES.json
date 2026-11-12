@@ -1,0 +1,26 @@
+[
+  {
+    "path": "hermit-cli/src/lib.rs",
+    "base_bytes": 205203,
+    "base_sha256": "2c354a05de69312b0c2ccebecfc2b023d5fc3d8de6f06704b1e8d2bcd63eade0",
+    "mode": "100644",
+    "bytes": 209051,
+    "sha256": "4a4df491a07f90b41e44714e56be9dcea40b02eaeb7ae81c1f361e2efabaa81a"
+  },
+  {
+    "path": "hermit-cli/src/error.rs",
+    "base_bytes": 10782,
+    "base_sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+    "mode": "100644",
+    "bytes": 13622,
+    "sha256": "cb40429449d1f8c7961f869d039245352af594452d1a540cfb193c700b86aa50"
+  },
+  {
+    "path": "hermit-cli/src/kvm_failure_tests.rs",
+    "base_bytes": 22390,
+    "base_sha256": "dcb2ec5d59dfe9c6ab599895dc5701c6dd7bacd63a60c5fd0a2978048164ecab",
+    "mode": "100644",
+    "bytes": 26883,
+    "sha256": "e0ec9384eed8cf4c5b97fe815ec2a205526ee649e372502be78807aa7d541e17"
+  }
+]

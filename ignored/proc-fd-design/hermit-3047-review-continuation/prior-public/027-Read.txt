@@ -1,0 +1,95 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01Fq6QqqPj1c3r7pNHEkHf2z",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/reverie/reverie-kvm/src/proc_mounts.rs"
+  }
+}
+
+Successful public tool result (exact text below):
+1	/*
+2	 * Copyright (c) Meta Platforms, Inc. and affiliates.
+3	 * All rights reserved.
+4	 *
+5	 * This source code is licensed under the BSD-style license found in the
+6	 * LICENSE file in the root directory of this source tree.
+7	 */
+8	
+9	use std::io::Read;
+10	use std::io::{self};
+11	
+12	/// The namespace used by the backend's ordinary host filesystem operations.
+13	/// Namespace-changing guest syscalls are unsupported, so fork and exec retain
+14	/// this snapshot. The Tool remains responsible for deterministic normalization.
+15	#[derive(Debug)]
+16	pub(crate) struct ProcMountSnapshot {
+17	    pub(crate) mountinfo: Vec<u8>,
+18	    pub(crate) mounts: Vec<u8>,
+19	}
+20	
+21	impl ProcMountSnapshot {
+22	    pub(crate) fn capture() -> io::Result<Self> {
+23	        Ok(Self {
+24	            mountinfo: read_snapshot("/proc/self/mountinfo")?,
+25	            mounts: read_snapshot("/proc/self/mounts")?,
+26	        })
+27	    }
+28	}
+29	
+30	fn read_snapshot(path: &str) -> io::Result<Vec<u8>> {
+31	    // A backend capacity refusal must not become a truncated mount table.
+32	    const MAX_SNAPSHOT_BYTES: u64 = 16 * 1024 * 1024;
+33	    read_snapshot_bytes(std::fs::File::open(path)?, MAX_SNAPSHOT_BYTES, path)
+34	}
+35	
+36	fn read_snapshot_bytes(source: impl Read, limit: u64, path: &str) -> io::Result<Vec<u8>> {
+37	    let mut bytes = Vec::new();
+38	    source.take(limit + 1).read_to_end(&mut bytes)?;
+39	    if bytes.is_empty() || bytes.len() as u64 > limit {
+40	        return Err(io::Error::new(
+41	            io::ErrorKind::InvalidData,
+42	            format!("{path} is empty or exceeds the backend mount snapshot capacity"),
+43	        ));
+44	    }
+45	    Ok(bytes)
+46	}
+47	
+48	#[cfg(test)]
+49	mod tests {
+50	    use super::*;
+51	
+52	    #[test]
+53	    fn mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input() {
+54	        let input = b"10 9 0:1 / / rw - tmpfs tmpfs rw\n";
+55	        assert_eq!(
+56	            read_snapshot_bytes(input.as_slice(), input.len() as u64, "fixture").unwrap(),
+57	            input
+58	        );
+59	        for (input, limit) in [(b"".as_slice(), 32), (b"12345".as_slice(), 4)] {
+60	            assert_eq!(
+61	                read_snapshot_bytes(input, limit, "fixture")
+62	                    .unwrap_err()
+63	                    .kind(),
+64	                io::ErrorKind::InvalidData
+65	            );
+66	        }
+67	    }
+68	
+69	    #[test]
+70	    fn mount_snapshot_propagates_read_error_without_partial_success() {
+71	        struct Broken;
+72	        impl Read for Broken {
+73	            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+74	                Err(io::Error::from_raw_os_error(libc::EACCES))
+75	            }
+76	        }
+77	        assert_eq!(
+78	            read_snapshot_bytes(Broken, 32, "fixture")
+79	                .unwrap_err()
+80	                .raw_os_error(),
+81	            Some(libc::EACCES)
+82	        );
+83	    }
+84	}
+85	

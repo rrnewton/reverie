@@ -1,0 +1,129 @@
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/compat-envelope/scorecard.rs:3206:twice. The manifest runner adds `--verify-strict` when the selected Hermit binary supports it, and \
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/compat-envelope/scorecard.rs:12337:        .strictness = canonical_verdict::LogCompareStrictness::Stripped;
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/bin/test-harness.rs:2461: print('--verify-strict');sys.exit(0)
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/bin/test-harness.rs:2483: assert '--verify' not in a and '--verify-strict' not in a,a
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/bin/test-harness.rs:2489:assert '--verify-strict' in a and '--verify' in a,a
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/ledger/schema10.rs:712:            || !prefix.iter().any(|arg| arg == "--verify-strict")
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/ledger/schema10/tests.rs:61:            "--verify-strict".into(),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:1577:        // Published main still exposes the legacy `--verify-strict` spelling;
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:1583:            command_help_contains(&hermit_bin, &["run", "--help"], "--verify-strict")?;
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:1599:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:2115:                argv.push("--verify-strict".into());
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:2165:                argv.push("--verify-strict".into());
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:2201:                argv.push("--verify-strict".into());
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:4812:/// non-zero all returned `false`. `false` means `--verify-strict` is omitted,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:4888:    /// `--verify-strict`, which on a pre-cutover Hermit silently runs the suite
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:4897:        let needle = "--verify-strict";
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:7240:        assert!(spec.argv.iter().any(|arg| arg == "--verify-strict"));
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:ci/manifest-plan/src/runner.rs:7289:        assert!(replay.argv.iter().any(|arg| arg == "--verify-strict"));
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:demos/05-qemu-busybox.sh:135:  # ⚠️ `--verify-strict` IS LOAD-BEARING FOR THE L2 LABEL PRINTED BELOW.
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:demos/05-qemu-busybox.sh:138:  # `--verify-strict`/`--verify-verbose`, and
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:demos/05-qemu-busybox.sh:142:  hermit_args+=(--verify --verify-strict --verify-json "$verify_json")
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:143:    #[clap(long = "unsafe-strip-lines")]
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:381:pub fn strip_log_entry(log: &str) -> String {
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:448:/// from [`strip_log_entry`]'s `<ADDR>` erasure in one decisive way: erasure maps
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:496:            .map(|message| strip_log_entry(message.text))
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:546:/// `--unsafe-strip-lines` transformation: scheduler turns, virtual time, syscall
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:1024:/// This is deliberately narrower than [`strip_log_entry`]. Syscall arguments,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:2241:        // quantity this record exists to expose: a drift that `--verify-strict`
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:2938:        let options = super::LogDiffOpts::try_parse_from(["log-diff", "--unsafe-strip-lines"])
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:2949:        assert!(help.contains("--unsafe-strip-lines"));
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:3364:            strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:3431:                    strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:3513:            strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:3797:            strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:3891:            strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4279:        assert_eq!(super::strip_log_entry("800.709_180s"), "<NANOSECONDS>");
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4280:        assert_eq!(super::strip_log_entry("98.91618ms"), "<NUM>");
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4281:        assert_eq!(super::strip_log_entry("98.91619ms"), "<NUM>");
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4282:        assert_eq!(super::strip_log_entry("x86_64"), "x86_64");
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4284:            super::strip_log_entry(
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4300:        let read = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_RDONLY""#);
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4301:        let write = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_WRONLY""#);
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4317:            super::strip_log_entry(r#"open path="/tmp/hermit-aaaa/f" flags="O_RDONLY""#),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4318:            super::strip_log_entry(r#"open path="/tmp/hermit-bbbb/f" flags="O_RDONLY""#),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4328:            super::strip_log_entry(r#"rename from="/tmp/a" to="/tmp/b" ok="1""#),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4576:    /// exists to expose — a drift `--verify-strict` catches and `--verify` does
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/logdiff.rs:4581:            strip_lines: true,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/scheduler.rs:3446:                // under `--verify-strict`, while ptrace is 0 of 50 on the same
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/scheduler.rs:4929:        // `--verify-strict` compares.
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/syscalls/threads.rs:2544:        // and INFO is the surface `--verify-strict` compares. The
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/src/syscalls/threads.rs:2581:        // which is compared exactly under `--verify-strict`.
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/tests/testutils/src/lib.rs:795:                let str_a = detcore::logdiff::strip_log_entry(&x[ix]);
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:detcore/tests/testutils/src/lib.rs:796:                let str_b = detcore::logdiff::strip_log_entry(&filtered[ix]);
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/logdiff.rs:154:    /// Compare the canonical INFO stream used by --verify-strict within the
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/logdiff.rs:597:        return Err("canonical INFO comparison conflicts with --unsafe-strip-lines");
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/record_start.rs:270:    /// else exactly (see --verify-strict) — rather than a stripped, content-blind,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/record_start.rs:509:            LogCompareStrictness::Stripped
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:549:    /// bitwise comparison of --verify-strict, and additionally raises the diff
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:628:    /// else exactly (see --verify-strict) — so it cannot be silently weakened to
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1025:            write!(f, " --verify-strict")?;
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1335:/// A PLAIN `--verify` CANNOT REACH THE CANONICAL COMPARATOR, AND `--verify-strict`
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1367:            LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1372:        for flag in ["--verify-strict", "--verify-verbose"] {
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1410:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:1436:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:2889:    /// entirely and `--verify-strict` could not reach the canonical comparator on
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:2901:    /// `--verify-strict` selects the same comparison quietly.
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/run.rs:2906:            LogCompareStrictness::Stripped
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:112:    /// mode; an ordinary `--verify-strict` verdict must not depend on diagnostic
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:144:/// [`LogCompareStrictness::Stripped`] mode applies (numbers, addresses, tmp
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:239:    /// [`Stripped`]: LogCompareStrictness::Stripped
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:306:            LogCompareStrictness::Stripped => {
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:824:            LogCompareStrictness::Stripped => LevelFilter::DEBUG,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1450:        LogCompareStrictness::Stripped => {
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1485:    if comparison.strictness == LogCompareStrictness::Stripped {
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1652:            verification_log_level(None, LogCompareStrictness::Stripped, false),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1659:                LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1738:            LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1881:            LogCompareStrictness::Stripped
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1911:            LogCompareStrictness::Stripped
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:1979:                strictness: LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:2027:            LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:2229:            compare_with(&out, log1, &out, log2, LogCompareStrictness::Stripped).unwrap();
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:3091:        // Positive: the exact qualifying comparison the `--verify-strict` path
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/bin/hermit/verify.rs:3117:            LogCompareStrictness::Stripped,
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/canonical_verdict.rs:810:            report(LogCompareStrictness::Stripped, true, 1, 1)
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/src/lib.rs:1638:    // INFO stream, which `--verify-strict` compares:
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/app_strict_verify.rs:542:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:964:                "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:2170:                "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:3792:        "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:3818:        "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:4214:        "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/cli.rs:4839:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/full_summary_futex_order.rs:14://! between runs. The summary is emitted in a WARN record that `--verify-strict`
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/hermit_modes.rs:1239:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/kvm_info_log_determinism.rs:11://! `--verify-strict` compares INFO events under the production canonical policy:
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/kvm_info_log_determinism.rs:336:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/liteinst_advanced.rs:842:/// timed `threads` under `--verify --verify-strict` at 3.32/3.37/3.47/3.71 and
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/ppoll_simulation.rs:74:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/ppoll_simulation.rs:144:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/ppoll_simulation.rs:233:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/ppoll_simulation.rs:349:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/record_replay.rs:676:            .args(["--strict", "--verify-strict"])
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/record_replay.rs:724:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/robust_futex_owner_death.rs:21://! This test asserts full L2 canonical parity (`--verify-strict --verify-json`
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/robust_futex_owner_death.rs:213:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/robust_futex_owner_death.rs:246:/// guest address and INFO is the surface `--verify-strict` compares, so this
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/robust_futex_owner_death.rs:345:                "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/sabre_examples.rs:299:                .args(["--verify-strict", "--keep-logs", "--verify-log-dir"])
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/verify_claim_names_its_limit.rs:27:/// Run `/bin/true` under `--verify --verify-strict`, optionally with the
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/verify_claim_names_its_limit.rs:41:    command.args(["run", "--strict", "--verify", "--verify-strict"]);
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/waitid_signal_interrupt.rs:260:            .args(["--verify", "--verify-strict"])
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/writev_determinism.rs:269:                    "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/writev_determinism.rs:341:        // `--verify-strict` and the JSON report below.
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:hermit-cli/tests/writev_determinism.rs:346:            "--verify-strict",
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/cross-backend-detlog-diff.rs:18://! `hermit run --strict --verify --verify-strict --verify-json ...` for each
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/lib/validate_plan.rs:167:                vec![s("record"), s("start"), s("--verify"), s("--verify-strict"), s("--")]
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/manifest-to-commands.rs:186:        "run_verify_strict=; if run_help=$(\"$hermit_bin\" run --help 2>&1); then case \"$run_help\" in *--verify-strict*) run_verify_strict=--verify-strict;; esac; fi".to_owned(),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/manifest-to-commands.rs:187:        "record_verify_strict=; if record_help=$(\"$hermit_bin\" record start --help 2>&1); then case \"$record_help\" in *--verify-strict*) record_verify_strict=--verify-strict;; esac; fi".to_owned(),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/validate.rs:1309:/// below-L2 unless their argv also adopts `--verify-strict` and the surrounding
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/validate.rs:1317:/// `record start --verify --verify-strict`, a different path with a different
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/validate.rs:2252:            .any(|arg| arg == "--verify-strict")
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:scripts/validate.rs:2257:                 omit --verify-strict and its rendered description must say below-L2: \
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:tests/e2e/lib/applications/common.sh:58:# too. `bitwise_parity` is true only under the canonical (`--verify-strict`)
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:tests/e2e/lib/applications/common.sh:175:        --verify --verify-strict --verify-json "$verdict_file" -- \
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:tests/manifest-cli.rs:297:        "run_verify_strict=; if run_help=$(\"$hermit_bin\" run --help 2>&1); then case \"$run_help\" in *--verify-strict*) run_verify_strict=--verify-strict;; esac; fi".to_owned(),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:tests/manifest-cli.rs:298:        "record_verify_strict=; if record_help=$(\"$hermit_bin\" record start --help 2>&1); then case \"$record_help\" in *--verify-strict*) record_verify_strict=--verify-strict;; esac; fi".to_owned(),
+969437b9f1a2a48ff34b62ee960570fbf3be2de5:tests/qemu-boot/strict_l2_network_test.sh:144:verify_command=("$hermit_bin" --log info run --strict --verify --verify-strict \

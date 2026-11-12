@@ -1,0 +1,47 @@
+{
+  "original": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be",
+    "bytes": 106835472,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "retained_copy": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/reverie_kvm-source-v2",
+    "bytes": 106835472,
+    "sha256": "40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be",
+    "mode": 493
+  },
+  "reason": "Preserve actual failed v2 native executable before any separately authorized cache rebuild."
+}

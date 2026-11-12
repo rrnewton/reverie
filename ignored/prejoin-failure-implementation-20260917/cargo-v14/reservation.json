@@ -1,0 +1,27 @@
+{
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v14/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v14/launch.py",
+    "bytes": 14208,
+    "mode": 420,
+    "sha256": "facbd3776672300a40a641084269ddd0388357ddd353927ecbba104e899c2189"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v14/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v14/plan.json",
+    "bytes": 36958,
+    "mode": 420,
+    "sha256": "0baf3576eb91d484f061348bee7fefc5b9fd6b64a21495abf413bcb37f0bef34"
+  },
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v14/launch.py"
+  ],
+  "outputs": {
+    "compile": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v14/compile",
+    "list": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v14/list",
+    "native": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v14/native"
+  },
+  "scope": "Preparation only; no execution."
+}

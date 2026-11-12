@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "--paginate",
+    "--slurp",
+    "repos/rrnewton/hermit/pulls/2694/reviews?per_page=100"
+  ],
+  "exit_code": 0,
+  "started_at": "2026-09-17T07:36:56.862243+00:00",
+  "wall_seconds": 0.46648080297745764
+}

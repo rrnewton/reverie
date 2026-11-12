@@ -1,0 +1,24 @@
+tree e470a86697cbb9590c23d45ee5fab9ade12aab01
+parent 8720799f78f8ef56d796723dbc473a9171a4f4eb
+author Ryan Newton <rrnewton@gmail.com> 1789633723 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789633723 -0700
+
+wrkslots: retain incomplete frozen validations without blocking entry
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Keep an authenticated current incomplete frozen validation on disk while
+allowing unrelated validation entry. This disposition retains the checkout,
+no-result and evidence; it grants no removal or result authority.
+
+Require the exact typed terminal record and sidecar, pristine root and
+initialized submodules, and stable Git and evidence observations around a
+fresh process census. Bind the original target and origin throughout those
+observations. A stable advanced source and its investigation files remain
+allowed. Direct recovery still requires its existing removal proof.
+
+Add positive preservation checks and controls for malformed evidence, live
+processes, dirty or replaced repositories, hidden submodule content and
+changes between observations. Corrected focused checks: 43 passed; strict
+mypy: 13 files passed. The four initial-observation controls failed before
+the target and origin binding correction; that failure is retained.

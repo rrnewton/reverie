@@ -1,0 +1,17 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01Xcv72Q6mVguqDnB26S21BN",
+  "name": "Grep",
+  "input": {
+    "pattern": "fn mount_ids_are_ordered_subset|fn new\\(|fn raw_mount_id_order|fn parse_mountinfo|unlisted",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore-model/src/procfs.rs",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+29:pub fn mount_ids_are_ordered_subset(visible: &[u64], captured: &[u64]) -> bool {
+56:fn parse_mountinfo_row(line: &[u8]) -> Option<MountInfoRow> {
+100:pub fn parse_mountinfo(contents: &[u8]) -> Option<Vec<MountInfoRow>> {

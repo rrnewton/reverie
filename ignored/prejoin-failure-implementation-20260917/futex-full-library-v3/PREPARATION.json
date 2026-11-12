@@ -1,0 +1,42 @@
+{
+  "source_head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "ce46884d151174f224bc29aa5850f8c65c684329582bafe42b61d4b36a537021",
+  "caller_sha256": "252cca41263bcda357e9668e27452832d73e613ce3cdaff5428cf6fbb80ec845",
+  "actual_inventory_count": 454,
+  "changed_prior_live_inputs": [
+    {
+      "prior": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "bytes": 116212232,
+        "mode": 493,
+        "sha256": "daf7a52b631f19790dcac4e1d1fbbbd3326683ca3305a424db6befedb25cee8b"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+        "bytes": 116339104,
+        "mode": 493,
+        "sha256": "c4041efdbb201f25ab0a8e1fa771dafba6d23e7bc761fd2bc8cdd11d45534a5a"
+      }
+    },
+    {
+      "prior": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "bytes": 148699992,
+        "mode": 493,
+        "sha256": "f11f2ec042c41f42ca16e062b8ac4da483998635cdd4d621d259a3be12fe2b85"
+      },
+      "current": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/static_elf-8045a74b4f627592",
+        "bytes": 148700208,
+        "mode": 493,
+        "sha256": "df5c522c1f51f8337c964c0f092155d0e818e37041ee6d385b8f0cd1a6cf0a0b"
+      }
+    }
+  ],
+  "first_attempt": true,
+  "scope": "First full serial library execution of final committed 12d4ce8c cleanup correction. All 453 prior methods plus the actual one new regression method; original 427 retained. Actual API 12 admission and REVERIE_REQUIRE_KVM=1 required. Same original resource limits and every assertion/deadline. Prior 450/3 and historical 426/1 remain retained. No separate selected-native/four-VM rerun, Hermit execution or canonical parity claim."
+}

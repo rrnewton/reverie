@@ -1,0 +1,31 @@
+diff --cc ci/manifest-plan/src/validation_dag_static.rs
+index bb779b2d8,862e17783..000000000
+--- a/ci/manifest-plan/src/validation_dag_static.rs
++++ b/ci/manifest-plan/src/validation_dag_static.rs
+@@@ -202,8 -202,8 +202,13 @@@ pub(super) const PMU_MEMORY_FAILURE_FAM
+  pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+      ("test.isolated_dbt_workdir", 2),
+      ("test.isolated_detcore_workdir", 1),
+++<<<<<<< HEAD
+ +    ("test.regular_crates", 507),
+ +    ("test.hermit_unit", 630),
+++=======
++     ("test.regular_crates", 505),
++     ("test.hermit_unit", 634),
+++>>>>>>> 4cfbe917f (Bind KVM mount identities to the actual backend namespace)
+      ("test.detcore_unit", 679),
+      ("test.detcore_misc", 27),
+      ("test.detcore_parallel", 5),
+@@@ -232,10 -232,10 +237,10 @@@
+      ("test.detcore_parallel_on_host", 5),
+      ("test.detcore_unit_on_host", 679),
+      ("test.hermit_integration_on_host", 158),
+-     ("test.hermit_unit_on_host", 630),
++     ("test.hermit_unit_on_host", 634),
+      ("test.ignored_syscall_regressions_on_host", 4),
+      ("test.liteinst_strict_on_host", 24),
+ -    ("test.regular_crates_on_host", 505),
+ +    ("test.regular_crates_on_host", 507),
+      ("test.rr_suite_contract_on_host", 1),
+      ("test.sabre_examples_on_host", 6),
+  ];

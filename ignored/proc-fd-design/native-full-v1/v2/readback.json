@@ -1,0 +1,18 @@
+{
+  "utc": "2026-09-17T06:09:42.623386+00:00",
+  "original_caller_sha256": "c45989a90feb8bf3d61143f974876496bd952008f7b44156eb7347c8a040e70c",
+  "original_plan_sha256": "4cf802e57f3d314c4582884824acb1999b92beb91e28d079f293d1866f32a1b2",
+  "changed_plan_keys": [
+    "execution",
+    "limits_and_sequence"
+  ],
+  "payload_equal": true,
+  "environment_equal": true,
+  "input_bindings_equal": true,
+  "output_paths_equal": true,
+  "run_root_absent": true,
+  "observer_root_absent": true,
+  "test_execution": false,
+  "inputs_verified": 64,
+  "source_files_verified": 2550
+}

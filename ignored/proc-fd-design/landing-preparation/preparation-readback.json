@@ -1,0 +1,19 @@
+{
+  "preparation_binding_sha256": "191672a456d7ead04bf431f6b70a4b6f67123f836b664549456371cbf0a43050",
+  "all_bound_inputs_and_artifacts_match": true,
+  "native_markers": [
+    [
+      "APPROVED-AT",
+      "codex",
+      "696f0476aa46cf29e31b947a89379d80b4542ce3"
+    ]
+  ],
+  "external_markers": [],
+  "shell_syntax_only": {
+    "exit": 0
+  },
+  "merge_output_root_absent": true,
+  "local_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tracked_source_index_clean": true,
+  "no_command_execution": true
+}

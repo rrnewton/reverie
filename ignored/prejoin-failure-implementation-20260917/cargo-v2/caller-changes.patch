@@ -1,0 +1,27 @@
+--- cargo-v1/launch.py
++++ cargo-v2/launch.py
+@@ -10,7 +10,7 @@
+ 
+ HERE = Path(__file__).resolve().parent
+ PLAN = HERE / 'plan.json'
+-PLAN_SHA256 = 'd94d92c619a6239964a44c0f1a1355886056a4d375ce4a25adf5f566b33e27d1'
++PLAN_SHA256 = 'b657a9ed68171522c25e02b727523d7aa03fbf57ddc361104adc58d52b4d2b2e'
+ 
+ 
+ def require(condition, message):
+@@ -137,6 +137,7 @@
+ def main():
+     require(digest(PLAN) == PLAN_SHA256, 'concrete execution plan changed')
+     plan = json.loads(read_bounded(PLAN, 1024**2))
++    require(plan['execution'] == ['/usr/bin/python3', '-B', str(HERE / 'launch.py')], 'execution names another caller')
+     require(Path(plan['run_root']) == HERE / 'run-1', 'unexpected run output destination')
+     require([step['name'] for step in plan['stages']] == ['compile', 'list', 'native'], 'unexpected stage order')
+     require(plan['required_count'] == 27 and len(set(plan['selected_tests'])) == 27, 'selected population changed')
+@@ -149,6 +150,7 @@
+     environment = {key: os.environ[key] for key in plan['environment_keys'] if key in os.environ}
+     environment.update(plan['environment_fixed'])
+     write_new(root / 'launch.json', {'plan_sha256': PLAN_SHA256, 'caller_sha256': digest(__file__),
++              'execution': plan['execution'], 'cwd': str(Path.cwd()),
+               'environment': environment, 'source_binding_sha256': digest(plan['source_binding']),
+               'scope': 'One native KVM library build/list/selected run; no Hermit or KVM guest.'})
+     records = []

@@ -1,0 +1,34 @@
+{
+  "scope": "bounded read-only publication metadata analysis",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/hermit-prejoin-publication-5bc8dfd9/final-remote-comments-v1.json",
+      "bytes": 53547,
+      "mode": 420,
+      "sha256": "7fd78633adedad167ee0bf8a409b0c7b1ba541c8cd1a379921633117a22e6a24"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/hermit-prejoin-publication-5bc8dfd9/final-core-review-lint-v1.stdout",
+      "bytes": 428,
+      "mode": 420,
+      "sha256": "cd9d0e300a369ae0fe657f857b2263b2ab3ec8cdc8b3066e735e18cfabd41fa0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/core-review-protocol-lint.sh",
+      "bytes": 58116,
+      "mode": 493,
+      "sha256": "54f5a5b57bd5efc4239d383e5b5b2d130befa693adee03e5d03dd9b4c3847725"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ci-hub/health/approval_binding.py",
+      "bytes": 203186,
+      "mode": 493,
+      "sha256": "0e66a7e57dda62c8aaa56656bdd654938c69607fd71c835417d5aefca5c90ccf"
+    }
+  ],
+  "exact_frozen_lint_git_object": true,
+  "original_comment_id": 5721785672,
+  "original_body_bytes": 21369,
+  "original_body_sha256": "fedc104946449272625e09a589bf6e76add134d4605a1152d7d777dc6bf2db03",
+  "new_comment_action_executed": false
+}

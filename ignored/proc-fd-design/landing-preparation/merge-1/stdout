@@ -1,0 +1,12 @@
+gh-merge-verified: running the byte-identical verifier from dev-hermit main 06b347e07938 (4e90a65316ae).
+  The modified working-tree copy is not admitting or merging this pull request.
+gh-merge-verified: pr head 696f0476aa46 CORROBORATED against --expect-head 696f0476aa46
+gh-merge-verified: receipt written to /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/merge-1/receipt.json
+gh-merge-verified: PR 565 (rrnewton/reverie)
+  pr head    696f0476aa46cf29e31b947a89379d80b4542ce3  (corroborated against 696f0476aa46)
+  origin/main 596b9adee8473dc0a7e62dce18580eead3d0c5c9
+  files changed by the branch: 6
+    arrived  (main == pr head): 6
+    absent   (main == merge base, change definitely not landed): 0
+    moved on (main matches neither, undecidable from blobs): 0
+  VERIFIED: every file the branch touches is byte-identical on origin/main.

@@ -1,0 +1,924 @@
+{
+  "stage": "compile",
+  "observer_exit": 1,
+  "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/result.json",
+  "result_sha256": "df7e7d90c6b886531b650eb3b56f038e1736de54a2a7d9a9216894475301063d",
+  "result": {
+    "schema": 1,
+    "scope": "Aggregate CPU observation of the actual safehermit service only",
+    "launch": {
+      "binary": "/usr/bin/python3",
+      "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "arguments": [
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/before-exec.json",
+        "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf"
+      ],
+      "payload": {
+        "binary": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "binary_sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72",
+        "arguments": [
+          "test",
+          "--locked",
+          "--offline",
+          "-p",
+          "reverie-kvm",
+          "--lib",
+          "--no-run",
+          "--message-format=json"
+        ]
+      },
+      "before_exec_spec_sha256": "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf",
+      "cpu_allowance_usec": 600000000,
+      "wall_seconds": 900,
+      "log_bytes": 16777216,
+      "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/safehermit",
+      "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+      "observer_sources": {
+        "observer.py": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+        "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+        "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+        "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+      },
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+      "epoch": 1789647306.8815384,
+      "monotonic_ns": 1806235639768389,
+      "pid": 2562298,
+      "wrapper_identity": {
+        "pid": 2562298,
+        "start_ticks": 180623564,
+        "parent_pid": 2562232,
+        "state": "R",
+        "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+      }
+    },
+    "wrapper_argv": [
+      "/home/newton/work/dev-hermit/bin/safehermit",
+      "--sh-deadline",
+      "900",
+      "--sh-max-log-bytes",
+      "16777216",
+      "--sh-report",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/safehermit.report",
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/before-exec.json",
+      "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf"
+    ],
+    "wrapper_exit_code": 101,
+    "stop_reason": null,
+    "observer_error": null,
+    "final_accounting": {
+      "source": "systemd CPUUsageNSec after service exit",
+      "cpu_usage_nsec": 157321000,
+      "cgroup_empty": true,
+      "exec_main_code": 1,
+      "exec_main_status": 101,
+      "properties": {
+        "Id": "safehermit-20260917T121506Z-2562298.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 2562949,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 101,
+        "ExecMainStartTimestampMonotonic": 1806236037419,
+        "CPUUsageNSec": 157321000
+      }
+    },
+    "kill_commands": [],
+    "accounting_complete": true,
+    "comparison_eligible": false,
+    "loaded_systemd_library_before": {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37",
+      "mapped_filename": "/lib64/libsystemd.so.0",
+      "device": 33,
+      "inode": 1693638
+    },
+    "authenticated_service": {
+      "unit": "safehermit-20260917T121506Z-2562298.service",
+      "initial_properties": {
+        "Id": "safehermit-20260917T121506Z-2562298.service",
+        "LoadState": "loaded",
+        "ActiveState": "active",
+        "SubState": "running",
+        "ControlGroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T121506Z-2562298.service",
+        "MainPID": 2562949,
+        "ExecMainPID": 2562949,
+        "ExecMainCode": 0,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1806236037419,
+        "CPUUsageNSec": 2877000,
+        "RuntimeMaxUSec": 900000000,
+        "MemoryMax": 17179869184,
+        "MemorySwapMax": 0,
+        "IgnoreSIGPIPE": 1,
+        "ExecStart": {
+          "value": {
+            "type": "a(sasbttttuii)",
+            "data": [
+              [
+                "/usr/bin/python3",
+                [
+                  "/usr/bin/python3",
+                  "-B",
+                  "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+                  "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/before-exec.json",
+                  "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf"
+                ],
+                false,
+                1789647307279190,
+                1806236037419,
+                0,
+                0,
+                2562949,
+                0,
+                0
+              ]
+            ]
+          },
+          "query_argv": [
+            "/usr/bin/busctl",
+            "--user",
+            "--json=short",
+            "get-property",
+            "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+            "org.freedesktop.systemd1.Service",
+            "ExecStart"
+          ],
+          "stdout_sha256": "73d1c0503748501e9cf4c9468d2e04f9fa7c8d043cb26b5b908fe9eedfe42cd6",
+          "raw_stdout": "{\"type\":\"a(sasbttttuii)\",\"data\":[[\"/usr/bin/python3\",[\"/usr/bin/python3\",\"-B\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py\",\"/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/before-exec.json\",\"9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf\"],false,1789647307279190,1806236037419,0,0,2562949,0,0]]}\n",
+          "returncode": 0
+        }
+      },
+      "main_process": {
+        "pid": 2562949,
+        "start_ticks": 180623603,
+        "parent_pid": 32320,
+        "state": "R",
+        "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T121506Z-2562298.service"
+      },
+      "cgroup_inode": 39084364,
+      "cgroup_device": 27
+    },
+    "payload_authorization": {
+      "request": {
+        "payload": {
+          "arguments": [
+            "test",
+            "--locked",
+            "--offline",
+            "-p",
+            "reverie-kvm",
+            "--lib",
+            "--no-run",
+            "--message-format=json"
+          ],
+          "binary": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+          "binary_sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+        },
+        "phase": "ready",
+        "pid": 2562949,
+        "spec_sha256": "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf",
+        "start_ticks": 180623603,
+        "token": "801943ed0777e1a1ceef74522bfc00f76a41c183351e108774efc1bba2919089"
+      },
+      "response": {
+        "payload": {
+          "arguments": [
+            "test",
+            "--locked",
+            "--offline",
+            "-p",
+            "reverie-kvm",
+            "--lib",
+            "--no-run",
+            "--message-format=json"
+          ],
+          "binary": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+          "binary_sha256": "d112867ed5a295cf6beb3629283f541c094d76d0819298a418188bca0463ee72"
+        },
+        "phase": "exec",
+        "pid": 2562949,
+        "spec_sha256": "9b01a8900b6dec8b37f6c4d3d47769c0e3786afd71959af72c81ced28ef8f9bf",
+        "start_ticks": 180623603,
+        "token": "801943ed0777e1a1ceef74522bfc00f76a41c183351e108774efc1bba2919089"
+      },
+      "monotonic_ns": 1806236154911503,
+      "first_cpu_sample": {
+        "monotonic_ns": 1806236122277876,
+        "usage_usec": 58393,
+        "members": [
+          {
+            "pid": 2562949,
+            "start_ticks": 180623603,
+            "parent_pid": 32320,
+            "state": "S",
+            "cgroup": "/user.slice/user-212630.slice/user@212630.service/app.slice/safehermit-20260917T121506Z-2562298.service"
+          }
+        ]
+      },
+      "meaning": "Authorization sent; payload start requires actual execution evidence."
+    },
+    "final_report": {
+      "run_id": "20260917T121506Z-2562298",
+      "binary": "/usr/bin/python3",
+      "binary_source": "argv:positional-path",
+      "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "log_dir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/safehermit/brs-safehermit-20260917T121506Z-2562298-2562326-1789647307033842513",
+      "log_file": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/safehermit/brs-safehermit-20260917T121506Z-2562298-2562326-1789647307033842513/hermit.log",
+      "unit": "safehermit-20260917T121506Z-2562298",
+      "bound.wall": "APPLIED:900s",
+      "bound.cgroup": "APPLIED:MemoryMax=16G MemorySwapMax=0",
+      "bound.disk": "APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound",
+      "bound.bytes": "APPLIED:16777216 (LETHAL: the run is cgroup-killed at the cap)",
+      "bound.logfilter": "NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires",
+      "env.forwarded": "APPLIED:24 variables forwarded",
+      "note.run_record": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v2/compile/safehermit/registry/20260917T121506Z-2562298.json (best-effort; nothing depends on it)",
+      "elapsed_secs": "0",
+      "bytes_written": "280",
+      "truncated": "false",
+      "runner_exit_code": "101",
+      "unit_result": "exit-code",
+      "exec_main_pid": "2562949",
+      "exec_main_code": "1",
+      "exec_main_status": "101",
+      "exec_main_start_monotonic_usec": "1806236037419",
+      "exit_code": "101"
+    },
+    "stderr_receipt_sha256": "5199a5de0a2a3799b948d3437fd8dd7dbcc79190e4fbeea778c5e382caafe89d",
+    "loaded_systemd_library_after": {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37",
+      "mapped_filename": "/lib64/libsystemd.so.0",
+      "device": 33,
+      "inode": 1693638
+    },
+    "loaded_systemd_library_final_readback": {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37",
+      "mapped_filename": "/lib64/libsystemd.so.0",
+      "device": 33,
+      "inode": 1693638
+    },
+    "systemd_calls": [
+      {
+        "function": "sd_bus_open_user",
+        "status": 0
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 5000000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 0.00024242396466434002,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 0.00012019113637506962,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 8.748192340135574e-05,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 9.657489135861397e-05,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 0.00014360598288476467,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 9.113689884543419e-05,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": -2,
+        "seconds": 0.00014951499179005623,
+        "error_name": "org.freedesktop.systemd1.NoSuchUnit",
+        "error_message": "Unit safehermit-20260917T121506Z-2562298.service not found."
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "RefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": 1,
+        "seconds": 0.021118891891092062,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "GetUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": 1,
+        "seconds": 0.0015768189914524555,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "Id",
+        "status": 0,
+        "seconds": 4.325411282479763e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "LoadState",
+        "status": 0,
+        "seconds": 3.161793574690819e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "ActiveState",
+        "status": 0,
+        "seconds": 3.039487637579441e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "SubState",
+        "status": 0,
+        "seconds": 2.8922921046614647e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ControlGroup",
+        "status": 0,
+        "seconds": 3.130710683763027e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "MainPID",
+        "status": 0,
+        "seconds": 2.8433045372366905e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainPID",
+        "status": 0,
+        "seconds": 0.0012327420990914106,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainCode",
+        "status": 0,
+        "seconds": 2.9894988983869553e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainStatus",
+        "status": 0,
+        "seconds": 2.701999619603157e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainStartTimestampMonotonic",
+        "status": 0,
+        "seconds": 2.6679830625653267e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "CPUUsageNSec",
+        "status": 0,
+        "seconds": 4.515796899795532e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "RuntimeMaxUSec",
+        "status": 0,
+        "seconds": 2.49580480158329e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "MemoryMax",
+        "status": 0,
+        "seconds": 2.5037908926606178e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "MemorySwapMax",
+        "status": 0,
+        "seconds": 2.5378074496984482e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "IgnoreSIGPIPE",
+        "status": 0,
+        "seconds": 0.0011713390704244375,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "GetUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": 1,
+        "seconds": 2.9395101591944695e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "GetUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": 1,
+        "seconds": 0.00034013111144304276,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "Id",
+        "status": 0,
+        "seconds": 7.736613042652607e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "LoadState",
+        "status": 0,
+        "seconds": 4.1723018512129784e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "ActiveState",
+        "status": 0,
+        "seconds": 8.609890937805176e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Unit",
+        "property": "SubState",
+        "status": 0,
+        "seconds": 2.8251903131604195e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ControlGroup",
+        "status": 0,
+        "seconds": 3.240909427404404e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "MainPID",
+        "status": 0,
+        "seconds": 2.9624905437231064e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainPID",
+        "status": 0,
+        "seconds": 2.6098918169736862e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainCode",
+        "status": 0,
+        "seconds": 2.545793540775776e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainStatus",
+        "status": 0,
+        "seconds": 2.5067012757062912e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "ExecMainStartTimestampMonotonic",
+        "status": 0,
+        "seconds": 2.672988921403885e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_get_property",
+        "path": "/org/freedesktop/systemd1/unit/safehermit_2d20260917T121506Z_2d2562298_2eservice",
+        "interface": "org.freedesktop.systemd1.Service",
+        "property": "CPUUsageNSec",
+        "status": 0,
+        "seconds": 2.6600202545523643e-05,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_set_method_call_timeout",
+        "microseconds": 250000,
+        "status": 0
+      },
+      {
+        "function": "sd_bus_call_method",
+        "destination": "org.freedesktop.systemd1",
+        "path": "/org/freedesktop/systemd1",
+        "interface": "org.freedesktop.systemd1.Manager",
+        "member": "UnrefUnit",
+        "signature": "s",
+        "arguments": [
+          "safehermit-20260917T121506Z-2562298.service"
+        ],
+        "status": 1,
+        "seconds": 0.00016903411597013474,
+        "error_name": null,
+        "error_message": null
+      },
+      {
+        "function": "sd_bus_flush_close_unref",
+        "connection_closed": true
+      }
+    ],
+    "sample_count": 11,
+    "maximum_sampled_usage_usec": 149159,
+    "completed_monotonic_ns": 1806236455912874,
+    "elapsed_seconds": 0.816144485,
+    "safehermit_report_sha256": "d6783e7959ce126f7a341aed2314004d079ceb50ed0f0073cdcd8e4490ffabda"
+  }
+}

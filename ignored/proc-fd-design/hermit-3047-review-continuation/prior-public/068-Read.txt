@@ -1,0 +1,72 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01SxJVWzprKWrryALmVZaBxL",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/lib.rs",
+    "offset": 2240,
+    "limit": 60
+  }
+}
+
+Successful public tool result (exact text below):
+2240	                Syscall::Read(s) if self.sock_diag_reply_fd(guest, s.fd()) => {
+2241	                    self.handle_sock_diag_read(guest, s).await
+2242	                }
+2243	                Syscall::Read(s) => self.handle_read(guest, s).await,
+2244	                Syscall::Pread64(s) => self.handle_pread64(guest, s).await,
+2245	                Syscall::Lseek(s) => self.handle_lseek(guest, s).await,
+2246	                // AUTONOMOUS-BOT-IMPLEMENTED
+2247	                // TODO-HUMAN-REVIEW(PR-838): Review regular-file sendfile mediation.
+2248	                Syscall::Sendfile(s) => self.handle_sendfile(guest, s).await,
+2249	                // AUTONOMOUS-BOT-IMPLEMENTED
+2250	                // TODO-HUMAN-REVIEW(PR-887): Present a stable pre-4.5-kernel
+2251	                // boundary so callers use determinized read/write copying.
+2252	                Syscall::CopyFileRange(_) => Err(Error::Errno(Errno::ENOSYS)),
+2253	                // TODO-HUMAN-REVIEW(#794): vectored scatter/gather I/O, mirroring
+2254	                // read/pread64/pwrite64/writev.
+2255	                Syscall::Readv(s) if self.sock_diag_reply_fd(guest, s.fd()) => {
+2256	                    self.handle_sock_diag_readv(guest, s).await
+2257	                }
+2258	                Syscall::Readv(s) => self.handle_readv(guest, s).await,
+2259	                Syscall::Preadv(s) => self.handle_preadv(guest, s).await,
+2260	                Syscall::Preadv2(s) => self.handle_preadv2(guest, s).await,
+2261	                Syscall::Pwritev(s) => self.handle_pwritev(guest, s).await,
+2262	                Syscall::Pwritev2(s) => self.handle_pwritev2(guest, s).await,
+2263	                // AUTONOMOUS-BOT-IMPLEMENTED
+2264	                // TODO-HUMAN-REVIEW(#683)
+2265	                Syscall::Pwrite64(s) => self.handle_pwrite64(guest, s).await,
+2266	                // This syscall is advisory; fixed success preserves its API contract.
+2267	                Syscall::Fadvise64(_) => Ok(0),
+2268	                Syscall::Mmap(s) => self.handle_mmap(guest, s).await,
+2269	                Syscall::Madvise(s) => self.handle_madvise(guest, s).await,
+2270	                // AUTONOMOUS-BOT-IMPLEMENTED
+2271	                // TODO-HUMAN-REVIEW(#775)
+2272	                Syscall::Mincore(s) => self.handle_mincore(guest, s).await,
+2273	                Syscall::Munmap(s) => self.handle_munmap(guest, s).await,
+2274	                Syscall::Mremap(s) => self.handle_mremap(guest, s).await,
+2275	                Syscall::Stat(s) => self.handle_stat_family(guest, s.into()).await,
+2276	                Syscall::Lstat(s) => self.handle_stat_family(guest, s.into()).await,
+2277	                Syscall::Fstat(s) => self.handle_stat_family(guest, s.into()).await,
+2278	                Syscall::Newfstatat(s) => self.handle_stat_family(guest, s.into()).await,
+2279	                Syscall::Statx(s) => self.handle_statx(guest, s).await,
+2280	                // AUTONOMOUS-BOT-IMPLEMENTED
+2281	                // TODO-HUMAN-REVIEW(#877)
+2282	                Syscall::Readlink(s) => self.handle_readlink(guest, s).await,
+2283	                // AUTONOMOUS-BOT-IMPLEMENTED
+2284	                Syscall::Readlinkat(s) => self.handle_readlinkat(guest, s).await,
+2285	                Syscall::Fcntl(s) => self.handle_fcntl(guest, s).await,
+2286	                // AUTONOMOUS-BOT-IMPLEMENTED
+2287	                // TODO-HUMAN-REVIEW(PR-912)
+2288	                Syscall::Ioctl(s)
+2289	                    if syscalls::socket_timestamp_ioctl::is_socket_timestamp_ioctl(s) =>
+2290	                {
+2291	                    self.handle_socket_timestamp_ioctl(guest, s).await
+2292	                }
+2293	                Syscall::Ioctl(s) => self.handle_ioctl(guest, s).await,
+2294	                Syscall::Futex(s) => self.handle_futex(guest, s).await,
+2295	
+2296	                Syscall::Clone(s) => self.handle_clone_family(guest, s.into()).await,
+2297	                Syscall::Clone3(s) => self.handle_clone_family(guest, s.into()).await,
+2298	                Syscall::Fork(s) => self.handle_clone_family(guest, s.into()).await,
+2299	

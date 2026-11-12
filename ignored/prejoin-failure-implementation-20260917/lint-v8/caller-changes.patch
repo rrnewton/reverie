@@ -1,0 +1,11 @@
+--- /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v7/launch.py
++++ /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v8/launch.py
+@@ -8,7 +8,7 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN_SHA256 = 'f5fb145b36dbb665218328af20a80d1c8f8d2408a67122def5443bd56a9a4306'
++PLAN_SHA256 = '0b7000b8e573745b31ee0445dc273b254d20da86d01e5b22ce86f6ad798fe937'
+ 
+ 
+ def main():

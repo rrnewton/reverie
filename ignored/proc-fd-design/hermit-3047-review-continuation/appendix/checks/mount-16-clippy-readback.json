@@ -1,0 +1,23 @@
+{
+  "name": "mount-16-clippy",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2518423-1789626239992297918.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 69.550818,
+  "wall_seconds": 38.314669540151954,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "9a361b5a5ae23d989641cb5304cb37b7172c4839d36ab9f4f3ff7f5aecac95a9",
+  "full_source_snapshots_equal": true,
+  "expected_method_names_equal": true
+}

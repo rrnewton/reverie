@@ -1,0 +1,167 @@
+{
+  "scope": "unchanged historical authored nodes at 805; source mapping, not an executable plan or current inventory; expected counts require actual composed inventory",
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/COMMANDS.json",
+    "bytes": 212078,
+    "sha256": "ab53ca65f094bddaaf0a622b98ae84f6576a6d75e916909dea37f7ffc712e39c"
+  },
+  "validation_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-validation-preparation-20260917/REPORT.md",
+    "bytes": 18401,
+    "sha256": "62d1486636c1025f7f77ff1ca4544e9833901d100398d2ce079c6b0883ddea66"
+  },
+  "nodes": [
+    {
+      "tag": "test.hermit_unit_on_host",
+      "complete_committed_step": {
+        "group": "test",
+        "job": "hermit_unit_on_host",
+        "desc": "Test Hermit unit and binary targets (-p hermit --lib --bins)",
+        "description": "MEMORY RECALIBRATED 2026-08-25 (task remeasure_the_fourteen_stale): five current exact-command cgroup samples peaked at 1130741760 bytes; the larger width-8 historical calibration of 4.6 GiB governs. The 5-GiB scheduling baseline rounds above that floor and the 7-GiB hard cap adds 2 GiB of headroom. CPU WIDTH remains pinned at 8 for the build phase while nextest execution remains -j1. See ai_docs/dag-memory-caps-recalibration-20260825.md. TEST CONCURRENCY -j1 EXPLAINED 2026-08-26 (task goal-5-build-the-validate-parallel-scaling-model-1-to-316-threads): the -j1 is DELIBERATE, not a default. It preserves a --test-threads=1 introduced 2026-07-27 in 6044c2d39a and carried to nextest -j1 on 2026-08-10 in 3dc3a08a79, whose message says 'Preserve serial execution where Hermit tests require it'. The sibling test.detcore_unit (-p hermit-detcore --lib --bins) has never carried it, so the choice is selective. Hermit's INTEGRATION tests get the same serialization by a different route -- .config/nextest.toml caps the test-group hermit-serialized at max-threads 1 over filter package(=hermit) & kind(=test); --lib and --bins are NOT kind(=test), which is why this node needs the flag instead. That file states the reason at lines 30-32: the hermit test binaries 'use process-local mutexes to serialize Hermit executions', and several tests here do execute Hermit (for example run::detects_symlink_resolution_through_implicit_mounts and the verify::tests::* family). MEASURED COST OF THE PIN: 1.93x. Two replicates each at a6b0c37648df on the host recorded for this measurement in docs/TESTING_ENVIRONMENTS.md under Named measurement hosts, -j1 gave 27.0s and 27.3s against -j16 at 14.4s and 13.7s. WARNING FOR WHOEVER MEASURES THIS NEXT -- TWO DISTINCT KNOBS, DO NOT PUT THEM ON ONE AXIS. CARGO_BUILD_JOBS=8 bounds BUILD width; nextest -j bounds TEST concurrency. The 1.93x is attributable to -j alone; the wrapper's build width was unchanged throughout. Plotting a build width and a test concurrency on one axis produces a smooth curve that means nothing. Those figures are WARM-REPEAT times, not node times: this node takes 57.6s in a full validate. The SPEEDUP transfers, the absolute seconds do not. NOT ESTABLISHED: whether the serialization is still necessary. No commit or comment names which lib/bin test requires it. Two -j16 runs returned rc=0 and that is NOT evidence of safety, because a race that only appears under concurrency is exactly what two green runs cannot rule out. Raising this needs someone to confirm Hermit's lib and bin targets are free of the process-local mutex constraint; until then the 1.93x is not claimable.",
+        "labels": [
+          "hosted-portable"
+        ],
+        "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; CARGO_BUILD_JOBS=8 ./ci/run-with-reverie-dbt-budget.sh ./ci/run-nextest-counted.sh ${CI:+--profile ci} -p hermit --features third-party-backends,kvm-native-test-support --lib --bins -j 1",
+        "result_manifests": [
+          {
+            "kind": "structured-test-results",
+            "schema": 2,
+            "path_env": "DAGRUN_TEST_COUNTS_PATH",
+            "owner": "test.hermit_unit_on_host"
+          }
+        ],
+        "deps": [
+          "build.e2e_artifact",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "setup.nextest"
+        ],
+        "env": {
+          "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+          "NEXTEST_EXPECTED_EXECUTED": "694",
+          "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends,kvm-native-test-support\",\"--lib\",\"--bins\"]"
+        },
+        "networkonly": false,
+        "engine_only": false,
+        "timeout": 900,
+        "cpu_timeout": 7200,
+        "jobs_flag": "",
+        "jobs_env": null,
+        "hint": {
+          "resources": {},
+          "est_duration_s": 120.0,
+          "rss_baseline_bytes": 5368709120,
+          "hard_mem_max_bytes": 7516192768,
+          "classification": "cpu-bound",
+          "preferred_inner_jobs": 8,
+          "measured_effective_cores": null,
+          "measured_cpu_utilization": null
+        },
+        "fail_fast_family": "test.hermit_unit_on_host"
+      },
+      "decoded_execution_payload": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; CARGO_BUILD_JOBS=8 ./ci/run-with-reverie-dbt-budget.sh ./ci/run-nextest-counted.sh ${CI:+--profile ci} -p hermit --features third-party-backends,kvm-native-test-support --lib --bins -j 1",
+      "inventory_status": "source declaration only; no list or test execution",
+      "source": "ci/dag/validate.json at 8051335e87104f7cf832204f74920d38416393b2"
+    },
+    {
+      "tag": "test.hermit_integration_on_host",
+      "complete_committed_step": {
+        "group": "test",
+        "job": "hermit_integration_on_host",
+        "desc": "Portable Hermit integration targets (batched compile, serial test binaries)",
+        "description": "MEMORY RECALIBRATED 2026-08-25 (task remeasure_the_fourteen_stale): all five current full-population runs were red for existing test failures, so their partial peaks are censored and do not lower the estimate. The last successful historical peak was 5351632896 bytes and an older 4-GiB run OOMed. The 6-GiB baseline rounds above the successful floor and the 8-GiB hard cap preserves 2 GiB more headroom. See ai_docs/dag-memory-caps-recalibration-20260825.md.",
+        "labels": [
+          "hosted-portable"
+        ],
+        "cmd": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; ./ci/run-with-hermit-e2e-artifact.sh --require-install ./ci/run-with-reverie-dbt-budget.sh ./ci/run-nextest-counted.sh ${CI:+--profile ci} -p hermit --features third-party-backends --test aio_nr_determinism --test arch_status_determinism --test chaos_sched_yield_progress --test chaos_stress_pmu_detection --test child_time_rpc --test chown_virtual_root_identity --test clock_determinism --test clock_discipline_determinism --test container_init_deadline --test cpufreq_avg_determinism --test epoll_determinism --test epoll_pwait_zero_timeout_progress --test file_nr_determinism --test fp_reduction_determinism --test futex2_refusal --test hashseed_determinism --test inode_nr_determinism --test kernel_keyring --test key_users_determinism --test mmap_determinism --test node_vmstat_determinism --test numa_maps_determinism --test perf_event_refusal --test pidfd_creation --test process_isolation_refusals --test proc_fdinfo_determinism --test proc_locks_determinism --test procfs_determinism --test procfs_positioned_determinism --test pty_nr_determinism --test python_stdlib --test robust_futex_owner_death --test run_evidence --test self_sched_determinism --test self_schedstat_determinism --test signal_determinism --test smaps_determinism --test smaps_rollup_determinism --test softnet_stat_determinism --test sockstat_determinism --test swaps_determinism --test thp_stats_determinism --test verification_report_cli --test verification_report_consumers --test writev_determinism --test zero_copy_pipe_fallback -j 1",
+        "result_manifests": [
+          {
+            "kind": "structured-test-results",
+            "schema": 2,
+            "path_env": "DAGRUN_TEST_COUNTS_PATH",
+            "owner": "test.hermit_integration_on_host"
+          }
+        ],
+        "integration_test_binaries": [
+          "aio_nr_determinism",
+          "arch_status_determinism",
+          "chaos_sched_yield_progress",
+          "chaos_stress_pmu_detection",
+          "child_time_rpc",
+          "chown_virtual_root_identity",
+          "clock_determinism",
+          "clock_discipline_determinism",
+          "container_init_deadline",
+          "cpufreq_avg_determinism",
+          "epoll_determinism",
+          "epoll_pwait_zero_timeout_progress",
+          "file_nr_determinism",
+          "fp_reduction_determinism",
+          "futex2_refusal",
+          "hashseed_determinism",
+          "inode_nr_determinism",
+          "kernel_keyring",
+          "key_users_determinism",
+          "mmap_determinism",
+          "node_vmstat_determinism",
+          "numa_maps_determinism",
+          "perf_event_refusal",
+          "pidfd_creation",
+          "process_isolation_refusals",
+          "proc_fdinfo_determinism",
+          "proc_locks_determinism",
+          "procfs_determinism",
+          "procfs_positioned_determinism",
+          "pty_nr_determinism",
+          "python_stdlib",
+          "robust_futex_owner_death",
+          "run_evidence",
+          "self_sched_determinism",
+          "self_schedstat_determinism",
+          "signal_determinism",
+          "smaps_determinism",
+          "smaps_rollup_determinism",
+          "sockstat_determinism",
+          "softnet_stat_determinism",
+          "swaps_determinism",
+          "thp_stats_determinism",
+          "verification_report_cli",
+          "verification_report_consumers",
+          "writev_determinism",
+          "zero_copy_pipe_fallback"
+        ],
+        "deps": [
+          "build.e2e_artifact",
+          "gate.manifest",
+          "pre.reverie_pin",
+          "setup.nextest"
+        ],
+        "env": {
+          "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+          "NEXTEST_EXPECTED_EXECUTED": "158",
+          "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends\",\"--test\",\"aio_nr_determinism\",\"--test\",\"arch_status_determinism\",\"--test\",\"chaos_sched_yield_progress\",\"--test\",\"chaos_stress_pmu_detection\",\"--test\",\"child_time_rpc\",\"--test\",\"chown_virtual_root_identity\",\"--test\",\"clock_determinism\",\"--test\",\"clock_discipline_determinism\",\"--test\",\"container_init_deadline\",\"--test\",\"cpufreq_avg_determinism\",\"--test\",\"epoll_determinism\",\"--test\",\"epoll_pwait_zero_timeout_progress\",\"--test\",\"file_nr_determinism\",\"--test\",\"fp_reduction_determinism\",\"--test\",\"futex2_refusal\",\"--test\",\"hashseed_determinism\",\"--test\",\"inode_nr_determinism\",\"--test\",\"kernel_keyring\",\"--test\",\"key_users_determinism\",\"--test\",\"mmap_determinism\",\"--test\",\"node_vmstat_determinism\",\"--test\",\"numa_maps_determinism\",\"--test\",\"perf_event_refusal\",\"--test\",\"pidfd_creation\",\"--test\",\"process_isolation_refusals\",\"--test\",\"proc_fdinfo_determinism\",\"--test\",\"proc_locks_determinism\",\"--test\",\"procfs_determinism\",\"--test\",\"procfs_positioned_determinism\",\"--test\",\"pty_nr_determinism\",\"--test\",\"python_stdlib\",\"--test\",\"robust_futex_owner_death\",\"--test\",\"run_evidence\",\"--test\",\"self_sched_determinism\",\"--test\",\"self_schedstat_determinism\",\"--test\",\"signal_determinism\",\"--test\",\"smaps_determinism\",\"--test\",\"smaps_rollup_determinism\",\"--test\",\"softnet_stat_determinism\",\"--test\",\"sockstat_determinism\",\"--test\",\"swaps_determinism\",\"--test\",\"thp_stats_determinism\",\"--test\",\"verification_report_cli\",\"--test\",\"verification_report_consumers\",\"--test\",\"writev_determinism\",\"--test\",\"zero_copy_pipe_fallback\"]"
+        },
+        "networkonly": false,
+        "engine_only": false,
+        "timeout": 1200,
+        "cpu_timeout": 7200,
+        "jobs_flag": null,
+        "jobs_env": null,
+        "hint": {
+          "resources": {},
+          "est_duration_s": 300.0,
+          "rss_baseline_bytes": 6442450944,
+          "hard_mem_max_bytes": 8589934592,
+          "classification": "latency-bound",
+          "preferred_inner_jobs": null,
+          "measured_effective_cores": null,
+          "measured_cpu_utilization": null
+        },
+        "fail_fast_family": "test.hermit_integration_on_host"
+      },
+      "decoded_execution_payload": "export PATH=\"$PWD/ci/rust-script-bin:$PATH\"; export HERMIT_RUST_SCRIPT_ARTIFACT_ROOT=\"$PWD/target/ci/rust-scripts\"; export HERMIT_PREBUILT_RUST_SCRIPTS_REQUIRED=1; ./ci/run-with-hermit-e2e-artifact.sh --require-install ./ci/run-with-reverie-dbt-budget.sh ./ci/run-nextest-counted.sh ${CI:+--profile ci} -p hermit --features third-party-backends --test aio_nr_determinism --test arch_status_determinism --test chaos_sched_yield_progress --test chaos_stress_pmu_detection --test child_time_rpc --test chown_virtual_root_identity --test clock_determinism --test clock_discipline_determinism --test container_init_deadline --test cpufreq_avg_determinism --test epoll_determinism --test epoll_pwait_zero_timeout_progress --test file_nr_determinism --test fp_reduction_determinism --test futex2_refusal --test hashseed_determinism --test inode_nr_determinism --test kernel_keyring --test key_users_determinism --test mmap_determinism --test node_vmstat_determinism --test numa_maps_determinism --test perf_event_refusal --test pidfd_creation --test process_isolation_refusals --test proc_fdinfo_determinism --test proc_locks_determinism --test procfs_determinism --test procfs_positioned_determinism --test pty_nr_determinism --test python_stdlib --test robust_futex_owner_death --test run_evidence --test self_sched_determinism --test self_schedstat_determinism --test signal_determinism --test smaps_determinism --test smaps_rollup_determinism --test softnet_stat_determinism --test sockstat_determinism --test swaps_determinism --test thp_stats_determinism --test verification_report_cli --test verification_report_consumers --test writev_determinism --test zero_copy_pipe_fallback -j 1",
+      "inventory_status": "source declaration only; no list or test execution",
+      "source": "ci/dag/validate.json at 8051335e87104f7cf832204f74920d38416393b2"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+Normal first push succeeded for 12d4ce8c0bc426f1ae41416f5b4a699e2c300879 to refs/heads/codex/kvm-fatal-cleanup-20260917. The remote ref was absent before the push. The two earlier public branches remain at their exact 696f and 9db tips, and the registered local branch/HEAD/source are unchanged. No force, hook override or PR creation was used.
+
+The push ran through the unchanged observed bash/with-proxy/git boundary with normal installed hook dispatch. The repository has no tracked or existing pre-push hook; the normal dispatcher returned successfully. Actual service accounting records 0.583253 CPU seconds and 2.627108807 observed wall seconds, payload 0, complete accounting and two fresh inactive/empty readbacks.
+
+An independent ordinary fetch retrieved the new ref. FETCH_HEAD and local HEAD both equal 12d4ce8c0bc426f1ae41416f5b4a699e2c300879; all 2596 complete tree entries and the changed vm.rs bytes are identical. Complete source/input plans and actual emitted ELF bindings still match. Root owns PR creation, review publication and normal rebase landing.

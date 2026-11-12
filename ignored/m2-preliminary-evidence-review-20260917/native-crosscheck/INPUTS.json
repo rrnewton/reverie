@@ -1,0 +1,1214 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/COHORTS.json",
+    "bytes": 26194,
+    "mode": 420,
+    "sha256": "c726b693cd541b1e019b1bbaf85ae8ef60d278728ebb217a497c7cc69687ba24"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/PRELIMINARY-RESULTS.json",
+    "bytes": 23144,
+    "mode": 420,
+    "sha256": "57db5aab729fefead96b912c048cc756a77c87fb387f0a1b5b0f6b5b816b1b7c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/PRELIMINARY-REPORT.md",
+    "bytes": 3251,
+    "mode": 420,
+    "sha256": "668b7bce31572cf6a6fda1ba216317180dd625d63235964136fe6aa3a8479507"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+    "bytes": 6968,
+    "mode": 420,
+    "sha256": "07a566b90006a71bb07f1d5541d2cbc3d189de577e81fde639e333d2327d3073"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/readback.py",
+    "bytes": 17782,
+    "mode": 420,
+    "sha256": "5e49b31aa9958637aa12facf8043f5fdf37dbdd2f89ac5fb32599dfe60c4821b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/run_phase.py",
+    "bytes": 10389,
+    "mode": 420,
+    "sha256": "c94ff93c08bf8eb8d8ba5d327143bbec150a206575569c06618a6b5e4042a7a3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/common.py",
+    "bytes": 10759,
+    "mode": 420,
+    "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/observer.py",
+    "bytes": 34363,
+    "mode": 420,
+    "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/before_exec.py",
+    "bytes": 8260,
+    "mode": 420,
+    "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/unit_reference.py",
+    "bytes": 8569,
+    "mode": 420,
+    "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/launch-controls-v2.sh",
+    "bytes": 1191,
+    "mode": 420,
+    "sha256": "b511c847efff9e7ac8098e1b4f8000dd5d06b75e168db5a6efe7cc5a319eb1ce"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.py",
+    "bytes": 5598,
+    "mode": 420,
+    "sha256": "dd7a37990e075b5c56139110c31806a434bc7659dd451bf432cb53dc35602d3d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package-v2.py",
+    "bytes": 6365,
+    "mode": 420,
+    "sha256": "1f0ae478aa70498172c510c23162fc31f5a150560f12f79d1fde29d2bb5cab06"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/package-v2.patch",
+    "bytes": 2269,
+    "mode": 420,
+    "sha256": "22033b8adc8d018bddf1b7409f7c00855bf5bfa4602d1dc18f0e35f936bdf992"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-control-v2.py",
+    "bytes": 3499,
+    "mode": 420,
+    "sha256": "cdca20a59cf78e87343b11f626d716530347832c70833521933513fd87f59aa8"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-template.json",
+    "bytes": 65597,
+    "mode": 420,
+    "sha256": "e328de2997d1a5c929464cbc02eb983c31be46d337dcc66a45cbb0957ff89d0b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-plan.json",
+    "bytes": 28601,
+    "mode": 420,
+    "sha256": "2b1562205220740e32d0a1df69243665092d891851d9a4ba6632ac9b30b8936d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-context.json",
+    "bytes": 177114,
+    "mode": 420,
+    "sha256": "06dc019eac70831d6d3b36feecb435ada7038ec74b9edbfd231ba7d351e1c22b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/before.json",
+    "bytes": 109697,
+    "mode": 420,
+    "sha256": "49437387bfe99388f1441f0894e07258159120052850170dd07c7b405c272bcf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/admission.json",
+    "bytes": 14779,
+    "mode": 420,
+    "sha256": "a2932a405304ab3e9251384a485aa5a2d2c750d9716b03c527bca1e2003dca71"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/result.json",
+    "bytes": 30137,
+    "mode": 384,
+    "sha256": "884f89e9d44fe28fd62361d833039e522236b3cb0c7ad248b012beaec62ddd84"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/result.json",
+    "bytes": 9155,
+    "mode": 420,
+    "sha256": "723916d57cb56a69faef815a20b8696c9906351efe11d800651ebce9f29b150f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/payload-exit.json",
+    "bytes": 114,
+    "mode": 420,
+    "sha256": "0a511e50002e21d575f20ca501ee97f642154a74a86b4d62064f4bc628819dfe"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/before-exec.json",
+    "bytes": 801,
+    "mode": 384,
+    "sha256": "b18a43825dfec3fbec4da9d2c2ef88de36faccddcbee262411c21a8ca70566be"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/before-exec-receipt.json",
+    "bytes": 1078,
+    "mode": 420,
+    "sha256": "50ea482c2603cce1e0e2ba8dac7be39fc0a772f4248d148aa94b116b22536ba3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-readback.json",
+    "bytes": 2393,
+    "mode": 420,
+    "sha256": "a634d4b8bafa1af48a3c1d702befb56af0af07051bbff3f5752fb13e90557048"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-head.json",
+    "bytes": 943,
+    "mode": 420,
+    "sha256": "447a550ecf735c947664dbe2d7d016b3799437b4cfc9bf05cd68842c5059991a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-tree.json",
+    "bytes": 950,
+    "mode": 420,
+    "sha256": "f0d7ad792f3dc1104dcb7486b50c3bf700ee7d7e4593f6e92d8186648c16bad0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-branch.json",
+    "bytes": 954,
+    "mode": 420,
+    "sha256": "853e32f057bb93632de875f93ebaffbda37673b7cbf1014cb74c671492972f46"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-index.json",
+    "bytes": 951,
+    "mode": 420,
+    "sha256": "30f0d73c3e2e20c6a144b3e26be7664ebf9de9ccc585459bfa9f98c2ae0fc5a9"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-before-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-head.json",
+    "bytes": 941,
+    "mode": 420,
+    "sha256": "4dc38fb6fedbfe575fa90058321303bdd0d7f2f47cceb2a34cabc0f02822370f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-tree.json",
+    "bytes": 948,
+    "mode": 420,
+    "sha256": "33e509c64ce52c2ce171d7f53bdb56159095ab2e574596f3c2549dfc15cd2a42"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-branch.json",
+    "bytes": 952,
+    "mode": 420,
+    "sha256": "5c2347ca15b6e507e69142aef2c9151351ed8a917dc7f72464b271ca26ea3e50"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-index.json",
+    "bytes": 950,
+    "mode": 420,
+    "sha256": "3d3c82e1b2798818fde796c5a31edf321ea8042cb14916ccbb33fc620de9bf12"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/scm-after-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/launch.json",
+    "bytes": 2216,
+    "mode": 384,
+    "sha256": "ce72d72b3d801435d2303ac9019d5c086ab640fdfca3ad6abf36617fe638e22a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/safehermit.report",
+    "bytes": 1652,
+    "mode": 384,
+    "sha256": "77ac7212974cefc208fd6e43d8d1e96a662ce07e4e4551db3afad59355f2a125"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-prepare.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-prepare.stdout",
+    "bytes": 241,
+    "mode": 420,
+    "sha256": "bd2347df83048a15c0b36818e6988e6804ed17c0504ab2b64554ba12b46e2912"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-prepare.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-launch.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-launch.stdout",
+    "bytes": 139,
+    "mode": 420,
+    "sha256": "bf7cea2a0f55d1d1d86455649b84f251efbcd6fcd191b4bf79e6c86f768caae3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-launch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stdout",
+    "bytes": 5996,
+    "mode": 384,
+    "sha256": "d67ec17f57c20d62529aa01606087fee1bd6ae84ac818bb6d1b4abb297f85ce5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/stderr",
+    "bytes": 3074,
+    "mode": 384,
+    "sha256": "6a5a038b3f5b0b021fa049b03efca7796c89974833d4d8027fa824b11d86933e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/samples.jsonl",
+    "bytes": 23420,
+    "mode": 384,
+    "sha256": "155fbd24d2fcef8fba7b12a8d4e1910e142d4d9d02a8768e46e0eb3f7f319d44"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-0.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-0.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-0.json",
+    "bytes": 977,
+    "mode": 420,
+    "sha256": "86fb89fe74b71dbac03562c608bc98547c84ebccfb42fda7ef9eb72b42925d53"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-1.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-1.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/service-post-1.json",
+    "bytes": 977,
+    "mode": 420,
+    "sha256": "aef9e738561febf3f79f92d28dd05945a5d33444498a95192f34cd32ee39eb28"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/safehermit/brs-safehermit-20260917T230659Z-3404300-3404315-1789686419146651234/hermit.log",
+    "bytes": 3074,
+    "mode": 384,
+    "sha256": "6a5a038b3f5b0b021fa049b03efca7796c89974833d4d8027fa824b11d86933e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-detcore/safehermit/registry/20260917T230659Z-3404300.json",
+    "bytes": 525,
+    "mode": 384,
+    "sha256": "069c72b94e76ecc4569ef205a774f8530a3fcd105208c8165df4361b660678f3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-plan.json",
+    "bytes": 13092,
+    "mode": 420,
+    "sha256": "6adf3cd1fecc63fe6e75444abd68a5b782ef9dfb86d278824defd1af76303ed5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-context.json",
+    "bytes": 173398,
+    "mode": 420,
+    "sha256": "29df7d9a9e7d19092d2c7e3e5c5f3fed5c80e6bdf4691634f24a92cd8a3e0b99"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/before.json",
+    "bytes": 109703,
+    "mode": 420,
+    "sha256": "ec08654965159190f09d416d3dba60d4261cba19addd31ee6cdbabcec02d1ff0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/admission.json",
+    "bytes": 10931,
+    "mode": 420,
+    "sha256": "e4cb195ad8cb9635213177532cc1c27b4fb2deaf9e0c3e722e441f2fcfd103ad"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/result.json",
+    "bytes": 39358,
+    "mode": 384,
+    "sha256": "065464437bd05c5f48935e719b38c172282e243e22f6a1fcc6323ab09e461e18"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/result.json",
+    "bytes": 5248,
+    "mode": 420,
+    "sha256": "3022f2d2d069a8887b40433f3f2a6307ac667ac05279154fdb8718b3d915903b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/payload-exit.json",
+    "bytes": 116,
+    "mode": 420,
+    "sha256": "499ee712a8ea8e1a49c90b2b62fcf87486c84e241a25a3fcd5aadc594e5761f0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/before-exec.json",
+    "bytes": 808,
+    "mode": 384,
+    "sha256": "cebbf189e439f53648c1f78abb4ee408e4ccfa9b5615e0bd92f21f56f36f6e30"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/before-exec-receipt.json",
+    "bytes": 1085,
+    "mode": 420,
+    "sha256": "0658b56f4af928205442ee478187183152c65e330ccd26558b3c309aef9f58a1"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-readback.json",
+    "bytes": 2422,
+    "mode": 420,
+    "sha256": "1405df7819c9cd2727cdb55e5d0bf0e5c947f08b88a6e39b43b30d5ed323e979"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-head.json",
+    "bytes": 957,
+    "mode": 420,
+    "sha256": "ed02892111cd7a451e06db3fdf5dce17ffafbd166b1286d5324d002a2d244314"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-tree.json",
+    "bytes": 964,
+    "mode": 420,
+    "sha256": "88234435453de27360a1b3ff2f0bbd00326cceed8ae49b3445851fb0f4340195"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-branch.json",
+    "bytes": 968,
+    "mode": 420,
+    "sha256": "c9e295b8b59fde1cfaa2729db9c2bcde983e6f1ee67ff126aca0ee55669d0a20"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-index.json",
+    "bytes": 965,
+    "mode": 420,
+    "sha256": "285a32907e0e748bcaafe6eeae2a15fd94509aefdc333986e75f2007f2245150"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-before-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-head.json",
+    "bytes": 954,
+    "mode": 420,
+    "sha256": "7ee2472a86b9e9ebe795a85894bd0b9cc0f477e839347207897e8f6cb2ed5c13"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-tree.json",
+    "bytes": 962,
+    "mode": 420,
+    "sha256": "3f18b663c823dd1d539544a046850b5e0567ee9564d6b05dda0d4015878a7ee5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-branch.json",
+    "bytes": 967,
+    "mode": 420,
+    "sha256": "4b51147d97ec70d91031b7436a1a1fd1163e07c569f85fef4cd170f8d8e6d9a5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-index.json",
+    "bytes": 964,
+    "mode": 420,
+    "sha256": "569e73da37f1afba82c41d8e46071fcf348d8b50532c04c3d3b34ab40f3aa17f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/scm-after-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/launch.json",
+    "bytes": 2237,
+    "mode": 384,
+    "sha256": "228d733bc89bb508aee900e8752c73a447e5b7d53f6b25126bbaa0f9447769a7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/safehermit.report",
+    "bytes": 1670,
+    "mode": 384,
+    "sha256": "476bb7846fdc98c9b04149a64cc4760cf5080b6e9e03f82b480ad2bac2e3eec6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-prepare.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-prepare.stdout",
+    "bytes": 248,
+    "mode": 420,
+    "sha256": "8612ee213c4710cee625f2fd0195d9ee1e7e0a0c3018071cfedf4fa8c764f1cb"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-prepare.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-launch.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-launch.stdout",
+    "bytes": 146,
+    "mode": 420,
+    "sha256": "53a4cb95c45a17ffa2bd2b648798ee925b0f26ea4f412b6e8a4b764ef8bcbe6c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-launch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stdout",
+    "bytes": 1853,
+    "mode": 384,
+    "sha256": "0d71f46441a442f9a296e9db0c66b4dabc1c8d8b74457ce9b1083699c5107dce"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/stderr",
+    "bytes": 0,
+    "mode": 384,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/samples.jsonl",
+    "bytes": 17016,
+    "mode": 384,
+    "sha256": "2f7ef764f1ad2bb75244cbaab8108602fa0fd7daa8f6cd6c439a3791e7ec6cd8"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-0.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-0.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-0.json",
+    "bytes": 992,
+    "mode": 420,
+    "sha256": "38dbddb34ec3784fce490a455d20e116fa0404b94b454bb2d3bd9931881bb639"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-1.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-1.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/service-post-1.json",
+    "bytes": 991,
+    "mode": 420,
+    "sha256": "db9e5941456390c0a50e8eeb002da50d544d6b42854d1478a1334d535b0fd2f5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/safehermit/brs-safehermit-20260917T230735Z-3471741-3471786-1789686456004179146/hermit.log",
+    "bytes": 0,
+    "mode": 384,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-reports/safehermit/registry/20260917T230735Z-3471741.json",
+    "bytes": 532,
+    "mode": 384,
+    "sha256": "ec37eb952cefa32e1c4d01216e57e837db76f717fdbacc3d7b9a44e43888343d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-plan.json",
+    "bytes": 58851,
+    "mode": 420,
+    "sha256": "a7637e29d7c09a656af86fdbb72ab1f7b9cb9f7677d1eff12a09c640f37cd163"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-context.json",
+    "bytes": 185172,
+    "mode": 420,
+    "sha256": "4243533c689ebd2dfcaaee39a90b63f5e6d8a43274f1812aadff1cc5c929b546"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/before.json",
+    "bytes": 109711,
+    "mode": 420,
+    "sha256": "1b1fbe6d6c7185ec45b4d2029a9e5e5b7faefa4ba5d746bc284c0a72b7aec1aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/admission.json",
+    "bytes": 22058,
+    "mode": 420,
+    "sha256": "315abe8669516de27a6294a723c8ddd60a918008d659758bc3c019ba70aad3cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/result.json",
+    "bytes": 30425,
+    "mode": 384,
+    "sha256": "32af4165b4456e0e56a793eb46f944ac8e4db33ec841ddad2ecf84c248c3525f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/result.json",
+    "bytes": 2918,
+    "mode": 420,
+    "sha256": "cc6826c72389aa48529010654d69737d47bf5775631628bb8895c941fb4b2789"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/payload-exit.json",
+    "bytes": 115,
+    "mode": 420,
+    "sha256": "51db1b4ebddd6ecbf47b793cba19e7ae307beab7688c3c5e6751eaa45533cf11"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/before-exec.json",
+    "bytes": 812,
+    "mode": 384,
+    "sha256": "c13df49fabe47938c07a03de72a4938273df820e5e62ab853c23f8835d0ca5a7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/before-exec-receipt.json",
+    "bytes": 1089,
+    "mode": 420,
+    "sha256": "8b821582e0290b366d6b3edb527cb1922d37a9da1651a5c7e5d66f64c478bfbc"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-readback.json",
+    "bytes": 2437,
+    "mode": 420,
+    "sha256": "d204ca66d49b7564df3fcd99fdf057b2ae63bfad4b1eb7286736c1953d0aa77a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-binding.json",
+    "bytes": 237,
+    "mode": 420,
+    "sha256": "a4aaa1ec90e5a8af0da4e8d9c92d06a28516d383d87cc052d00b486c4a441e08"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-head.json",
+    "bytes": 965,
+    "mode": 420,
+    "sha256": "36c787e8610de3ea348ba7b38ed83ddde52511a104edde1360d2644f4d4356da"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-tree.json",
+    "bytes": 972,
+    "mode": 420,
+    "sha256": "216f2efccb33dfaa21a10b28bd3a4a377666528c8f2d991495b70ea69049bf9f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-branch.json",
+    "bytes": 977,
+    "mode": 420,
+    "sha256": "d64a51d524daad58125e3581db92c266ff10e4682c0e47492ba43627f790284a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-index.json",
+    "bytes": 973,
+    "mode": 420,
+    "sha256": "ba753b1d7f658fcdfbe57048a2dcbc2ab0193e391f80c950b448fc891e645107"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-before-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-head.json",
+    "bytes": 963,
+    "mode": 420,
+    "sha256": "ba781e59e00593d15511b4a87f41ac921cbb3cefd74d00942c8013aa0a50711c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-head.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "c609b42b6a93a76bb5253ff44c1ccbe672fb914d72e72bf645134abd2833b312"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-head.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-tree.json",
+    "bytes": 970,
+    "mode": 420,
+    "sha256": "fe0559a672462df5901bce65cb386f7cebe07619170c017b1f61c30074f4995a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-tree.stdout",
+    "bytes": 41,
+    "mode": 420,
+    "sha256": "61c04d086641701ab41705b571e18f979bb04a605a4216aabb6f4d6d110584cf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-tree.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-branch.json",
+    "bytes": 975,
+    "mode": 420,
+    "sha256": "b5321484a29f5cb2ede8e7653fa146005666dc009c1a023e9cc1d9c29ae1b5f6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-branch.stdout",
+    "bytes": 32,
+    "mode": 420,
+    "sha256": "430b34b284811d7ce404dad8580737ec82adfbc09bf92fbb178f3e542c56e1d0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-branch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-index.json",
+    "bytes": 971,
+    "mode": 420,
+    "sha256": "5d13434f41c98ee638acbf96a8c2b60d3b2ee099167c9c441e9635243e93ff3c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-index.stdout",
+    "bytes": 151614,
+    "mode": 420,
+    "sha256": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/scm-after-index.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/launch.json",
+    "bytes": 2248,
+    "mode": 384,
+    "sha256": "534261f30c5903b34096e93484cf65f424625d9fafc9863401afc14b8bfe2e2e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/safehermit.report",
+    "bytes": 1846,
+    "mode": 384,
+    "sha256": "59a80cf1984eae63e5df48e43a3e59ead5965d8c36768d9ccbe91654130cbb98"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-prepare.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-prepare.stdout",
+    "bytes": 252,
+    "mode": 420,
+    "sha256": "37d72deea01a8b09e9927eb670c7d9ec41d78c4e8f2644db9ddb83e12a7fdae0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-prepare.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-launch.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-launch.stdout",
+    "bytes": 150,
+    "mode": 420,
+    "sha256": "fbaa3502882aacf2e80c24d6acd9a72fbd3e8e905c3eac180a025992bdcc4e9e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-launch.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stdout",
+    "bytes": 13870,
+    "mode": 384,
+    "sha256": "4d4fe5500448eeef9bfe62e6e9be1b4d24167bf87c9c3cf2d7c8e659f3503381"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/stderr",
+    "bytes": 63881,
+    "mode": 384,
+    "sha256": "f1ab9856c6623d1dadfc37b2475e7354ee23a4ced7eb58961ef7d02856c278fd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/samples.jsonl",
+    "bytes": 484591,
+    "mode": 384,
+    "sha256": "6a8b428b874b8f304175f99080ef0aaee2da20e2c2bd7103d8e587e730780e8a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-0.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-0.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-0.json",
+    "bytes": 999,
+    "mode": 420,
+    "sha256": "745e3018091b126c19c17d54a03cb78bec562cce1236937f30eb7ce9e81c78cc"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-1.stdout",
+    "bytes": 79,
+    "mode": 420,
+    "sha256": "71b5daa45098f5fd7fb6d02e6c7eb43366af5950d87f4c23d0baa6e8a00a2147"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-1.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/service-post-1.json",
+    "bytes": 999,
+    "mode": 420,
+    "sha256": "5dc941a31773024af5eed6003bb1d1095fc63c60dc7a44fbc5e511f122862e31"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/safehermit/brs-safehermit-20260917T230812Z-3535287-3535319-1789686492795208830/hermit.log",
+    "bytes": 63881,
+    "mode": 384,
+    "sha256": "f1ab9856c6623d1dadfc37b2475e7354ee23a4ced7eb58961ef7d02856c278fd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/native-m2-hermit-comparators/safehermit/registry/20260917T230812Z-3535287.json",
+    "bytes": 538,
+    "mode": 384,
+    "sha256": "5c68cb08d0dca779ab210dee4b9e22edaea288ecede9dd3c5a16b208a1694f92"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.stdout",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package.stderr",
+    "bytes": 648,
+    "mode": 420,
+    "sha256": "115de83bd6854888985b35ceab2e874a5f2057997e5fe8127fcc26bb4755c539"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package-v2.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package-v2.stdout",
+    "bytes": 95,
+    "mode": 420,
+    "sha256": "f01e709d751a552c0d171b9f4dd7b32b6be79b0de363027ff03df33c33f11374"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package-v2.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-v2.status",
+    "bytes": 2,
+    "mode": 420,
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-v2.stdout",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-v2.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare_phase.py",
+    "bytes": 10445,
+    "mode": 420,
+    "sha256": "61a1666fa0b121fcf5190c7947a7d7b1ca41db5fefc29304a4eedf77c65aa894"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/source-inputs.json",
+    "bytes": 1812,
+    "mode": 420,
+    "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-systemd.json",
+    "bytes": 2618,
+    "mode": 420,
+    "sha256": "84e836c2f7e6868ffef6ba5e8e9ed2a7e09331039ce12476e2fd1b5fe6317906"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/refresh_systemd.py",
+    "bytes": 3702,
+    "mode": 420,
+    "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/observer.stdout",
+    "bytes": 159,
+    "mode": 420,
+    "sha256": "afd168b2801d7b502257996ed48a274920db4d1842ca53854d04faf1d10ca364"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-detcore/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-systemd.json",
+    "bytes": 2632,
+    "mode": 420,
+    "sha256": "504a85eb026e1e46a1c023af26d5ab035eb2ebeec87ee269d21ee8599cd5ce94"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/observer.stdout",
+    "bytes": 160,
+    "mode": 420,
+    "sha256": "1c787f8744c4e3ffeb32dcf21b15dab5de0a41d2eabbf047c67b490b36775e90"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-systemd.json",
+    "bytes": 2640,
+    "mode": 420,
+    "sha256": "e7cd958752a440199df1bcd4bb340dfd01db33ae54d144f98b5208c8d3043032"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/observer.stdout",
+    "bytes": 164,
+    "mode": 420,
+    "sha256": "190c8b33278f57602526a966ce58549f6980f44051765be1219cbf56696afea4"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-comparators/observer.stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "git",
+    "bundle",
+    "verify",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle"
+  ],
+  "exit": 0,
+  "stdout": "The bundle contains this ref:\n9db60ab95587d4cb5e0438dfeca409471eb9baf5 refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917\nThe bundle requires this ref:\n526c21cf06ef9e5098ec9002b93e40e2022e798f \nThe bundle uses this hash algorithm: sha1\n",
+  "stderr": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle is okay\n"
+}

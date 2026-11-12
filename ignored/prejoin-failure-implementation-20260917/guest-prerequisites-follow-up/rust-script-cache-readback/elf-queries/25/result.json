@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "/usr/bin/readelf",
+    "-W",
+    "-l",
+    "-d",
+    "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/deps/libserde_repr-6fe5845da9dcc335.so"
+  ],
+  "pid": 133674,
+  "exit_code": 0,
+  "wall_seconds": 0.00875501288101077,
+  "bounds": {
+    "cpu_seconds": 5,
+    "wall_seconds": 15,
+    "bytes_per_stream": 1048576
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/stdout",
+    "bytes": 3368,
+    "sha256": "42969d3b100f73940fd856a35b9d049e0e6497d9c3b4eac104b04de781c2d49f"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

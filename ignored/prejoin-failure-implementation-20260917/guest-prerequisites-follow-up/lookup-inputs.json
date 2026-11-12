@@ -1,0 +1,161 @@
+{
+  "PATH": "/home/newton/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+  "commands": [
+    {
+      "command": "cc",
+      "selected": "/usr/bin/cc",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/cc",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/local/bin/cc",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/bin/cc",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/bin/gcc",
+          "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0",
+          "executable": true
+        }
+      ]
+    },
+    {
+      "command": "as",
+      "selected": "/usr/bin/as",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/as",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/local/bin/as",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/bin/as",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/bin/as",
+          "sha256": "2870525fb59869f6f4c51cae67ffc6124f6635129db00a7d0818b84f7d069c56",
+          "executable": true
+        }
+      ]
+    },
+    {
+      "command": "ld",
+      "selected": "/usr/bin/ld",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/ld",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/local/bin/ld",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/bin/ld",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/bin/ld.bfd",
+          "sha256": "ac6bbc7393b95278ffa294cbdf18c65b5003d4e15dc805ce24a8146a8a154c42",
+          "executable": true
+        }
+      ]
+    },
+    {
+      "command": "timeout",
+      "selected": "/usr/bin/timeout",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/timeout",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/local/bin/timeout",
+          "exists": false,
+          "lexists": false,
+          "executable": false
+        },
+        {
+          "path": "/usr/bin/timeout",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/bin/timeout",
+          "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+          "executable": true
+        }
+      ]
+    },
+    {
+      "command": "rust-script",
+      "selected": "/home/newton/.cargo/bin/rust-script",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/rust-script",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/home/newton/.cargo/bin/rust-script",
+          "sha256": "90a6cc5197f2d35f9d9a7c3b30a1a8ca7dcfcfa645024fa4b7a1d565461d7a00",
+          "executable": true
+        }
+      ]
+    },
+    {
+      "command": "cargo-nextest",
+      "selected": "/home/newton/.cargo/bin/cargo-nextest",
+      "attempts_through_selected": [
+        {
+          "path": "/home/newton/.cargo/bin/cargo-nextest",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/home/newton/.cargo/bin/cargo-nextest",
+          "sha256": "ee1af2e9ce0f5eeeee6832035c0d8001a2fdb557332a0383434dfe6b38f0fe83",
+          "executable": true
+        }
+      ]
+    }
+  ],
+  "environment_keys_absent": [
+    "GCC_EXEC_PREFIX",
+    "COMPILER_PATH",
+    "LIBRARY_PATH",
+    "CPATH",
+    "C_INCLUDE_PATH",
+    "CPLUS_INCLUDE_PATH",
+    "LD_LIBRARY_PATH",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "CC",
+    "CFLAGS",
+    "CPPFLAGS",
+    "CXXFLAGS",
+    "LDFLAGS",
+    "PERL5LIB",
+    "PERLLIB",
+    "PERL5OPT",
+    "PERL_LOCAL_LIB_ROOT",
+    "PERL_USE_UNSAFE_INC",
+    "BASH_ENV",
+    "ENV"
+  ],
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea"
+}

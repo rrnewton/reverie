@@ -1,0 +1,31 @@
+The retained first native M2 results agree with their selected identities, payload exits and accounting. This is a scoped evidence audit, with no new execution. The CLI cohort remains failed.
+
+| Cohort | Exact selected identities | Raw payload exit | Recorded acceptance | Cgroup CPU seconds | Observer wall seconds |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Detcore logdiff | 76 passed / 76 | 0 | true | 0.687357 | 1.222841540 |
+| Hermit canonical-report library | 18 passed / 18 | 0 | true | 0.699037 | 1.390606713 |
+| Hermit CLI comparators | 175 passed, 1 failed / 176 | 101 | false | 1.572174 | 12.070378026 |
+
+Every COHORTS identity equals the corresponding plan expected list, selected list, binding list, admitted argv and actual stdout identity, in order. The admitted argv is the bound retained ELF followed by --exact, every selected name, --nocapture and --test-threads=1. There are no duplicate, missing, extra or ignored identities. Raw summaries report filtered populations of 626, 367 and 136 respectively. The parent owns verification of the six originating ELF inventories; this audit does not replace that verification. AUDIT.json contains every selected name and actual outcome.
+
+The sole failure is logdiff::tests::json_report_distinguishes_divergence_match_and_no_messages. Raw stderr line 88 records the panic at hermit-cli/src/bin/hermit/logdiff.rs:1337:9; the assertion's left value is String("info") and its right value is "deterministic". Raw stdout records FAILED, and the payload, wrapper, systemd terminal status and controller raw_status all retain 101. The controller error is RuntimeError('actual named native outcomes differ'); comparison_eligible and accepted are false. This is an executed assertion failure, not merely a reader refusal. No proposed successor correction is applied to these records or credited here.
+
+For all three cohorts, payload-exit records show reaped=true and local_wait_timed_out=false. There is no observer error, stop reason or forced transport termination. Final CPUUsageNSec covers the maximum retained sample and agrees exactly with the preliminary CPU values; observer elapsed_seconds agrees exactly with the preliminary wall values. Each plan keeps 30 CPU seconds, 60 wall seconds, 16 GiB memory, zero swap and a 1 MiB lethal stderr bound. Retained authenticated service properties confirm the wall, memory and swap limits. Stderr equals the retained safehermit log byte-for-byte, and each report says truncated=false. Detcore stderr contains expected comparator diagnostics; it is not empty. The CLI stderr includes both negative-control diagnostics and the real assertion panic.
+
+The authenticated services are safehermit-20260917T230659Z-3404300.service, safehermit-20260917T230735Z-3471741.service and safehermit-20260917T230812Z-3535287.service. Initial and terminal service identity, ExecMainPID and start timestamp agree. Terminal accounting records inactive/dead, MainPID=0 and an empty ControlGroup. Both retained postchecks for each service return 0 and independently record not-found/inactive/dead, MainPID=0 and an empty ControlGroup, with empty stderr. Terminal authentication therefore remains true for the failed CLI cohort without promoting its test outcome.
+
+The before/admission/context executable records agree and include these actual argv targets:
+
+- retained-detcore: a0e93e720946ed609531b133599323c76afd5d9f85f62d075a7e8283bc0f5300, 171641984 bytes, mode 0755.
+- retained-hermit: 44ceb9cb742f65d838969db0c2668896c2c4649ea2f92f325804519658a0228b, 374606576 bytes, mode 0755.
+- retained-hermit-bin: 837c888d2f785eb3bf9b93ef2036faf4aa378dc67fea7a6d2476c06ec701df46, 425053032 bytes, mode 0755.
+
+These are recorded ELF identities, not new hashes of the executables. All source references agree on tracked-source-manifest.json SHA-256 e263883c153cf2ed59c81a939dda4a48c560f34f0561fe93e2a968308535ab63. Each result records final_source_inputs_unchanged=true. Retained SCM before/after values agree at HEAD 14d63ed54b7284b7f8bc29d44c7610a809815621, its committed tree d828fca5783a8183e1cff1d42937a2beb5d4f743 and index SHA-256 ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63. The source manifest identifies the uncommitted composition separately; the committed tree must not be described as that composition. The parent owns the wider source and compile binding.
+
+The original prepare-package status 1 and traceback remain preserved: an intended module was absent from the actual list. The successor status is 0. Its source diff explicitly records the absent logdiff_report:: and analyze::phases:: prefixes and retains their later integration/analyze obligations. This audit does not independently certify absence in the parent-owned inventories or live source. Sequence status is 1, and the launch script exits on the CLI failure; the three native launch statuses are 0, 0 and 1.
+
+Goalpost-moving assessment: no selected test is removed, ignored, relabelled or accepted despite failure in these records. No bound or comparator is widened by this audit, and no assertion is changed. The preparation refusal and executed CLI failure remain failures. The explicit absence of two unit prefixes is preserved as a scope limitation, not converted into evidence for those integration paths.
+
+Requested environment values match admission. Actual inherited environment additionally contains service and shell variables; AUDIT.json records their names. The recorded cwd is the owner's checkout, not /test. These records establish selected native method execution only; they do not establish a minimal environment, container execution, actual traced guest behavior, cross-backend INFO parity, or a complete recurring node. No live source/cache was hashed and no build, test, guest, systemctl or network command was executed for this audit.
+
+INPUTS.json binds 202 retained files copied without content or mode changes under inputs/. All 185 checked references whose targets are inside the assigned evidence directory match retained bytes, size and mode; no audit check failed. References outside that directory remain recorded identities only. audit.py makes the calculations reviewable; it is not a product test. No donor closure or new pull request is claimed for https://github.com/rrnewton/hermit/pull/2302.

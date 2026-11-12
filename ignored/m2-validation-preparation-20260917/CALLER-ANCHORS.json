@@ -1,0 +1,366 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "warning": "Function association is lexical; macros and cfg attributes are not expanded. Not an emitted test inventory.",
+  "anchors": [
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 103,
+      "enclosing_or_preceding_function": "det_test_fn_without_pmu",
+      "text": "fn det_test_fn_without_pmu<F>(f: F)"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 111,
+      "enclosing_or_preceding_function": "det_test_fn_without_pmu",
+      "text": "    detcore_testutils::det_test_fn_with_config(true, f, config, detcore_testutils::expect_success)"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 114,
+      "enclosing_or_preceding_function": "det_test_fn_sequential_without_pmu",
+      "text": "fn det_test_fn_sequential_without_pmu<F>(f: F)"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 118,
+      "enclosing_or_preceding_function": "det_test_fn_sequential_without_pmu",
+      "text": "    det_test_fn_sequential_without_pmu_with_post_fork(detcore::RunsPostFork::Child, f);"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 121,
+      "enclosing_or_preceding_function": "det_test_fn_sequential_without_pmu_with_post_fork",
+      "text": "fn det_test_fn_sequential_without_pmu_with_post_fork<F>(runs_post_fork: detcore::RunsPostFork, f: F)"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 131,
+      "enclosing_or_preceding_function": "det_test_fn_sequential_without_pmu_with_post_fork",
+      "text": "    detcore_testutils::det_test_fn_with_config(true, f, config, detcore_testutils::expect_success)"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 151,
+      "enclosing_or_preceding_function": "run_madvise_policy_test",
+      "text": "    detcore_testutils::det_test_fn_with_config("
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 295,
+      "enclosing_or_preceding_function": "prctl_keepcaps_round_trips_deterministically",
+      "text": "    det_test_fn_sequential_without_pmu(|| unsafe {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 306,
+      "enclosing_or_preceding_function": "timer_slack_prctl_and_procfs_share_virtual_state",
+      "text": "    det_test_fn_sequential_without_pmu(|| unsafe {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 434,
+      "enclosing_or_preceding_function": "timer_slack_procfs_vector_io_matches_linux",
+      "text": "    det_test_fn_sequential_without_pmu(|| unsafe {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 620,
+      "enclosing_or_preceding_function": "timer_slack_procfs_binds_target_at_open",
+      "text": "    det_test_fn_sequential_without_pmu(|| unsafe {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 721,
+      "enclosing_or_preceding_function": "timer_slack_is_mediated_under_passthru_opt",
+      "text": "    detcore_testutils::det_test_fn_with_config("
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 885,
+      "enclosing_or_preceding_function": "sched_affinity_is_normalized_to_virtual_cpu_zero",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1043,
+      "enclosing_or_preceding_function": "waitid_polls_until_child_exit_and_supports_wnohang",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1212,
+      "enclosing_or_preceding_function": "ordinary_clone_child_starts_before_parent_resumes",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1235,
+      "enclosing_or_preceding_function": "ordinary_clone_parent_mode_can_resume_before_child",
+      "text": "    det_test_fn_sequential_without_pmu_with_post_fork(detcore::RunsPostFork::Parent, || {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1258,
+      "enclosing_or_preceding_function": "dup_shares_status_flags_but_not_cloexec",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1302,
+      "enclosing_or_preceding_function": "fcntl_advisory_set_lock_succeeds",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1345,
+      "enclosing_or_preceding_function": "bound_port_survives_closing_dup_alias",
+      "text": "    det_test_fn_sequential_without_pmu(move || {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1471,
+      "enclosing_or_preceding_function": "unix_autobind_names_are_deterministic",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1544,
+      "enclosing_or_preceding_function": "netlink_autobind_port_ids_are_deterministic",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1603,
+      "enclosing_or_preceding_function": "shared_futex_modes_are_supported_and_validate_bitsets",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1630,
+      "enclosing_or_preceding_function": "shared_anonymous_futex_wakes_across_processes",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1695,
+      "enclosing_or_preceding_function": "dup2_same_fd_preserves_cloexec",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1716,
+      "enclosing_or_preceding_function": "failed_exec_preserves_shared_fd_table",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1771,
+      "enclosing_or_preceding_function": "futex_wait_bitset_timeout_is_absolute_and_removes_waiter",
+      "text": "    det_test_fn_sequential_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1843,
+      "enclosing_or_preceding_function": "getrandom_intercepted",
+      "text": "    detcore_testutils::det_test_fn(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1900,
+      "enclosing_or_preceding_function": "rdrand_rdseed_is_masked",
+      "text": "    det_test_fn_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/mod.rs",
+      "line": 1923,
+      "enclosing_or_preceding_function": "network_syscalls_are_deterministic_across_five_runs",
+      "text": "    detcore_testutils::det_test_fn_with_config_repetitions("
+    },
+    {
+      "path": "detcore/tests/misc/vfork.rs",
+      "line": 21,
+      "enclosing_or_preceding_function": "clone_vfork_parent_waits_for_child_exit",
+      "text": "    super::det_test_fn_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/misc/vfork.rs",
+      "line": 49,
+      "enclosing_or_preceding_function": "vfork_parent_resumes_after_child_exec",
+      "text": "    super::det_test_fn_without_pmu(|| {"
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "line": 110,
+      "enclosing_or_preceding_function": "count_switch_points",
+      "text": "    use detcore_testutils::det_test_fn_with_config;"
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "line": 196,
+      "enclosing_or_preceding_function": "noop_mode",
+      "text": "    detcore_testutils::make_det_test_variants!(detcore, \"all\");"
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "line": 211,
+      "enclosing_or_preceding_function": "run_seq_mode",
+      "text": "            det_test_fn_with_config(true, run_seq_mode, cfg, expect_success);"
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "line": 213,
+      "enclosing_or_preceding_function": "run_seq_mode",
+      "text": "            det_test_fn_with_config(false, raw_run_par_mode_reverie, cfg, expect_success);"
+    },
+    {
+      "path": "detcore/tests/parallelism/mod.rs",
+      "line": 289,
+      "enclosing_or_preceding_function": "raw_run_par_mode",
+      "text": "    detcore_testutils::make_det_test_variants!(detcore, \"all\");"
+    },
+    {
+      "path": "detcore/tests/stats/mod.rs",
+      "line": 133,
+      "enclosing_or_preceding_function": "detcore",
+      "text": "            detcore_testutils::det_test_fn_with_config("
+    },
+    {
+      "path": "hermit-cli/tests/analyze.rs",
+      "line": 13,
+      "enclosing_or_preceding_function": null,
+      "text": "//! `tests/util/hermit_analyze_test.sh`: each scenario runs `hermit analyze"
+    },
+    {
+      "path": "hermit-cli/tests/analyze.rs",
+      "line": 160,
+      "enclosing_or_preceding_function": "workloads",
+      "text": "/// Mirrors `tests/util/hermit_analyze_test.sh`: `--analyze-seed=0 --search`,"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 19,
+      "enclosing_or_preceding_function": "schedule",
+      "text": "        .expect(\"hermit-verify should be inside the repository\")"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 25,
+      "enclosing_or_preceding_function": "hermit_verify",
+      "text": "    Command::new(env!(\"CARGO_BIN_EXE_hermit-verify\"))"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 28,
+      "enclosing_or_preceding_function": "hermit_verify",
+      "text": "        .unwrap_or_else(|error| panic!(\"failed to run hermit-verify with {args:?}: {error}\"))"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 44,
+      "enclosing_or_preceding_function": "help_lists_verification_and_trace_commands",
+      "text": "    assert_success(&output, \"hermit-verify --help\");"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 47,
+      "enclosing_or_preceding_function": "help_lists_verification_and_trace_commands",
+      "text": "    assert!(help.contains(\"Usage: hermit-verify [OPTIONS] <COMMAND>\"));"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 50,
+      "enclosing_or_preceding_function": "help_lists_verification_and_trace_commands",
+      "text": "        \"trace-replay\","
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 51,
+      "enclosing_or_preceding_function": "help_lists_verification_and_trace_commands",
+      "text": "        \"chaos-replay\","
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 63,
+      "enclosing_or_preceding_function": "schedule_diff_reports_stable_trace_distances",
+      "text": "    let output = Command::new(env!(\"CARGO_BIN_EXE_hermit-verify\"))"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 69,
+      "enclosing_or_preceding_function": "schedule_diff_reports_stable_trace_distances",
+      "text": "    assert_success(&output, \"hermit-verify sched-trace diff\");"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 88,
+      "enclosing_or_preceding_function": "schedule_inspect_reports_context_switches_per_thread",
+      "text": "    let output = Command::new(env!(\"CARGO_BIN_EXE_hermit-verify\"))"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 93,
+      "enclosing_or_preceding_function": "schedule_inspect_reports_context_switches_per_thread",
+      "text": "    assert_success(&output, \"hermit-verify sched-trace inspect\");"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 114,
+      "enclosing_or_preceding_function": "schedule_print_filters_thread_and_strips_times",
+      "text": "    let output = Command::new(env!(\"CARGO_BIN_EXE_hermit-verify\"))"
+    },
+    {
+      "path": "hermit-verify/tests/cli.rs",
+      "line": 126,
+      "enclosing_or_preceding_function": "schedule_print_filters_thread_and_strips_times",
+      "text": "    assert_success(&output, \"hermit-verify sched-trace print\");"
+    },
+    {
+      "path": "tests/BUCK",
+      "line": 165,
+      "enclosing_or_preceding_function": null,
+      "text": "        name = \"verify_replay__\" + test_target[1:],"
+    },
+    {
+      "path": "tests/BUCK",
+      "line": 193,
+      "enclosing_or_preceding_function": null,
+      "text": "        test = \"./util/hermit_analyze_test.sh\","
+    },
+    {
+      "path": "tests/BUCK",
+      "line": 309,
+      "enclosing_or_preceding_function": null,
+      "text": "# Similar to trace-replay tests but with lower preemption timeout and schedule split"
+    },
+    {
+      "path": "tests/BUCK",
+      "line": 314,
+      "enclosing_or_preceding_function": null,
+      "text": "            \"trace-replay\","
+    },
+    {
+      "path": "tests/helpers.bzl",
+      "line": 77,
+      "enclosing_or_preceding_function": null,
+      "text": "            args = [\"--verbose\", \"trace-replay\", \"--strip-times\", \"--isolate-workdir\"],"
+    },
+    {
+      "path": "tests/helpers.bzl",
+      "line": 86,
+      "enclosing_or_preceding_function": null,
+      "text": "            args = [\"--verbose\", \"trace-replay\", \"--strip-times\", \"--chaos\", \"--isolate-workdir\"],"
+    },
+    {
+      "path": "tests/helpers.bzl",
+      "line": 115,
+      "enclosing_or_preceding_function": null,
+      "text": "            args = [\"chaos-replay\", \"--isolate-workdir\"],"
+    },
+    {
+      "path": "tests/helpers.bzl",
+      "line": 166,
+      "enclosing_or_preceding_function": null,
+      "text": "        test = \"//hermetic_infra/hermit/hermit-verify:hermit-verify\","
+    }
+  ]
+}

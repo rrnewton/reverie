@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/issues/comments/5709626304"
+  ],
+  "exit": 0,
+  "utc": "2026-09-17T05:55:01.321162+00:00"
+}

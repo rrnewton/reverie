@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "env",
+    "TG_DB_PATH=/home/newton/.tg/hermit2.db",
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/ci-hub",
+    "active-work",
+    "--json"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "started_at_utc": "2026-09-17T05:45:09.521517+00:00",
+  "finished_at_utc": "2026-09-17T05:45:39.953662+00:00",
+  "elapsed_wall_seconds": 30.43218248919584,
+  "returncode": 1,
+  "stdout_bytes": 110958,
+  "stderr_bytes": 102,
+  "stdout_sha256": "134936b61911c1a5f1c13217d99b47ea3a90c80ebd9d4a3f8cd40f2c9beea6ee",
+  "stderr_sha256": "7096fba57906a08c38f2db293c03aa6a8a7fc865261e459360d2edc921d13ae4"
+}

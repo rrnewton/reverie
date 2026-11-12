@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "comment",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/native-review-comment.md"
+  ],
+  "exit": 0,
+  "utc": "2026-09-17T05:52:48.830283+00:00"
+}

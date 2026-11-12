@@ -1,0 +1,63 @@
+{
+  "status": "passed",
+  "artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "16c7ef52ccbeecf98da2e29d1d865977960cba599441b574fce9beac056a8569",
+    "bytes": 110491440,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v4/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "selected_count": 27,
+  "observed": [
+    {
+      "stage": "compile",
+      "exit": 0,
+      "aggregate_cpu_nsec": 85110235000,
+      "wall_seconds": 45.583959234
+    },
+    {
+      "stage": "list",
+      "exit": 0,
+      "aggregate_cpu_nsec": 205115000,
+      "wall_seconds": 0.906773083
+    },
+    {
+      "stage": "native",
+      "exit": 0,
+      "aggregate_cpu_nsec": 225295000,
+      "wall_seconds": 1.090184755
+    }
+  ],
+  "scope": "Native selected controls only; no Hermit guest or cross-backend qualification."
+}

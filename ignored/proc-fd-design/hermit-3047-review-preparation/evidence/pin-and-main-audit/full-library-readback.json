@@ -1,0 +1,146 @@
+{
+  "receipt_sha256": "9b701e2669aae08de50d4005d6c3b222944609781c9d94ed93f213eea380df56",
+  "all64_input_hashes_lengths_modes_resolved_paths_reverified": true,
+  "all_recorded_raw_result_files_reverified": 9,
+  "compiled_executable": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "bytes": 106866600,
+    "mode": 493
+  },
+  "suite_summary": {
+    "type": "suite",
+    "event": "failed",
+    "passed": 426,
+    "failed": 1,
+    "ignored": 0,
+    "measured": 0,
+    "filtered_out": 0,
+    "exec_time": 19.908519288
+  },
+  "failed_test_names": [
+    "vm::tests::fatal_worker_ro_delayed_waiter_qualifies"
+  ],
+  "old37_all_passed_again": true,
+  "caller_exit": 1,
+  "observer_exit": 1,
+  "payload_exit": 101,
+  "aggregate_cpu_seconds": 8.260615,
+  "wall_seconds": 21.283923545,
+  "stop_reason": null,
+  "observer_error": null,
+  "accounting_complete": true,
+  "services": [
+    {
+      "name": "native-full",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T061039Z-1596708.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": "",
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native-full-v1/native/result.json",
+      "result_sha256": "8f465b62f9ca251f8d9aee87de1927d15c7faebb1e3701b56262c6232da675dc"
+    },
+    {
+      "name": "compile",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050706Z-1111479.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": "",
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/compile/result.json",
+      "result_sha256": "cfd7ab340c167aca83931b34468c921c2a686d14808b2f398eb83907f5236e30"
+    },
+    {
+      "name": "list",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050712Z-1116766.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": "",
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/list/result.json",
+      "result_sha256": "90fd31b9a161b3ed268bfe13bebc80604043e72d38fa62eb79e774af78ebc4d4"
+    },
+    {
+      "name": "native",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050714Z-1118462.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": "",
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/native/result.json",
+      "result_sha256": "8a92e4f083b0eb6b0d5f820ff33e966d9dcac47b0ea768602adbbebce92aa666"
+    },
+    {
+      "name": "clippy",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050817Z-1201005.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": "",
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/clippy/result.json",
+      "result_sha256": "8f64bb19d54521cb0c278e35b9f5cc42d4db763f0a0f8a1cb383c0b730e6be11"
+    }
+  ],
+  "vm_source_bytes_equal_base": true,
+  "base_runtime_compared": false,
+  "failure": "thread 'vm::tests::fatal_worker_ro_delayed_waiter_qualifies' (1601731) panicked at reverie-kvm/src/vm.rs:5221:9:\nassertion `left == right` failed: waiter must be queued at its original word; waiter result: Ok((-1, Some(110)))\n  left: 0\n right: 1",
+  "helper_limit": "The top-level initialization_child registration returns when its child-only environment is absent. All52 parent-driven child cases separately report passed=true; ordinary pass counts are not a blanket claim about every conditional body.",
+  "initialization_child_verified_count": 52,
+  "no_new_run_by_auditor": true
+}

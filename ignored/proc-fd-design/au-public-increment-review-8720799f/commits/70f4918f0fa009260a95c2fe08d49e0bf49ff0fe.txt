@@ -1,0 +1,52 @@
+tree 2e544c5cebd4c4749fd4fb943c6c92906f6b3b6b
+parent 3bdf5a78570494dcd8d82efae742c73261c07fbb
+author Ryan Newton <rrnewton@gmail.com> 1789593493 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789593493 -0700
+
+wrkslots: stop blocking removal on a historical owner identity
+
+[hermit2, disk-2, claude-opus-5, devbig014, role=impl]
+
+OWNER DIRECTIVE: a removal gate keyed on which agent once owned a slot is an
+anti-pattern here. Agents die constantly, so a protocol that depends on one
+surviving into the future cannot hold, and no owner directive ever asked for
+this gate -- our own tooling invented it.
+
+WHAT IS REMOVED. Two refusals stood between an expired slot and removal:
+  "has no recorded owner process, so owner death is unknown ... preserve this
+   slot until an evidence-based migration can establish its historical owner"
+  "remove requires a proven-dead recorded owner"
+The first is deleted. The second is skipped when the owner record is absent or
+degenerate. No flag to remember, and no migration path for evidence already
+proven absent.
+
+A DEGENERATE OWNER IS AN ABSENT OWNER. The machine's init can never have owned a
+slot, so a row naming it records an ERROR, not a fact. The old code treated that
+error as evidence and then demanded proof to overturn it that the same error made
+impossible: PID 1 in /init.scope reads LIVE until reboot, so owner_state is never
+"dead". Measured across an entire 6,841-entry append-only event log: for every
+row in this state a non-degenerate identity is NEVER recorded in an `owner`
+field, in any event, ever -- the create journal itself wrote init for both
+`owner` and `coordinator_lease`.
+
+⚠️ THERE WERE TWO ROUTES, NOT ONE, and the second was found only because the
+wiring test still failed after the first was removed. The generation gate and
+the cgroup gate read the SAME bad evidence: a row naming init also names
+/init.scope, where a live process always sits, so `_owner_cgroup_is_evidence`
+refused forever on the same error. Both now consult one predicate.
+
+WHAT STILL PROTECTS WORK, unchanged: the heartbeat must be expired; the handoff
+read still runs; the direct-use check still runs; salvage still precedes delete.
+Only the guard keyed on a historical identity is gone.
+
+Test Plan: py/wrkslots/tests/test_proc_status.py 33 passed, including a CONTROL
+that fails if the unblocking escapes to properly-recorded owners, and one
+pinning that PID 1 INSIDE ITS OWN NAMESPACE is a real process and is NOT swept
+in. Lifecycle: 4 passed --
+test_remove_releases_a_slot_whose_owner_record_is_degenerate (new, the wiring
+test) plus both parametrisations of
+test_remove_refuses_a_not_proven_dead_owner_even_when_the_authority_says_dead
+and test_agent_remove_ignores_a_dead_owner_cgroup_with_a_live_process, all of
+which must and do still pass. MUTATION: reverting the wiring fails the new test
+in 2.4s -- my unit tests alone could not catch that, which is why the lifecycle
+test exists.

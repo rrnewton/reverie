@@ -1,0 +1,33 @@
+{
+  "commit": "8051335e87104f7cf832204f74920d38416393b2",
+  "context": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-generator-context.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-generator-context.json",
+    "bytes": 132264,
+    "mode": 420,
+    "sha256": "a6d8f064ba36fe08509168f4bc692d9d5accda716c94b34859b691c0f08d47a3",
+    "symlink": null
+  },
+  "generator_supplement": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/SOURCE-INPUTS-FOR-REUSE.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/SOURCE-INPUTS-FOR-REUSE.json",
+    "bytes": 705536,
+    "mode": 420,
+    "sha256": "ba0192387cd85a8bfe4f401ef0a6de92c08a8c066effe53f341602b704b23790",
+    "symlink": null
+  },
+  "generator_lock": {
+    "path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.lock",
+    "resolved_path": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects/b81ceab65609123303f94190/Cargo.lock",
+    "bytes": 29210,
+    "mode": 420,
+    "sha256": "7ac15e1160645500d16e81148b76eda918471e0b386c263064e45cb301408c1a",
+    "symlink": null
+  },
+  "cache_root": "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/projects",
+  "cache_project_count": 2,
+  "candidate_registry_count": 117,
+  "candidate_source_count": 5381,
+  "candidate_files_not_already_bound": 0,
+  "execution": "No Cargo/rustc/rust-script/build/test/guest/network execution. Python reads and git show/rev-parse only."
+}

@@ -1,0 +1,257 @@
+24294: def _cmd_classify_ownerless_validate_batch(args: argparse.Namespace) -> int:
+24295:     """Classify retained validation checkouts without locks or writes."""
+24296: 
+24297:     ordinary = tuple(args.checkouts or ())
+24298:     frozen_values = tuple(args.frozen_validate_checkouts or ())
+24299:     if bool(ordinary) == bool(frozen_values):
+24300:         raise Refusal(
+24301:             "classify-ownerless-validate-batch requires exactly one of --checkout or "
+24302:             "--frozen-validate-checkout"
+24303:         )
+24304:     frozen = bool(frozen_values)
+24305:     checkouts = frozen_values if frozen else ordinary
+24306:     records = tuple(args.completed_records)
+24307:     repositories = tuple(args.repositories)
+24308:     proofs = tuple(args.validation_proof_manifests or ())
+24309:     if not (len(checkouts) == len(records) == len(repositories)):
+24310:         raise Refusal(
+24311:             "classify-ownerless-validate-batch requires the same number of "
+24312:             "checkout, completed-record, and repository arguments"
+24313:         )
+24314:     if proofs and len(proofs) != len(checkouts):
+24315:         raise Refusal(
+24316:             "classify-ownerless-validate-batch requires one proof per checkout"
+24317:         )
+24318:     if len(checkouts) > VALIDATE_REMOVE_BATCH_LIMIT:
+24319:         raise Refusal(
+24320:             "classify-ownerless-validate-batch accepts at most "
+24321:             f"{VALIDATE_REMOVE_BATCH_LIMIT} checkouts"
+24322:         )
+24323:     if len(set(checkouts)) != len(checkouts):
+24324:         raise Refusal(
+24325:             "classify-ownerless-validate-batch received a duplicate checkout"
+24326:         )
+24327:     config = _load_config(args.project_root, args.machine)
+24328:     canonical_proofs = tuple(
+24329:         _validation_proof_manifest_path(config, value)[0] for value in proofs
+24330:     )
+24331:     if len(canonical_proofs) != len(set(canonical_proofs)):
+24332:         raise Refusal("classify-ownerless-validate-batch received a duplicate proof")
+24333:     aligned_proofs: tuple[str | None, ...] = (
+24334:         canonical_proofs
+24335:         if canonical_proofs
+24336:         else tuple(None for _checkout in checkouts)
+24337:     )
+24338:     _refuse_partial_state(config, allow_validate_batch_seals=True)
+24339:     if _validate_batch_seal_journals(config):
+24340:         raise Refusal(
+24341:             "an interrupted validation-batch seal is recorded; recover it before admission"
+24342:         )
+24343:     before_states, before_archives = _validate_global_state(config)
+24344:     before_rows = _global_rows(before_states, before_archives)
+24345:     before_paths = tuple(_outstanding_journals(config))
+24346:     create_rows = _classify_create_journals(
+24347:         config, before_states, before_archives
+24348:     )
+24349:     prepared: list[
+24350:         tuple[str, str, str, str | None, Path, _PrivateCleanupIdentity]
+24351:     ] = []
+24352:     results: list[dict[str, object]] = []
+24353:     for checkout, record, repository, proof in zip(
+24354:         checkouts, records, repositories, aligned_proofs, strict=True
+24355:     ):
+24356:         try:
+24357:             _relative, target, _allowed = _validation_recovery_target(
+24358:                 config,
+24359:                 checkout,
+24360:                 "frozen-checkout" if frozen else "checkout",
+24361:             )
+24362:             if any(
+24363:                 _path_is_within(target, row.slot_path)
+24364:                 or _path_is_within(row.slot_path, target)
+24365:                 for row in create_rows
+24366:             ):
+24367:                 raise Refusal("validation path overlaps an interrupted create")
+24368:             identity = _private_cleanup_path_identity(
+24369:                 config,
+24370:                 target,
+24371:                 allowed_modes={0o700},
+24372:                 managed_root=(
+24373:                     _frozen_validation_directory(config) if frozen else None
+24374:                 ),
+24375:             )
+24376:         except (Refusal, StateError) as exc:
+24377:             results.append(
+24378:                 {
+24379:                     "blocks_entry": True,
+24380:                     "checkout": checkout,
+24381:                     "reason": str(exc),
+24382:                     "state": "could-not-classify",
+24383:                 }
+24384:             )
+24385:         else:
+24386:             prepared.append((checkout, record, repository, proof, target, identity))
+24387:     identities = [identity for *_prefix, identity in prepared]
+24388:     if len(set(identities)) != len(identities):
+24389:         raise Refusal(
+24390:             "classify-ownerless-validate-batch resolved multiple checkouts to one directory"
+24391:         )
+24392:     budget = _ReadOnlyCommandBudget.start(
+24393:         timeout_seconds=_VALIDATE_REMOVE_BATCH_CENSUS_SECONDS,
+24394:         stdout_limit=16 * 1024 * 1024,
+24395:         stderr_limit=64 * 1024,
+24396:         input_limit=_MOUNTINFO_CENSUS_BYTES_LIMIT,
+24397:     )
+24398:     census_count = int(bool(prepared))
+24399:     if prepared:
+24400:         try:
+24401:             census = _capture_lsof_process_path_census(
+24402:                 [target for *_prefix, target, _identity in prepared], budget=budget
+24403:             )
+24404:             budget.remaining_seconds()
+24405:         except Refusal as exc:
+24406:             results.extend(
+24407:                 {
+24408:                     "blocks_entry": True,
+24409:                     "checkout": checkout,
+24410:                     "reason": str(exc),
+24411:                     "state": "could-not-classify",
+24412:                 }
+24413:                 for checkout, _record, _repo, _proof, _target, _identity in prepared
+24414:             )
+24415:             prepared = []
+24416:             census = _ProcessPathCensus((), (), owner_cgroup_complete=False)
+24417:     else:
+24418:         census = _ProcessPathCensus((), (), owner_cgroup_complete=False)
+24419:     batch = _OwnerlessValidationBatchContext(
+24420:         {identity: target for *_prefix, target, identity in prepared},
+24421:         census,
+24422:         budget,
+24423:     )
+24424:     actor = _read_process_identity(os.getpid())
+24425:     for checkout, record, repository, proof, target, _identity in prepared:
+24426:         try:
+24427:             budget.remaining_seconds()
+24428:             census.assert_slot_unused(target, None, ignore_current_process=False)
+24429:             if frozen and proof is None:
+24430:                 historical = _frozen_no_proof_disposition(
+24431:                     config,
+24432:                     target,
+24433:                     record,
+24434:                     repository,
+24435:                     batch_cleanup=batch,
+24436:                 )
+24437:                 if historical.disposition is _FrozenNoProofDisposition.CURRENT_INCOMPLETE_RETAINED:
+24438:                     results.append({
+24439:                         "blocks_entry": False,
+24440:                         "checkout": checkout,
+24441:                         "reason": "current incomplete frozen validation is exact and inactive; the checkout and no-result remain retained",
+24442:                         "state": "current-incomplete-retained",
+24443:                     })
+24444:                     continue
+24445:                 if (
+24446:                     historical.disposition
+24447:                     is _FrozenNoProofDisposition.HISTORICAL_NONBLOCKING
+24448:                 ):
+24449:                     results.append(
+24450:                         {
+24451:                             "blocks_entry": False,
+24452:                             "checkout": checkout,
+24453:                             "reason": (
+24454:                                 f"historical schema {historical.historical_schema} "
+24455:                                 "validation is exact and inactive; it remains retained"
+24456:                             ),
+24457:                             "state": "historical-retained",
+24458:                         }
+24459:                     )
+24460:                     continue
+24461:                 if historical.disposition is _FrozenNoProofDisposition.BLOCKS_ENTRY:
+24462:                     raise Refusal(
+24463:                         "frozen validation has no typed removal proof and cannot "
+24464:                         "be classified as historical"
+24465:                     )
+24466:             item_args = argparse.Namespace(
+24467:                 ownerless_validate_checkout=None if frozen else checkout,
+24468:                 ownerless_validate_cargo_home=None,
+24469:                 frozen_validate_checkout=checkout if frozen else None,
+24470:                 completed_record=record,
+24471:                 repository=repository,
+24472:                 validation_proof_manifest=proof,
+24473:                 recovery_note=None,
+24474:             )
+24475:             _ownerless_validation_journal(
+24476:                 config,
+24477:                 item_args,
+24478:                 actor,
+24479:                 before_states,
+24480:                 batch_cleanup=batch,
+24481:                 require_remote_containment=False,
+24482:             )
+24483:         except (Refusal, StateError) as exc:
+24484:             results.append(
+24485:                 {
+24486:                     "blocks_entry": True,
+24487:                     "checkout": checkout,
+24488:                     "reason": str(exc),
+24489:                     "state": "could-not-classify",
+24490:                 }
+24491:             )
+24492:         else:
+24493:             results.append(
+24494:                 {
+24495:                     "blocks_entry": False,
+24496:                     "checkout": checkout,
+24497:                     "reason": (
+24498:                         "terminal validation is exact and unused; read-only "
+24499:                         "classification left it retained"
+24500:                     ),
+24501:                     "state": "terminal-retained",
+24502:                 }
+24503:             )
+24504:     after_states, after_archives = _validate_global_state(config)
+24505:     if before_rows != _global_rows(after_states, after_archives):
+24506:         raise Refusal("active registry changed during validation classification")
+24507:     if before_paths != tuple(row.path for row in create_rows):
+24508:         raise Refusal("recovery journal set changed before validation classification")
+24509:     _assert_create_journal_classifications_stable(
+24510:         config, create_rows, after_states, after_archives
+24511:     )
+24512:     payload = {
+24513:         "classifications": results,
+24514:         "create_journals": [row.to_obj() for row in create_rows],
+24515:         "process_censuses": census_count,
+24516:         "requested": len(checkouts),
+24517:         "schema": 1,
+24518:     }
+24519:     if args.format == "json":
+24520:         print(json.dumps(payload, sort_keys=True))
+24521:     else:
+24522:         blocking = sum(result["blocks_entry"] is True for result in results)
+24523:         print(
+24524:             f"requested={len(checkouts)} blocking={blocking} "
+24525:             f"nonblocking={len(results) - blocking} process_censuses={census_count}"
+24526:         )
+24527:         for result in results:
+24528:             print(
+24529:                 f"{result['state']}: {result['checkout']} "
+24530:                 f"blocks_entry={str(result['blocks_entry']).lower()} "
+24531:                 f"reason={result['reason']}"
+24532:             )
+24533:     return 0
+24534: 
+24535: 
+24536: def _cmd_recover(
+24537:     args: argparse.Namespace,
+24538:     *,
+24539:     ownerless_batch_cleanup: _OwnerlessValidationBatchContext | None = None,
+24540:     emit: bool = True,
+24541: ) -> int:
+24542:     config = _load_config(args.project_root, args.machine)
+24543:     coordinator = _capture_caller_process(args.coordinator_pid, "coordinator")
+24544:     with _mutation_locks(config, args.wait_lock):
+24545:         recovered_partial = _recover_partial_updates(config, args.discard_partial)
+24546:         _refuse_partial_state(config, allow_validate_batch_seals=True)
+24547:         if (
+24548:             recovered_partial
+24549:             and not _outstanding_journals(config)
+24550:             and not _validate_batch_seal_journals(config)

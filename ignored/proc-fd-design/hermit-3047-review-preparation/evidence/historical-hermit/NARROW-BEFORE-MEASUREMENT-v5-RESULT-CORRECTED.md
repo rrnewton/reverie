@@ -1,0 +1,37 @@
+The approved v5 descriptor-reuse control passed natively and failed on the old KVM binary at its first ordinary file reopened on fd0. This measures the scoped descriptor identity defect. It does not yet show that the unlanded resource guard repairs it or that it explains the historical cat loader exit127.
+
+Exact execution: /usr/bin/python3 -B measure-narrow-before-v5.py, caller SHA256 7022790f4a643ef7e33b8554cc4f56a20db83a62a657067a0428a1033e6c6644, plan SHA256 6345f5aa51cbfd260349485ae9e85074a0d36c93e109527f9cb428d5f31feb82. Root released this sequence once after reviewing the fixture split, actual arguments, all 16 bound inputs and absent output root. The caller completed with exit0 because the requested stages and readbacks completed; its retained old guest exit1 remains failure.
+
+| Stage | Actual exit | Observer wall seconds | Service CPU seconds |
+| --- | ---: | ---: | ---: |
+| Compile | 0 | 0.682156094 | 0.162546 |
+| Native descriptor-reuse | 0 | 0.474349051 | 0.032743 |
+| Old KVM descriptor-reuse | 1 | 1.810566814 | 0.698181 |
+
+Total service CPU was 0.893470 seconds. The limits stayed compile30CPU/60wall, native5CPU/15wall and KVM15CPU/30wall, with the same observer, before-exec, safehermit route, memory/output bounds and environment. No service was killed for a bound or observer error. Native exact success preceded KVM launch. There was one KVM guest and no retry.
+
+The 31,160-byte compiled fixture is SHA256 fc1546ea0cbb2c1378f1d3ef1d26a5fd36203b64218fc6e6b0d39d5cff50d48c, built from C source 2981cd8521adc7e9d7be82b7e62c73814a744ad946b60251392be8c4c607bd47. Native stdout was exactly 32 bytes, “stdio-inode-descriptor-reuse-ok” followed by newline (SHA256 9b31f0a71500b74a316eb78d7e2a839fffa7094896dd4944a097fb2fcee89769); native stderr and compiler stdout/stderr were empty. The native run completed every selected narrow assertion, including file/pipe reuse at fds0–2, aliases, descriptor and ordinary-path stat, fdinfo, current-process pipe readlink, exact negative controls and inherited-stream restoration. It did not execute complete-stat-routes.
+
+The old Hermit binary remains the previously bound 400,047,928-byte ELF, SHA256 77b75f844625ebb022bf3ec691967a1acf4dfb3f84aa9fbe8c0d91fcc13c460a, source e8e5ed8ee5647c06d30f5453ee3251073dc849ed, same whole tree as landed 2a4142371e74aebea3cbd8b4c8329fc819d324f9 (tree 2a12bfa0a6a22dd036b781c6be1e46831025d885), Reverie d87a03a312421d34dee81dae71aa395b40231e63. Actual arguments were --log info run --backend kvm --strict --base-env=minimal --mount=type=tmpfs,target=/test --workdir /test --env LC_ALL=C --env TZ=UTC -- <bound-fixture> descriptor-reuse. No determinism opt-out or comparison was requested.
+
+The old KVM result is empty stdout, 49,472-byte stderr SHA256 6c0f2ea97b826227dbfcff5c95ba74abc13922054256dc35484e5d938d1040f4, exit1. Its first failure is candidate-narrow-v5/tests/c/fixtures/stdio_inode_identity.c:51: same_object(actual, expected), inside check_descriptor_stat_routes, called by stat_ordinary_descriptor(low=0). The preceding descriptor controls on original file fds3/4 and absolute nonempty pathname controls passed. The raw record establishes this exact sequence:
+
+- Lines184–185: close(0), syscall75, success.
+- Lines186–191: openat("stdio-inode-a-jzDf7y", O_RDWR), syscall76, returns guest fd0. The shared tool injects additional fstat to retrieve its metadata.
+- Lines192–193: explicit fstat(0), syscall77, succeeds.
+- Lines194–195: newfstatat(0, "", AT_EMPTY_PATH), syscall78, succeeds.
+- Line212: the C comparison of returned device/inode fields fails. The diagnostic is written through saved stderr fd12, then exit_group(1).
+
+The reported errno14 is stale from the earlier intentional EFAULT negative; neither syscall77 nor78 failed. The INFO records do not print their actual device/inode values. The measurement therefore directly proves unequal identity, while source inspection identifies the inconsistent choice: current fstat uses deterministic_stdio_inode(0), assigning fixed inode1000 regardless of the reopened object; newfstatat uses the ordinary raw-inode pool. Device mapping is shared. This is the predicted source defect at the first reuse, not the v4 followed-proc mismatch. The KVM run did not reach later fd1/2 replacements, aliases or the pipe loop. It ended after85 syscalls and9 scheduler turns, elapsed virtual time5,811,940ns.
+
+Every observer result has accounting_complete=true, observer_error=null, stop_reason=null, truncated=false, no kill_commands and an empty final cgroup. Independent subsequent systemctl queries found each service not-found/inactive/dead, MainPID0 and empty ControlGroup: safehermit-20260917T024549Z-3429962.service (compile), safehermit-20260917T024550Z-3432558.service (native), safehermit-20260917T024551Z-3435257.service (old KVM). All16 bound source/tool/binary inputs were rehashed after execution and remain unchanged. The raw results, streams, service receipts and caller dispatch/completion are retained under measurement-observer/measurement-before-narrow-5 and measurement-v5-dispatch-readback.json.
+
+No product source, target, index or ref was changed. The original cat assertion remains unchanged, no cat command or candidate product binary ran, and there was no ptrace run, verify pair, parity qualification or census update. The complete-stat-routes control is still unqualified; the v4 old-KVM failure before fd reuse remains preserved and is not superseded by the native v5 result. Both earlier native invalid-flag failures also remain preserved.
+
+The next coherent product step is the already approved candidate-narrow-v5 resource guard, followed by its real original CLI assertion and the same narrow control on the resulting product. A read-only check of current committed recovery source cd75f970d3c8aa919033094c29cc44a4b51aab62 (tree9dff0b651debe6928384e23383e68b82ce6712f7) found all six copied original Rust files byte-identical to the candidate base. No application was performed; current working files were not used as an immutable target. REVERIE-PROC-FD-STAT-PROPOSAL.md remains the separate bounded stat-route repair proposal, with capture-output and anonymous-readlink interactions explicit.
+
+Goalpost assessment: the released v5 bytes were unchanged during execution. Native success is scoped to descriptor-reuse; the broader mode was explicitly excluded in the reviewed plan and remains failed/unqualified. No assertion, exact error, comparison, log level, selected count or resource bound was relaxed after either result. There is no candidate repair success or historical loader-causation claim.
+
+Readback SHA256: 200f6aefb10f08dcc02101e616657c37341893296770eda01a63e00f5403f7c3. Current committed-source comparison SHA256: 119aa51e896e5dd9fba454df4ab7f6f690ecc6750f202056f821f9190b71c190.
+
+Hash correction: this report replaces only the mistaken readback digest in NARROW-BEFORE-MEASUREMENT-v5-RESULT.md (retained SHA256 de0f216107d01d4920a2d6aba6b412d70ed82e21fe446ca092c56a831469724e). A later source-file loop reused the reporting variable p before printing its digest. The earlier displayed digest was the original CLI source file, not the measurement readback. An independent sha256sum and the existing narrow-v5-result-binding.json both identify the unchanged 22,785-byte readback as 200f6aefb10f08dcc02101e616657c37341893296770eda01a63e00f5403f7c3. No measurement was repeated or changed, and no source was edited.

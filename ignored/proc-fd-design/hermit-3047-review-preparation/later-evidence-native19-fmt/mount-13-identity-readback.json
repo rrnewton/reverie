@@ -1,0 +1,38 @@
+{
+  "name": "mount-13-identity",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2477838-1789626202370227225.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 0.172811,
+  "wall_seconds": 0.5709730619564652,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "bf916ce85298811b93a48eacdbf8f2b9beeb19310ceadc099b25738c22a9d54b",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 678
+    }
+  ]
+}

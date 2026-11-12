@@ -1,0 +1,654 @@
+{
+  "base": "35af18f34a3238117eecac8b439ac20e13316715",
+  "callers": [
+    {
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--lib",
+        "tests::kvm_mountinfo_config_",
+        "--",
+        "--test-threads=2"
+      ],
+      "expected_methods": 4,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-01-config.py",
+      "sha256": "b15a53b045d3c1b03c27f6271f1086ae69a1942c1af33cb7b0abe57147f4e43e",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "detcore-model",
+        "--lib",
+        "procfs::tests::",
+        "--",
+        "--test-threads=2"
+      ],
+      "expected_methods": 3,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-02-parser.py",
+      "sha256": "3c1c1fb42d513dd5630db28808a6e43f2883180400231440c45b86159d7e9e66",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-03-identity.py",
+      "sha256": "f35051097a11bf955794c963f65dcf4842a73624a71b3a739192eae7c71210e3",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-04-identity.py",
+      "sha256": "f169ca5a731de24ca9c4368cc3c51b94c6879789c5d422f0ed71aa5f4fd1addf",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-05-identity.py",
+      "sha256": "5378b9ad9528f2894fa63b9beec9ca5fdbd59cf21741d4d7b5241c61dbd532e4",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-06-identity.py",
+      "sha256": "58c1c97169baa24b9caefa3c852f39b269cb7ed0e02f382754c1ddc1c55547a2",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-07-identity.py",
+      "sha256": "03d2db7e473f2e0899211c52249a4f9fb3ff4774a96fec9084ee373db47ddd97",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-08-identity.py",
+      "sha256": "745e72ce906889d1a524d0d6329a7ddb049f339d5a173297f0ba4fa0f62dac86",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-09-identity.py",
+      "sha256": "6ef990d403e68858ae9c0865e0ec6a81e35ce1e82540359ee8e657ccd3c68e0d",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-10-identity.py",
+      "sha256": "97c7b3274de8a99b54d49f607212f8987108e60d45ac17399e34201c779bbd59",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-11-identity.py",
+      "sha256": "5a6f8439ee622d570b8475df9669c6f9899b7e449686d6323332950dd5ba8e73",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_hides_backing_identity_only",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-12-identity.py",
+      "sha256": "663303c48fbfef9ca9c06190190c291a292b2fe06da59aa649adc90a50ed94c3",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-13-identity.py",
+      "sha256": "e48cb816030ab96bcfa14d64d6ae4819f2345e7e6b13b161ee4b04c700547639",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "expected_methods": 1,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-14-identity.py",
+      "sha256": "62522107f93f0a497e9b9bc75e416d20f8f53a2911a2d330c24bb98e378781a1",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-15-fmt.py",
+      "sha256": "82a44a395d55166774192304c76f84f40863d1f35ac709e6adeac3804ba4c405",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+        "--features",
+        "third-party-backends",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "name": "mount-16-clippy.py",
+      "sha256": "ac24c817ef54b0b7224a7b3129e8a2e4cf5ad86380a44f81c521dd8c9dc72328",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--offline",
+        "--message-format",
+        "json",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--lib",
+        "--bins"
+      ],
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "name": "mount-17-hermit-inventory.py",
+      "sha256": "251f9e96d88be29ec4b3b1ce287f383cf5a297ee99971e41f1eaa5f80d4748a2",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-manifest-plan",
+        "--bin",
+        "generate-validation-dag",
+        "--",
+        "--write",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/generated-validate.json"
+      ],
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-18-generate-dag.py",
+      "sha256": "e566ea225934883cbce38801e92ac548404d546869c47e39f37ea9626b6809e7",
+      "status": "already_executed"
+    },
+    {
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-manifest-plan",
+        "--bin",
+        "generate-validation-dag",
+        "--",
+        "--check"
+      ],
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-19-dag-check.py",
+      "sha256": "53979305b6fc8cff206fcf99a5c7d517ec115b285f375a32c8481d4dd3f9be19",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--bin",
+        "hermit"
+      ],
+      "delta_sha256": "bf2d4fee5ce0c59175d654671cbd3f95e701d4746ea99ea86af0b26e87766c66",
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "name": "mount-20-build-hermit.py",
+      "reused_caller": "mount-16-clippy.py",
+      "reused_sha256": "ac24c817ef54b0b7224a7b3129e8a2e4cf5ad86380a44f81c521dd8c9dc72328",
+      "sha256": "2fd7eb3dbb39bc7b1770fb232d303169081d4c7b01d8a2130de0d2b120e12c04",
+      "status": "bound_not_executed"
+    },
+    {
+      "command": [
+        "./ci/publish-hermit-e2e-artifact.sh",
+        "target/debug/hermit",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/e2e-artifact/bundles",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/e2e-artifact/hermit.path"
+      ],
+      "delta_sha256": "d75a662c18dc1b08d30123e810d553f4d346ba38bd8b27371c016d0430f956d1",
+      "expected_methods": null,
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "name": "mount-21-publish.py",
+      "reused_caller": "mount-19-dag-check.py",
+      "reused_sha256": "53979305b6fc8cff206fcf99a5c7d517ec115b285f375a32c8481d4dd3f9be19",
+      "sha256": "bec9923e31384f76be7c293f2865b68a527813f3ff5c5f5a02249de9d74abef2",
+      "status": "bound_not_executed"
+    }
+  ],
+  "clean_branch": "codex/kvm-parity-recovery-20260916",
+  "commit_actual_exit": 0,
+  "commit_cpu_seconds": 5.865382,
+  "commit_receipt_sha256": "31fc7a847123a15a214193c0ed3a8c1a116dea2b1f47ee6cb2278838844f6922",
+  "commit_wall_seconds": 5.454469581134617,
+  "committed_source_delta_sha256": "1a9b0762b7ebec6b9e58ac28dfafc663e406d60385fe346138fa7f744ecbc997",
+  "complete_cumulative_patch_sha256": "96502f9880df67b8423b1ed111c65f1f08feb0eede6c30657db25f281f92083a",
+  "cumulative_paths": [
+    "Cargo.lock",
+    "ci/configure-build-jobs.sh",
+    "ci/dag/validate.json",
+    "ci/manifest-plan/src/validation_dag_static.rs",
+    "ci/run-with-reverie-dbt-budget.sh",
+    "detcore-dbt/Cargo.toml",
+    "detcore-model/Cargo.toml",
+    "detcore-sabre/Cargo.toml",
+    "detcore/Cargo.toml",
+    "detcore/src/syscalls.rs",
+    "detcore/src/syscalls/files.rs",
+    "detcore/src/syscalls/namespace.rs",
+    "detcore/src/tool_local.rs",
+    "detcore/tests/testutils/Cargo.toml",
+    "hermit-cli/Cargo.toml",
+    "hermit-cli/src/lib.rs",
+    "hermit-cli/tests/cli.rs",
+    "hermit-install/Cargo.toml",
+    "liteinst-runtime-build/Cargo.lock",
+    "liteinst-runtime-build/runtime/Cargo.toml",
+    "tests/c/fixtures/stdio_inode_identity.c"
+  ],
+  "execution_order": [
+    "mount-19-dag-check.py",
+    "mount-01-config.py",
+    "mount-02-parser.py",
+    "mount-03-identity.py",
+    "mount-04-identity.py",
+    "mount-05-identity.py",
+    "mount-06-identity.py",
+    "mount-07-identity.py",
+    "mount-08-identity.py",
+    "mount-09-identity.py",
+    "mount-10-identity.py",
+    "mount-11-identity.py",
+    "mount-12-identity.py",
+    "mount-13-identity.py",
+    "mount-14-identity.py",
+    "mount-15-fmt.py",
+    "mount-16-clippy.py",
+    "mount-17-hermit-inventory.py",
+    "mount-20-build-hermit.py",
+    "mount-21-publish.py"
+  ],
+  "head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "hermit_inventory_expected": 634,
+  "native_methods_expected": 19,
+  "no_guest_in_sequence": true,
+  "parent": "df8f668f9956797ffaeb72a26a938619c0be5df9",
+  "post_commit_native_tests_inventory_clippy_cli_build_not_started": true,
+  "scope_inactive_empty": true,
+  "source_binding_delta_sha256": "11783ea187e27a8577e3dbc358c85550ddd94bd6cc2332d7b63ed3858f577778",
+  "source_binding_sha256": "0af91ecfb34b5629754620d8d9727c6817b87fe8298bbfbf4a20fc8045b28e5e",
+  "tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "tree_entries": 1726,
+  "tree_entries_sha256": "fff1d70cc2dfa9a44b04acce2f6be77714ea3eec1c72d687c3a5b6f1d035b58d"
+}

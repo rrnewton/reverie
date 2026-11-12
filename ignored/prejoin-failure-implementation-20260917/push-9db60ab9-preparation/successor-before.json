@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "/usr/bin/git",
+    "ls-remote",
+    "--heads",
+    "origin",
+    "refs/heads/codex/kvm-prejoin-failure-20260917",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917",
+    "refs/heads/main"
+  ],
+  "exit": 0,
+  "stdout_sha256": "e1d9d2764da730abe7628cc1822361c90c9c01e842a7947cb37abc483bdf4671",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

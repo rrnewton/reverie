@@ -1,0 +1,226 @@
+{
+  "created_at": "2026-09-17T10:05:50.202539+00:00",
+  "scope": "preparation only; ignored artifacts only; no source/ref/registry mutation or execution",
+  "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+  "branch": "codex/kvm-parity-recovery-20260916",
+  "head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
+  "observed_public_main": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+  "source_path": "hermit-cli/src/bin/hermit/global_opts.rs",
+  "base_and_live_sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f",
+  "candidate_sha256": "34506e6cdd47915e2e6d6b64563e271e6a3df14d5ecf1de99bb20d764bda1d6a",
+  "patch_sha256": "5ccc72192d987ef953213f4561d43983393e82d50862eff2d5027b05f099a44e",
+  "mode": "100644",
+  "handoff": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/HANDOFF.md",
+    "bytes": 2107,
+    "sha256": "f3d4023258cb7644c9a919b07a99f3c7fa0aec330f246b010c2406aa4c07bd3c"
+  },
+  "current_to_observed_main_changes": [
+    "M\tagent-utils",
+    "M\tci/manifest-plan/src/ledger/schema10/tests.rs",
+    "M\tscripts/lib/fixtures/schema10-matched-cell.json",
+    "M\tscripts/lib/validate_cell_results.rs",
+    "M\tscripts/lib/validate_classification.rs",
+    "M\ttests/backend-parity/test_verify_tier_evidence.py"
+  ],
+  "callers": {
+    "hermit-cli/src/bin/hermit/global_opts.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/queue-refresh-20260917-0918/next-log-guard/callers/hermit-cli/src/bin/hermit/global_opts.rs",
+      "sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f",
+      "bytes": 9193,
+      "git_source": "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/global_opts.rs"
+    },
+    "hermit-cli/src/bin/hermit/main.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/queue-refresh-20260917-0918/next-log-guard/callers/hermit-cli/src/bin/hermit/main.rs",
+      "sha256": "c6d92d4cb812c0646f588fb059bfeacf9b0cc0bc83a03d29b514527a9390b776",
+      "bytes": 54999,
+      "git_source": "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/main.rs"
+    },
+    "hermit-cli/src/bin/hermit/analyze/rundata.rs": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/queue-refresh-20260917-0918/next-log-guard/callers/hermit-cli/src/bin/hermit/analyze/rundata.rs",
+      "sha256": "26ff89c132cad78300b6d004f9a4f9d3c77def82a7b3ffaf5a2a602d9ffd4dd1",
+      "bytes": 17309,
+      "git_source": "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/analyze/rundata.rs"
+    },
+    "hermit-cli/Cargo.toml": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/queue-refresh-20260917-0918/next-log-guard/callers/hermit-cli/Cargo.toml",
+      "sha256": "ff312f2f540a65be0567aa78bf9e0b90290b2f4e29017854c8c4e38b2fb39697",
+      "bytes": 4122,
+      "git_source": "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/Cargo.toml"
+    }
+  },
+  "read_only_commands": [
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "4392560a4f6e06f136b5a74b0418294a6cdda28a\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-parity-recovery-20260916\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=normal"
+      ],
+      "exit": 0,
+      "stdout": "?? HANDOFF.md\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "merge-base",
+        "--is-ancestor",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "31289f45984e4f9de29e25a4463d0936976e8b5d"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "merge-base",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "31289f45984e4f9de29e25a4463d0936976e8b5d"
+      ],
+      "exit": 0,
+      "stdout": "231228c010541561a81dcb1353ac200f5c791b1a\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "diff",
+        "--name-status",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "31289f45984e4f9de29e25a4463d0936976e8b5d"
+      ],
+      "exit": 0,
+      "stdout": "M\tagent-utils\nM\tci/manifest-plan/src/ledger/schema10/tests.rs\nM\tscripts/lib/fixtures/schema10-matched-cell.json\nM\tscripts/lib/validate_cell_results.rs\nM\tscripts/lib/validate_classification.rs\nM\ttests/backend-parity/test_verify_tier_evidence.py\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show-ref",
+        "--verify",
+        "--quiet",
+        "refs/rescue/kvm-parity-recovery-439-before-log-guard-20260917"
+      ],
+      "exit": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/global_opts.rs"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout_bytes": 9193,
+      "stdout_sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f",
+      "retained_in_callers": true
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/main.rs"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout_bytes": 54999,
+      "stdout_sha256": "c6d92d4cb812c0646f588fb059bfeacf9b0cc0bc83a03d29b514527a9390b776",
+      "retained_in_callers": true
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/src/bin/hermit/analyze/rundata.rs"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout_bytes": 17309,
+      "stdout_sha256": "26ff89c132cad78300b6d004f9a4f9d3c77def82a7b3ffaf5a2a602d9ffd4dd1",
+      "retained_in_callers": true
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show",
+        "4392560a4f6e06f136b5a74b0418294a6cdda28a:hermit-cli/Cargo.toml"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout_bytes": 4122,
+      "stdout_sha256": "ff312f2f540a65be0567aa78bf9e0b90290b2f4e29017854c8c4e38b2fb39697",
+      "retained_in_callers": true
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "show",
+        "31289f45984e4f9de29e25a4463d0936976e8b5d:hermit-cli/src/bin/hermit/global_opts.rs"
+      ],
+      "exit": 0,
+      "stderr": "",
+      "stdout_bytes": 9193,
+      "stdout_sha256": "c6ba4919c06c4c4cb6e1498101719fd62f8a85f789574b8b40c01ef37a9cd26f",
+      "retained_in_callers": true
+    }
+  ],
+  "selected_test_names": [
+    "global_opts::tests::host_log_open_refuses_a_symlink_without_changing_its_target",
+    "global_opts::tests::host_log_open_creates_a_regular_file_and_keeps_the_opened_object",
+    "global_opts::tests::host_log_open_truncates_an_existing_regular_file"
+  ],
+  "tests_executed": false,
+  "build_executed": false,
+  "slot_advancement_executed": false,
+  "registry_generation_freshly_read": false
+}

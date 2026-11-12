@@ -1,0 +1,10 @@
+{
+  "ref": "refs/rescue/kvm-prejoin-9db-before-cleanup-followup-20260917",
+  "tip": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "bundle": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/9db-before-cleanup-followup.bundle",
+  "bundle_bytes": 50950,
+  "bundle_sha256": "9e09e636e797ecc4622b747aaede52a28876147e31b2aa9c71e3bd6a78bc073d",
+  "prerequisite": "526c21cf06ef9e5098ec9002b93e40e2022e798f",
+  "tree_entries": 2596,
+  "tree_stream_sha256": "c8f69361f0de7a4240e3ec93932f62935218ff1db6e54ed040e31fccd07f26a6"
+}

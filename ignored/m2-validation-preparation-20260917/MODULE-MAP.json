@@ -1,0 +1,119 @@
+{
+  "base": "8051335e87104f7cf832204f74920d38416393b2",
+  "preview": "M2 v5",
+  "scope": "Source mappings and test-name obligations only, not emitted inventory or execution results",
+  "modules": [
+    {
+      "paths": [
+        "detcore/src/logdiff.rs"
+      ],
+      "package": "hermit-detcore",
+      "target": "library detcore",
+      "nodes": [
+        "test.detcore_unit"
+      ],
+      "required_source_controls": [
+        "default_comparison_preserves_numeric_values",
+        "public_file_comparisons_reject_invalid_utf8_on_either_side",
+        "legacy_comparison_options_are_deleted_and_default_is_canonical_info",
+        "bitwise_info_v1_binds_the_complete_policy",
+        "test_full_trace_detects_unnormalized_timing_difference"
+      ]
+    },
+    {
+      "paths": [
+        "detcore/tests/testutils/src/lib.rs"
+      ],
+      "package": "detcore-testutils",
+      "target": "library",
+      "nodes": [
+        "test.regular_crates"
+      ],
+      "required_source_controls": [
+        "commit_comparison_preserves_numeric_values_and_record_count"
+      ],
+      "real_tracee_consumers": [
+        "test.detcore_misc",
+        "super.post_fork_scheduling_diagnostics",
+        "super.network_syscall_determinism_diagnostic"
+      ],
+      "caveat": "det_test_cmd has no captured logs; test.detcore_parallel skips the Detcore macro variants"
+    },
+    {
+      "paths": [
+        "hermit-cli/src/bin/hermit/verify.rs",
+        "hermit-cli/src/bin/hermit/run.rs",
+        "hermit-cli/src/bin/hermit/record_start.rs",
+        "hermit-cli/src/bin/hermit/backends.rs",
+        "hermit-cli/src/bin/hermit/analyze/phases.rs"
+      ],
+      "package": "hermit",
+      "target": "binary hermit",
+      "nodes": [
+        "test.hermit_unit",
+        "test.hermit_modes",
+        "test.cli",
+        "quick.verify_smoke",
+        "quick.record_replay_smoke",
+        "super.record_replay_matrix_diagnostic",
+        "super.chaos_hello_race_verification_diagnostic",
+        "super.pmu_analyze_hello_race_stress_calibrated_skid"
+      ],
+      "required_source_controls": [
+        "default_verification_diverges_on_numeric_only_log_difference",
+        "comparison_spec_binds_canonical_policy_and_preserves_historical_reports",
+        "comparator_choice_does_not_depend_on_the_backend"
+      ]
+    },
+    {
+      "paths": [
+        "hermit-cli/src/bin/hermit/logdiff.rs"
+      ],
+      "package": "hermit",
+      "target": "binary hermit",
+      "nodes": [
+        "test.hermit_unit"
+      ],
+      "required_source_controls": [
+        "plain_logdiff_compares_all_info_without_json_or_compatibility_flags",
+        "plain_follow_compares_all_info_without_json_or_compatibility_flags",
+        "canonical_follow_refuses_invalid_utf8",
+        "canonical_json_refuses_relaxed_comparisons_and_starts_as_no_result"
+      ]
+    },
+    {
+      "paths": [
+        "hermit-cli/src/canonical_verdict.rs",
+        "hermit-cli/src/logdiff_report.rs"
+      ],
+      "changed": false,
+      "package": "hermit",
+      "target": "library",
+      "nodes": [
+        "test.hermit_unit",
+        "test.hermit_integration"
+      ],
+      "caveat": "Historical stripped-report decoding must remain; active constructor policy is canonical only. Integration tests include separate verification-report CLI and consumer targets."
+    },
+    {
+      "paths": [
+        "hermit-verify/src/common/verify.rs",
+        "hermit-verify/src/trace_replay.rs",
+        "hermit-verify/src/chaos_replay.rs",
+        "hermit-verify/src/use_case.rs",
+        "hermit-verify/src/use_case/run_usecase.rs"
+      ],
+      "package": "hermit-verify",
+      "target": "binary hermit-verify and integration cli",
+      "nodes": [
+        "test.regular_crates"
+      ],
+      "required_source_controls": [
+        "log_diff_command_requires_canonical_info_without_filters",
+        "log_diff_command_preserves_default_diagnostic_history"
+      ],
+      "caveat": "Existing CLI integration methods are help/schedule operations. Actual run/trace/chaos wrapper routes are declared in tests/BUCK and helpers.bzl, not selected by the current DAG."
+    }
+  ],
+  "complete_affected_source_name_list": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/AFFECTED-SOURCE-TEST-NAMES-v5.json"
+}

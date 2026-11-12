@@ -1,0 +1,2398 @@
+{
+  "source": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+  "landed_same_tree": "2a4142371e74aebea3cbd8b4c8329fc819d324f9",
+  "tree": "2a12bfa0a6a22dd036b781c6be1e46831025d885",
+  "reverie": "d87a03a312421d34dee81dae71aa395b40231e63",
+  "source_files": [
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "detcore/src/scheduler.rs",
+      "blob": "e8038325b066901cad527df9996cbb3518c123f3",
+      "bytes": 349500,
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "detcore/src/lib.rs",
+      "blob": "4a945cec6301aaa529fa72a1e940ffa3413930c0",
+      "bytes": 162115,
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "detcore/src/tool_global.rs",
+      "blob": "5c7017b67167f9001ce39ad6b23c033ce568e768",
+      "bytes": 245704,
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "detcore/src/logdiff.rs",
+      "blob": "3c3e916c8db6f2193ee1e4face9887afb81cc3e7",
+      "bytes": 193571,
+      "sha256": "d1021d8334488bbd3a8fc2f66228fc7b20f161482204ae8f592a5ef6226358eb"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "hermit-cli/src/lib.rs",
+      "blob": "ce9a8cb68fb007db1258501911a3c7a4a1d63b7f",
+      "bytes": 194652,
+      "sha256": "a5f6b9e8a8fefa2891359d3106f998deec0b029dfa2d6c94ba3af099ee2486c1"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+      "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+      "path": "tests/e2e/determinism-stress/fork_tree.c",
+      "blob": "a95beaaa0ebe2696627a9697196001c6907e0a15",
+      "bytes": 3917,
+      "sha256": "04cd48f271f152353ca330c0cb703b5e7cc2012397c0c6649db05f9ff176b6c2"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/reverie",
+      "commit": "d87a03a312421d34dee81dae71aa395b40231e63",
+      "path": "reverie/src/guest.rs",
+      "blob": "fb4de8c2b10dd59031f07623f537528cfc7aecfa",
+      "bytes": 19585,
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/reverie",
+      "commit": "d87a03a312421d34dee81dae71aa395b40231e63",
+      "path": "reverie-kvm/src/runtime.rs",
+      "blob": "b289ec97da382c588ae6ad2a81d845c3f0f35403",
+      "bytes": 146482,
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/reverie",
+      "commit": "d87a03a312421d34dee81dae71aa395b40231e63",
+      "path": "reverie-kvm/src/executor.rs",
+      "blob": "ede5cef439a98d066d54dccc7c870ad09527064b",
+      "bytes": 1321368,
+      "sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878"
+    },
+    {
+      "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/reverie",
+      "commit": "d87a03a312421d34dee81dae71aa395b40231e63",
+      "path": "reverie-kvm/src/vm.rs",
+      "blob": "13aeec30c28f15cb96525f342261efde290d792f",
+      "bytes": 279455,
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d"
+    }
+  ],
+  "retained_input_reports": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/CORRECTED-PILOT-RESULTS.md",
+      "bytes": 2318,
+      "sha256": "24fe5406bb90c88207069b0bf9874fef768079fd41fad8c84d5eb11039306201"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/corrected-execution-readback.json",
+      "bytes": 16245,
+      "sha256": "17eeb2138687c16b8cbef3cc741f2ff414e783279073fcf2f17d3c2d3d3b8482"
+    }
+  ],
+  "authoritative_verification_report": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+    "bytes": 1916,
+    "sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695"
+  },
+  "official_verdict": "diverged",
+  "binary_sha256": "77b75f844625ebb022bf3ec691967a1acf4dfb3f84aa9fbe8c0d91fcc13c460a",
+  "raw_log_readback": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run1_log_8vfmV",
+      "bytes": 552285,
+      "sha256": "5710d7f1443d07b9780f8b154477f9ad8696b4749f2a889e5e6473a06c04e1d2",
+      "backend": "kvm",
+      "run": 1,
+      "info_records": 2911,
+      "signals": [
+        {
+          "record_one_based": 728,
+          "message": "INFO detcore::scheduler: [dtid 4] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1159,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1160,
+          "message": "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake."
+        },
+        {
+          "record_one_based": 1367,
+          "message": "INFO detcore::scheduler: [dtid 4] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1798,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2005,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2006,
+          "message": "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake."
+        },
+        {
+          "record_one_based": 2426,
+          "message": "INFO detcore::scheduler: [dtid 12] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2633,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2847,
+          "message": "INFO detcore::scheduler: [dtid 12] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2857,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2867,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2877,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2884,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        }
+      ],
+      "inbound_signal_callbacks": 0,
+      "scheduler_sigchld_attempts": 12,
+      "esrch_records": 2,
+      "structured_commits": [
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 0,
+          "virtual_nanoseconds": 1767225600000000000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 1,
+          "virtual_nanoseconds": 1767225600000500000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 2,
+          "virtual_nanoseconds": 1767225600001338650,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 3,
+          "virtual_nanoseconds": 1767225600001904400,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 4,
+          "virtual_nanoseconds": 1767225600002988560,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 5,
+          "virtual_nanoseconds": 1767225600003738950,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 6,
+          "virtual_nanoseconds": 1767225600004518370,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 7,
+          "virtual_nanoseconds": 1767225600005268500,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 8,
+          "virtual_nanoseconds": 1767225600006018890,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 9,
+          "virtual_nanoseconds": 1767225600006798310,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 10,
+          "virtual_nanoseconds": 1767225600007548430,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 11,
+          "virtual_nanoseconds": 1767225600008327850,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 12,
+          "virtual_nanoseconds": 1767225600008827850,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 13,
+          "virtual_nanoseconds": 1767225600009577980,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 14,
+          "virtual_nanoseconds": 1767225600010328370,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 15,
+          "virtual_nanoseconds": 1767225600011107790,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 16,
+          "virtual_nanoseconds": 1767225600011857910,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 17,
+          "virtual_nanoseconds": 1767225600012637330,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 18,
+          "virtual_nanoseconds": 1767225600013137330,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 19,
+          "virtual_nanoseconds": 1767225600013916480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 20,
+          "virtual_nanoseconds": 1767225600014416480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 21,
+          "virtual_nanoseconds": 1767225600015166610,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 22,
+          "virtual_nanoseconds": 1767225600015917000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 23,
+          "virtual_nanoseconds": 1767225600016696420,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 24,
+          "virtual_nanoseconds": 1767225600017446540,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 25,
+          "virtual_nanoseconds": 1767225600018225960,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 26,
+          "virtual_nanoseconds": 1767225600018725960,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 27,
+          "virtual_nanoseconds": 1767225600019505110,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 28,
+          "virtual_nanoseconds": 1767225600020005110,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 29,
+          "virtual_nanoseconds": 1767225600020755170,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 30,
+          "virtual_nanoseconds": 1767225600021534080,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 31,
+          "virtual_nanoseconds": 1767225600022284200,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 32,
+          "virtual_nanoseconds": 1767225600023063620,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 33,
+          "virtual_nanoseconds": 1767225600023563620,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 34,
+          "virtual_nanoseconds": 1767225600024342770,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 35,
+          "virtual_nanoseconds": 1767225600024842770,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 36,
+          "virtual_nanoseconds": 1767225600025592830,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 38,
+          "virtual_nanoseconds": 1767225600026343600,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 39,
+          "virtual_nanoseconds": 1767225600027122750,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 40,
+          "virtual_nanoseconds": 1767225600027622750,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 41,
+          "virtual_nanoseconds": 1767225600028372810,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 42,
+          "virtual_nanoseconds": 1767225600029123580,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 43,
+          "virtual_nanoseconds": 1767225600029623580,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 44,
+          "virtual_nanoseconds": 1767225600030373640,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 45,
+          "virtual_nanoseconds": 1767225600031124410,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 46,
+          "virtual_nanoseconds": 1767225600031624410,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 47,
+          "virtual_nanoseconds": 1767225600032374480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 48,
+          "virtual_nanoseconds": 1767225600033125250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 49,
+          "virtual_nanoseconds": 1767225600033625250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 50,
+          "virtual_nanoseconds": 1767225600034375320,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 51,
+          "virtual_nanoseconds": 1767225600034875320,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 52,
+          "virtual_nanoseconds": 1767225600035625390,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 53,
+          "virtual_nanoseconds": 1767225600036189250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 54,
+          "virtual_nanoseconds": 1767225600036940090,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        }
+      ],
+      "noncommit_records": [
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 37, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(4)), owner: None, exit_class: Sigchld }"
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run2_log_HGw8D",
+      "bytes": 551917,
+      "sha256": "db103881777e43daece402cbefa818303d6c8a2a18453fdd78c8872bc929dba0",
+      "backend": "kvm",
+      "run": 2,
+      "info_records": 2909,
+      "signals": [
+        {
+          "record_one_based": 728,
+          "message": "INFO detcore::scheduler: [dtid 4] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1159,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1366,
+          "message": "INFO detcore::scheduler: [dtid 4] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1797,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2004,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2424,
+          "message": "INFO detcore::scheduler: [dtid 12] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2631,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2845,
+          "message": "INFO detcore::scheduler: [dtid 12] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2855,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2865,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2875,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2882,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        }
+      ],
+      "inbound_signal_callbacks": 0,
+      "scheduler_sigchld_attempts": 12,
+      "esrch_records": 0,
+      "structured_commits": [
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 0,
+          "virtual_nanoseconds": 1767225600000000000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 1,
+          "virtual_nanoseconds": 1767225600000500000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 2,
+          "virtual_nanoseconds": 1767225600001338650,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 3,
+          "virtual_nanoseconds": 1767225600001904400,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 4,
+          "virtual_nanoseconds": 1767225600002988560,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 5,
+          "virtual_nanoseconds": 1767225600003738950,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 6,
+          "virtual_nanoseconds": 1767225600004518370,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 7,
+          "virtual_nanoseconds": 1767225600005268500,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 8,
+          "virtual_nanoseconds": 1767225600006018890,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 9,
+          "virtual_nanoseconds": 1767225600006798310,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 10,
+          "virtual_nanoseconds": 1767225600007548430,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 11,
+          "virtual_nanoseconds": 1767225600008327850,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 12,
+          "virtual_nanoseconds": 1767225600008827850,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 13,
+          "virtual_nanoseconds": 1767225600009577980,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 14,
+          "virtual_nanoseconds": 1767225600010328370,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 15,
+          "virtual_nanoseconds": 1767225600011107790,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 16,
+          "virtual_nanoseconds": 1767225600011857910,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 17,
+          "virtual_nanoseconds": 1767225600012637330,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 18,
+          "virtual_nanoseconds": 1767225600013137330,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 19,
+          "virtual_nanoseconds": 1767225600013916480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 20,
+          "virtual_nanoseconds": 1767225600014416480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 21,
+          "virtual_nanoseconds": 1767225600015166610,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 22,
+          "virtual_nanoseconds": 1767225600015917000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 23,
+          "virtual_nanoseconds": 1767225600016696420,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 24,
+          "virtual_nanoseconds": 1767225600017446540,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 25,
+          "virtual_nanoseconds": 1767225600018225960,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 26,
+          "virtual_nanoseconds": 1767225600018725960,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 27,
+          "virtual_nanoseconds": 1767225600019505110,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 28,
+          "virtual_nanoseconds": 1767225600020005110,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 29,
+          "virtual_nanoseconds": 1767225600020755170,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 30,
+          "virtual_nanoseconds": 1767225600021534080,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 31,
+          "virtual_nanoseconds": 1767225600022284200,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 32,
+          "virtual_nanoseconds": 1767225600023063620,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 33,
+          "virtual_nanoseconds": 1767225600023563620,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 34,
+          "virtual_nanoseconds": 1767225600024342770,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 35,
+          "virtual_nanoseconds": 1767225600024842770,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 36,
+          "virtual_nanoseconds": 1767225600025592830,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 38,
+          "virtual_nanoseconds": 1767225600026343600,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 39,
+          "virtual_nanoseconds": 1767225600027122750,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 40,
+          "virtual_nanoseconds": 1767225600027622750,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 41,
+          "virtual_nanoseconds": 1767225600028372810,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 42,
+          "virtual_nanoseconds": 1767225600029123580,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 43,
+          "virtual_nanoseconds": 1767225600029623580,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 44,
+          "virtual_nanoseconds": 1767225600030373640,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 45,
+          "virtual_nanoseconds": 1767225600031124410,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 46,
+          "virtual_nanoseconds": 1767225600031624410,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 47,
+          "virtual_nanoseconds": 1767225600032374480,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 48,
+          "virtual_nanoseconds": 1767225600033125250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 49,
+          "virtual_nanoseconds": 1767225600033625250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 50,
+          "virtual_nanoseconds": 1767225600034375320,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 51,
+          "virtual_nanoseconds": 1767225600034875320,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 52,
+          "virtual_nanoseconds": 1767225600035625390,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 53,
+          "virtual_nanoseconds": 1767225600036189250,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 54,
+          "virtual_nanoseconds": 1767225600036940090,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        }
+      ],
+      "noncommit_records": [
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 37, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(4)), owner: None, exit_class: Sigchld }"
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run1_log_x1I2n",
+      "bytes": 564453,
+      "sha256": "c9bc71bd07b8240b9203efab2fa584eb6682f981e0825ea8f38218e1772fa9da",
+      "backend": "ptrace",
+      "run": 1,
+      "info_records": 2970,
+      "signals": [
+        {
+          "record_one_based": 738,
+          "message": "INFO detcore::scheduler: [dtid 5] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1170,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1173,
+          "message": "INFO detcore: [dtid 5] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1178,
+          "message": "INFO detcore::scheduler: [dtid 5] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1610,
+          "message": "INFO detcore::scheduler: [dtid 15] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1613,
+          "message": "INFO detcore: [dtid 9] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1618,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1620,
+          "message": "INFO detcore: [dtid 5] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1621,
+          "message": "INFO detcore: [dtid 5] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2039,
+          "message": "INFO detcore::scheduler: [dtid 21] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2042,
+          "message": "INFO detcore: [dtid 15] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2047,
+          "message": "INFO detcore::scheduler: [dtid 15] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2049,
+          "message": "INFO detcore: [dtid 9] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2050,
+          "message": "INFO detcore: [dtid 9] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2054,
+          "message": "INFO detcore: [dtid 21] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2059,
+          "message": "INFO detcore::scheduler: [dtid 21] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2061,
+          "message": "INFO detcore: [dtid 15] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2062,
+          "message": "INFO detcore: [dtid 15] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2064,
+          "message": "INFO detcore: [dtid 21] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2065,
+          "message": "INFO detcore: [dtid 21] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2067,
+          "message": "INFO detcore: [dtid 21] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2279,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2283,
+          "message": "INFO detcore: [dtid 3] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2285,
+          "message": "INFO detcore: [dtid 3] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2288,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(5)"
+        },
+        {
+          "record_one_based": 2289,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(9)"
+        },
+        {
+          "record_one_based": 2290,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(15)"
+        },
+        {
+          "record_one_based": 2292,
+          "message": "INFO detcore: [dtid 15] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2495,
+          "message": "INFO detcore: [dtid 9] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2698,
+          "message": "INFO detcore: [dtid 5] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2922,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2928,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2933,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2936,
+          "message": "INFO detcore: [dtid 3] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2938,
+          "message": "INFO detcore: [dtid 3] finish delivering signal (#1) SIGCHLD"
+        }
+      ],
+      "inbound_signal_callbacks": 10,
+      "scheduler_sigchld_attempts": 12,
+      "esrch_records": 0,
+      "structured_commits": [
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 0,
+          "virtual_nanoseconds": 1767225600000000000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 1,
+          "virtual_nanoseconds": 1767225600000500000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 2,
+          "virtual_nanoseconds": 1767225600001343690,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 3,
+          "virtual_nanoseconds": 1767225600001909530,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 4,
+          "virtual_nanoseconds": 1767225600002994125,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 5,
+          "virtual_nanoseconds": 1767225600003744515,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 6,
+          "virtual_nanoseconds": 1767225600004523935,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 7,
+          "virtual_nanoseconds": 1767225600005274065,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 8,
+          "virtual_nanoseconds": 1767225600006024455,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 9,
+          "virtual_nanoseconds": 1767225600006803875,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 10,
+          "virtual_nanoseconds": 1767225600007553995,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 11,
+          "virtual_nanoseconds": 1767225600008333415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 12,
+          "virtual_nanoseconds": 1767225600008833415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 13,
+          "virtual_nanoseconds": 1767225600009583545,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 14,
+          "virtual_nanoseconds": 1767225600010333935,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 15,
+          "virtual_nanoseconds": 1767225600011113355,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 16,
+          "virtual_nanoseconds": 1767225600011863475,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 17,
+          "virtual_nanoseconds": 1767225600012642895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 18,
+          "virtual_nanoseconds": 1767225600013142895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 19,
+          "virtual_nanoseconds": 1767225600013642895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 20,
+          "virtual_nanoseconds": 1767225600014142895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 21,
+          "virtual_nanoseconds": 1767225600014893025,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 22,
+          "virtual_nanoseconds": 1767225600015643415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 23,
+          "virtual_nanoseconds": 1767225600016422835,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 24,
+          "virtual_nanoseconds": 1767225600017172955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 25,
+          "virtual_nanoseconds": 1767225600017952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 26,
+          "virtual_nanoseconds": 1767225600018452375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 27,
+          "virtual_nanoseconds": 1767225600018952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 28,
+          "virtual_nanoseconds": 1767225600019452375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 29,
+          "virtual_nanoseconds": 1767225600019952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 30,
+          "virtual_nanoseconds": 1767225600020731285,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 31,
+          "virtual_nanoseconds": 1767225600021481405,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 32,
+          "virtual_nanoseconds": 1767225600022260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 33,
+          "virtual_nanoseconds": 1767225600022760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 34,
+          "virtual_nanoseconds": 1767225600023260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 35,
+          "virtual_nanoseconds": 1767225600023760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 37,
+          "virtual_nanoseconds": 1767225600024260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 38,
+          "virtual_nanoseconds": 1767225600024760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 39,
+          "virtual_nanoseconds": 1767225600025260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 40,
+          "virtual_nanoseconds": 1767225600025760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 41,
+          "virtual_nanoseconds": 1767225600026260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 42,
+          "virtual_nanoseconds": 1767225600027039975,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 43,
+          "virtual_nanoseconds": 1767225600027790035,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 44,
+          "virtual_nanoseconds": 1767225600028540805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 45,
+          "virtual_nanoseconds": 1767225600029040805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 46,
+          "virtual_nanoseconds": 1767225600029540805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 48,
+          "virtual_nanoseconds": 1767225600030290805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 49,
+          "virtual_nanoseconds": 1767225600031069955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 50,
+          "virtual_nanoseconds": 1767225600031849105,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 51,
+          "virtual_nanoseconds": 1767225600032628255,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 52,
+          "virtual_nanoseconds": 1767225600033378315,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 53,
+          "virtual_nanoseconds": 1767225600034128375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 54,
+          "virtual_nanoseconds": 1767225600034878435,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 55,
+          "virtual_nanoseconds": 1767225600035629205,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 56,
+          "virtual_nanoseconds": 1767225600036379975,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 57,
+          "virtual_nanoseconds": 1767225600037130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 58,
+          "virtual_nanoseconds": 1767225600037630745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 59,
+          "virtual_nanoseconds": 1767225600038130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 60,
+          "virtual_nanoseconds": 1767225600038630745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 61,
+          "virtual_nanoseconds": 1767225600039130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 62,
+          "virtual_nanoseconds": 1767225600039880815,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 63,
+          "virtual_nanoseconds": 1767225600040630885,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 64,
+          "virtual_nanoseconds": 1767225600041380955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 65,
+          "virtual_nanoseconds": 1767225600041944825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 66,
+          "virtual_nanoseconds": 1767225600042695665,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        }
+      ],
+      "noncommit_records": [
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 36, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(5)), owner: None, exit_class: Sigchld }",
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 47, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(5)), owner: None, exit_class: Sigchld }"
+      ]
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run2_log_nAtMN",
+      "bytes": 564453,
+      "sha256": "49fed03b36ccaaf6eacc0cdc4f6f3e1f5968f28b5ddf377cf5ba4d36da8c465e",
+      "backend": "ptrace",
+      "run": 2,
+      "info_records": 2970,
+      "signals": [
+        {
+          "record_one_based": 738,
+          "message": "INFO detcore::scheduler: [dtid 5] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1170,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1173,
+          "message": "INFO detcore: [dtid 5] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1178,
+          "message": "INFO detcore::scheduler: [dtid 5] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1610,
+          "message": "INFO detcore::scheduler: [dtid 15] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1613,
+          "message": "INFO detcore: [dtid 9] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1618,
+          "message": "INFO detcore::scheduler: [dtid 9] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 1620,
+          "message": "INFO detcore: [dtid 5] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 1621,
+          "message": "INFO detcore: [dtid 5] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2039,
+          "message": "INFO detcore::scheduler: [dtid 21] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2042,
+          "message": "INFO detcore: [dtid 15] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2047,
+          "message": "INFO detcore::scheduler: [dtid 15] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2049,
+          "message": "INFO detcore: [dtid 9] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2050,
+          "message": "INFO detcore: [dtid 9] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2054,
+          "message": "INFO detcore: [dtid 21] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2059,
+          "message": "INFO detcore::scheduler: [dtid 21] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2061,
+          "message": "INFO detcore: [dtid 15] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2062,
+          "message": "INFO detcore: [dtid 15] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2064,
+          "message": "INFO detcore: [dtid 21] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2065,
+          "message": "INFO detcore: [dtid 21] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2067,
+          "message": "INFO detcore: [dtid 21] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2279,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2283,
+          "message": "INFO detcore: [dtid 3] handling inbound signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2285,
+          "message": "INFO detcore: [dtid 3] finish delivering signal (#0) SIGCHLD"
+        },
+        {
+          "record_one_based": 2288,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(5)"
+        },
+        {
+          "record_one_based": 2289,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(9)"
+        },
+        {
+          "record_one_based": 2290,
+          "message": "INFO detcore::scheduler: [step2] Re-admit deferred SIGCHLD for dtid DetPid(15)"
+        },
+        {
+          "record_one_based": 2292,
+          "message": "INFO detcore: [dtid 15] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2495,
+          "message": "INFO detcore: [dtid 9] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2698,
+          "message": "INFO detcore: [dtid 5] finish delivering signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2922,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2928,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2933,
+          "message": "INFO detcore::scheduler: [dtid 3] Alarm fired, delivering signal SIGCHLD to guest."
+        },
+        {
+          "record_one_based": 2936,
+          "message": "INFO detcore: [dtid 3] handling inbound signal (#1) SIGCHLD"
+        },
+        {
+          "record_one_based": 2938,
+          "message": "INFO detcore: [dtid 3] finish delivering signal (#1) SIGCHLD"
+        }
+      ],
+      "inbound_signal_callbacks": 10,
+      "scheduler_sigchld_attempts": 12,
+      "esrch_records": 0,
+      "structured_commits": [
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 0,
+          "virtual_nanoseconds": 1767225600000000000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 1,
+          "virtual_nanoseconds": 1767225600000500000,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 2,
+          "virtual_nanoseconds": 1767225600001343690,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 3,
+          "virtual_nanoseconds": 1767225600001909530,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 4,
+          "virtual_nanoseconds": 1767225600002994125,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 5,
+          "virtual_nanoseconds": 1767225600003744515,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 6,
+          "virtual_nanoseconds": 1767225600004523935,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 7,
+          "virtual_nanoseconds": 1767225600005274065,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 8,
+          "virtual_nanoseconds": 1767225600006024455,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 9,
+          "virtual_nanoseconds": 1767225600006803875,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 10,
+          "virtual_nanoseconds": 1767225600007553995,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 11,
+          "virtual_nanoseconds": 1767225600008333415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 12,
+          "virtual_nanoseconds": 1767225600008833415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 13,
+          "virtual_nanoseconds": 1767225600009583545,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 14,
+          "virtual_nanoseconds": 1767225600010333935,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 15,
+          "virtual_nanoseconds": 1767225600011113355,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 16,
+          "virtual_nanoseconds": 1767225600011863475,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 17,
+          "virtual_nanoseconds": 1767225600012642895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 18,
+          "virtual_nanoseconds": 1767225600013142895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 19,
+          "virtual_nanoseconds": 1767225600013642895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 20,
+          "virtual_nanoseconds": 1767225600014142895,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 21,
+          "virtual_nanoseconds": 1767225600014893025,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 22,
+          "virtual_nanoseconds": 1767225600015643415,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 23,
+          "virtual_nanoseconds": 1767225600016422835,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 24,
+          "virtual_nanoseconds": 1767225600017172955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 25,
+          "virtual_nanoseconds": 1767225600017952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 26,
+          "virtual_nanoseconds": 1767225600018452375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 27,
+          "virtual_nanoseconds": 1767225600018952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 28,
+          "virtual_nanoseconds": 1767225600019452375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 29,
+          "virtual_nanoseconds": 1767225600019952375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 30,
+          "virtual_nanoseconds": 1767225600020731285,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 31,
+          "virtual_nanoseconds": 1767225600021481405,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 32,
+          "virtual_nanoseconds": 1767225600022260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 33,
+          "virtual_nanoseconds": 1767225600022760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 34,
+          "virtual_nanoseconds": 1767225600023260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 35,
+          "virtual_nanoseconds": 1767225600023760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 37,
+          "virtual_nanoseconds": 1767225600024260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 38,
+          "virtual_nanoseconds": 1767225600024760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 39,
+          "virtual_nanoseconds": 1767225600025260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 40,
+          "virtual_nanoseconds": 1767225600025760825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 41,
+          "virtual_nanoseconds": 1767225600026260825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 42,
+          "virtual_nanoseconds": 1767225600027039975,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 43,
+          "virtual_nanoseconds": 1767225600027790035,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 44,
+          "virtual_nanoseconds": 1767225600028540805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 45,
+          "virtual_nanoseconds": 1767225600029040805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 46,
+          "virtual_nanoseconds": 1767225600029540805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 48,
+          "virtual_nanoseconds": 1767225600030290805,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 49,
+          "virtual_nanoseconds": 1767225600031069955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 50,
+          "virtual_nanoseconds": 1767225600031849105,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 51,
+          "virtual_nanoseconds": 1767225600032628255,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 52,
+          "virtual_nanoseconds": 1767225600033378315,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 53,
+          "virtual_nanoseconds": 1767225600034128375,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 54,
+          "virtual_nanoseconds": 1767225600034878435,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 55,
+          "virtual_nanoseconds": 1767225600035629205,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 56,
+          "virtual_nanoseconds": 1767225600036379975,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 57,
+          "virtual_nanoseconds": 1767225600037130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 58,
+          "virtual_nanoseconds": 1767225600037630745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 59,
+          "virtual_nanoseconds": 1767225600038130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 60,
+          "virtual_nanoseconds": 1767225600038630745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 61,
+          "virtual_nanoseconds": 1767225600039130745,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 62,
+          "virtual_nanoseconds": 1767225600039880815,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 63,
+          "virtual_nanoseconds": 1767225600040630885,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 64,
+          "virtual_nanoseconds": 1767225600041380955,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 65,
+          "virtual_nanoseconds": 1767225600041944825,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        },
+        {
+          "kind": "scheduler_commit",
+          "scheduler_turn": 66,
+          "virtual_nanoseconds": 1767225600042695665,
+          "internal_io_poll": false,
+          "runtime_maps_read": false
+        }
+      ],
+      "noncommit_records": [
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 36, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(5)), owner: None, exit_class: Sigchld }",
+        "INFO detcore::scheduler: [scheduler] NONCOMMIT turn 47, parking dettid 3 for child ChildWaitSpec { selector: Exact(DetPid(5)), owner: None, exit_class: Sigchld }"
+      ]
+    }
+  ],
+  "diagnostic_alignment_only": [
+    {
+      "tag": "delete",
+      "left_zero_based_range": [
+        1159,
+        1160
+      ],
+      "right_zero_based_range": [
+        1159,
+        1159
+      ],
+      "left_messages": [
+        "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake."
+      ],
+      "right_messages": []
+    },
+    {
+      "tag": "delete",
+      "left_zero_based_range": [
+        2005,
+        2006
+      ],
+      "right_zero_based_range": [
+        2004,
+        2004
+      ],
+      "left_messages": [
+        "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake."
+      ],
+      "right_messages": []
+    }
+  ],
+  "diagnostic_transform": "Split timestamp-prefixed full records as the source record boundary does; preserve every INFO message including structured payload. No result or comparator output is rewritten.",
+  "target_liveness_contexts": [
+    {
+      "left_record_one_based": 1160,
+      "adjacent_messages": [
+        "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 17, dettid 7 using resources {Exit { group: true, process: DetPid(7), mm: MmId { creator: DetPid(7), generation: 0 } }: RW}, on previously committed 1_767_225_600.012_637_330s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":17,\"virtual_nanoseconds\":1767225600012637330,\"internal_io_poll\":false,\"runtime_maps_read\":false}}",
+        "INFO detcore::tool_global: Scheduler authorized an exit-group scenario, from dettid 7 / detpid 7",
+        "INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 7 in pid 7..",
+        "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest.",
+        "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake.",
+        "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 18, dettid 4 using resources {ParentContinue { parent: DetPid(4), child: DetPid(8) }: W}, on previously committed 1_767_225_600.013_137_330s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":18,\"virtual_nanoseconds\":1767225600013137330,\"internal_io_poll\":false,\"runtime_maps_read\":false}}",
+        "INFO detcore: DETLOG [syscall][detcore, dtid 4] finish syscall #3: clone(CloneFlags(0x1200011), NULL, NULL, 0x134ea10, 0) = Ok(8) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":3}}"
+      ],
+      "prior_target_messages": [
+        {
+          "record_one_based": 304,
+          "message": "INFO detcore::tool_global: [detcore, dtid 6] New thread given go-ahead to proceed via <ivar Go(None)>"
+        },
+        {
+          "record_one_based": 305,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: set_robust_list(0x134ea20, 24) = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 306,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #1: set_robust_list(0x134ea20, 24) = Ok(0) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":1}}"
+        },
+        {
+          "record_one_based": 307,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: clone(CloneFlags(0x1200011), NULL, NULL, 0x134ea10, 0) = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 946,
+          "message": "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 15, dettid 6 using resources {ParentContinue { parent: DetPid(6), child: DetPid(7) }: W}, on previously committed 1_767_225_600.011_107_790s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":15,\"virtual_nanoseconds\":1767225600011107790,\"internal_io_poll\":false,\"runtime_maps_read\":false}}"
+        },
+        {
+          "record_one_based": 947,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #2: clone(CloneFlags(0x1200011), NULL, NULL, 0x134ea10, 0) = Ok(7) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":2}}"
+        },
+        {
+          "record_one_based": 948,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: clone(CloneFlags(0x1200011), NULL, NULL, 0x134ea10, 0) = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 1159,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        }
+      ],
+      "later_target_messages": [
+        {
+          "record_one_based": 1799,
+          "message": "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 26, dettid 6 using resources {ParentContinue { parent: DetPid(6), child: DetPid(11) }: W}, on previously committed 1_767_225_600.018_725_960s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":26,\"virtual_nanoseconds\":1767225600018725960,\"internal_io_poll\":false,\"runtime_maps_read\":false}}"
+        },
+        {
+          "record_one_based": 1800,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #3: clone(CloneFlags(0x1200011), NULL, NULL, 0x134ea10, 0) = Ok(11) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":3}}"
+        },
+        {
+          "record_one_based": 1801,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: getpid() = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        }
+      ]
+    },
+    {
+      "left_record_one_based": 2006,
+      "adjacent_messages": [
+        "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 27, dettid 11 using resources {Exit { group: true, process: DetPid(11), mm: MmId { creator: DetPid(11), generation: 0 } }: RW}, on previously committed 1_767_225_600.019_505_110s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":27,\"virtual_nanoseconds\":1767225600019505110,\"internal_io_poll\":false,\"runtime_maps_read\":false}}",
+        "INFO detcore::tool_global: Scheduler authorized an exit-group scenario, from dettid 11 / detpid 11",
+        "INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 11 in pid 11..",
+        "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest.",
+        "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake.",
+        "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 28, dettid 4 using resources {WaitChild { parent: DetPid(4), spec: ChildWaitSpec { selector: Exact(DetPid(5)), owner: None, exit_class: Sigchld } }: R}, on previously committed 1_767_225_600.020_005_110s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":28,\"virtual_nanoseconds\":1767225600020005110,\"internal_io_poll\":false,\"runtime_maps_read\":false}}",
+        "INFO detcore: DETLOG [syscall][detcore, dtid 4] finish syscall #104: wait4(5, 0x3fffe8bc, WaitPidFlag(0x0), NULL) = Ok(5) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":104}}"
+      ],
+      "prior_target_messages": [
+        {
+          "record_one_based": 1995,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: getppid() = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 1996,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #101: getppid() = Ok(3) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":101}}"
+        },
+        {
+          "record_one_based": 1997,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: gettid() = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 1998,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #102: gettid() = Ok(6) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":102}}"
+        },
+        {
+          "record_one_based": 1999,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: getuid() = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 2000,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #103: getuid() = Ok(0) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":103}}"
+        },
+        {
+          "record_one_based": 2001,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: wait4(7, 0x3fffe8bc, WaitPidFlag(0x0), NULL) = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        },
+        {
+          "record_one_based": 2005,
+          "message": "INFO detcore::scheduler: [dtid 6] Alarm fired, delivering signal SIGCHLD to guest."
+        }
+      ],
+      "later_target_messages": [
+        {
+          "record_one_based": 2634,
+          "message": "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 35, dettid 6 using resources {WaitChild { parent: DetPid(6), spec: ChildWaitSpec { selector: Exact(DetPid(7)), owner: None, exit_class: Sigchld } }: R}, on previously committed 1_767_225_600.024_842_770s DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"scheduler_commit\",\"scheduler_turn\":35,\"virtual_nanoseconds\":1767225600024842770,\"internal_io_poll\":false,\"runtime_maps_read\":false}}"
+        },
+        {
+          "record_one_based": 2635,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] finish syscall #104: wait4(7, 0x3fffe8bc, WaitPidFlag(0x0), NULL) = Ok(7) DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall_result\",\"finished_syscall_number\":104}}"
+        },
+        {
+          "record_one_based": 2636,
+          "message": "INFO detcore: DETLOG [syscall][detcore, dtid 6] inbound syscall: wait4(11, 0x3fffe8bc, WaitPidFlag(0x0), NULL) = ? DETLOG_RECORD={\"schema\":1,\"event\":{\"kind\":\"syscall\"}}"
+        }
+      ]
+    }
+  ],
+  "current_hermit_queue_child_exit_signal_callers": {
+    "git_grep_status": 1,
+    "matches": []
+  },
+  "evidence_limits": [
+    "No compiler, test, guest, controller, network, source, target, index or ref operation.",
+    "Current INFO logs do not capture the host PID 6 recipient or siginfo.",
+    "One fork-tree pair only; no cross comparison or second ID execution, zero retries.",
+    "Existing-path diagnosis only; not an approval of a new scheduler design."
+  ]
+}

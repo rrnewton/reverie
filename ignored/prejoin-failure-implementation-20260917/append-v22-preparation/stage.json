@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "git",
+    "add",
+    "--",
+    "reverie-kvm/src/error.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/failure.rs",
+    "reverie-kvm/src/runtime.rs",
+    "reverie-kvm/src/runtime/failure_tests.rs",
+    "reverie-kvm/src/runtime/native_test_support.rs",
+    "reverie-kvm/src/vm.rs",
+    "reverie/src/tool.rs"
+  ],
+  "exit": 0,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

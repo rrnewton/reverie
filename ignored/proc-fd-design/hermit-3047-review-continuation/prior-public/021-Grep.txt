@@ -1,0 +1,100 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_014XxmibwuYiioazmH8T3nEA",
+  "name": "Grep",
+  "input": {
+    "pattern": "capture_mountinfo_identity_order|mountinfo_mount_ids_captured|fdinfo_unlisted_mount_ids|mountinfo_root_rewrites|mountinfo_device_rewrites|IdentityGuard",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+    "output_mode": "content",
+    "-n": true,
+    "head_limit": 120
+  }
+}
+
+Successful public tool result (exact text below):
+detcore-model/src/config.rs:246:    pub mountinfo_root_rewrites: Vec<MountInfoRootRewrite>,
+detcore-model/src/config.rs:257:    pub mountinfo_device_rewrites: Vec<(u64, u64)>,
+detcore-model/src/config.rs:276:    pub mountinfo_mount_ids_captured: bool,
+detcore-model/src/config.rs:284:    pub fdinfo_unlisted_mount_ids: Vec<u64>,
+detcore-model/src/config.rs:1409:            .remove("mountinfo_root_rewrites");
+detcore-model/src/config.rs:1413:            .remove("mountinfo_device_rewrites");
+detcore-model/src/config.rs:1418:            .remove("mountinfo_mount_ids_captured");
+detcore-model/src/config.rs:1422:            .remove("fdinfo_unlisted_mount_ids");
+detcore-model/src/config.rs:1424:        assert!(restored.mountinfo_root_rewrites.is_empty());
+detcore-model/src/config.rs:1425:        assert!(restored.mountinfo_device_rewrites.is_empty());
+detcore-model/src/config.rs:1427:        assert!(!restored.mountinfo_mount_ids_captured);
+detcore-model/src/config.rs:1428:        assert!(restored.fdinfo_unlisted_mount_ids.is_empty());
+hermit-cli/src/lib.rs:1948:/// The CLI supplies IdentityGuard provenance from the completed container.
+hermit-cli/src/lib.rs:1958:    if !config.mountinfo_mount_ids_captured
+hermit-cli/src/lib.rs:1959:        && (!config.mountinfo_mount_ids.is_empty() || !config.fdinfo_unlisted_mount_ids.is_empty())
+hermit-cli/src/lib.rs:1964:    if config.mountinfo_mount_ids_captured {
+hermit-cli/src/lib.rs:1972:        config.mountinfo_mount_ids_captured = true;
+hermit-cli/src/lib.rs:1977:    config.mountinfo_device_rewrites.clear();
+hermit-cli/src/lib.rs:1990:    prepare_kvm_mountinfo_config(&mut config, capture_mountinfo_identity_order)?;
+hermit-cli/src/lib.rs:3047:        mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3050:        let exit_status = record_to_with_mountinfo(command, data.path(), mountinfo_root_rewrites)?;
+hermit-cli/src/lib.rs:3189:pub fn capture_mountinfo_identity_order() -> Result<Vec<u64>, Error> {
+hermit-cli/src/lib.rs:3236:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3238:    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+hermit-cli/src/lib.rs:3242:        mountinfo_root_rewrites,
+hermit-cli/src/lib.rs:3251:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3256:        Record::spawn_with_mountinfo(command, dir, mountinfo_root_rewrites, mountinfo_mount_ids)
+hermit-cli/src/lib.rs:3282:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3284:    let mountinfo_mount_ids = capture_mountinfo_identity_order()?;
+hermit-cli/src/lib.rs:3288:        mountinfo_root_rewrites,
+hermit-cli/src/lib.rs:3297:    mountinfo_root_rewrites: Vec<detcore_model::config::MountInfoRootRewrite>,
+hermit-cli/src/lib.rs:3306:        Record::spawn_with_mountinfo(command, dir, mountinfo_root_rewrites, mountinfo_mount_ids)
+hermit-cli/src/lib.rs:3402:            mountinfo_mount_ids_captured: true,
+hermit-cli/src/lib.rs:3403:            fdinfo_unlisted_mount_ids: vec![700, 701],
+hermit-cli/src/lib.rs:3404:            mountinfo_root_rewrites: vec![rewrite],
+hermit-cli/src/lib.rs:3405:            mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+hermit-cli/src/lib.rs:3409:        expected.mountinfo_device_rewrites.clear();
+hermit-cli/src/lib.rs:3430:            mountinfo_mount_ids_captured: true,
+hermit-cli/src/lib.rs:3441:        assert!(empty.mountinfo_mount_ids_captured);
+hermit-cli/src/lib.rs:3454:            stale.mountinfo_device_rewrites = vec![(libc::makedev(0, 1), libc::makedev(8, 1))];
+hermit-cli/src/lib.rs:3481:        expected.mountinfo_mount_ids_captured = true;
+hermit-cli/src/lib.rs:3509:        assert!(empty.mountinfo_mount_ids_captured);
+hermit-cli/src/lib.rs:3518:                mountinfo_mount_ids_captured: captured,
+hermit-cli/src/lib.rs:3519:                fdinfo_unlisted_mount_ids: if captured { vec![700, 701] } else { vec![] },
+hermit-cli/src/lib.rs:3520:                mountinfo_device_rewrites: vec![(libc::makedev(0, 1), libc::makedev(8, 1))],
+hermit-cli/src/lib.rs:3558:                fdinfo_unlisted_mount_ids: unlisted,
+hermit-cli/src/bin/hermit/container.rs:34:use hermit::capture_mountinfo_identity_order;
+hermit-cli/src/bin/hermit/container.rs:232:pub(super) struct IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:239:impl IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:307:    pub(super) fn mountinfo_root_rewrites(&self) -> Result<Vec<MountInfoRootRewrite>, Error> {
+hermit-cli/src/bin/hermit/container.rs:317:        capture_mountinfo_identity_order()
+hermit-cli/src/bin/hermit/container.rs:378:pub(super) fn identity_hardening_mounts() -> Result<(Vec<Mount>, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:409:        IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:465:/// unnecessary here. The returned [`IdentityGuard`] still records an
+hermit-cli/src/bin/hermit/container.rs:477:) -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:555:    let mut identity_sources = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:565:/// nondeterministic host identity state. The returned [`IdentityGuard`] must be
+hermit-cli/src/bin/hermit/container.rs:567:pub(super) fn deterministic_container() -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/container.rs:1382:        let guard = IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:1389:        let rewrites = guard.mountinfo_root_rewrites().unwrap();
+hermit-cli/src/bin/hermit/container.rs:1453:        let guard = IdentityGuard {
+hermit-cli/src/bin/hermit/container.rs:1460:        let error = guard.mountinfo_root_rewrites().unwrap_err().to_string();
+hermit-cli/src/bin/hermit/container.rs:1467:        let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:1483:        let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/container.rs:1501:            let mut guard = IdentityGuard::empty();
+hermit-cli/src/bin/hermit/run.rs:56:use super::container::IdentityGuard;
+hermit-cli/src/bin/hermit/run.rs:317:    identity_sources: IdentityGuard,
+hermit-cli/src/bin/hermit/run.rs:4618:    fn container(&self, tmpfs: &Path) -> Result<(Container, IdentityGuard), Error> {
+hermit-cli/src/bin/hermit/run.rs:4871:        identity_sources: Option<&IdentityGuard>,
+hermit-cli/src/bin/hermit/run.rs:4902:        config.mountinfo_root_rewrites = identity_sources
+hermit-cli/src/bin/hermit/run.rs:4903:            .map(IdentityGuard::mountinfo_root_rewrites)
+hermit-cli/src/bin/hermit/run.rs:4907:            .map(IdentityGuard::mountinfo_identity_order)
+hermit-cli/src/bin/hermit/run.rs:4911:        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+hermit-cli/src/bin/hermit/run.rs:4912:        config.fdinfo_unlisted_mount_ids.clear();
+hermit-cli/src/bin/hermit/run.rs:4948:        identity_sources: Option<&IdentityGuard>,
+hermit-cli/src/bin/hermit/run.rs:4974:        config.mountinfo_root_rewrites = identity_sources
+hermit-cli/src/bin/hermit/run.rs:4975:            .map(IdentityGuard::mountinfo_root_rewrites)
+hermit-cli/src/bin/hermit/run.rs:4979:            .map(IdentityGuard::mountinfo_identity_order)
+hermit-cli/src/bin/hermit/run.rs:4983:        config.mountinfo_mount_ids_captured = identity_sources.is_some();
+hermit-cli/src/bin/hermit/run.rs:4984:        config.fdinfo_unlisted_mount_ids.clear();
+detcore/src/tool_global.rs:573:                cfg.mountinfo_mount_ids_captured,
+detcore/src/tool_global.rs:574:                &cfg.fdinfo_unlisted_mount_ids,
+detcore/src/syscalls/files.rs:1278:            let has_configured_mount_ids = guest.config().mountinfo_mount_ids_captured;
+detcore/src/syscalls/files.rs:1407:            for &(mountinfo_device, metadata_device) in &guest.config().mountinfo_device_rewrites {
+detcore/src/syscalls/files.rs:1442:            for rewrite in &guest.config().mountinfo_root_rewrites {
+detcore/src/syscalls/files.rs:1455:                if guest.config().mountinfo_mount_ids_captured {

@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "git",
+    "diff",
+    "--exit-code",
+    "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+    "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+    "--"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": ""
+}

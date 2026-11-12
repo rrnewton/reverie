@@ -1,0 +1,21 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v6/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v6/plan.json",
+    "bytes": 19050,
+    "mode": 420,
+    "sha256": "46ec843fe066e81715f54a0753e5cf20863198b6404b4b39b5c9be3ca6ac5dc2"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v6/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v6/launch.py",
+    "bytes": 4710,
+    "mode": 420,
+    "sha256": "837798c68a8e967a122b4319bbc8c3f610ac5b5deac597207cf3ddc233e44bf5"
+  },
+  "outputs": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v6/format",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v6/clippy"
+  ],
+  "preflight": "Full live source/input/payload/fresh-path checks passed. No execution."
+}

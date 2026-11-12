@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/reverie/commits/4db9ddb68126ce97ff929c7f30b61a633e48513e"
+  ],
+  "started_utc": "2026-09-17T09:48:55.329671+00:00",
+  "ended_utc": "2026-09-17T09:48:57.286109+00:00",
+  "exit_code": 0,
+  "wall_seconds": 1.9564454420469701,
+  "stdout_sha256": "7c3186866d1d35994d15e3946fdd2a304afdbbdae7ce28b95da9f2294f196cfc",
+  "stdout_bytes": 34459,
+  "stderr_bytes": 0
+}

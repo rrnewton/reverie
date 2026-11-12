@@ -1,0 +1,24 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/plan.json",
+    "bytes": 60169,
+    "mode": 420,
+    "sha256": "9b3ecdc839a0f978e2fdf8c20bfdff1046a173306cc0e66a69b28b9ec6d98aff"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/launch.py",
+    "bytes": 4601,
+    "mode": 420,
+    "sha256": "c63546e027c95813064aab161173d1ce31547abe13b8b80040863c04a9742203"
+  },
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/native-forward-v1/launch.py"
+  ],
+  "inputs": 83,
+  "selected_count": 44,
+  "status": "Prepared, not executed."
+}

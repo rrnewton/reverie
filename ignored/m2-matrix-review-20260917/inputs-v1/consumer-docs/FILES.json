@@ -1,0 +1,16 @@
+[
+  {
+    "path": "hermit-cli/tests/verification_report_consumers.rs",
+    "before_sha256": "16166d56985c0b6cd1052cf73db86df2b1d4f69da43a1db27277619ae38887b3",
+    "after_sha256": "d3d665450e2dfa55aaec02fd78d43cbf3a8ee7169ae1011bd03f9645a2f274d5",
+    "mode": "100644",
+    "bytes": 44580
+  },
+  {
+    "path": "tests/backend-parity/README.md",
+    "before_sha256": "be60766cb1ea1994becd723b49e68f5ab29029553cf3d628eab9ed0ebfd47136",
+    "after_sha256": "1baac34e8cce034e10b5fd669678c14c3517c8e1a68141a077b492b7247a3fab",
+    "mode": "100644",
+    "bytes": 31147
+  }
+]

@@ -1,0 +1,551 @@
+{
+  "status": "passed",
+  "services": [
+    {
+      "stage": "vm-01",
+      "unit": "safehermit-20260917T173213Z-2303842.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173213Z-2303842.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "vm-02",
+      "unit": "safehermit-20260917T173216Z-2308418.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173216Z-2308418.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "vm-03",
+      "unit": "safehermit-20260917T173219Z-2311747.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173219Z-2311747.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "vm-04",
+      "unit": "safehermit-20260917T173223Z-2315830.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173223Z-2315830.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-01",
+      "unit": "safehermit-20260917T173226Z-2318167.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173226Z-2318167.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-02",
+      "unit": "safehermit-20260917T173230Z-2322580.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173230Z-2322580.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-03",
+      "unit": "safehermit-20260917T173233Z-2328137.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173233Z-2328137.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-04",
+      "unit": "safehermit-20260917T173236Z-2333334.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173236Z-2333334.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-05",
+      "unit": "safehermit-20260917T173240Z-2335622.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173240Z-2335622.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-06",
+      "unit": "safehermit-20260917T173243Z-2337998.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173243Z-2337998.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-07",
+      "unit": "safehermit-20260917T173246Z-2340715.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173246Z-2340715.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-08",
+      "unit": "safehermit-20260917T173249Z-2344160.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173249Z-2344160.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-09",
+      "unit": "safehermit-20260917T173253Z-2349496.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173253Z-2349496.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-10",
+      "unit": "safehermit-20260917T173256Z-2353217.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173256Z-2353217.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-11",
+      "unit": "safehermit-20260917T173259Z-2356075.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173259Z-2356075.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-12",
+      "unit": "safehermit-20260917T173302Z-2357387.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173302Z-2357387.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-13",
+      "unit": "safehermit-20260917T173305Z-2360852.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173305Z-2360852.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-14",
+      "unit": "safehermit-20260917T173309Z-2363336.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173309Z-2363336.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-15",
+      "unit": "safehermit-20260917T173312Z-2365718.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173312Z-2365718.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-16",
+      "unit": "safehermit-20260917T173316Z-2369930.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173316Z-2369930.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-17",
+      "unit": "safehermit-20260917T173319Z-2370980.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173319Z-2370980.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-18",
+      "unit": "safehermit-20260917T173322Z-2373834.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173322Z-2373834.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-19",
+      "unit": "safehermit-20260917T173326Z-2377301.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173326Z-2377301.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-20",
+      "unit": "safehermit-20260917T173329Z-2378661.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173329Z-2378661.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-21",
+      "unit": "safehermit-20260917T173332Z-2384437.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173332Z-2384437.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    },
+    {
+      "stage": "static-elf-22",
+      "unit": "safehermit-20260917T173336Z-2387017.service",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T173336Z-2387017.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+      "stderr": "",
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      }
+    }
+  ]
+}

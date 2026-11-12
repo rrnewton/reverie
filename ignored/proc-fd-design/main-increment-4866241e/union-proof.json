@@ -1,0 +1,129 @@
+{
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "candidate": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "main_changed_paths": [
+    "experimental/reverie-sabre-macros/src/expand.rs",
+    "experimental/reverie-sabre/src/bootstrap.rs",
+    "experimental/reverie-sabre/src/ffi/clone.rs",
+    "experimental/reverie-sabre/src/ffi/mod.rs",
+    "experimental/reverie-sabre/src/lib.rs",
+    "experimental/reverie-sabre/src/reverie_adapter.rs",
+    "experimental/reverie-sabre/src/tool.rs",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.S",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.c",
+    "experimental/reverie-sabre/tests/fixtures/syscall_frame/frame_probe.h",
+    "experimental/reverie-sabre/tests/loader_bootstrap.c",
+    "experimental/reverie-sabre/tests/loader_bootstrap.rs",
+    "experimental/reverie-sabre/tests/syscall_frame_abi.rs",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/handle_syscall_loader.s",
+    "experimental/reverie-sabre/vendor/sabre/arch/x86_64/syscall_stackframe.c",
+    "experimental/reverie-sabre/vendor/sabre/includes/loader/bootstrap.h",
+    "experimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt",
+    "experimental/reverie-sabre/vendor/sabre/loader/bootstrap.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/loader.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/premain.c",
+    "experimental/reverie-sabre/vendor/sabre/loader/rewriter.c",
+    "experimental/reverie-sabre/vendor/sabre/plugin_api/arch/x86_64/vfork_return_from_child.s"
+  ],
+  "candidate_changed_paths": [
+    "reverie-kvm/src/elf.rs",
+    "reverie-kvm/src/executor.rs",
+    "reverie-kvm/src/fdinfo.rs",
+    "reverie-kvm/src/lib.rs",
+    "reverie-kvm/src/memory.rs",
+    "reverie-kvm/src/proc_mounts.rs"
+  ],
+  "overlap": [],
+  "expected_source_preserving_tree": "bb2c88a1f0b37e264535693f2b72d77b2502dc5f",
+  "tree_hash_algorithm_checked_against_all3_actual_trees": true,
+  "main_changed_path_count": 23,
+  "candidate_changed_path_count": 6,
+  "expected_entries_count": 2562,
+  "all_candidate_six_blobs_identical_in_expected_union": true,
+  "all_main23_blobs_identical_in_expected_union": true,
+  "unchanged_dependency_surfaces": {
+    "reverie-kvm/": true,
+    "reverie/": true,
+    "reverie-memory/": true,
+    "reverie-process/": true,
+    "reverie-syscalls/": true,
+    "reverie-rpc-transport/": true,
+    "reverie-dbt/": true,
+    "reverie-preload/": true
+  },
+  "manifest_build_inputs": {
+    "Cargo.toml": {
+      "base": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "4168dea2771f18a00fb1afdfd2218efba415ecbb"
+      },
+      "main": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "4168dea2771f18a00fb1afdfd2218efba415ecbb"
+      },
+      "unchanged": true
+    },
+    "rust-toolchain.toml": {
+      "base": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "fdd319e308cd6ea96df9b5f5d8e68756b47afb09"
+      },
+      "main": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "fdd319e308cd6ea96df9b5f5d8e68756b47afb09"
+      },
+      "unchanged": true
+    },
+    ".gitmodules": {
+      "base": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "437ed3693a701c48f7a161d0835556ab1028f2aa"
+      },
+      "main": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "437ed3693a701c48f7a161d0835556ab1028f2aa"
+      },
+      "unchanged": true
+    },
+    "experimental/reverie-sabre/Cargo.toml": {
+      "base": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "808387c1b969087d0c529cf0ac0ce78e14cdc453"
+      },
+      "main": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "808387c1b969087d0c529cf0ac0ce78e14cdc453"
+      },
+      "unchanged": true
+    },
+    "experimental/reverie-sabre/build.rs": {
+      "base": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "bebd9a2c46e7f2f21680c1f5d2d4d24ae9b6f29e"
+      },
+      "main": {
+        "mode": "100644",
+        "type": "blob",
+        "oid": "bebd9a2c46e7f2f21680c1f5d2d4d24ae9b6f29e"
+      },
+      "unchanged": true
+    }
+  },
+  "b304_is_ancestor_of_main": true,
+  "b304_is_ancestor_of_candidate": false,
+  "cargo_lock_tracked_at_base_or_main": false,
+  "existing_owned_cargo_lock_sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469",
+  "no_rebase_merge_source_index_or_ref_mutation": true,
+  "tracked_source_still_clean": true
+}

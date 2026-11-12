@@ -1,0 +1,26 @@
+[
+  {
+    "name": "reverie",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "base": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+    "head": "114b309413612fafc2657c74e83811c71aac7b19",
+    "object_status": 0,
+    "object_type": "commit",
+    "stderr": "",
+    "tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083\n",
+    "commits": "3955492bfa383a5fe51e114cb067a03f79e904be Return observed PKRU with native syscall results\n226c3e31389599a00400938e93461c59d56f846e Declare the SaBRe loader's zlib runtime dependency\n114b309413612fafc2657c74e83811c71aac7b19 Adopt LiteInst branch and fork arena repairs\n",
+    "paths": "M\texperimental/reverie-sabre/vendor/sabre/loader/CMakeLists.txt\nM\treverie-liteinst/Cargo.toml\nM\treverie-preload/Cargo.toml\nA\treverie-preload/src/bin/native_syscall_result.rs\nM\treverie-preload/src/trap.rs\nA\treverie-preload/tests/native_syscall_result.rs\nM\treverie-rpc-transport/tests/fixtures/owned_lifecycle.rs\n"
+  },
+  {
+    "name": "hermit",
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "base": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+    "head": "f8f425368ce1168b4f588bd40c6a0295aa4b3225",
+    "object_status": 0,
+    "object_type": "commit",
+    "stderr": "",
+    "tree": "03addfff257ee8f8a48be4a4d38a6ca9454bb5ea\n",
+    "commits": "f8f425368ce1168b4f588bd40c6a0295aa4b3225 Adopt LiteInst trampoline and fork arena repairs\n",
+    "paths": "M\tCargo.lock\nM\tci/configure-build-jobs.sh\nM\tci/run-with-reverie-dbt-budget.sh\nM\tdetcore-dbt/Cargo.toml\nM\tdetcore-model/Cargo.toml\nM\tdetcore-sabre/Cargo.toml\nM\tdetcore/Cargo.toml\nM\tdetcore/tests/testutils/Cargo.toml\nM\thermit-cli/Cargo.toml\nM\thermit-install/Cargo.toml\nM\tliteinst-runtime-build/Cargo.lock\nM\tliteinst-runtime-build/runtime/Cargo.toml\n"
+  }
+]

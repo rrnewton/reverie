@@ -1,0 +1,4 @@
+  ⚠️ over 6 file(s), derived from refs/pull/565/head. If this PR was
+  pushed seconds ago that ref can be STALE, making the file set too small and
+  this success true only of a subset. Confirm the count against the PR's real
+  file list, or re-run once the ref has converged.

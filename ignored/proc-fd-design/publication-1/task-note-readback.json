@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/home/newton/work/dev-hermit/ci-hub/bin/tg-note-verified",
+    "kvm-lane-to-full-determinism-and-parity",
+    "--file",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/publication-1/task-note.txt"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.49624019814655185,
+  "stdout": "tg-note-verified: STORED AND VERIFIED byte-for-byte (2035 bytes, 7 lines) on kvm-lane-to-full-determinism-and-parity\n",
+  "stderr": "",
+  "note_sha256": "3b8ad5c6ade613bcd6531268ecb1ee0d0696d8ded315258731d385fc720d7c7f"
+}

@@ -1,0 +1,31 @@
+{
+  "head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "tree": "b86bfdb0703e96d377007c102eccfa57ba362396",
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "title_sha256": "d54d57db647cb14f04da10e2ec64e4f618257e88f5c03e025c67197aea914f12",
+  "body_sha256": "ed4015a7be58d2087c408c4a0b166826b32adc9db06ccf88622f94433946dcb2",
+  "references": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+      "sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/execution-readback.json",
+      "sha256": "e8451672e5173204681400deae70af1db6e7e87d8701c300403f00dbfe110626"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/execution-readback.json",
+      "sha256": "4343625059f801644bf30e2c6542f9ae6b30e5648d048ff06ad76ecf6e484d9d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/commit-1/readback.json",
+      "sha256": "05d76bfaf74c5bb1341249df21bcc3eae7fc8cb79d5841cf56c24c72f4ac6c50"
+    }
+  ],
+  "status": "draft only; root review required before push/PR; production external verdict pending",
+  "readme_relationship_source": {
+    "path": "reverie-kvm/README.md",
+    "sha256": "b69c0d9343398ea3516f1b78771defb47bfa9de03176336c3103eb9ce17af2ce",
+    "lines": "239 onward"
+  }
+}

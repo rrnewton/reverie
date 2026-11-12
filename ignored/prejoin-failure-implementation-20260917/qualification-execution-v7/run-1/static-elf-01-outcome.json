@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-01",
+  "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "860cd9f464b2699e127e8336df1a26cc5f10cfb66ad075da316e949f37f1d4a1",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "37809ea44681e946c6d28e155f7e3a86069913168cdaf6b452d7a6e8f18a2de7",
+  "cpu_nsec": 582214000,
+  "wall_seconds": 2.027395247
+}

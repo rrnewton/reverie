@@ -1,0 +1,13 @@
+{
+  "phase": "static prerequisite preparation",
+  "command": [
+    "/usr/bin/python3",
+    "ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/complete_inputs.py"
+  ],
+  "exit_status": 1,
+  "reported_wall_seconds": 0.214198233,
+  "source_sha256": "b2af181c2f6916979cc258533f9b4a517ea67c90b957d6bbcc8a5d5ac68a6294",
+  "cause": "Plugin regex matched --enable-plugin from the GCC configuration line as well as the actual -plugin argument. Assertion stopped before any new result file or ELF query. No required input was missing; no guest build or execution occurred.",
+  "exception": "AssertionError: {'/usr/libexec/gcc/x86_64-redhat-linux/11/liblto_plugin.so', '--enable-initfini-array'}",
+  "correction": "New complete_inputs-v2.py requires whitespace or line start before the exact -plugin option. Original script retained."
+}

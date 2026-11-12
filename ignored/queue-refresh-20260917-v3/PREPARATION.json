@@ -1,0 +1,44 @@
+{
+  "write_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/queue-refresh-20260917-v3",
+  "baseline": "2026-09-17 19:32 UTC v2 complete open snapshots, 19 Hermit and 1 Reverie",
+  "reader_delta": "Add two explicit GET git/ref/heads/main endpoints only; retain same normal inherited address-space behavior, bounds, proxy and outcome capture",
+  "prior_1_gib_failures_preserved_at": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1",
+  "no_source_or_remote_mutation": true,
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/read_operation.py",
+      "bytes": 2691,
+      "sha256": "7a71bbc1adb5bf7296174b77f823e0c898f522100da94d64d58635d9466ef9f1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-open.stdout",
+      "bytes": 397135,
+      "sha256": "4682c2e0598305ca6cf347395a100f5cca8e4aa1901cb4e57fba91db9e169bc5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-open.stdout",
+      "bytes": 24618,
+      "sha256": "e5c72b7e36308beada0f005264b0a00afb0cf88228af878da9ef1f4b170ddafa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/REPORT.md",
+      "bytes": 10608,
+      "sha256": "c77fb5c8300ec7681564ca858900f2e8255c7c387cbc14600c2ea9cc611c4b2b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/LATEST-BASELINE-ADDENDUM.md",
+      "bytes": 887,
+      "sha256": "f23c65fb2c72d9aaac2945aa407a8b5bd975b77753c24f107ed41a17e9a5e1ce"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/PREPARATION.json",
+      "bytes": 726,
+      "sha256": "0bd9de90505543d01d449e5a6380d295f38d9a82a96d00cef0e32f44573edfe9"
+    },
+    {
+      "path": "/home/newton/.codex/skills/github-with-proxy/SKILL.md",
+      "bytes": 5096,
+      "sha256": "8e553a46bde7f6a52b589e960efca122481822d72d045c9d193a8374c8ccc5d1"
+    }
+  ]
+}

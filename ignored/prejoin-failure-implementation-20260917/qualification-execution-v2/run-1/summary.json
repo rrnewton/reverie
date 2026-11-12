@@ -1,0 +1,141 @@
+{
+  "status": "failed",
+  "active_stage": "static-elf-04",
+  "error": "static-elf-04 failed",
+  "completed": [
+    {
+      "stage": "vm-01",
+      "test": "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "447"
+        ]
+      ],
+      "stdout_sha256": "a8500d3b5d3d75887daf5086658b66c228a740ecb66f2ef46ccc7f7cd4368de0",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "36c62ff63385530d7e85f07a8c5b810005a91224b55174d5303775013624ac4c",
+      "cpu_nsec": 256814000,
+      "wall_seconds": 0.832879821
+    },
+    {
+      "stage": "vm-02",
+      "test": "vm::tests::page_fault_action_restores_complete_stopped_context",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "447"
+        ]
+      ],
+      "stdout_sha256": "095402471b3436e8b6fe150f39459e9d7306b7cc07a98faffec414259c73d94d",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "b21ad643e255afd81efc2c55248cadc7aecf43b017835bee95bc0d6ae0994b25",
+      "cpu_nsec": 278749000,
+      "wall_seconds": 0.981398044
+    },
+    {
+      "stage": "vm-03",
+      "test": "vm::tests::real_fork_and_thread_cancel_keep_status_while_terminal_hook_is_returning",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "447"
+        ]
+      ],
+      "stdout_sha256": "fa7a0c3d034b0b7715535a15ddb643561f2e4acf5e9d0f3a0c7b637e2f9c7bfb",
+      "stderr_sha256": "fbe79e2cd5f0effe6dac0e2dc16e803984a79c1331e79dcebab5cd2111781215",
+      "admission_sha256": "8996da74113b3a060842fb9f1e9a9c47de5bf3b9575ddf75aa053a427b40846a",
+      "cpu_nsec": 275383000,
+      "wall_seconds": 0.982772928
+    },
+    {
+      "stage": "vm-04",
+      "test": "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "447"
+        ]
+      ],
+      "stdout_sha256": "07fa5f899aa7c1a8e758e2a81ac7915139aa2e19fe277898e2a13caea1fe7994",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "8406d4b0506eddd4c6804f816f2dceccbdcde7bb3a2ead82388cdb2a6331be9d",
+      "cpu_nsec": 293825000,
+      "wall_seconds": 1.006604446
+    },
+    {
+      "stage": "static-elf-01",
+      "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "f24a6e0d50fceb1fb8292f726e09a01279e188204861cf518a575c6eb25cb007",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "e9f8c6fdb4b03f3fd1321a5e8dfa76f4ee9c815d3ea7d9e860bcbfcfac6a38f2",
+      "cpu_nsec": 597401000,
+      "wall_seconds": 1.672750805
+    },
+    {
+      "stage": "static-elf-02",
+      "test": "leader_exit::exec_rearms_worker_survival_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "cdd90d53be764d387ba416de9374792aa38881cc6addff32f461228d11e47636",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "bae2cf52dae72ad8b793d10356d6a41cb8e33638215dd37ac7590bad49505163",
+      "cpu_nsec": 381382000,
+      "wall_seconds": 0.938655465
+    },
+    {
+      "stage": "static-elf-03",
+      "test": "leader_exit::exec_rearms_worker_survival_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "2651c99bf73f17d29bf10d1c63cecc5a36e4772268c4146e9b0511f8ab709209",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "387b8e334be877bfd8d309761a39ce41bf8154e88693f14be6e7a949e7c0ad16",
+      "cpu_nsec": 391436000,
+      "wall_seconds": 0.870280071
+    }
+  ],
+  "scope": "Four exact library VM controls and all 22 unchanged static_elf lifecycle methods. The exec-worker method retains all ten modes. Real KVM admission occurs inside each actual observed service; no skip is qualification. This is Reverie execution evidence, not Hermit/Detcore guest or canonical parity evidence."
+}

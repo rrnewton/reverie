@@ -1,0 +1,19 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_018W3aZeXhBDCZ7qg8KvTrZv",
+  "name": "Glob",
+  "input": {
+    "pattern": "evidence/pin-and-main-audit/*",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation"
+  }
+}
+
+Successful public tool result (exact text below):
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/REPORT.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/stage02-readback.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/main-delta.patch
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/main-commits
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/main-readback.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/FULL-LIBRARY-RESULT.md
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/full-library-readback.json
+/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/pin-and-main-audit/full-library-failure.txt

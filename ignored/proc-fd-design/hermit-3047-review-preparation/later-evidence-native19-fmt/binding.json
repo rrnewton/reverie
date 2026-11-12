@@ -1,0 +1,833 @@
+{
+  "head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "prepared_at": "2026-09-17T06:29:26.814126+00:00",
+  "status": "Independent later evidence appendix; not supplied to the already-running reviewer; no frozen input modified",
+  "native_methods": [
+    {
+      "method": "tests::kvm_mountinfo_config_captures_validated_ambient_namespace",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_preserves_captured_provenance",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::mount_id_subset_requires_unique_members_in_captured_order",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::fdinfo_mount_id_is_strict_and_unique",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::mountinfo_parser_accepts_empty_and_refuses_malformed_or_duplicate_rows",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+      "status": "ok"
+    },
+    {
+      "method": "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::fdinfo_hides_backing_identity_only",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+      "status": "ok"
+    },
+    {
+      "method": "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+      "status": "ok"
+    }
+  ],
+  "native_count": 19,
+  "fmt_pass": true,
+  "commands": [
+    {
+      "name": "mount-01-config",
+      "cpu_seconds": 92.263617,
+      "wall_seconds": 47.87259216886014,
+      "receipt_sha256": "06e1f6b26c0b07599f85dc6dceb35540e7efd596d202e26425680f3cb82dcec4",
+      "test_summary": [
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 338
+        }
+      ],
+      "methods": [
+        {
+          "method": "tests::kvm_mountinfo_config_captures_validated_ambient_namespace",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_preserves_captured_provenance",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-02-parser",
+      "cpu_seconds": 5.306212,
+      "wall_seconds": 3.901821245905012,
+      "receipt_sha256": "f43b1f54ce9463d8b94f169448b2064e3d6f709a1f0f6b03f71f28990271913c",
+      "test_summary": [
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 74
+        }
+      ],
+      "methods": [
+        {
+          "method": "procfs::tests::mount_id_subset_requires_unique_members_in_captured_order",
+          "status": "ok"
+        },
+        {
+          "method": "procfs::tests::fdinfo_mount_id_is_strict_and_unique",
+          "status": "ok"
+        },
+        {
+          "method": "procfs::tests::mountinfo_parser_accepts_empty_and_refuses_malformed_or_duplicate_rows",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-03-identity",
+      "cpu_seconds": 55.464066,
+      "wall_seconds": 44.739180757896975,
+      "receipt_sha256": "a7668f55747396e7fc1f7007c28ab8f2f2ef31d9112ea1dd82c57cb58e7322d9",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-04-identity",
+      "cpu_seconds": 0.181787,
+      "wall_seconds": 0.5644387400243431,
+      "receipt_sha256": "2491974003b1b10e04404a14179b1669571c24e791051c4435133dd30397c4e7",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-05-identity",
+      "cpu_seconds": 0.166887,
+      "wall_seconds": 0.5321808049920946,
+      "receipt_sha256": "5e513d2f95a677f5cc88a34db4f7a28d74354ac851067386074824a61e3558f4",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-06-identity",
+      "cpu_seconds": 0.193554,
+      "wall_seconds": 0.6021135069895536,
+      "receipt_sha256": "48d0180822882bc45f663c589a6f67157ef488cd2eb5b9449b117dcec6ed9afd",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-07-identity",
+      "cpu_seconds": 0.16679,
+      "wall_seconds": 0.6016453239135444,
+      "receipt_sha256": "d84b8f3bfd44e82872d15766badb81281787be5859885e8b6443b43cbac2d479",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-08-identity",
+      "cpu_seconds": 0.163433,
+      "wall_seconds": 0.5450833020731807,
+      "receipt_sha256": "4bd5c9eb679c9c6add9c96c65649350f91a6c37f1e39ae9d0fdc413ca52faa14",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-09-identity",
+      "cpu_seconds": 0.165396,
+      "wall_seconds": 0.6045664311386645,
+      "receipt_sha256": "11e7e526eeaace0be91593b1b9d24a2648dc2122b2633e9a96ee232689db42d1",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-10-identity",
+      "cpu_seconds": 0.170914,
+      "wall_seconds": 0.5457510051783174,
+      "receipt_sha256": "409166e28ded2407f34e868584bc3dd1a6b0777f60d0fdac9c6fa0f956c09d17",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-11-identity",
+      "cpu_seconds": 0.170211,
+      "wall_seconds": 0.563005066011101,
+      "receipt_sha256": "4644cba81f426088b7d3a778267ad547be9b402fb49a69256e69e99e3264b2af",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-12-identity",
+      "cpu_seconds": 0.168518,
+      "wall_seconds": 0.5921188769862056,
+      "receipt_sha256": "64b016e108ab0fb351b203f6f5cf82dc3b2e24b10523f3928ff1f2fa294a6ea0",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "procfs::tests::fdinfo_hides_backing_identity_only",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-13-identity",
+      "cpu_seconds": 0.172811,
+      "wall_seconds": 0.5709730619564652,
+      "receipt_sha256": "bf916ce85298811b93a48eacdbf8f2b9beeb19310ceadc099b25738c22a9d54b",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-14-identity",
+      "cpu_seconds": 0.206568,
+      "wall_seconds": 0.6067275460809469,
+      "receipt_sha256": "d44c12cd1bf5075fc3fd1e812064538d959759dea6872a98f9a7b712bb3007f3",
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "methods": [
+        {
+          "method": "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+          "status": "ok"
+        }
+      ]
+    },
+    {
+      "name": "mount-15-fmt",
+      "cpu_seconds": 2.698178,
+      "wall_seconds": 3.1529134809970856,
+      "receipt_sha256": "9c5b1cf51f9286165d7f61e0603127df38ba8c70fa7fcccc3d2b2371406e19c8",
+      "test_summary": null,
+      "methods": []
+    }
+  ],
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-01-config-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-01-config-readback.json",
+      "bytes": 1334,
+      "sha256": "7c93b94af916dcd5d04ca271923cd5efc154ce4dd24a1f8483346c71925b9109",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-01-config.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-01-config.json",
+      "bytes": 4072,
+      "sha256": "06e1f6b26c0b07599f85dc6dceb35540e7efd596d202e26425680f3cb82dcec4",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-01-config.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-01-config.log",
+      "bytes": 417,
+      "sha256": "9c59532a240be20887b1587e7b8d6b237bcf380b0ea1441413cce2898939a6dc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-01-config-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-01-config-stderr.log",
+      "bytes": 3895,
+      "sha256": "b986999637b98e2ca46c7e4fdd98efab8f108fdec6c0024a11b9df28a91c0926",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-02-parser-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-02-parser-readback.json",
+      "bytes": 1236,
+      "sha256": "e74966ccdf7b7597374eb35b9aaeb5b740e1a4ac0b0b6026af50c2c5b06242c6",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-02-parser.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-02-parser.json",
+      "bytes": 3876,
+      "sha256": "f43b1f54ce9463d8b94f169448b2064e3d6f709a1f0f6b03f71f28990271913c",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-02-parser.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-02-parser.log",
+      "bytes": 361,
+      "sha256": "d2e2209872cac3fd6826e30a400e130cbcc9ad98276780f1f33c802ad89b7918",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-02-parser-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-02-parser-stderr.log",
+      "bytes": 318,
+      "sha256": "34622f5aac24864aebf651556edb71ec0357775c275f3eddd103e45f7aefa02e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-03-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-03-identity-readback.json",
+      "bytes": 1003,
+      "sha256": "aa6377828e2fb22907632adacc2c65cbf7c65462c0a293c0d64d57866f49ec2d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-03-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-03-identity.json",
+      "bytes": 4049,
+      "sha256": "a7668f55747396e7fc1f7007c28ab8f2f2ef31d9112ea1dd82c57cb58e7322d9",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-03-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-03-identity.log",
+      "bytes": 205,
+      "sha256": "bd535bb16e726f544fed219b040fcc21e74a410ae4a376182139a6b1e204724e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-03-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-03-identity-stderr.log",
+      "bytes": 1354,
+      "sha256": "f62dcdd794bda5683663a3748058f7a53f1770b7ed6fa95eaeba4b05adaa2688",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-04-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-04-identity-readback.json",
+      "bytes": 1006,
+      "sha256": "56b5935d755f1dd6e5e8951dac2183d9ea875256efb5ca398ba053179520626d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-04-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-04-identity.json",
+      "bytes": 4050,
+      "sha256": "2491974003b1b10e04404a14179b1669571c24e791051c4435133dd30397c4e7",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-04-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-04-identity.log",
+      "bytes": 209,
+      "sha256": "f8f4732bc3a3f99591cb2ce92641da6a206c56fa5bf32f7b20b9523d365532f4",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-04-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-04-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "e5104a2574c11a59d4bc76273acccf1ddebabf2a8a978edcc57afc7d1dec6065",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-05-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-05-identity-readback.json",
+      "bytes": 1000,
+      "sha256": "7025a97115c9af6f80f611f8dd03d7765a07dca570ffbfb9d4e3ad8f4d47538f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-05-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-05-identity.json",
+      "bytes": 4038,
+      "sha256": "5e513d2f95a677f5cc88a34db4f7a28d74354ac851067386074824a61e3558f4",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-05-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-05-identity.log",
+      "bytes": 203,
+      "sha256": "15819b9508228a82482d5749ae58a52a1c3f8b51d8eeb5b866fbf38994535283",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-05-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-05-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "64999d4c09ccd740b844740a5fec006cd712dec33cc7cb16ddcd815ad23e4baf",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-06-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-06-identity-readback.json",
+      "bytes": 1005,
+      "sha256": "82aea1cbe5cb3c4e9e5fe897140448a6b6c7c1a585d465887b5567ac3aa881a6",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-06-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-06-identity.json",
+      "bytes": 4048,
+      "sha256": "48d0180822882bc45f663c589a6f67157ef488cd2eb5b9449b117dcec6ed9afd",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-06-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-06-identity.log",
+      "bytes": 208,
+      "sha256": "6783fd9b91ff4e2bba8d7328231af0c52f7e4237a13c95bee9cf49d971eb82aa",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-06-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-06-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "64999d4c09ccd740b844740a5fec006cd712dec33cc7cb16ddcd815ad23e4baf",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-07-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-07-identity-readback.json",
+      "bytes": 995,
+      "sha256": "b94acef28d3ebea4916292cb894951d0e2432d48b995bd620e2df1502c754afa",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-07-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-07-identity.json",
+      "bytes": 4029,
+      "sha256": "d84b8f3bfd44e82872d15766badb81281787be5859885e8b6443b43cbac2d479",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-07-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-07-identity.log",
+      "bytes": 199,
+      "sha256": "9b11242dfd99e8fa1bd234794661ed80696425fdc78281b3c8ea21eaf6efa135",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-07-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-07-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "0e7f15d3aae5c31441d72128e5272a8b28641a4458a9119bff48cd3b7cffdf5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-08-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-08-identity-readback.json",
+      "bytes": 999,
+      "sha256": "5c69a5807464a3e35067138a3274d10e9fa71913a22b249f3c907f6fe35b4916",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-08-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-08-identity.json",
+      "bytes": 4036,
+      "sha256": "4bd5c9eb679c9c6add9c96c65649350f91a6c37f1e39ae9d0fdc413ca52faa14",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-08-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-08-identity.log",
+      "bytes": 202,
+      "sha256": "d14f9ab4c35741d4eaa3f6f39c25a59543d83bdfb97b9ec69821cdc34dbb0d52",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-08-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-08-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "0e7f15d3aae5c31441d72128e5272a8b28641a4458a9119bff48cd3b7cffdf5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-09-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-09-identity-readback.json",
+      "bytes": 1011,
+      "sha256": "a966c4b097048216cf7bcafed345d861d081ea061cb48cd5d880002afe36459f",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-09-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-09-identity.json",
+      "bytes": 4060,
+      "sha256": "11e7e526eeaace0be91593b1b9d24a2648dc2122b2633e9a96ee232689db42d1",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-09-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-09-identity.log",
+      "bytes": 214,
+      "sha256": "3b720f07746b1ce10cca24f7f365ee5272c55cc7df627f63d144618535a5a028",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-09-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-09-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "0e7f15d3aae5c31441d72128e5272a8b28641a4458a9119bff48cd3b7cffdf5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-10-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-10-identity-readback.json",
+      "bytes": 999,
+      "sha256": "20700b5aa41db68a27d128f1f9ef8283e7ce61b3da1cdec6175c891d111e419c",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-10-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-10-identity.json",
+      "bytes": 4036,
+      "sha256": "409166e28ded2407f34e868584bc3dd1a6b0777f60d0fdac9c6fa0f956c09d17",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-10-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-10-identity.log",
+      "bytes": 202,
+      "sha256": "29b5077cc3a37ee7eea0705e129f88ba0a68355186e6fa70ca9ed959b62f95d3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-10-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-10-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "0e7f15d3aae5c31441d72128e5272a8b28641a4458a9119bff48cd3b7cffdf5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-11-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-11-identity-readback.json",
+      "bytes": 1018,
+      "sha256": "3fcea7a56e2f94b0b1eb88af451268e6207ca3caecc3b672b855332bf21f7645",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-11-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-11-identity.json",
+      "bytes": 4075,
+      "sha256": "4644cba81f426088b7d3a778267ad547be9b402fb49a69256e69e99e3264b2af",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-11-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-11-identity.log",
+      "bytes": 222,
+      "sha256": "93f4a32a311c2a2ff19fa56ec8a62bccdfe0b35bea96ba9c9af91b43424479ef",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-11-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-11-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "0e7f15d3aae5c31441d72128e5272a8b28641a4458a9119bff48cd3b7cffdf5e",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-12-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-12-identity-readback.json",
+      "bytes": 973,
+      "sha256": "4b9d3b2cdebc5dda71ad7389dc7939b8ce1924520ec2a60c6108216a1f13f05c",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-12-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-12-identity.json",
+      "bytes": 3984,
+      "sha256": "64b016e108ab0fb351b203f6f5cf82dc3b2e24b10523f3928ff1f2fa294a6ea0",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-12-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-12-identity.log",
+      "bytes": 176,
+      "sha256": "d4cc3ccc774e63f078d4a2b44f1d701be9411a2972f5937456d1c919fc3e232a",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-12-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-12-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "bfe98ff51303f9a0f5486ac24b9a09f07981483c0ef3c0a632b019461b31c5ca",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-13-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-13-identity-readback.json",
+      "bytes": 996,
+      "sha256": "471da1f575fd9430395b53b8c225f0820a64cdfb014ad293ab7e5a1b60347c20",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-13-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-13-identity.json",
+      "bytes": 4030,
+      "sha256": "bf916ce85298811b93a48eacdbf8f2b9beeb19310ceadc099b25738c22a9d54b",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-13-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-13-identity.log",
+      "bytes": 199,
+      "sha256": "11876c37ce50dc79f6bd19352240cc83d992ef0f94570ac06759be792777074d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-13-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-13-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "64999d4c09ccd740b844740a5fec006cd712dec33cc7cb16ddcd815ad23e4baf",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-14-identity-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-14-identity-readback.json",
+      "bytes": 1004,
+      "sha256": "b3dcb3840fda62ccba980925d2b3b15d75a8bea68565989d945c7ab6599f3e32",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-14-identity.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-14-identity.json",
+      "bytes": 4046,
+      "sha256": "d44c12cd1bf5075fc3fd1e812064538d959759dea6872a98f9a7b712bb3007f3",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-14-identity.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-14-identity.log",
+      "bytes": 207,
+      "sha256": "75246ad90a39ed7a13078c0c79f3df9ad40be80e4a9ec19056f1c6ac5e186676",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-14-identity-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-14-identity-stderr.log",
+      "bytes": 189,
+      "sha256": "363f3b59801e64dbe535423d3f6721e2a30ad95f76fbc09a2bad97b19b11eefe",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-15-fmt-readback.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-15-fmt-readback.json",
+      "bytes": 701,
+      "sha256": "d50e863a2da28a67fbfbebdf854bc0daddceac229b970b001ecbb17492cb9cbe",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-15-fmt.json",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-15-fmt.json",
+      "bytes": 3530,
+      "sha256": "9c5b1cf51f9286165d7f61e0603127df38ba8c70fa7fcccc3d2b2371406e19c8",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-15-fmt.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-15-fmt.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/later-evidence-native19-fmt/mount-15-fmt-stderr.log",
+      "origin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/mount-15-fmt-stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    }
+  ],
+  "scope": "Native selected methods and formatting only. No fresh Hermit guest or full inventory/build/Clippy outcome is inferred."
+}

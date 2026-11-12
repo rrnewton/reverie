@@ -1,0 +1,73 @@
+{
+  "status": "passed",
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "source_binding_sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f",
+  "plan_sha256": "a109c46c97bb229e6d2c3a2e83a55e35375a02bea97c9c7e52376729f16744b8",
+  "caller_sha256": "570db3481b993e2a79a9e29b3927298ded31f21b87f1ff7b2f28c55020648e2a",
+  "actual_launch_sha256": "1d24b5e453f58c31aa020d79bbabcc77018cf066f5572443789a42e8e29ef4ae",
+  "stages": [
+    {
+      "stage": "format",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cpu_seconds": 1.715961,
+      "wall_seconds": 2.284361717,
+      "result_sha256": "892a201b163924dc6eff6b2195cc17c76ab7f0173ad2a4eab55f865c47c262eb",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "unit": "safehermit-20260917T172424Z-1676354.service",
+      "fresh_post": {
+        "argv": [
+          "systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T172424Z-1676354.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "clippy",
+      "payload": [
+        "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cpu_seconds": 42.145983,
+      "wall_seconds": 23.835640536,
+      "result_sha256": "f43bf39a5a1cf3a2efa8c83360f08b4146743a22889ad202e7fcef9421e250b8",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "4524640f50f45e8a3bb7da1388bcabcd25302df8fe1ed8c6c2da5f9503a2a9f8",
+      "unit": "safehermit-20260917T172427Z-1685434.service",
+      "fresh_post": {
+        "argv": [
+          "systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T172427Z-1685434.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      }
+    }
+  ],
+  "source_and_inputs_after": "Full 2596-entry source manifest and all 43 explicit inputs match.",
+  "scope": "Workspace format and --workspace --all-targets --all-features Clippy only. No tests or guests."
+}

@@ -1,0 +1,698 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/ADDITIONAL-INPUTS.json",
+    "bytes": 781959,
+    "mode": 420,
+    "sha256": "47b7b4f8c34692ae90b80bee38ad554e121932d23439c91081e0262cba7b608f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/CACHE-PROJECTS.json",
+    "bytes": 6183,
+    "mode": 420,
+    "sha256": "d0f7860baf9fc2f30d9915990cf2f37c05703e8262c1ee47fe0811bbfba2448d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/CAPTURE.json",
+    "bytes": 4272,
+    "mode": 420,
+    "sha256": "b4e7a141498522bd37e50721548aa2399de24e1badf699ec04bf1e335b434df6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/DEPFILE-RESOLVED-COVERAGE.json",
+    "bytes": 65082,
+    "mode": 420,
+    "sha256": "0979499b1509f8d087360623f4e4015be22f316f48862b8823fb70c5e1380d9f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/DEPFILE-SOURCE-COVERAGE.json",
+    "bytes": 38379,
+    "mode": 420,
+    "sha256": "ff4d904738aa2d7c34df11250a73067b5976cff4daa18e0efe027c89a05f1531"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-BUILD-OUTPUTS.json",
+    "bytes": 61162,
+    "mode": 420,
+    "sha256": "c6c7b959a6f1b860fe6b95756c7332882d2c1e32a601df0199a0f35ee6a25e84"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-COMMAND-SOURCES.json",
+    "bytes": 29825,
+    "mode": 420,
+    "sha256": "c2de29fab52d52a0d8e6d0365f1a6805d55d7b5e1d72a6c82ea10b64bedebabe"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-COMMANDS.json",
+    "bytes": 18389,
+    "mode": 420,
+    "sha256": "5bafe315323e5541597da491f4f36f6d08e036eacdc1617bb94484c1aaaa019d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-ELF-DEPENDENCIES.json",
+    "bytes": 42048,
+    "mode": 420,
+    "sha256": "0862f634a5b10ee62e50d0c0ce4c86554856924752b5c3825cc0d74f92348b82"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-LOADER-INPUTS.json",
+    "bytes": 9237,
+    "mode": 420,
+    "sha256": "e68b88750d73e9bcb86e2c9ff03947282bdb90dc0fd0347d6167ce1d35f82c72"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-PROC-MACROS.json",
+    "bytes": 3869,
+    "mode": 420,
+    "sha256": "6c6fc845963011682888e55ed88d82b8efda067f1e88f57d1d1ac04146292685"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/LOCAL-PACKAGES.json",
+    "bytes": 2977,
+    "mode": 420,
+    "sha256": "4a68070b0772a4e60e06bc45068b3bf03d23b96fa744324624843af4be168e27"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/LOCK-PACKAGES.json",
+    "bytes": 78919,
+    "mode": 420,
+    "sha256": "315e5b80724c168d9c5d37806f02d9507d287a7a7a38c25bda2c7e46c533f184"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/MANIFEST.json",
+    "bytes": 39084,
+    "mode": 420,
+    "sha256": "5740d61e4691ab7cad0bd72889ee5a3af08091e03d96f9451cf461ce14f3f903"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/MISSING-REGISTRY-PACKAGES.json",
+    "bytes": 26398,
+    "mode": 420,
+    "sha256": "35a3a456011dff701b90e77ea146a2f1f94fd603767fc5a9d0307a2106a215fe"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/OBSERVED-FILES.json",
+    "bytes": 827495,
+    "mode": 420,
+    "sha256": "eedda103daea6c992e89fad19126a19fa1ab33cedaf0ad132a0785108f4e7456"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/READBACK.json",
+    "bytes": 275613,
+    "mode": 420,
+    "sha256": "a7648c297e251e0fe1bdf652d1a193027107a75fc459d20c35fd6c3862514f77"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/REPORT-CORRECTION.json",
+    "bytes": 801,
+    "mode": 420,
+    "sha256": "2292d818d378ec679c4a3238ee39944e154816878dfcb04bd3827fb7075e5d7e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/REPORT-v2.md",
+    "bytes": 11162,
+    "mode": 420,
+    "sha256": "2c393409fa61ee8b6980badc15477bf631fb9b1125ed0b7806dc0a00e6df7fbe"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/REPORT.md",
+    "bytes": 10885,
+    "mode": 420,
+    "sha256": "a6b6e5eb4b8e0e7008af944cf04995a63b6437e05f319723bc38eb32251ada0f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/RUNTIME-LOOKUP-INPUTS.json",
+    "bytes": 2640,
+    "mode": 420,
+    "sha256": "0c3e255e09652fb7544c9f575562e820820df92293136c77ecc9d7db3442f5ec"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/RUST-SCRIPT-LOADER.json",
+    "bytes": 1586,
+    "mode": 420,
+    "sha256": "4cb73b9a64dc56b98021a35e8b28934fe5fe8be6f43eef82191ac9b9e30d03c9"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/SOURCE-INPUTS-FOR-REUSE.json",
+    "bytes": 705536,
+    "mode": 420,
+    "sha256": "ba0192387cd85a8bfe4f401ef0a6de92c08a8c066effe53f341602b704b23790"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/capture.py",
+    "bytes": 14905,
+    "mode": 420,
+    "sha256": "366331bf5dc69bbd8b54736f3a6bb3b7c8ef42e76f093c69a0beb354961da366"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/b81ceab65609123303f94190/Cargo.lock",
+    "bytes": 29210,
+    "mode": 420,
+    "sha256": "7ac15e1160645500d16e81148b76eda918471e0b386c263064e45cb301408c1a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/b81ceab65609123303f94190/Cargo.toml",
+    "bytes": 688,
+    "mode": 420,
+    "sha256": "9fbb7bea2614e901fd38467d6919fdd65cc660c27cb545eea57399fbe0b2accd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/b81ceab65609123303f94190/original-script.rs",
+    "bytes": 1002474,
+    "mode": 420,
+    "sha256": "16128aad4b5f1761713ee595029b6daf5e298d11a7fcd8df3279c8dfca882a26"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/be776c6e0dc0044fb82ec5a8/Cargo.lock",
+    "bytes": 191,
+    "mode": 420,
+    "sha256": "587bcd2c6184550fd1b3fe6f452cf9daca91b3978270bac274873eb22b5d49d9"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/be776c6e0dc0044fb82ec5a8/Cargo.toml",
+    "bytes": 354,
+    "mode": 420,
+    "sha256": "9b141f1a75ca1108721fc76d3773989ef22802023b748c2d6bfb901b9f8a438c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/be776c6e0dc0044fb82ec5a8/original-script.rs",
+    "bytes": 29777,
+    "mode": 420,
+    "sha256": "7d3355260aab61a362fffd5b568867309b741497c3837b9e9f841583ff99b0e0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8/executable.d",
+    "bytes": 331,
+    "mode": 420,
+    "sha256": "b4eee261760e5d7a4052282073265cf7ac8ea5dca4fda9e77c6ccfc4b3da1f03"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/context.json",
+    "bytes": 132264,
+    "mode": 420,
+    "sha256": "a6d8f064ba36fe08509168f4bc692d9d5accda716c94b34859b691c0f08d47a3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/validate_b81ceab65609123303f94190/executable.d",
+    "bytes": 8841,
+    "mode": 420,
+    "sha256": "9f2b6dfa7f6e5de8ac5be18dbc76da7df028f32161e198d393fa36e506f1c797"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/copies/validation_dag.rs",
+    "bytes": 117322,
+    "mode": 420,
+    "sha256": "0d82d82a9987ee1f624aa96b4fdd6573aac51936d9997d226b3bf2fa41a63401"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/00/result.json",
+    "bytes": 1026,
+    "mode": 420,
+    "sha256": "9c43acd0389cbe9fbc3db84584a1bc71ec8b04894d6f754f2914770229f08956"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/00/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/00/stdout",
+    "bytes": 3642,
+    "mode": 420,
+    "sha256": "362da8d1d43aa0c4c0d7655551f42378fd20aaa4cbf1078495eaead92da260f2"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/result.json",
+    "bytes": 1040,
+    "mode": 420,
+    "sha256": "eadd4463d44b25c06dcc3126091657fc158a15fbe74aae52dd26c2941d7a3e31"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "c1f6844a3c4a51a4d5240eeee54c5d44ed225888d4639eb759eb524a268c9a3b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/02/result.json",
+    "bytes": 1041,
+    "mode": 420,
+    "sha256": "ad6e332a0d1f1b3bbb9a09a651d3f08ae7e15b7121ade4565c6a5cb5cf3082bf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/02/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/02/stdout",
+    "bytes": 3630,
+    "mode": 420,
+    "sha256": "c52d72e8674637e613bccdc5739513f494ed23787c76deba3fb47294a353dae7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/03/result.json",
+    "bytes": 1048,
+    "mode": 420,
+    "sha256": "9db6468444d71c34a88cff089076c07ea574550a0638b60ceff09219c69a79df"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/03/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/03/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "fb6d382706227c5a783771ad0633c205baa37735ae8360186dda8ad0c0a941eb"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/04/result.json",
+    "bytes": 1044,
+    "mode": 420,
+    "sha256": "8918c532cb88ac72b58f7a832dd9a9ae9adadd727ab71ae117f89190434e012f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/04/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/04/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "7599b887a4fbcc8089efbba8009fc795f6cc397beeeaff81f7d8cb39828bdd59"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/05/result.json",
+    "bytes": 1039,
+    "mode": 420,
+    "sha256": "5da1881e92a697a23e86615f5402073570f366eb3b2cb6de388112213318e135"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/05/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/05/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "177218ebf78b9fb1181063046fb73ae4db8b5486ed2a936993f62bf417fa35c0"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/06/result.json",
+    "bytes": 1045,
+    "mode": 420,
+    "sha256": "fea4ca712ef017f039316d9d86d335a7bc43430651399d068db7b0bcc377dbcd"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/06/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/06/stdout",
+    "bytes": 3629,
+    "mode": 420,
+    "sha256": "a31ca59e751c7717073aec889b8197dc98a2f635b40f26216fc4c789c492dd5d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/07/result.json",
+    "bytes": 1038,
+    "mode": 420,
+    "sha256": "959c45eaf7e14e1d2d52150e21df92ebd81eb9aec81d598a1d12bc74bd6598ac"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/07/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/07/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "5b819d4da02214e3c0a02b573a068b96fad5f8561726bb6dac8f88a2d64fe9f6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/08/result.json",
+    "bytes": 1044,
+    "mode": 420,
+    "sha256": "bf14d9eab4194e17f1de9ef307989cdeababef8b91ba3f5192a56b76f9b25bb6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/08/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/08/stdout",
+    "bytes": 3629,
+    "mode": 420,
+    "sha256": "aa894dc58f35e1bb8d819049b92855a35437762aa321fd96ffb17e801c8825ba"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/09/result.json",
+    "bytes": 1040,
+    "mode": 420,
+    "sha256": "c9f645c52760044ea7f999df6f5bfe9310090fdc42d7ed14fcb91b78662cd1f3"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/09/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/09/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "7514d27b12c4859ea0a9aeef5464489f284021d31ca12086abe2e31fa6a4646d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/10/result.json",
+    "bytes": 1046,
+    "mode": 420,
+    "sha256": "c40fb42761801441f5b1819d2abf9f0278cd88a97fb42ac49a645f84d06545e1"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/10/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/10/stdout",
+    "bytes": 3630,
+    "mode": 420,
+    "sha256": "1be4cda13afab7514302813f4d37e71344f776752e616c2a52e17003b9ef0832"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/11/result.json",
+    "bytes": 1040,
+    "mode": 420,
+    "sha256": "a018a665f98bdb3f1a47656f3b36b6e577838a8e38aaa3b967c66cbb7c002b4b"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/11/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/11/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "91c61d6d19f8aca42590032853ac129a200827a6b9efc547fd6e7170387ff100"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/12/result.json",
+    "bytes": 1041,
+    "mode": 420,
+    "sha256": "bc82ea66bb5fd6bd7c4e2c3c27fe0e05cb86f101221c60cba941b3815246825c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/12/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/12/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "45eccf728ba021ab15f9614d5ad2863a358a8aba89752d9a1ef3de4d54892aac"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/13/result.json",
+    "bytes": 1040,
+    "mode": 420,
+    "sha256": "d70a302dffce2bfe857b3d57e2ee60eaa0f20a2bf484b0ef6a8d7ff18598cafb"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/13/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/13/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "2af9f300197f728b92c2db204650d282ab4057cd5fac40f11849359a75d6d7c2"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/14/result.json",
+    "bytes": 1040,
+    "mode": 420,
+    "sha256": "3b7dcaab655025cd6087d5fa6f6be5d5e130de49a90f7e2fcd9a5737fada9002"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/14/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/14/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "ade1ac4d6913b93d04540eb672d52382a60ee22a3a1e7d6293e2fdf411772eb8"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/15/result.json",
+    "bytes": 1045,
+    "mode": 420,
+    "sha256": "e23b64a2f645dfe5713d15a2ee41f1f7f8d33a1e9f69d5c01023c392d22a4b79"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/15/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/15/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "e8be4d1c7cbca5aef8a1dd91d0b9e294c2f3183e43020f7b5b2d16231c3158a6"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/16/result.json",
+    "bytes": 1045,
+    "mode": 420,
+    "sha256": "5c28a66b6d9661d1a5029715805ce536e86bbd24e1c783d1793956589a78c017"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/16/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/16/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "e9205eef494bbbe7cc2e220eba6de8fcb39da217a77ace275bf2383891c8254c"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/17/result.json",
+    "bytes": 1045,
+    "mode": 420,
+    "sha256": "78d8f1a61d38a1484db654367b69283d4809eb893104c1e2e1ec083a69c68712"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/17/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/17/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "d809fe988304bb0c6e0782834769fad7b8a3df60d4e3038f279a1a906e707cb1"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/18/result.json",
+    "bytes": 1042,
+    "mode": 420,
+    "sha256": "5394d4f01b48c42a8d00db43553c23dfd7dc4c450145e5dbb5506df705464432"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/18/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/18/stdout",
+    "bytes": 3627,
+    "mode": 420,
+    "sha256": "4758ed9cd6da77069f6e4d574000d335f9d8ec35be0497a07bf02e07c46307ab"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/result.json",
+    "bytes": 1039,
+    "mode": 420,
+    "sha256": "3fc539e01d88a73eed4da32d866fda4ea394dec67d7d655b04221b7cf3fa38b2"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/stdout",
+    "bytes": 3628,
+    "mode": 420,
+    "sha256": "c62f5e12e8940c9ef33b9554af57a735b0fd2d52cad72c79b30050aeb2b3e829"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/20/result.json",
+    "bytes": 1035,
+    "mode": 420,
+    "sha256": "fc7ad1efaf9adcdb0b52184f43629c50ddc784e46541e55c11a2f87b2be85b8a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/20/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/20/stdout",
+    "bytes": 3362,
+    "mode": 420,
+    "sha256": "5a7b5170fc2b776dbec1899bde39b97506851b7cbfea786cd2214c589222c071"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/21/result.json",
+    "bytes": 1033,
+    "mode": 420,
+    "sha256": "0b6f6ccd11d98c5f4358d848ba922f2774ec3d8e83f6de3e9af6dfeeb14bb804"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/21/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/21/stdout",
+    "bytes": 3368,
+    "mode": 420,
+    "sha256": "9568dedfb4970d04b645a04264291c5172e7b3f85fb11170c515698664793bcf"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/22/result.json",
+    "bytes": 1037,
+    "mode": 420,
+    "sha256": "ac307d8fa9c0a9e0435c620cc98d64dedae0dbde4e3adc4394df574f44a1a8b1"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/22/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/22/stdout",
+    "bytes": 3370,
+    "mode": 420,
+    "sha256": "96a8d9d4d1cf3106d7dc3599165f3e2013e92b14fa3510ac5f6d2a0150f9e2d5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/23/result.json",
+    "bytes": 1026,
+    "mode": 420,
+    "sha256": "b066774abf733e8c0c3abdcfa0d545443393aa804019f037523a4da1d08c2e00"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/23/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/23/stdout",
+    "bytes": 3361,
+    "mode": 420,
+    "sha256": "cfc75d99ef6f135846b1e89822d1b96c5b0f375242800b661f74eccfcbe4e30a"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/24/result.json",
+    "bytes": 1033,
+    "mode": 420,
+    "sha256": "e71467c2bcc43a3d32d23626e65c1717224a2e59f6bd147160859ec08d561a83"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/24/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/24/stdout",
+    "bytes": 3368,
+    "mode": 420,
+    "sha256": "05672d4dff631bb237c6323a358bc96e39d84a736bed41791ddd81cab7b249b5"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/result.json",
+    "bytes": 1030,
+    "mode": 420,
+    "sha256": "709b7d17783b6c8997e10f3412618b042dedbb611ef6c5fb0826510bf6b4096e"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/25/stdout",
+    "bytes": 3368,
+    "mode": 420,
+    "sha256": "42969d3b100f73940fd856a35b9d049e0e6497d9c3b4eac104b04de781c2d49f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/26/result.json",
+    "bytes": 1039,
+    "mode": 420,
+    "sha256": "ca975127fcc3d76939841d0838d12fae5cc8e7f32dc8c529d50e32f3982c82a7"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/26/stderr",
+    "bytes": 0,
+    "mode": 420,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/26/stdout",
+    "bytes": 3368,
+    "mode": 420,
+    "sha256": "8b84c4057c21ee554511053ebf4865efcb7486826832d8e37972d6c4c829fe7d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/inspect_elf.py",
+    "bytes": 4909,
+    "mode": 420,
+    "sha256": "6101bc96a3c8bffb8535f69caf10862503963af0887af959cd452c51be84cf5b"
+  }
+]

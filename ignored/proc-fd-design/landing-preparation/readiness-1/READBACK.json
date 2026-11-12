@@ -1,0 +1,106 @@
+{
+  "github_read_at_utc": "2026-09-17T05:45:10.441815+00:00",
+  "main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "main_tree": "9161b3f6b07676c8463b7a93f8d930d538dd6b5b",
+  "public_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "local_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "local_tree": "b86bfdb0703e96d377007c102eccfa57ba362396",
+  "draft": true,
+  "public_state": "OPEN",
+  "mergeable": "MERGEABLE",
+  "labels": [],
+  "status_check_rollup": [],
+  "comments_count": 0,
+  "reviews_count": 0,
+  "original_public_body_unchanged": true,
+  "review_status_limit": "GitHub has no public review verdict; actual external source-v3 CHANGES REQUESTED remains effective while root continuation14137 runs. No clearance inferred.",
+  "source": {
+    "reverie-kvm/src/elf.rs": {
+      "entry": "100644 blob 7959e7780cec9d3b41a6cf13088e474e3b03c1bf\treverie-kvm/src/elf.rs",
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7"
+    },
+    "reverie-kvm/src/executor.rs": {
+      "entry": "100644 blob 44ee9f7c26dd71075291aad4446051eeee6eba02\treverie-kvm/src/executor.rs",
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1"
+    },
+    "reverie-kvm/src/fdinfo.rs": {
+      "entry": "100644 blob 2518463e81b35fb2c27ef823edc3d103ec3bba01\treverie-kvm/src/fdinfo.rs",
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    "reverie-kvm/src/lib.rs": {
+      "entry": "100644 blob b0645d69507e33ca76880691ccb5c5f9c8d9d190\treverie-kvm/src/lib.rs",
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9"
+    },
+    "reverie-kvm/src/memory.rs": {
+      "entry": "100644 blob ce39403ae27b32ff5c0952868759951a10acbb40\treverie-kvm/src/memory.rs",
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6"
+    },
+    "reverie-kvm/src/proc_mounts.rs": {
+      "entry": "100644 blob 413c53832e52d380814741306e7a2ba528d78424\treverie-kvm/src/proc_mounts.rs",
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    }
+  },
+  "active_work": {
+    "exit_code": 1,
+    "state": "drift",
+    "snapshot_utc": "2026-09-17T05:44:23.555419+00:00",
+    "result_utc": "2026-09-17T05:45:39.953662+00:00",
+    "snapshot_age_at_result_seconds": 76.398243,
+    "counts": {
+      "actually_active": 3,
+      "awaiting_land": 373,
+      "busy_agents": 3,
+      "claimed": 5,
+      "in_progress": 22,
+      "lifecycle_violations": 10,
+      "live_agents": 10,
+      "misrouted": 17,
+      "off_book": 0,
+      "orphaned": 0,
+      "owned_active": 20,
+      "stale": 0
+    },
+    "own_claim": [
+      {
+        "id": "kvm-lane-to-full-determinism-and-parity",
+        "landed": false,
+        "owner": "Ensure deterministic KVM parity | dev-hermit",
+        "status": "IN_PROGRESS",
+        "tags": [
+          "owner-directive",
+          "kvm"
+        ],
+        "title": "KVM backend lane: drive to 100 percent determinism and 100 percent parity"
+      }
+    ],
+    "own_actually_active": [
+      {
+        "id": "kvm-lane-to-full-determinism-and-parity",
+        "landed": false,
+        "owner": "Ensure deterministic KVM parity | dev-hermit",
+        "status": "IN_PROGRESS",
+        "tags": [
+          "owner-directive",
+          "kvm"
+        ],
+        "title": "KVM backend lane: drive to 100 percent determinism and 100 percent parity"
+      }
+    ],
+    "own_invalid_entries": [],
+    "task_contains_full_pr_url": true,
+    "authority": "Claimed own task is current despite unrelated aggregate drift; one authority invocation only."
+  },
+  "prepared_files": {
+    "native_comment": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/native-review-comment.md",
+      "sha256": "8798420ff214cbbbf18f0486d59260e8d0c6b6ff0be76410672223474d4ceb75"
+    },
+    "revised_merge_caller": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/landing-preparation/external-follow-up/merge-command.sh",
+      "sha256": "2c76dbea1e212e296f6be36dd46fcabc0539f6cba7c6188c98a7e62b457b5fe2"
+    }
+  },
+  "source_index_clean": true,
+  "new_main_increment": false,
+  "merge_executed": false
+}

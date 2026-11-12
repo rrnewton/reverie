@@ -1,0 +1,16 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_019nUB48FFYuJq8TTntqzW8d",
+  "name": "Grep",
+  "input": {
+    "pattern": "^REVERIE_DBT_MAX_PARALLEL_JOBS=|^REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS=|^REVERIE_DBT_MAX_BUILD_SECONDS",
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/ci/configure-build-jobs.sh",
+    "output_mode": "content",
+    "-n": true
+  }
+}
+
+Successful public tool result (exact text below):
+565:REVERIE_DBT_MAX_PARALLEL_JOBS=16
+566:REVERIE_DBT_MAX_BUILD_EFFECTIVE_JOB_SECONDS=1050
+574:REVERIE_DBT_MAX_BUILD_SECONDS=$((

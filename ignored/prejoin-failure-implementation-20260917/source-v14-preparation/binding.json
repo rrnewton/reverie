@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "append_to_head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 10784,
+      "sha256": "c3f31fd44b001fbdd47bea6836627aafe39a9b5aef3dc65c3d7df479a262a73b"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1398838,
+      "sha256": "af6f8a36328f08105bc148a8713bcbf6c81cb2e930727f8015bb35426f560e7a"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 16360,
+      "sha256": "34eb8c9de0ba6f779034f628eb6ec855aa73c7b687064e10ad7cc03955fa8f94"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 156244,
+      "sha256": "cf09ada60ccc8e51ae388d149887f04fd346894707bc4ec0cae0f09913efbcd7"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 27261,
+      "sha256": "cd938560ff03fd7929d07248c33c628e7b98b66dcd324cebc36cf4a2d28c1e4b"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17499,
+      "sha256": "ffa0d30c99afae13ed61e35e3212aa77aaeadee54efa08ce1b5f456473aaceb4"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 306099,
+      "sha256": "185ce5d480c3d4ac96e0194bc5c27241b5960219d6321a2bd2c331dfdc62d223"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    }
+  ],
+  "patch_sha256": "79e05bdc20d8bc1ef17688fabeb0d2fad1e31e9b49e4c27347b479c2297e7807",
+  "patch_bytes": 196781,
+  "increment_sha256": "daa477e42b8e256170b0b1c190914f5debbc013fb9d462ec47c20547e34a1eff",
+  "report_sha256": "12918b20533f94e2615b1e245c96766d2bb150c3fe75d93423e4fcbf24c9e607",
+  "source_manifest_sha256": "5c7ba163d9155b9b4811450ae11291023dc404af0ab4926d1542eba508e92629",
+  "source_file_count": 2586,
+  "selected_tests_sha256": "61744c5a3b8517682980594c995107ed6b3596f680a7026ba1ef773f6f7170a5",
+  "retained_no_vm_selected_count": 34,
+  "selected_no_vm_count": 37,
+  "separate_new_vm_count": 1,
+  "source_preparation": "Only the native test-support accessor feature gates/removal differ from v13. No execution on v14.",
+  "previous_binding_sha256": "b7a4d941ee8d6010d7dcaa2a5b725c06fa8d1787b8562c802fea27aec94da566"
+}

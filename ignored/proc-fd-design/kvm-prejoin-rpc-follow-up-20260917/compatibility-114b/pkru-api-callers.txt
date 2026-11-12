@@ -1,0 +1,16 @@
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:15:use reverie_preload::trap::NativeSyscallResult;
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:18:use reverie_preload::trap::raw_syscall6_with_result;
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:32:fn native(number: i64, args: [u64; 6]) -> NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:46:    NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:51:fn helper(number: i64, args: [u64; 6], guest: u32) -> NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:53:    let result = unsafe { raw_syscall6_with_result(number, args, Some(guest)) };
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:107:            NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:225:        NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:314:        NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:335:        let result = unsafe { raw_syscall6_with_result(libc::SYS_getpid, [0; 6], None) };
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/bin/native_syscall_result.rs:338:            NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/trap.rs:207:pub struct NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/trap.rs:238:pub unsafe fn raw_syscall6_with_result(
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/trap.rs:242:) -> NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/trap.rs:246:            NativeSyscallResult {
+114b309413612fafc2657c74e83811c71aac7b19:reverie-preload/src/trap.rs:251:        None => NativeSyscallResult {

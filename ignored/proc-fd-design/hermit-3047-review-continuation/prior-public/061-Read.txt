@@ -1,0 +1,132 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01HjPbcEjHS6Q7ubKKBskN53",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/tool_global.rs",
+    "offset": 200,
+    "limit": 120
+  }
+}
+
+Successful public tool result (exact text below):
+200	        }
+201	    }
+202	
+203	    // remove a det inode
+204	    fn remove_inode(&mut self, det_inode: DetInode) {
+205	        if let Some(info) = self.detinodes_info.remove(&det_inode) {
+206	            self.inodes.remove(&info.raw);
+207	        }
+208	    }
+209	}
+210	
+211	// AUTONOMOUS-BOT-IMPLEMENTED
+212	// TODO-HUMAN-REVIEW(PR-1056): Deterministic remapping of device numbers (st_dev).
+213	/// Deterministic remapping of device numbers (`st_dev`).
+214	///
+215	/// The kernel assigns anonymous block-device numbers to filesystems without a
+216	/// backing block device (procfs, sysfs, tmpfs, devpts) from a global,
+217	/// host-wide counter (`get_anon_bdev`). The raw `st_dev` a guest observes for
+218	/// such a filesystem therefore drifts between otherwise-identical runs — and
+219	/// even between the two runs of `--verify`, because the first run's mounts are
+220	/// still live when the second run mounts fresh copies, so the second run's
+221	/// procfs gets a different anonymous device number. That leaked host state into
+222	/// a guest-visible `stat`/`statx` field.
+223	///
+224	/// We replace each distinct raw device number with a strictly-increasing
+225	/// synthetic id assigned in first-observation order. Both `stat`/`statx` and a
+226	/// virtualized mountinfo snapshot use this pool. A mountinfo read intentionally
+227	/// pre-populates it in that snapshot's row order, and later metadata syscalls
+228	/// reuse those assignments.
+229	///
+230	/// This guarantees identity consistency within one Detcore run. It is not an
+231	/// unconditional cross-machine guarantee: hosts with different filesystem
+232	/// layouts can expose different device equivalence classes or first-observation
+233	/// order. The remapping still preserves distinctness and equality within the
+234	/// run, so `find -xdev`, `du -x`, and `(st_dev, st_ino)` checks behave
+235	/// consistently with the mountinfo device column.
+236	#[derive(Debug)]
+237	struct DevicePool {
+238	    devices: HashMap<u64, u64>,
+239	    next_device: u64,
+240	}
+241	
+242	/// Run-global identities for fdinfo mount IDs that are not present in the
+243	/// namespace's mountinfo table.
+244	///
+245	/// Linux gives pseudo filesystems such as pipefs, sockfs, anon_inodefs, nsfs,
+246	/// and pidfs their own mount IDs without listing those mounts in
+247	/// `/proc/*/mountinfo`. The raw numbers are host-assigned. Preserve equality
+248	/// and distinctness by keying on the raw mount ID. IDs present in mountinfo are
+249	/// assigned in canonical row/parent order; unlisted IDs are assigned afterward
+250	/// in deterministic guest observation order.
+251	#[derive(Debug)]
+252	enum MountIdPool {
+253	    Uninitialized,
+254	    Invalid,
+255	    Ready {
+256	        mount_ids: BTreeMap<u64, u64>,
+257	        mountinfo_order: Vec<u64>,
+258	        allow_visible_subsets: bool,
+259	        unlisted_order: Vec<u64>,
+260	        next_mount_id: u64,
+261	    },
+262	}
+263	
+264	/// The raw identity order observed by the producer and required to reconstruct
+265	/// the same guest-visible mount IDs during replay.
+266	pub struct MountIdentityProvenance {
+267	    pub mountinfo_order: Vec<u64>,
+268	    pub unlisted_order: Vec<u64>,
+269	}
+270	
+271	impl MountIdPool {
+272	    fn from_config(mount_ids: &[u64], captured: bool, unlisted_ids: &[u64]) -> Self {
+273	        if !captured {
+274	            if !mount_ids.is_empty() || !unlisted_ids.is_empty() {
+275	                return Self::Invalid;
+276	            }
+277	            return Self::Uninitialized;
+278	        }
+279	        Self::from_orders(mount_ids, unlisted_ids, true).unwrap_or(Self::Invalid)
+280	    }
+281	
+282	    fn from_orders(
+283	        mount_ids: &[u64],
+284	        unlisted_ids: &[u64],
+285	        allow_visible_subsets: bool,
+286	    ) -> Option<Self> {
+287	        let mut seen = BTreeSet::new();
+288	        if !mount_ids.iter().all(|raw| seen.insert(*raw))
+289	            || !unlisted_ids
+290	                .iter()
+291	                .all(|raw| *raw != 0 && seen.insert(*raw))
+292	        {
+293	            return None;
+294	        }
+295	
+296	        let mut mappings = BTreeMap::new();
+297	        for (index, raw) in mount_ids.iter().chain(unlisted_ids).enumerate() {
+298	            mappings.insert(*raw, u64::try_from(index).ok()?.checked_add(1)?);
+299	        }
+300	        let next_mount_id = u64::try_from(mappings.len()).ok()?.checked_add(1)?;
+301	        Some(Self::Ready {
+302	            mount_ids: mappings,
+303	            mountinfo_order: mount_ids.to_vec(),
+304	            allow_visible_subsets,
+305	            unlisted_order: unlisted_ids.to_vec(),
+306	            next_mount_id,
+307	        })
+308	    }
+309	
+310	    fn validate_mountinfo_order(&mut self, mountinfo_order: &[u64]) -> bool {
+311	        if matches!(self, Self::Uninitialized) {
+312	            *self = Self::from_orders(mountinfo_order, &[], false).unwrap_or(Self::Invalid);
+313	        }
+314	        let Self::Ready {
+315	            mountinfo_order: expected,
+316	            allow_visible_subsets,
+317	            ..
+318	        } = self
+319	        else {

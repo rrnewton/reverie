@@ -1,0 +1,19 @@
+{
+  "stage": "vm-03",
+  "test": "vm::tests::fatal_worker_ro_failed_store_still_wakes",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "452"
+    ]
+  ],
+  "stdout_sha256": "14a87f397be11cf41099712ff3431059c133ae1e9839eacbf22307605d83d8e6",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "b32bec1dfd292d62c376a6125e0d3a28fc74c593fd440f2d6bcf9128594f4a92",
+  "cpu_nsec": 281353000,
+  "wall_seconds": 3.231693839
+}

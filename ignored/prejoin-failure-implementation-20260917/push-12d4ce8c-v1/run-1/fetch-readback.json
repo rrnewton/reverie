@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "/usr/bin/with-proxy",
+    "/usr/bin/git",
+    "fetch",
+    "--no-tags",
+    "origin",
+    "refs/heads/codex/kvm-fatal-cleanup-20260917"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": "From https://github.com/rrnewton/reverie\n * branch              codex/kvm-fatal-cleanup-20260917 -> FETCH_HEAD\n"
+}

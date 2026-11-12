@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "base": "114b309413612fafc2657c74e83811c71aac7b19",
+  "base_tree": "16b49eb8c6e85b6b63ac8d2b43179de663726083",
+  "append_to_head": "d99853df1ab677863f149e6c81dfa2d1147f886d",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 16191,
+      "sha256": "eb130f64177a6e9d0cd851ce069fd992e0c0eca6eea2eb444ba378506c3fe7ac"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1398935,
+      "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 159585,
+      "sha256": "c83a5c5de43472010ced12e00d06d77e50ccaf0b431bc6880717bec5368f1343"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 42169,
+      "sha256": "e2d90ab0e6f7184e1f38a2b1144ebcf23dc969237602ccd118d782485a3fad9e"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17882,
+      "sha256": "c3be9c6a4a0ad3e2910a1a1c490c203077da70e9b5308ea9f2f5c990536bb6c5"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 306150,
+      "sha256": "5f6de8ca47096d9485f61814dcdc435cee4a19234c4a4dd1371a8f07332d8dfa"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    }
+  ],
+  "patch_sha256": "52c81ebecef246afc4846ab1ad888361f208ea567e21b5f1d0daa92f591949c6",
+  "patch_bytes": 236641,
+  "increment_sha256": "405486e643e0d1d699900208adc48ab8bc4b356228fbe4335f369a1908b60982",
+  "report_sha256": "8e74b95fa5009ce51b7c491679546c5d0756aa22cae54e2da07f27e03e43886a",
+  "source_manifest_sha256": "e90c6aa685661840aa1b4a7828735c324f858999297c423d164b2ccd99442a14",
+  "source_file_count": 2586,
+  "selected_tests_sha256": "6883f2986f1fb77f7b23e843f3f29fc8fd6635959f763e43faef0c743695fc54",
+  "retained_no_vm_selected_count": 40,
+  "selected_no_vm_count": 42,
+  "separate_new_vm_count": 1,
+  "source_preparation": "Process notification and actual ordinary RPC interruption after retained v19 started-fork failure; v20 unexecuted.",
+  "previous_binding_sha256": "5948a664efb812f47d3f0f607ec3926f07139f8d5faf21e2bda886533bab41ee"
+}

@@ -1,0 +1,67 @@
+
+Elf file type is DYN (Shared object file)
+Entry point 0x1f20
+There are 13 program headers, starting at offset 64
+
+Program Headers:
+  Type           Offset   VirtAddr           PhysAddr           FileSiz  MemSiz   Flg Align
+  PHDR           0x000040 0x0000000000000040 0x0000000000000040 0x0002d8 0x0002d8 R   0x8
+  INTERP         0x000318 0x0000000000000318 0x0000000000000318 0x00001c 0x00001c R   0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+  LOAD           0x000000 0x0000000000000000 0x0000000000000000 0x000f30 0x000f30 R   0x1000
+  LOAD           0x001000 0x0000000000001000 0x0000000000001000 0x002ef1 0x002ef1 R E 0x1000
+  LOAD           0x004000 0x0000000000004000 0x0000000000004000 0x001178 0x001178 R   0x1000
+  LOAD           0x005c90 0x0000000000006c90 0x0000000000006c90 0x000378 0x000388 RW  0x1000
+  DYNAMIC        0x005ca8 0x0000000000006ca8 0x0000000000006ca8 0x0001f0 0x0001f0 RW  0x8
+  NOTE           0x000338 0x0000000000000338 0x0000000000000338 0x000030 0x000030 R   0x8
+  NOTE           0x000368 0x0000000000000368 0x0000000000000368 0x000044 0x000044 R   0x4
+  GNU_PROPERTY   0x000338 0x0000000000000338 0x0000000000000338 0x000030 0x000030 R   0x8
+  GNU_EH_FRAME   0x004df4 0x0000000000004df4 0x0000000000004df4 0x000084 0x000084 R   0x4
+  GNU_STACK      0x000000 0x0000000000000000 0x0000000000000000 0x000000 0x000000 RW  0x10
+  GNU_RELRO      0x005c90 0x0000000000006c90 0x0000000000006c90 0x000370 0x000370 R   0x1
+
+ Section to Segment mapping:
+  Segment Sections...
+   00     
+   01     .interp 
+   02     .interp .note.gnu.property .note.gnu.build-id .note.ABI-tag .gnu.hash .dynsym .dynstr .gnu.version .gnu.version_r .rela.dyn .rela.plt 
+   03     .init .plt .plt.sec .text .fini 
+   04     .rodata .eh_frame_hdr .eh_frame 
+   05     .init_array .fini_array .data.rel.ro .dynamic .got .data .bss 
+   06     .dynamic 
+   07     .note.gnu.property 
+   08     .note.gnu.build-id .note.ABI-tag 
+   09     .note.gnu.property 
+   10     .eh_frame_hdr 
+   11     
+   12     .init_array .fini_array .data.rel.ro .dynamic .got 
+
+Dynamic section at offset 0x5ca8 contains 27 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x000000000000000d (FINI)               0x3ee4
+ 0x0000000000000019 (INIT_ARRAY)         0x6c90
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000000000001a (FINI_ARRAY)         0x6c98
+ 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffef5 (GNU_HASH)           0x3b0
+ 0x0000000000000005 (STRTAB)             0x7f0
+ 0x0000000000000006 (SYMTAB)             0x3d0
+ 0x000000000000000a (STRSZ)              587 (bytes)
+ 0x000000000000000b (SYMENT)             24 (bytes)
+ 0x0000000000000015 (DEBUG)              0x0
+ 0x0000000000000003 (PLTGOT)             0x6e98
+ 0x0000000000000002 (PLTRELSZ)           792 (bytes)
+ 0x0000000000000014 (PLTREL)             RELA
+ 0x0000000000000017 (JMPREL)             0xc18
+ 0x0000000000000007 (RELA)               0xaf8
+ 0x0000000000000008 (RELASZ)             288 (bytes)
+ 0x0000000000000009 (RELAENT)            24 (bytes)
+ 0x0000000000000018 (BIND_NOW)           
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE
+ 0x000000006ffffffe (VERNEED)            0xa98
+ 0x000000006fffffff (VERNEEDNUM)         1
+ 0x000000006ffffff0 (VERSYM)             0xa3c
+ 0x000000006ffffff9 (RELACOUNT)          3
+ 0x0000000000000000 (NULL)               0x0

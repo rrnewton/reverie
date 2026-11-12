@@ -1,0 +1,11 @@
+{
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "fetched_main": "4866241e15c18bdbd717865c504b9facdcaf1ae0",
+  "fetched_tree": "9161b3f6b07676c8463b7a93f8d930d538dd6b5b",
+  "candidate_head": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "main_is_descendant_of_base": true,
+  "b304_ancestor_exit": 0,
+  "full_patch_bytes": 75343,
+  "full_patch_sha256": "4c36754c30911daac19a9a73242b94332f514797d7fc528a4cdba53b6997600b",
+  "tracked_source_clean": true
+}

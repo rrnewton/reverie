@@ -1,0 +1,169 @@
+{
+  "status": "compile failed; no list, native or lint execution",
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v18-preparation/binding.json",
+    "bytes": 3135,
+    "sha256": "9c9e37357e1adf9cc6514b16b45bf5221a14a9e3bae4e645f925032b5001aded"
+  },
+  "input_and_source_checks_after_terminal_failure": "passed; comparison assertions, no separately retained complete after-snapshot",
+  "service": {
+    "source": "systemd CPUUsageNSec after service exit",
+    "cpu_usage_nsec": 1936583000,
+    "cgroup_empty": true,
+    "exec_main_code": 1,
+    "exec_main_status": 101,
+    "properties": {
+      "Id": "safehermit-20260917T160647Z-3562839.service",
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ControlGroup": "",
+      "MainPID": 0,
+      "ExecMainPID": 3565083,
+      "ExecMainCode": 1,
+      "ExecMainStatus": 101,
+      "ExecMainStartTimestampMonotonic": 1820137097147,
+      "CPUUsageNSec": 1936583000
+    }
+  },
+  "wall_seconds": 2.606381369,
+  "diagnostics": [
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "error[E0599]: no associated function or constant named `ENOTSUP` found for struct `reverie::Errno` in the current scope\n   --> reverie-kvm/src/runtime/failure_tests.rs:241:64\n    |\n241 |             \"own execution error\" => Err(Error::Reverie(Errno::ENOTSUP.into())),\n    |                                                                ^^^^^^^ associated function or constant not found in `reverie::Errno`\n    |\nhelp: there is an associated constant `ENOTSUPP` with a similar name\n    |\n241 |             \"own execution error\" => Err(Error::Reverie(Errno::ENOTSUPP.into())),\n    |                                                                       +\n\n",
+        "$message_type": "diagnostic",
+        "children": [
+          {
+            "children": [],
+            "code": null,
+            "level": "help",
+            "message": "there is an associated constant `ENOTSUPP` with a similar name",
+            "rendered": null,
+            "spans": [
+              {
+                "byte_end": 8344,
+                "byte_start": 8337,
+                "column_end": 71,
+                "column_start": 64,
+                "expansion": null,
+                "file_name": "reverie-kvm/src/runtime/failure_tests.rs",
+                "is_primary": true,
+                "label": null,
+                "line_end": 241,
+                "line_start": 241,
+                "suggested_replacement": "ENOTSUPP",
+                "suggestion_applicability": "MaybeIncorrect",
+                "text": [
+                  {
+                    "highlight_end": 71,
+                    "highlight_start": 64,
+                    "text": "            \"own execution error\" => Err(Error::Reverie(Errno::ENOTSUP.into())),"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "level": "error",
+        "message": "no associated function or constant named `ENOTSUP` found for struct `reverie::Errno` in the current scope",
+        "spans": [
+          {
+            "byte_end": 8344,
+            "byte_start": 8337,
+            "column_end": 71,
+            "column_start": 64,
+            "expansion": null,
+            "file_name": "reverie-kvm/src/runtime/failure_tests.rs",
+            "is_primary": true,
+            "label": "associated function or constant not found in `reverie::Errno`",
+            "line_end": 241,
+            "line_start": 241,
+            "suggested_replacement": null,
+            "suggestion_applicability": null,
+            "text": [
+              {
+                "highlight_end": 71,
+                "highlight_start": 64,
+                "text": "            \"own execution error\" => Err(Error::Reverie(Errno::ENOTSUP.into())),"
+              }
+            ]
+          }
+        ],
+        "code": {
+          "code": "E0599",
+          "explanation": "This error occurs when a method is used on a type which doesn't implement it:\n\nErroneous code example:\n\n```compile_fail,E0599\nstruct Mouth;\n\nlet x = Mouth;\nx.chocolate(); // error: no method named `chocolate` found for type `Mouth`\n               //        in the current scope\n```\n\nIn this case, you need to implement the `chocolate` method to fix the error:\n\n```\nstruct Mouth;\n\nimpl Mouth {\n    fn chocolate(&self) { // We implement the `chocolate` method here.\n        println!(\"Hmmm! I love chocolate!\");\n    }\n}\n\nlet x = Mouth;\nx.chocolate(); // ok!\n```\n"
+        }
+      }
+    },
+    {
+      "reason": "compiler-message",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "message": {
+        "rendered": "For more information about this error, try `rustc --explain E0599`.\n",
+        "$message_type": "diagnostic",
+        "children": [],
+        "level": "failure-note",
+        "message": "For more information about this error, try `rustc --explain E0599`.",
+        "spans": [],
+        "code": null
+      }
+    }
+  ],
+  "raw_stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v12/compile/stdout",
+    "bytes": 128421,
+    "sha256": "f9a79acf27bc31a6397d102a3a2b22cf5c5badaf40514deae88cc8a719f9f7be"
+  },
+  "raw_stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v12/compile/stderr",
+    "bytes": 195,
+    "sha256": "ae2bf2e49231a671decb602b479a1a90cface36ec5b275f4d20cead0161c4788"
+  },
+  "actual_result": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v12/compile/result.json",
+    "bytes": 33898,
+    "sha256": "e84981c166b681284109bbca076d4289924e5c8e1e29b77ff8cca7e10bc99e8f"
+  },
+  "terminal_readback": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v12/run-1/compile-service-post.json",
+    "bytes": 372,
+    "sha256": "cfaad4a6e0b81d0390556143c00d172df7d9098b1247efdafdc4516c2e54c89a"
+  },
+  "unexecuted": [
+    "list",
+    "native",
+    "lint-v9"
+  ]
+}

@@ -1,0 +1,30 @@
+Publish fatal KVM Tool failures before joining children
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+A failed KVM worker could leave a Tool RPC and a joining owner waiting on
+one another. Publish the first typed failure before worker retirement and
+child joins, wake every subscribed handler, and consume constructed child
+state without starting the guest. This advances the production KVM backend
+by making fatal runtime cleanup complete while preserving ordinary syscall
+errors, cancellation, successful exit status and lifecycle hook order.
+
+Task: kvm-lane-to-full-determinism-and-parity
+
+Keep the first typed cause paired with its process/thread identity, retain
+secondary cleanup errors separately, and return GlobalState on failed Tool
+completion so Hermit can consume scheduler cleanup. Add a nondefault native
+test support feature for combined production-path controls in Hermit.
+
+Validation: 34 selected Reverie native controls and 3 selected VM controls
+passed on the preserved candidate before the final-expression Clippy and
+format-only corrections. The coordinated Hermit candidate passed 51 Detcore
+and 9 CLI native controls against that version. Workspace Clippy passed with
+all targets/features and -D warnings after the expression correction; the
+final workspace format check passed after its formatting correction. Every
+run retained aggregate CPU, wall, output and terminal cgroup accounting.
+These are bounded selected populations, not full-suite or guest parity
+results. Real Hermit setup/pthread qualification remains separate, as does
+the retained fatal_worker_ro_delayed_waiter whole-suite failure.

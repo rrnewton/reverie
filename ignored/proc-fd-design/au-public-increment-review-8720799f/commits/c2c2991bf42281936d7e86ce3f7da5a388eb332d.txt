@@ -1,0 +1,12 @@
+tree 96fd8a370296d5bf57b419fea26742aba3da45a2
+parent dcd73b31ec7447928c0d7864a843a251c0ec4d3b
+author Ryan Newton <rrnewton@gmail.com> 1789595275 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789599082 -0700
+predecessor f149e7a04874cb379ef7764014f81504d31f48f6
+predecessor-op rebase
+
+herdr-run: retain worker permissions across legacy registry writers
+
+[gpt-6-astra] Persist the selected Codex permission mode beside registry data, keyed to the worker creation identity, so an older live writer cannot discard a new worker permission setting. Reject corrupt fallback metadata.
+
+Validated 83 foreign-runtime tests, strict typing, and the packaged public-docstring check, including a legacy writer regression that preserves native permissions despite an opposite caller setting.

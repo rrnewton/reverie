@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "env",
+    "TG_DB_PATH=/home/newton/.tg/hermit2.db",
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/ci-hub",
+    "active-work",
+    "--json"
+  ],
+  "exit": 1,
+  "started": "2026-09-17T05:53:52.788352+00:00",
+  "finished": "2026-09-17T05:53:53.537923+00:00",
+  "stdout_sha256": "3b8516d70abc58e26b8a34f466249820a2e9ba82f0fbf856f20dff0530889aea",
+  "stderr_sha256": "297c57b6e280bf70809a6623e1425170f759ab2dc62ee3e35e9ab1e4f8bf0462"
+}

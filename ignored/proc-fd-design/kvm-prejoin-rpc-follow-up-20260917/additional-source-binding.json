@@ -1,0 +1,52 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+    "prior": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+    "path": "detcore/Cargo.toml",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/sources/hermit/detcore/Cargo.toml",
+    "sha256": "20612dc169307740341a8266ef630eeb6b41a48ec0b9829fabc42be1e8f29761",
+    "bytes": 4387,
+    "same_as_prior": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+    "prior": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+    "path": "detcore/src/record_or_replay.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/sources/hermit/detcore/src/record_or_replay.rs",
+    "sha256": "e9d2b4d01996a94344b557b1ad086c6bcc5fdec2703c917ef4f26f5f9f1a547b",
+    "bytes": 1392,
+    "same_as_prior": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+    "prior": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+    "path": "detcore-model/src/config.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/sources/hermit/detcore-model/src/config.rs",
+    "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+    "bytes": 73871,
+    "same_as_prior": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "revision": "1edc84cbe8ffe5a9a25aebd97198a5facc13bbe6",
+    "prior": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+    "path": "hermit-cli/src/error.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/sources/hermit/hermit-cli/src/error.rs",
+    "sha256": "0e4000c69950253b645040a870fc467d1e72745d276c79f28e50be2352d06b09",
+    "bytes": 10782,
+    "same_as_prior": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "4db9ddb68126ce97ff929c7f30b61a633e48513e",
+    "prior": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+    "path": "reverie-kvm/Cargo.toml",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/kvm-prejoin-rpc-follow-up-20260917/sources/reverie/reverie-kvm/Cargo.toml",
+    "sha256": "e57f461a611e2a9d300607191e9fbc8e8abc6082af1445028e237b1f7c66aba5",
+    "bytes": 614,
+    "same_as_prior": true
+  }
+]

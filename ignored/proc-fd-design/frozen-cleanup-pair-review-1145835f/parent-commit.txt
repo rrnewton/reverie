@@ -1,0 +1,14 @@
+tree f127f6563d771eb172980af74e398fed8b6e0edd
+parent 0510ee72b3c94f164b62d6a0d24be912b23b490b
+author Ryan Newton <rrnewton@gmail.com> 1789633633 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789633633 -0700
+
+Preserve frozen validation cleanup authority
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Use the canonical state root for fresh checkout cleanup, including worker-slot sources, and pass only the run record actually created by this invocation. Accept the typed current-incomplete-retained frozen disposition without removing its checkout or changing its no-result outcome.
+
+Keep provider proof refusals and post-removal existence checks. The 32 focused parent methods passed across the preserved initial 28 passes and four corrected-fixture passes; static checks passed. Initial fixture setup failures remain recorded. No real checkout cleanup was run.
+
+Task: kvm-lane-to-full-determinism-and-parity

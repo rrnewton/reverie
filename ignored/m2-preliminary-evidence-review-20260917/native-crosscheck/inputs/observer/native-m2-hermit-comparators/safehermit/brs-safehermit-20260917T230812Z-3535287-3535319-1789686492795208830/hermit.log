@@ -1,0 +1,980 @@
+hermit log-diff: record envelope all_records_v1
+REFUSING to compare: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+hermit log-diff: read 0 records in full (left 0 | right 0); selected 0 | 0 messages under all_records_v1
+hermit log-diff: REFUSED: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound.
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: checked 1 complete records (left has 1 | right has 1); selected 1 | 1 messages under all_records_v1
+hermit log-diff: both logs unchanged for 1 polls; identical over 1 | 1 selected messages from 1 complete records
+hermit log-diff: comparison failed while following: the first log was truncated at the configured size bound; the discarded tail was never written
+hermit log-diff: comparison failed while following: run 1 is not UTF-8: invalid utf-8 sequence of 1 bytes from index 42
+hermit log-diff: comparison failed while following: run 1 log record 1 is missing its structured DETLOG result
+hermit log-diff: record envelope cross_backend_detcore_v1
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: read 3 records in full (left 3 | right 3); selected 1 | 1 messages under cross_backend_detcore_v1
+hermit log-diff: record envelope cross_backend_detcore_v1
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: COMMIT turn 7 at time 1[0m[1;48;5;52;31m7[0m[31m"[0m
+[32m>"INFO detcore::scheduler: COMMIT turn 7 at time 1[0m[1;48;5;22;32m8[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: COMMIT turn 7 at time 1[0m[1;48;5;52;31m7[0m[31m"[0m
+[32m>"INFO detcore::scheduler: COMMIT turn 7 at time 1[0m[1;48;5;22;32m8[0m[32m"[0m
+Done processing logs, differences found.
+hermit log-diff: read 3 records in full (left 3 | right 3); selected 1 | 1 messages under cross_backend_detcore_v1
+hermit log-diff: record envelope cross_backend_detcore_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/ptrace.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/kvm.log: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/ptrace.log is not UTF-8: invalid utf-8 sequence of 1 bytes from index 53
+hermit log-diff: record envelope cross_backend_detcore_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/ptrace.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/kvm.log: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/kvm.log is not UTF-8: invalid utf-8 sequence of 1 bytes from index 53
+hermit log-diff: record envelope cross_backend_detcore_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/ptrace.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/kvm.log: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKSYxhQ/ptrace.log is not UTF-8: invalid utf-8 sequence of 1 bytes from index 53
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: checked 0 complete records (left has 0 | right has 0); selected 0 | 0 messages under all_records_v1
+hermit log-diff: both logs unchanged for 1 polls after reading 0 complete records, but selected 0 | 0 comparable messages; refusing to report a match
+hermit log-diff: checked 0 complete records (left has 0 | right has 0); selected 0 | 0 messages under all_records_v1
+hermit log-diff: checked 1 complete records (left has 1 | right has 1); selected 1 | 1 messages under all_records_v1
+hermit log-diff: checked 2 complete records (left has 2 | right has 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: checked 3 complete records (left has 3 | right has 3); selected 3 | 3 messages under all_records_v1
+hermit log-diff: checked 4 complete records (left has 4 | right has 4); selected 4 | 4 messages under all_records_v1
+hermit log-diff: checked 5 complete records (left has 5 | right has 5); selected 5 | 5 messages under all_records_v1
+hermit log-diff: checked 6 complete records (left has 6 | right has 6); selected 6 | 6 messages under all_records_v1
+Logs contain 6 | 6 messages total
+Logs contain 6 | 6 detcore-specific messages
+Logs contain 6 | 6 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 6 (run 1) and 6 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG record 5 [0m[1;48;5;52;31mLEF[0m[31mT"[0m
+[32m>"INFO detcore: DETLOG record 5 [0m[1;48;5;22;32mRIGH[0m[32mT"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG record 5 [0m[1;48;5;52;31mLEF[0m[31mT"[0m
+[32m>"INFO detcore: DETLOG record 5 [0m[1;48;5;22;32mRIGH[0m[32mT"[0m
+Done processing logs, differences found.
+hermit log-diff: DIVERGED at record 6 of 6 compared
+hermit log-diff: checked 0 complete records (left has 0 | right has 0); selected 0 | 0 messages under all_records_v1
+hermit log-diff: checked 3 complete records (left has 3 | right has 3); selected 3 | 3 messages under all_records_v1
+hermit log-diff: checked 7 complete records (left has 7 | right has 7); selected 7 | 7 messages under all_records_v1
+hermit log-diff: checked 10 complete records (left has 10 | right has 10); selected 10 | 10 messages under all_records_v1
+hermit log-diff: checked 14 complete records (left has 14 | right has 14); selected 14 | 14 messages under all_records_v1
+hermit log-diff: checked 18 complete records (left has 18 | right has 18); selected 18 | 18 messages under all_records_v1
+hermit log-diff: checked 21 complete records (left has 21 | right has 21); selected 21 | 21 messages under all_records_v1
+hermit log-diff: checked 25 complete records (left has 25 | right has 25); selected 25 | 25 messages under all_records_v1
+hermit log-diff: checked 28 complete records (left has 28 | right has 28); selected 28 | 28 messages under all_records_v1
+hermit log-diff: checked 32 complete records (left has 32 | right has 32); selected 32 | 32 messages under all_records_v1
+hermit log-diff: checked 35 complete records (left has 35 | right has 35); selected 35 | 35 messages under all_records_v1
+hermit log-diff: timed out after 1s with 35 complete records read and 35 | 35 messages compared while at least one run was still writing; NOT a match -- the rest was never read
+
+thread 'logdiff::tests::json_report_distinguishes_divergence_match_and_no_messages' (3553954) panicked at hermit-cli/src/bin/hermit/logdiff.rs:1337:9:
+assertion `left == right` failed
+  left: String("info")
+ right: "deterministic"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: checked 2 complete records (left has 2 | right has 2); selected 2 | 2 messages under all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Done processing logs, differences found.
+hermit log-diff: DIVERGED at record 2 of 2 compared
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Done processing logs, differences found.
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/left.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/right.log: run 2 is not UTF-8: invalid utf-8 sequence of 1 bytes from index 29
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Done processing logs, differences found.
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/left.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/right.log: run 2 is not UTF-8: invalid utf-8 sequence of 1 bytes from index 29
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Done processing logs, differences found.
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/left.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/right.log: run 2 is not UTF-8: invalid utf-8 sequence of 1 bytes from index 29
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO unrelated: value=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"INFO unrelated: value=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Done processing logs, differences found.
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+Logs contain 2 | 2 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+hermit log-diff: read 2 records in full (left 2 | right 2); selected 2 | 2 messages under all_records_v1
+hermit log-diff: record envelope all_records_v1
+hermit log-diff: could not compare /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/left.log and /tmp/hermit-prejoin-integration-20260917-v7/.tmprXVnBH/right.log: run 2 is not UTF-8: invalid utf-8 sequence of 1 bytes from index 29
+Logs contain 1 | 1 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+WARNING: --max-timeslice requires user-space perf counters, but perf_event_open is unavailable; continuing with --max-timeslice=disabled. Check the host perf_event_paranoid value and container seccomp policy.
+WARNING: --gdbserver requires host networking so a host gdb client can reach the gdbserver port; overriding --network=local with --network=host for this debug session. Network isolation and deterministic networking are disabled while the gdbserver is attached.
+:: Backend: e9patch preprocessing + ptrace runtime; mapped_sites=0; main_executable=non-ELF; preprocessing=not-applicable
+WARNING: --gdbserver requires host networking so a host gdb client can reach the gdbserver port; overriding --network=local with --network=host for this debug session. Network isolation and deterministic networking are disabled while the gdbserver is attached.
+:: Comparing captured verification logs...
+REFUSING to compare: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_0xDhx
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_58GaF
+Mismatch in stdout between run 1 and run 2:
+[1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"[0m[1;48;5;52;31mhell[0m[31mo\n"[0m
+[32m>"[0m[1;48;5;22;32mg[0m[32mo[0m[1;48;5;22;32modbye[0m[32m\n"[0m
+
+:: Comparing captured verification logs...
+REFUSING to compare: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_fWBDM
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_Vhrfu
+Mismatch in stderr between run 1 and run 2:
+[1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<""[0m
+[32m>"[0m[1;48;5;22;32moops\n[0m[32m"[0m
+
+:: Comparing captured verification logs...
+REFUSING to compare: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_iy5E2
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_H5gRH
+:: Comparing captured verification logs...
+REFUSING to compare: both logs were truncated at the configured size bound (the log ends with the bounded writer's truncation marker). The discarded tail was never written, so no comparison of these files can establish that the runs agree past that point. Re-run with a larger HERMIT_LOG_MAX_BYTES, or 0 to disable the bound. This is a NO-RESULT, not a difference and not a match.
+Mismatch in exit status between run 1 and run 2: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+ Exited(
+[31m<    [0m[1;48;5;52;31m0[0m[31m,[0m
+[32m>    [0m[1;48;5;22;32m3[0m[32m,[0m
+ )
+
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_rFib3
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_eiVNy
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=8)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_p5LuX
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_JRllF
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing full trace messages...
+
+(full trace) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"DEBUG detcore: diagnostic host timing=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"DEBUG detcore: diagnostic host timing=[0m[1;48;5;22;32m2[0m[32m00"[0m
+(full trace) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"DEBUG detcore: diagnostic host timing=[0m[1;48;5;52;31m1[0m[31m00"[0m
+[32m>"DEBUG detcore: diagnostic host timing=[0m[1;48;5;22;32m2[0m[32m00"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_lwmtR
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_wQSQI
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m1[0m[31m00)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m2[0m[32m00)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m1[0m[31m00)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m2[0m[32m00)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=100)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=200)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_a27Vc
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_C6s2T
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=0)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=1)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-29NbQxMPOkVo/run1_log_1YyLA
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-29NbQxMPOkVo/run2_log_j9goT
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m1[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m2[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m1[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m2[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=1)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=2)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-BI7S5Ssj7XCO/run1_log_9CVMG
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-BI7S5Ssj7XCO/run2_log_0Mfws
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=2)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=3)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-T2QJg9O5SG8H/run1_log_A6EbX
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKKlApK/verify-failures/comparison-T2QJg9O5SG8H/run2_log_Nsgi9
+:: Retired 1 older failed verification comparison(s); keeping the newest 2 plus comparisons with active readers
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=0)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=1)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-03FpuDX4aNL5/run1_log_7pAh0
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-03FpuDX4aNL5/run2_log_rTIzj
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=2)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=3)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-XsmHLeTjDAVZ/run1_log_ou4rO
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-XsmHLeTjDAVZ/run2_log_I5iwM
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=4)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=5)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-5q1FQ39UMATu/run1_log_Ox82X
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-5q1FQ39UMATu/run2_log_RZO7V
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=6)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-V2zmhA7fvzu7/run1_log_7w1sm
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpKqmLdv/verify-failures/comparison-V2zmhA7fvzu7/run2_log_fIU3M
+:: Retired 2 older failed verification comparison(s); keeping the newest 2 plus comparisons with active readers
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=0)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=1)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-Lhh5VffkHhbS/run1_log_gg3ih
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-Lhh5VffkHhbS/run2_log_7in80
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=2)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=3)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-11NUqxgkYcDP/run1_log_KhhpP
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-11NUqxgkYcDP/run2_log_5Jam1
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=4)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=5)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-TMhYVhrQTQVY/run1_log_MEsRE
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-TMhYVhrQTQVY/run2_log_TyTDs
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=6)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-9R5RqzFNaOPK/run1_log_nrB2A
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmp305OFI/verify-failures/comparison-9R5RqzFNaOPK/run2_log_27m71
+:: Retired 2 older failed verification comparison(s); keeping the newest 2 plus comparisons with active readers
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m0[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m1[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=0)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=1)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-ZRfx5oUQsfPN/run1_log_5kRts
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-ZRfx5oUQsfPN/run2_log_XgB8b
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m2[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m3[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=2)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=3)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-89vOYnI2A56A/run1_log_MNk2D
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-89vOYnI2A56A/run2_log_xNVkC
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m4[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m5[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=4)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=5)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-gf07UhafyJQm/run1_log_C4CCc
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-gf07UhafyJQm/run2_log_LOXFz
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m6[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m7[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=6)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-IekhpcSO0IyH/run1_log_RGpsE
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpIfq7xD/verify-failures/comparison-IekhpcSO0IyH/run2_log_1kqd8
+:: Retired 2 older failed verification comparison(s); keeping the newest 2 plus comparisons with active readers
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+Mismatch in stdout between run 1 and run 2:
+[1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"[0m[1;48;5;52;31mlef[0m[31mt\n"[0m
+[32m>"[0m[1;48;5;22;32mrigh[0m[32mt\n"[0m
+
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 0 (run 1) and 0 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: COMMIT turn 23 at time 4567890123\nINFO detcore: DETLOG value=[0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore::scheduler: COMMIT turn 23 at time 4567890123\nINFO detcore: DETLOG value=[0m[1;48;5;22;32m2[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: COMMIT turn 23 at time 4567890123\nINFO detcore: DETLOG value=[0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore::scheduler: COMMIT turn 23 at time 4567890123\nINFO detcore: DETLOG value=[0m[1;48;5;22;32m2[0m[32m"[0m
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_Elgr6
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_YqLrA
+:: Comparing guest output and exit status only; internal logs were not compared
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmp082Rya/left_log_jamEc
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmp082Rya/right_log_uRFF7
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpwCCT8f/left_log_9mSuZ
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpwCCT8f/right_log_P0oQ4
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+Mismatch in stdout between run 1 and run 2:
+[1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"[0m[1;48;5;52;31mh[0m[31me[0m[1;48;5;52;31mllo[0m[31m\n"[0m
+[32m>"[0m[1;48;5;22;32mdiff[0m[32me[0m[1;48;5;22;32mrent[0m[32m\n"[0m
+
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_iFtVS
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_TEzqG
+Mismatch in stderr between run 1 and run 2:
+[1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<""[0m
+[32m>"[0m[1;48;5;22;32mdifferent\n[0m[32m"[0m
+
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_5VQKA
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_4RC6a
+:: Comparing captured verification logs...
+Logs contain 0 | 0 messages total
+Logs contain 0 | 0 detcore-specific messages
+Logs contain 0 | 0 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, but ZERO INFO messages were selected on either side: nothing was compared (no-result, not a match).
+Mismatch in exit status between run 1 and run 2: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+ Exited(
+[31m<    [0m[1;48;5;52;31m0[0m[31m,[0m
+[32m>    [0m[1;48;5;22;32m1[0m[32m,[0m
+ )
+
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_oBL3H
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_6T9ri
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=8)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/left_log_V1TJF
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/right_log_fXlY0
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (1 | 1 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/left_log_JSc1y
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/right_log_L8Vy2
+:: Comparing captured verification logs...
+Logs contain 1 | 1 messages total
+Logs contain 1 | 1 detcore-specific messages
+Logs contain 1 | 1 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 1 (run 1) and 1 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;52;31m7[0m[31m)"[0m
+[32m>"INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=[0m[1;48;5;22;32m8[0m[32m)"[0m
+Divergent syscall context:
+  run 1, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=7)
+  run 2, log message 1: INFO detcore: [dtid 2] DETLOG [syscall] write(fd=1, count=8)
+
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/left_log_HDPDV
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/.tmpih00px/right_log_11xzn
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2 (run 1) and 2 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG value=[0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore: DETLOG value=[0m[1;48;5;22;32m2[0m[32m"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG value=[0m[1;48;5;52;31m1[0m[31m"[0m
+[32m>"INFO detcore: DETLOG value=[0m[1;48;5;22;32m2[0m[32m"[0m
+Done processing logs, differences found.
+:: Log differences found between run 1 and run 2.
+:: Verification logs retained:
+::   run 1: /tmp/hermit-prejoin-integration-20260917-v7/verify_left_log_LKAql
+::   run 2: /tmp/hermit-prejoin-integration-20260917-v7/verify_right_log_ycwrp
+:: Comparing captured verification logs...
+Logs contain 2 | 2 messages total
+Logs contain 2 | 2 detcore-specific messages
+Logs contain 2 | 2 INFO messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+Done processing logs, no substantive differences found (2 | 2 INFO messages compared).
+Logs contain 0 | 0 scheduler empty-run-queue kick messages
+Logs contain 0 | 0 scheduler COMMIT records reading /proc/self/maps

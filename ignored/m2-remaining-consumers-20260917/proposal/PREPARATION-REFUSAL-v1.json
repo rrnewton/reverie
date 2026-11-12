@@ -1,0 +1,9 @@
+{
+  "command": "python3 prepare-consumer-test.py",
+  "returncode": 1,
+  "error": "AssertionError at line 16: the preparation-only assertion incorrectly expected zero exact escaped matched string occurrences; actual source contains the intended one. This happened before any consumer preview/test output was written.",
+  "script_sha256": "3893c5cd071f78812508d1abbc9033489f6be1b167e0aeaa583d7622b71ed468",
+  "successor": "prepare-consumer-test-v2.py",
+  "correction": "remove only that redundant incorrect spelling-count assertion; preserve later exact entry/count/reversal checks",
+  "product_execution": false
+}

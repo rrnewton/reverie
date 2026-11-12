@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "exit": 0,
+  "aggregate_cpu_nsec": 9178808000,
+  "wall_seconds": 19.010510442,
+  "registered_count": 454,
+  "outcome_counts": {
+    "ok": 454,
+    "failed": 0,
+    "ignored": 0
+  },
+  "native_artifact": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+    "sha256": "c4041efdbb201f25ab0a8e1fa771dafba6d23e7bc761fd2bc8cdd11d45534a5a",
+    "bytes": 116339104,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [
+        "default"
+      ],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v9/debug/deps/reverie_kvm-43ce2f687796397a",
+      "fresh": false
+    }
+  },
+  "admission_sha256": "8dff8182cf1c01f88ce09ad82ede82a0494c0e3be3fe9f92eebea77faa46a7e0",
+  "kvm_unavailable_diagnostics": [],
+  "scope": "First full serial library execution of final committed 12d4ce8c cleanup correction. All 453 prior methods plus the actual one new regression method; original 427 retained. Actual API 12 admission and REVERIE_REQUIRE_KVM=1 required. Same original resource limits and every assertion/deadline. Prior 450/3 and historical 426/1 remain retained. No separate selected-native/four-VM rerun, Hermit execution or canonical parity claim."
+}

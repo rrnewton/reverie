@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "base": "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+  "base_tree": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 311450,
+      "sha256": "42ecbb5238c074cb901f50e1e04b45b0ddf9d9dcdecb56dbd54fdb0610db952d"
+    }
+  ],
+  "patch_sha256": "6ab538810a69d8e6bbfa493645eb52a9c489e93a53aa7078e4a7bc2a8f98e530",
+  "patch_bytes": 8597,
+  "increment_sha256": "6ab538810a69d8e6bbfa493645eb52a9c489e93a53aa7078e4a7bc2a8f98e530",
+  "increment_scope": "Complete single-file committed correction on landed c8f4; identical to candidate.patch and reviewed source-v24.",
+  "report_sha256": "7f0261385f0fc9fbe61a1d1a2978ace501fce8df115e5cf5870416fd975dd872",
+  "source_manifest_sha256": "a153bf773a7680fc5b2390c84467260a266fe40cbb022b2a1b3ba8be012b6919",
+  "source_file_count": 2596,
+  "selected_tests_sha256": "6c08b0c3f26349d3c2f4746780af73cf0b920a1e99fe5955966df6b97afa1b61",
+  "actual_inventory": "pending",
+  "source_preparation": "Final committed source; source-v24 bytes unchanged. Final-head compile/inventory/runtime/lint and actual Claude review pending.",
+  "prior_full_failure_result_sha256": "6820d7b61eeff749f1d7ed8cbb6dc799ce2ca6085a6e9cede0917b458b750a9a",
+  "base_advance_sha256": "7122c2dc09c5f6d542d5a4e8047ecb3098f59bd3c90a12a2eaab717d354f013d",
+  "tree": "ba584b989e7dc89fce4ac7eabaa05166ba035069",
+  "committed_copies_sha256": "5db8ece0ec467048e5206bfb16ccb3f66b6849bd3a38633159e1ea6cc51a51e2",
+  "prior_evidence_sha256": "3d833d448cac336afdc6b1477b0f8770c809ec49bbf1550ab0a4ffc629d97cdd",
+  "prior_source_binding_sha256": "806ce88dfd0ea39cee3760cb4ec8c66528e329f0df3c085f879a1a18ca508ceb"
+}

@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "/usr/bin/readelf",
+    "-W",
+    "-l",
+    "-d",
+    "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/check-nested-lockfiles_be776c6e0dc0044fb82ec5a8"
+  ],
+  "pid": 133514,
+  "exit_code": 0,
+  "wall_seconds": 0.008976805955171585,
+  "bounds": {
+    "cpu_seconds": 5,
+    "wall_seconds": 15,
+    "bytes_per_stream": 1048576
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/stdout",
+    "bytes": 3628,
+    "sha256": "c1f6844a3c4a51a4d5240eeee54c5d44ed225888d4639eb759eb524a268c9a3b"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/01/stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

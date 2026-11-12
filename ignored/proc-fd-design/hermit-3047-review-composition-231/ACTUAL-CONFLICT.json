@@ -1,0 +1,8 @@
+{
+  "head": "1ad25c374a192d206e2bad1a35529aef0d1c4e3c",
+  "tree": "bfaf42bbaddfdf3b6828e2d0cd851f864f68c8ca",
+  "unmerged": "100644 6a0ab6337b38c7119a4ce896315b0a548771b7fa 1\tci/manifest-plan/src/validation_dag_static.rs\n100644 bb779b2d8745218d81efdf434f487de907433bc0 2\tci/manifest-plan/src/validation_dag_static.rs\n100644 862e177839b47edbba97fd78af1b31f2544459fa 3\tci/manifest-plan/src/validation_dag_static.rs\n",
+  "status": "M  Cargo.lock\nM  ci/configure-build-jobs.sh\nM  ci/dag/validate.json\nUU ci/manifest-plan/src/validation_dag_static.rs\nM  ci/run-with-reverie-dbt-budget.sh\nM  detcore-dbt/Cargo.toml\nM  detcore-model/Cargo.toml\nM  detcore-sabre/Cargo.toml\nM  detcore/Cargo.toml\nM  detcore/tests/testutils/Cargo.toml\nM  hermit-cli/Cargo.toml\nM  hermit-cli/src/lib.rs\nM  hermit-install/Cargo.toml\nM  liteinst-runtime-build/Cargo.lock\nM  liteinst-runtime-build/runtime/Cargo.toml\n?? HANDOFF.md\n",
+  "dag_matches_expected_candidate": true,
+  "static_conflicted_sha256": "130d5427459988b0ed505a6994b4f5846609280210480f96c70f468fa4dc4ac2"
+}

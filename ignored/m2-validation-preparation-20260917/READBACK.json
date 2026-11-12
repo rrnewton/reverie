@@ -1,0 +1,817 @@
+{
+  "source_and_preview_checks": [
+    {
+      "kind": "retained_source",
+      "path": ".config/nextest.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "AGENTS.md",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "Cargo.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "Makefile",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/cargo-guest-binaries.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/configure-build-jobs.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/dag/validate.json",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/manifest-plan/src/nextest_build_selections.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/manifest-plan/src/validation_dag_static.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/nextest-binaries.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/nextest-test-results.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/nextest-timeout-config.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/prepare-rust-scripts.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/run-nextest-counted.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/run-node.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/run-with-hermit-e2e-artifact.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "ci/run-with-reverie-dbt-budget.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/BUCK",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/Cargo.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/lit/hello_world_c/main.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/lit/hello_world_rs/main.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/lit/networking/main.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/lit/rt_sigaction/main.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/lit/rt_sigprocmask/main.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/misc/mod.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/misc/vfork.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/parallelism/mod.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/stats/mod.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "detcore/tests/testutils/Cargo.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "flaky-tests/cas_sequence_easy.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "flaky-tests/hello_race.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/Cargo.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-failing.json",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-passing.json",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/analyze.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/cli.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/common/hermit_binary.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/fixtures/dbt/hermit_log_env.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/fixtures/dbt/stderr_nostdlib.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/hermit_modes.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/record_replay.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/stress_suite.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/verification_report_cli.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-verify/Cargo.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "hermit-verify/tests/cli.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "rust-toolchain.toml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/BUCK",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/backend-parity/fixtures/cpuid_probe.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/clock_exec_continuity.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/clone.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_exec_failure.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_execveat_unsupported.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_mmap_exec.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_pid_virtualization.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_prlimit_self.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_self_sigqueue.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_unsupported_syscall.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/dbt_wait_lifecycle.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/exec_clock_continuity.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/fixtures/stdio_inode_identity.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/fork_child_getrandom.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/ftruncate_ignore_output_error.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/getCpu.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/getpid.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/getsockopt_null.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/hello_alarm.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/hello_signals.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/io_uring_fallback.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/ioctl_fioclex.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/ioctl_siocethtool.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/just_spin.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/kvm_exact_child_waits.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/liteinst_inert_runtime.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/memoryPress.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/mount_nscd_order.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/nanosleep-par.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/pidfd_open_self.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/pidfd_poll_self.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/ppoll_readv.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/print_memaddrs.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/printf_with_threads.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/proc_fdinfo_mount_classes.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/public_record_mount_stdio.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_deep_fork_chain.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_execveat_paths.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_fd_close.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_file_state.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_forked_streams.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_lseek_seek_cur.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_mkdir_eexist.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_poll_partial_copyout.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/record_replay_setsockopt.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/recvmsg_scm_rights_mmap.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/resource_determinism.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sabre_exit_group_parked.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sigpipe_siginfo.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sigtimedwait-no-timeout.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sigtimedwait-timeout-0s.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sigtimedwait-timeout-1s.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/simple/hello_nostdlib.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/simple/nanosleep-threads-nocrash.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/simple/nanosleep-threads-simple.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/simple/pread64_nostdlib.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/simple/racewrite_nostdlib.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/stdio_lseek_identity.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sysinfo.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/sysinfo_uptime.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/threadExhaustion.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/timerslack_proc_record_replay.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/uname.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/wait_on_child.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/c/write_ignore_output_error.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/chaos/lock_granularity.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/chaos/order_violation.c",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/e2e/lib/determinism-stress/common.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/e2e/lib/language-runtimes/run.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/e2e/lib/system-utils/_common.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/e2e/manifests/chaos-c.yaml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/e2e/manifests/defaults.yaml",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/helpers.bzl",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/qemu-boot/strict_l2_network_test.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/qemu-boot/strict_l2_userspace_test.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/rust/clock_gettime.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/rust/heap_ptrs.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/rust/mem_race.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/rust/rdtsc.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/rust/stack_ptr.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/shell/par_work.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/shell/taskset.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/standalone/network_bind.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/standalone/strict_setitimer.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/standalone/strict_timer_create.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/stress/concurrency.rs",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/util/hermit_analyze_e2e.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/util/hermit_analyze_test.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/util/hermit_verify_trace_replay.sh",
+      "matched": true
+    },
+    {
+      "kind": "retained_source",
+      "path": "tests/util/pmu_skid.c",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "detcore/src/logdiff.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/lib.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/src/metadata.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-verify/src/common/verify.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-verify/src/trace_replay.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "hermit-verify/src/use_case.rs",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "docs/USER_GUIDE.md",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "docs/ERROR_CATALOG.md",
+      "matched": true
+    },
+    {
+      "kind": "immutable_preview",
+      "path": "demos/05-qemu-busybox.sh",
+      "matched": true
+    }
+  ],
+  "all_matched": true,
+  "executed_product_commands": [],
+  "emitted_inventories": [],
+  "scope": "Offline record verification, not validation execution",
+  "preserved_discovery_limitations": [
+    "Initial broad focused search also returned large unrelated ci history; retained FOCUSED-CALLER-SEARCH.txt is not the basis for coverage conclusions. Focused v2 search and immutable source/DAG parsing are the basis.",
+    "Initial guessed target/script paths are retained as absent-path records and resolved explicitly in FIXTURE-DISPOSITIONS.json."
+  ]
+}

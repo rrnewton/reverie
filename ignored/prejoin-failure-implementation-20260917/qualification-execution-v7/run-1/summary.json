@@ -1,0 +1,122 @@
+{
+  "status": "failed",
+  "active_stage": "static-elf-07",
+  "error": "incomplete service accounting",
+  "completed": [
+    {
+      "stage": "static-elf-01",
+      "test": "exec_worker_error_diagnostic::exec_worker_error_still_consumes_root_and_process_hooks",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "860cd9f464b2699e127e8336df1a26cc5f10cfb66ad075da316e949f37f1d4a1",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "37809ea44681e946c6d28e155f7e3a86069913168cdaf6b452d7a6e8f18a2de7",
+      "cpu_nsec": 582214000,
+      "wall_seconds": 2.027395247
+    },
+    {
+      "stage": "static-elf-02",
+      "test": "leader_exit::exec_rearms_worker_survival_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "91231a096312b7eb4c37992018064590e29df449da3bfc1efe046419717540f6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "ce265fdd21f03fd824069c79132227c58b439f910edee1b355e16cb660687663",
+      "cpu_nsec": 406277000,
+      "wall_seconds": 1.491914045
+    },
+    {
+      "stage": "static-elf-03",
+      "test": "leader_exit::exec_rearms_worker_survival_tool",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "5127b7d3d9a1fbd92a9ba4edd5900a980f3a4a6caa4f8ba514c604eb3a973f67",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "c60fd9bb3750ff0b2c4e1291ce1d424c74000eb6d3bd4d5b3a71d65ce468d872",
+      "cpu_nsec": 418192000,
+      "wall_seconds": 1.346835927
+    },
+    {
+      "stage": "static-elf-04",
+      "test": "leader_exit::failed_worker_cancels_live_sibling_after_leader_exit",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "995cb7cdcab56f4d3fa15d0bc5c42436d81b17875d638077caa93ec3b4de97cb",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "b26c717b1d2fb2815525d2c9ae4e58ca6ad70e2fa73fe9e1a49769fa0383c8c1",
+      "cpu_nsec": 391521000,
+      "wall_seconds": 1.089669714
+    },
+    {
+      "stage": "static-elf-05",
+      "test": "leader_exit::failed_worker_preserves_execution_and_cleanup_errors",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "8d39503a0e63e20466ac04394c726449dbf10ec15b499dacb98c3b70e4ce2f0e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "5682fa8290e6c6846f1e62a367327ed2d99bc422927d7a5ea9c72e7d4ddb41e6",
+      "cpu_nsec": 386830000,
+      "wall_seconds": 1.347582228
+    },
+    {
+      "stage": "static-elf-06",
+      "test": "leader_exit::later_group_exit_preserves_worker_direct",
+      "status": "passed",
+      "counts": [
+        [
+          "1",
+          "0",
+          "0",
+          "0",
+          "287"
+        ]
+      ],
+      "stdout_sha256": "408ca8132c7d5956b9d4a782362198030148141aede32c41b75cdd95482cbd62",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "fc24b10c13345c5dcabf02c788d7aa46b522bc499f364575bbe14f739701e50b",
+      "cpu_nsec": 347672000,
+      "wall_seconds": 1.024105703
+    }
+  ],
+  "scope": "First original 22 static integration methods after the complete serial 454 library pass, on final committed 12d4ce8c. The full library already executed every earlier selected native and four focused VM method; these are not repeated here. Original static names, order, ten exec modes, assertions, admission, bounds and first-failure stop remain. Earlier failures remain retained. No Hermit INFO, repeat determinism or canonical parity claim."
+}

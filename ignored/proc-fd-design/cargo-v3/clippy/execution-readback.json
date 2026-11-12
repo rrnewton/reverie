@@ -1,0 +1,217 @@
+{
+  "outcome": "Clippy passed once; no retry or source change",
+  "caller_exit": 0,
+  "clippy_exit": 0,
+  "source_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "source_binding_sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496",
+  "caller_sha256": "a1e6426ee8cb19251d4d45103065e9f09838ed0960e2bce0378e2592c29c5c22",
+  "plan_sha256": "a13af803508b0175c78755499b366801312da4cf8fbd584b7162c2b11bc89ec5",
+  "payload": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "clippy",
+    "--locked",
+    "--offline",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--tests",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "aggregate_cpu_seconds": 40.80786,
+  "wall_seconds": 22.047195164,
+  "accounting_complete": true,
+  "observer_error": null,
+  "stop_reason": null,
+  "terminal_accounting": {
+    "source": "systemd CPUUsageNSec after service exit",
+    "cpu_usage_nsec": 40807860000,
+    "cgroup_empty": true,
+    "exec_main_code": 1,
+    "exec_main_status": 0,
+    "properties": {
+      "Id": "safehermit-20260917T050817Z-1201005.service",
+      "LoadState": "loaded",
+      "ActiveState": "inactive",
+      "SubState": "dead",
+      "ControlGroup": "",
+      "MainPID": 0,
+      "ExecMainPID": 1201828,
+      "ExecMainCode": 1,
+      "ExecMainStatus": 0,
+      "ExecMainStartTimestampMonotonic": 1780627119161,
+      "CPUUsageNSec": 40807860000
+    }
+  },
+  "fresh_all_four_service_readbacks": [
+    {
+      "stage": "clippy",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050817Z-1201005.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "stage": "compile",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050706Z-1111479.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "stage": "list",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050712Z-1116766.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    },
+    {
+      "stage": "native",
+      "argv": [
+        "/usr/bin/systemctl",
+        "--user",
+        "show",
+        "safehermit-20260917T050714Z-1118462.service",
+        "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+      ],
+      "exit": 0,
+      "properties": {
+        "LoadState": "not-found",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "MainPID": "0",
+        "ControlGroup": ""
+      },
+      "stderr": ""
+    }
+  ],
+  "actual_native_executable_unchanged": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "bytes": 106866600,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "all46_input_paths_modes_bytes_match": true,
+  "verified_surrounding_source_files": 2550,
+  "source_v3_unchanged": true,
+  "clippy_components": [
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "bytes": 1269192,
+      "mode": 493,
+      "sha256": "19828a90d246b16a14220eaefe5eb16f65d3926dadad72c49fbedbef8278bd87"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "bytes": 17154944,
+      "mode": 493,
+      "sha256": "657754f6f51ce79d7bbc5ed9d002001d1dd82b926c6f19c20db000a81296c930"
+    }
+  ],
+  "diagnostic_stdout": "",
+  "diagnostic_stderr": "    Checking libc v0.2.189\n    Checking cfg-if v1.0.5\n    Checking serde_core v1.0.229\n    Checking memchr v2.8.3\n    Checking simd-adler32 v0.3.10\n    Checking adler2 v2.0.1\n    Checking miniz_oxide v0.9.1\n    Checking bitflags v2.13.2\n    Checking serde v1.0.229\n    Checking crc32fast v1.5.2\n    Checking smallvec v1.16.1\n    Checking pin-project-lite v0.2.17\n    Checking futures-sink v0.3.34\n    Checking futures-core v0.3.34\n    Checking flate2 v1.1.10\n    Checking futures-channel v0.3.34\n    Checking futures-io v0.3.34\n    Checking futures v0.1.31\n    Checking slab v0.4.12\n    Checking scopeguard v1.2.0\n    Checking futures-task v0.3.34\n    Checking bitflags v1.3.2\n    Checking lock_api v0.4.14\n    Checking syscalls v0.6.18\n    Checking futures-util v0.3.34\n    Checking num-traits v0.2.19\n    Checking memoffset v0.9.1\n    Checking parking_lot_core v0.9.12\n    Checking errno v0.3.14\n    Checking static_assertions v1.1.0\n    Checking iana-time-zone v0.1.65\n    Checking twox-hash v2.1.4\n    Checking ruzstd v0.8.3\n    Checking chrono v0.4.45\n    Checking futures-executor v0.3.34\n    Checking twox-hash v1.6.3\n    Checking signal-hook-registry v1.4.8\n    Checking nix v0.30.1\n    Checking parking_lot v0.12.5\n    Checking socket2 v0.6.5\n    Checking mio v1.2.3\n    Checking equivalent v1.0.2\n    Checking linux-raw-sys v0.12.1\n    Checking hex v0.4.3\n    Checking foldhash v0.1.5\n    Checking unty v0.0.4\n    Checking bytes v1.12.1\n    Checking lazy_static v1.5.0\n    Checking hashbrown v0.17.1\n    Checking indexmap v2.14.2\n    Checking colored v2.2.0\n    Checking tokio v1.53.1\n    Checking bincode v2.0.1\n    Checking hashbrown v0.15.5\n    Checking procfs-core v0.18.0\n    Checking rustix v1.1.5\n    Checking thiserror v2.0.20\n    Checking ruzstd v0.7.3\n    Checking futures v0.3.34\n    Checking object v0.39.1\n    Checking derive_more v1.0.0\n    Checking cpp_demangle v0.5.1\n    Checking reverie-memory v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-memory)\n    Checking vmm-sys-util v0.15.0\n    Checking memmap2 v0.9.11\n    Checking rustc-demangle v0.1.28\n    Checking gimli v0.33.0\n    Checking typed-arena v2.0.2\n    Checking fallible-iterator v0.3.0\n    Checking kvm-bindings v0.14.1\n    Checking scroll v0.13.0\n    Checking reverie-syscalls v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-syscalls)\n    Checking addr2line v0.26.1\n    Checking procfs v0.18.0\n    Checking reverie-process v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-process)\n    Checking object v0.36.7\n    Checking anyhow v1.0.104\n    Checking raw-cpuid v10.7.0\n    Checking linked-hash-map v0.5.6\n    Checking never-say-never v6.6.666\n    Checking byteorder v1.5.0\n    Checking plain v0.2.3\n    Checking log v0.4.34\n    Checking reverie-core v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie)\n    Checking goblin v0.10.7\n    Checking kvm-ioctls v0.25.0\n    Checking perf-event-open-sys v5.0.0\n    Checking reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 21.21s\n",
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/clippy/result.json",
+      "bytes": 31828,
+      "mode": 384,
+      "sha256": "8f64bb19d54521cb0c278e35b9f5cc42d4db763f0a0f8a1cb383c0b730e6be11"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/clippy/stdout",
+      "bytes": 0,
+      "mode": 384,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v3/clippy/stderr",
+      "bytes": 3253,
+      "mode": 384,
+      "sha256": "1d9718e27d6a5609db44a8413b0dab2c34769e44356f1d6a7250d859eb66cf6a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/run-1/summary.json",
+      "bytes": 487,
+      "mode": 420,
+      "sha256": "8f217233e519181659eb7c86e5bba776207c15b922420da4db2b6a675e542f41"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+      "bytes": 67056,
+      "mode": 420,
+      "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+    }
+  ],
+  "scope": "Clippy plus preserved native37 evidence only; no Hermit/KVM guest, cat fix or backend parity claim."
+}

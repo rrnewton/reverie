@@ -1,0 +1,3 @@
+Local commit 696f0476aa46cf29e31b947a89379d80b4542ce3 / tree b86bfdb0703e96d377007c102eccfa57ba362396 has exact source-v3 six-file bytes and modes, parent 24cd5bb518b027eddb62a226805210d74d31c3d8. Committed message equals the approved draft byte-for-byte, including the actual disclosure tag. The tracked worktree and index are clean; ignored evidence and HANDOFF are uncommitted.
+
+Normal git commit exited0 in0.201600285 seconds with no bypass or amend. Hook configuration and hook-file presence are recorded in readback.json; no test/check execution is inferred merely from commit success. No push or PR occurred.

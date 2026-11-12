@@ -1,0 +1,34 @@
+[
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/test_verify_tier_evidence.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_verify_tier_evidence.py",
+    "bytes": 28550,
+    "sha256": "0343f2ac871a3b3b10dfa3d9357e35d299704dbe8c782929bbd52148806cbbda"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/test_parallel_validate_paths.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_parallel_validate_paths.py",
+    "bytes": 15072,
+    "sha256": "7c327fc6bace5fb9365104975f73b8b81d790b448522ea7cd7dc7f160d2dfd72"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/test_scorecard_header_compat.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/test_scorecard_header_compat.py",
+    "bytes": 32156,
+    "sha256": "da610b2ae0de6bc7a8d6662c73272fe33d302d83cac44aed31ee9c3271bcfca7"
+  },
+  {
+    "git_path": "tests/backend-parity/cases.tsv",
+    "unavailable": "fatal: path 'tests/backend-parity/cases.tsv' does not exist in '14d63ed54b7284b7f8bc29d44c7610a809815621'\n"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "ci/run-with-hermit-e2e-artifact.sh",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/ci/run-with-hermit-e2e-artifact.sh",
+    "bytes": 1139,
+    "sha256": "c2c90ff03c6ad120ec09b9452accd98ae41f1240a3aafce697b0070987ffd1de"
+  }
+]
