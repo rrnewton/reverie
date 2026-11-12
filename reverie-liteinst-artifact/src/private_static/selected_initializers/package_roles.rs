@@ -1970,6 +1970,22 @@ mod tests {
     fn fallback_image() -> (Vec<u8>, String) {
         fallback_image_from(FALLBACK)
     }
+    fn fallback_with_post_merge_isa_mxcsr_path() -> Vec<u8> {
+        const OLD: &[u8] =
+            b"_RNvNtNtCsga9NZm0hUzd_15reverie_inguest5guest12continuation14CALLBACK_MXCSR";
+        const NEW: &[u8] =
+            b"_RNvNtNtNtCsga9NZm0hUzd_15reverie_inguest5guest3isa6x86_6414CALLBACK_MXCSR";
+        assert!(NEW.len() < OLD.len());
+        let positions: Vec<_> = (0..FALLBACK.len() - OLD.len())
+            .filter(|&at| FALLBACK[at..].starts_with(OLD))
+            .collect();
+        assert_eq!(positions.len(), 1);
+        let mut raw = FALLBACK.to_vec();
+        let at = positions[0];
+        raw[at..at + NEW.len()].copy_from_slice(NEW);
+        raw[at + NEW.len()] = 0;
+        raw
+    }
 
     // Synthetic ELF DATA for the exact isolated-function geometry. Preserve
     // the historical fixture and its negative controls; this is no source or
@@ -2142,6 +2158,15 @@ mod tests {
             let bad_elf = Elf::parse(&bad).unwrap();
             assert!(join_fallback(&objects[0], &objects, &map, &bad_elf, &bad).is_err());
         }
+    }
+    #[test]
+    fn package_roles_fallback_accepts_post_merge_isa_mxcsr_path() {
+        let data = fallback_with_post_merge_isa_mxcsr_path();
+        let (raw, map) = fallback_image_from(&data);
+        let elf = Elf::parse(&raw).unwrap();
+        let objects = [object(&data, InitializerRole::PackageFallback)];
+        let joined = join_fallback(&objects[0], &objects, &map, &elf, &raw).unwrap();
+        assert_eq!((joined.bytes, joined.relocation_fields), (48, 3));
     }
     #[test]
     fn package_roles_fallback_exact_subextent_never_weakens_whole_section_join() {
