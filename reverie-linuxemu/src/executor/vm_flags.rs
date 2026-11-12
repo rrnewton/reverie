@@ -108,6 +108,11 @@ impl HostVmFacts {
     /// (`LoadedStaticElf::host_vm_facts`), and no list or mapping reads the
     /// host.
     pub(crate) fn capture_for_run() -> Self {
+        // A test process's global subscriber is in place before this
+        // event's callsite can register
+        // (`vm_flags_tests::install_global_subscriber`).
+        #[cfg(test)]
+        super::vm_flags_tests::install_global_subscriber();
         let facts = Self::read();
         tracing::info!(
             "LinuxEmu host mapping facts, fixed for the run: the kernel prints the guard \

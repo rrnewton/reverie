@@ -2236,6 +2236,62 @@ impl tracing::Subscriber for HostFactsEvents {
     fn exit(&self, _: &tracing::span::Id) {}
 }
 
+/// Installs, once per test process, a global subscriber that is interested
+/// in every callsite sometimes and enables none.
+/// [`HostVmFacts::capture_for_run`] calls this before it logs, so it is in
+/// place before the host-facts event's callsite first registers, on any
+/// thread.
+///
+/// Without it, a run's scoped [`HostFactsEvents`] can miss its event. In
+/// tracing-core 0.1.36 the thread that first reaches a callsite registers it
+/// (`DefaultCallsite::register`) and caches the interest that
+/// `rebuild_callsite_interest` computes over `Dispatchers::rebuilder()`.
+/// While at most one dispatcher is registered, as when one run's
+/// `HostFactsEvents` is the only one, that rebuilder is `JustOne`: the
+/// registering thread's own default, which for a thread with no subscriber
+/// and no global one is `NoSubscriber`, whose interest is never. Installing
+/// the scoped subscriber rebuilt only the callsites already registered, so a
+/// callsite another test's thread registers after that keeps never, and the
+/// run's own event is dropped before any subscriber sees it. With a global
+/// default, every thread's default answers sometimes, no interest is cached
+/// as never, and each event asks the emitting thread's own subscriber.
+///
+/// A global default can be set once per process. Where another one was set
+/// first, this leaves it: that one holds only if its interest in the
+/// callsite is not never, so the test that depends on this checks that the
+/// global is this one
+/// ([`each_run_logs_its_host_facts_once_under_its_own_subscriber`]).
+pub(super) fn install_global_subscriber() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(EnablesNothing);
+    });
+}
+
+/// A subscriber interested in every callsite sometimes, so that each event
+/// asks the emitting thread's own subscriber, that enables nothing itself.
+struct EnablesNothing;
+
+impl tracing::Subscriber for EnablesNothing {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, _: &tracing::Event<'_>) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
 /// A run's life as these tests drive it: a mapping with `MAP_NORESERVE`, a
 /// guard, lists, a fork, the child's list, and the child's exec.
 fn drive_a_run(executor: &mut ElfExecutor, memory: &GuestMemory, directory: &Directory) {
@@ -2354,6 +2410,11 @@ fn no_list_or_mapping_reads_the_host_after_the_run_starts() {
 /// same process logs its own.
 #[test]
 fn each_run_logs_its_host_facts_once_under_its_own_subscriber() {
+    install_global_subscriber();
+    assert!(
+        tracing::dispatcher::get_default(|dispatch| dispatch.is::<EnablesNothing>()),
+        "the process's global subscriber is install_global_subscriber's"
+    );
     let _host = inject_host_vm_facts(HOST);
     let directory = Directory::new();
     for run in 0..2 {
