@@ -199,6 +199,45 @@ fn fd_link_spellings_match_the_native_oracle() {
     }
 }
 
+/// The /dev/fd ".." escape: /dev/fd is a symlink to /proc/self/fd, so
+/// the kernel resolves /dev/fd/../task/<tid>/fd/<n> through the
+/// caller's own task spellings. With the supervisor's real tid and a
+/// planted supervisor directory descriptor, the literal forward this
+/// used to take read the supervisor's marker; the guest must now
+/// answer ENOENT for open and stat.
+#[test]
+fn dev_fd_dotdot_task_spellings_never_reach_the_supervisor() {
+    let root = TestDir::new();
+    std::fs::create_dir(root.0.join("planted-dir")).unwrap();
+    std::fs::write(root.0.join("planted-dir/secret"), b"supervisor-secret").unwrap();
+    let secret = std::fs::File::open(root.0.join("planted-dir")).unwrap();
+    let planted = unsafe { libc::fcntl(secret.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4000) };
+    assert!(planted >= 4000, "planting supervisor descriptor: {planted}");
+    let _planted =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(planted) };
+    let supervisor_tid = unsafe { libc::syscall(libc::SYS_gettid) };
+
+    let mut state = test_state(&root.0);
+    let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+    for spelling in [
+        format!("/dev/fd/../task/{supervisor_tid}/fd/{planted}"),
+        format!("/dev/fd/../task/{supervisor_tid}/fd/{planted}/secret"),
+        format!("/dev/stdin/../task/{supervisor_tid}/fd/{planted}/secret"),
+        format!("/dev/stdout/../task/{supervisor_tid}/fd/{planted}"),
+    ] {
+        assert_eq!(
+            guest_open(&mut memory, &mut state, &spelling, libc::O_RDONLY),
+            negative_errno(libc::ENOENT),
+            "{spelling} reached the supervisor's descriptor {planted}"
+        );
+        assert_eq!(
+            guest_stat(&mut memory, &mut state, &spelling),
+            negative_errno(libc::ENOENT),
+            "{spelling} reached the supervisor's descriptor {planted}"
+        );
+    }
+}
+
 #[test]
 fn fd_link_spellings_never_reach_the_supervisors_descriptors() {
     let root = TestDir::new();

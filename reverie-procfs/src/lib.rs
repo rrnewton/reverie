@@ -318,8 +318,18 @@ pub fn parse_fd_link(path: &[u8], own_pid: i32, own_tid: i32) -> Option<FdLinkPa
                 None => {}
                 Some(component)
                     if *component == b"self".as_slice()
-                        || *component == b"thread-self".as_slice() =>
+                        || *component == b"thread-self".as_slice()
+                        || *component == b"stdin".as_slice()
+                        || *component == b"stdout".as_slice()
+                        || *component == b"stderr".as_slice()
+                        || (*component == b"fd".as_slice()
+                            && stack.first() == Some(&b"dev".as_slice())) =>
                 {
+                    // `fd` under /dev is a symlink to /proc/self/fd, and
+                    // std* are symlinks to single descriptors: popping
+                    // any of them with ".." is a symlink fold, not a
+                    // lexical one. (The `fd` directory under /proc is a
+                    // real directory; popping it folds lexically.)
                     ambiguous_fold = true;
                     stack.pop();
                 }
@@ -347,7 +357,32 @@ pub fn parse_fd_link(path: &[u8], own_pid: i32, own_tid: i32) -> Option<FdLinkPa
             }
         }
     }
-    let fd = fd?;
+    let Some(fd) = fd else {
+        // A poisoned fold whose remaining spelling still contains an
+        // fd-link-shaped suffix (`fd/<digits>` or
+        // `task/<digits>/fd/<digits>` after a dev/proc start) is an fd
+        // link the walk could not classify safely: fail closed instead
+        // of letting the caller forward it literally (for example
+        // `/dev/fd/../task/<tid>/fd/<n>/...`, where /dev/fd is a symlink
+        // to /proc/self/fd and the kernel resolves the ".." there).
+        if ambiguous_fold {
+            let parts: Vec<&[u8]> = path
+                .split(|byte| *byte == b'/')
+                .filter(|part| !part.is_empty() && *part != b".")
+                .collect();
+            let digits = |part: &[u8]| !part.is_empty() && part.iter().all(u8::is_ascii_digit);
+            let starts_dev_or_proc =
+                matches!(parts.first(), Some(part) if *part == b"dev" || *part == b"proc");
+            let loose_fd_shape = starts_dev_or_proc
+                && parts
+                    .windows(2)
+                    .any(|pair| pair[0] == b"fd" && digits(pair[1]));
+            if loose_fd_shape {
+                return Some(FdLinkPath::OtherTask);
+            }
+        }
+        return None;
+    };
     // The fd digits were the last thing pushed-wise; recompute the
     // matched prefix shape from the stack (the digits never entered it).
     enum Shape {
@@ -745,6 +780,9 @@ mod tests {
             "/proc/2/task/2/fd/3",
             "/proc/thread-self/task/9/fd/3",
             "/proc/self/../2/fd/3",
+            "/dev/fd/../task/9/fd/3",
+            "/dev/fd/../task/9/fd/3/x",
+            "/dev/stdin/../task/9/fd/3",
             "/proc/1/task/77/fd/3",
         ] {
             assert_eq!(parse(spelling.as_bytes()), Some(OtherTask), "{spelling}");
@@ -759,6 +797,7 @@ mod tests {
             "/proc/self/task/x/fd/3",
             "/proc/self/task/09/fd/3",
             "/etc/fd/3",
+            "/srv/fd/../fd/3",
             "proc/self/fd/3",
         ] {
             assert_eq!(parse(spelling.as_bytes()), None, "{spelling}");
