@@ -1,0 +1,14 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "fetch",
+    "--no-tags",
+    "origin",
+    "refs/heads/codex/kvm-proc-fd-identity-20260917"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.630927711026743,
+  "stdout": "",
+  "stderr": "From https://github.com/rrnewton/reverie\n * branch              codex/kvm-proc-fd-identity-20260917 -> FETCH_HEAD\n"
+}

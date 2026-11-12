@@ -1,0 +1,84 @@
+{
+  "files": [
+    {
+      "path": "/etc/ld.so.cache",
+      "resolved_path": "/etc/ld.so.cache",
+      "size": 28431,
+      "mode": 420,
+      "mode_octal": "0o644",
+      "device": 33,
+      "inode": 40101525,
+      "mtime_ns": 1789671837638204192,
+      "sha256": "2a85ed62cfbe1156d2d5b33c84b0c136ae06c7871b751e70f41de1b1c5e41c0e",
+      "symlinks": [],
+      "roles": [
+        "dynamic loader configuration"
+      ]
+    },
+    {
+      "path": "/etc/ld.so.conf",
+      "resolved_path": "/etc/ld.so.conf",
+      "size": 138,
+      "mode": 420,
+      "mode_octal": "0o644",
+      "device": 33,
+      "inode": 447924,
+      "mtime_ns": 1786586868823206146,
+      "sha256": "c4fd43fc82b3b002841dca6b78f8a6394b781aeefc094a44f1fab3ab775a5d82",
+      "symlinks": [],
+      "roles": [
+        "dynamic loader configuration"
+      ]
+    },
+    {
+      "path": "/etc/ld.so.conf.d/chef.conf",
+      "resolved_path": "/etc/ld.so.conf.d/chef.conf",
+      "size": 165,
+      "mode": 420,
+      "mode_octal": "0o644",
+      "device": 33,
+      "inode": 723345,
+      "mtime_ns": 1786587683614216965,
+      "sha256": "9f14e6b6bcc8d67027520f58bb1d3b7bae1b0c9f1c857eb614406ec23045868e",
+      "symlinks": [],
+      "roles": [
+        "ld.so.conf included configuration"
+      ]
+    },
+    {
+      "path": "/etc/ld.so.conf.d/fb-mysql-libs-universal-x86_64.conf",
+      "resolved_path": "/etc/ld.so.conf.d/fb-mysql-libs-universal-x86_64.conf",
+      "size": 17,
+      "mode": 420,
+      "mode_octal": "0o644",
+      "device": 33,
+      "inode": 630027,
+      "mtime_ns": 1679875675000000000,
+      "sha256": "598466b4954bc66c6f45f1f119211b0698d4a549f6c01b5d9a933a2511b82626",
+      "symlinks": [],
+      "roles": [
+        "ld.so.conf included configuration"
+      ]
+    },
+    {
+      "path": "/etc/ld.so.conf.d/fb-mysql-x86_64.conf",
+      "resolved_path": "/etc/ld.so.conf.d/fb-mysql-x86_64.conf",
+      "size": 17,
+      "mode": 420,
+      "mode_octal": "0o644",
+      "device": 33,
+      "inode": 630028,
+      "mtime_ns": 1679844828000000000,
+      "sha256": "598466b4954bc66c6f45f1f119211b0698d4a549f6c01b5d9a933a2511b82626",
+      "symlinks": [],
+      "roles": [
+        "ld.so.conf included configuration"
+      ]
+    }
+  ],
+  "absent_paths": [
+    "/etc/ld.so.preload"
+  ],
+  "static_resolution_source": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/elf-dependencies-complete.json",
+  "scope": "Existing loader configuration rechecked without invoking the runtime loader; preserve these files and preload absence during future reuse."
+}

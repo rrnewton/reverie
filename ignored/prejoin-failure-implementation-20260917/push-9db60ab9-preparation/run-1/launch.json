@@ -1,0 +1,67 @@
+{
+  "plan_sha256": "5f55c05db86f288d6e01e5aeb7842c444f0b876298e8ec090fa82e2363ec7950",
+  "caller_sha256": "7a7db9bab2b43ac35d8031c8ce7ebd161661b448470a8cf15e26d0d003b4c95b",
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/launch.py"
+  ],
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "stage": {
+    "name": "push",
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-push-9db60ab9-v1/push",
+    "cpu_usec": 600000000,
+    "wall_seconds": 900,
+    "stderr_limit_bytes": 16777216,
+    "reader_limit_bytes": 16777216,
+    "payload": [
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "push",
+      "origin",
+      "HEAD:refs/heads/codex/kvm-prejoin-failure-20260917"
+    ],
+    "argv": [
+      "/usr/bin/python3",
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "--out",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-push-9db60ab9-v1/push",
+      "--cpu-usec",
+      "600000000",
+      "--wall-seconds",
+      "900",
+      "--log-bytes",
+      "16777216",
+      "/usr/bin/with-proxy",
+      "/usr/bin/git",
+      "push",
+      "origin",
+      "HEAD:refs/heads/codex/kvm-prejoin-failure-20260917"
+    ]
+  },
+  "environment": {
+    "HOME": "/home/newton",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/prejoin-native-v7",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/push-9db60ab9-preparation/run-1/tmp",
+    "CARGO_TERM_COLOR": "never",
+    "THIRD_PARTY_BUILD_JOBS": "2"
+  },
+  "hook_expectation": "Normal installed composite pre-push dispatcher remains enabled. The current source has no tracked or existing .githooks/pre-push, so that hook exits normally without running a repository build; completed final-head checks are separately bound. No hook override or skip variable is used."
+}

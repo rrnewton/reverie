@@ -1,0 +1,26 @@
+{
+  "stage": "static-elf-22",
+  "test": "terminal_fork::injected_exec_failure_preserves_child_and_owner_errors",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ],
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "533f62adef84d9c82dad8ffaca86e9cb0bb7dd4dba4c0178c42703b2b9adb04e",
+  "stderr_sha256": "90454145f2046429deb9ec8cf45079a0e58ff9e79417b7baaa904f655efad53b",
+  "admission_sha256": "5be7ab8d8c52ba75d9540fafec82f6d61a03c4a5f44ed49f6f663ac457230155",
+  "cpu_nsec": 368216000,
+  "wall_seconds": 0.944890355
+}

@@ -1,0 +1,921 @@
+{
+  "repository": "rrnewton/hermit",
+  "pull_request": "https://github.com/rrnewton/hermit/pull/3047",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/source",
+  "base": "231228c010541561a81dcb1353ac200f5c791b1a",
+  "head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+  "tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
+  "candidate_patch_sha256": "4425a7f7dddbfb342d4592e4b82b72431e922d680cceba91ce6d5741f1fc4409",
+  "files": [
+    {
+      "path": "hermit/Cargo.lock",
+      "bytes": 74781,
+      "sha256": "7346d2b7080bb74c3a3c7ac1156eb72c3ef65ac5ffe91ffc653c97f0afbe2bac",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "Cargo.lock",
+        "git_blob": "5b056ea694b26d78a29e22ed446957b1279ce65c",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/configure-build-jobs.sh",
+      "bytes": 49733,
+      "sha256": "5e025a4133df3d640d2ce9e0334e0d9e37286ed62a0c384a551f5c82d6eb4093",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/configure-build-jobs.sh",
+        "git_blob": "ab56754918f3888badf96894970cbe41c428fb8f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/dag/validate.json",
+      "bytes": 2855212,
+      "sha256": "10655bde1518272b68e4ebbbb30fd3949a96b811006d7a4ead17f1fbd0077772",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/dag/validate.json",
+        "git_blob": "fdf08a2d5e3f6d85319c95d5f7cbcf237c8df472",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 347671,
+      "sha256": "9d2b17a74d35ae68445a0ef57b2dacbec66334f2f9777633d9ca88d07357353d",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/manifest-plan/src/validation_dag_static.rs",
+        "git_blob": "76123eb116e9e714046a62b640787692cf94e087",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/run-with-reverie-dbt-budget.sh",
+      "bytes": 19494,
+      "sha256": "ca0572c43774416c0f7ec1fab28710635d9cf6f9492a0c8e2e09c8a2018b4913",
+      "mode": "0o755",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/run-with-reverie-dbt-budget.sh",
+        "git_blob": "23e5aa7b6dbb97e89dc21303237ebd727114c11f",
+        "git_mode": "100755"
+      }
+    },
+    {
+      "path": "hermit/detcore-dbt/Cargo.toml",
+      "bytes": 955,
+      "sha256": "48b06e55c64b0719676ce08960f963b032d0bcb0881f0563c2d13acbea030e1f",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-dbt/Cargo.toml",
+        "git_blob": "fb6f34e7c0b963bfe09381838fe9eb33f7b490e1",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore-model/Cargo.toml",
+      "bytes": 1434,
+      "sha256": "6d7fecbf56eab3618f01e1e2b63ffcdf6655a45be915aa914bbd6209e49f157b",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-model/Cargo.toml",
+        "git_blob": "b2db67753ea827645ffd5c846e72270f9cc04ad1",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore-sabre/Cargo.toml",
+      "bytes": 1187,
+      "sha256": "a2a40896ba06a992a9f1dcbcb67b3b38ffc51dbc087cce59c7d5e779474f7d5e",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-sabre/Cargo.toml",
+        "git_blob": "78e30996ca90a9db09b42e6b02e6828f3faf0984",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/Cargo.toml",
+      "bytes": 4387,
+      "sha256": "ada3125e2fe5bc015b88e66dff572acd61d88f08738ad8c96f9fa7c5171772c1",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/Cargo.toml",
+        "git_blob": "b9fdf9ccce58adb1ff7f373f22cf2e5b4f21969a",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/syscalls.rs",
+      "bytes": 3340,
+      "sha256": "aacabce215d502f58ff902e887daf66102d0f23ca3923d41aa3b6aa8d52764ca",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/syscalls.rs",
+        "git_blob": "5e553d3833c6a1ba1610681adf0bf8c66cea0483",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/syscalls/files.rs",
+        "git_blob": "1c18603c7d8e6a3f9297936ea9df35814e179163",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/syscalls/namespace.rs",
+      "bytes": 23790,
+      "sha256": "6d684d890f485ee16c0e064e3e483b37ace803becca6929ba401f703a2f326ed",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/syscalls/namespace.rs",
+        "git_blob": "b4a61cae412d66e631083b2be0bd8ff0f49ed606",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/tool_local.rs",
+      "bytes": 147434,
+      "sha256": "43ce15bfcce5e05c5e3b5725a9fc1e0153913e894667af93163d8c30fdc1763e",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/tool_local.rs",
+        "git_blob": "de19b512e9b630aa3fd0d8b66f6902379bd02f3d",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/tests/testutils/Cargo.toml",
+      "bytes": 1282,
+      "sha256": "d90f7e52b9c6b63927c01a275da0030a61646eba9002a0b47136bcc22cfdf803",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/tests/testutils/Cargo.toml",
+        "git_blob": "97e8bf741dba8a422ad8f99a1a83b623378d9c18",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/Cargo.toml",
+      "bytes": 4122,
+      "sha256": "ff312f2f540a65be0567aa78bf9e0b90290b2f4e29017854c8c4e38b2fb39697",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/Cargo.toml",
+        "git_blob": "2819eb5c52b2691d4b771882aa910f99cea289ae",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/src/lib.rs",
+      "bytes": 202202,
+      "sha256": "20d5051c3482701181b3fc8c6eb9a08b2acc3741437386c359e42fc65e98096c",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/src/lib.rs",
+        "git_blob": "4b606f33275836489986b9383e6987dcdd9c1259",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/tests/cli.rs",
+      "bytes": 267845,
+      "sha256": "9e4dc5901edaa7ece16d4a5fe14d4182c62a82c7e82c885d2ea4876183a994a0",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/tests/cli.rs",
+        "git_blob": "297c41ff7e2360dd3c91a6a836a4b27a4fe8a654",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-install/Cargo.toml",
+      "bytes": 382,
+      "sha256": "2545708092d842c65853fd3089e7c4e38a089e510c9978d55274cbe1ccffa42d",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-install/Cargo.toml",
+        "git_blob": "7f31a4d473c53184ba4c1ab00d9941038605b9ae",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/liteinst-runtime-build/Cargo.lock",
+      "bytes": 45801,
+      "sha256": "6d587e58d6675e5a6fb6287431db0598e422f46d5ca78da2ef31b2db0ff50a98",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "liteinst-runtime-build/Cargo.lock",
+        "git_blob": "5dac3c6d34eaf01c406247592237e852fbc7b82d",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/liteinst-runtime-build/runtime/Cargo.toml",
+      "bytes": 321,
+      "sha256": "a5a3356063ca8dd1befd7c6c33bc616cab9d41aa6d363be49eb7c8a937a57ffb",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "liteinst-runtime-build/runtime/Cargo.toml",
+        "git_blob": "de9f79169f3ec31dda251d9167dca832bbd3a1a0",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/tests/c/fixtures/stdio_inode_identity.c",
+      "bytes": 11218,
+      "sha256": "2981cd8521adc7e9d7be82b7e62c73814a744ad946b60251392be8c4c607bd47",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "tests/c/fixtures/stdio_inode_identity.c",
+        "git_blob": "008e0cfcf2ab7c0045dc78d92af9add2ea079467",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/AGENTS.md",
+      "bytes": 34047,
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "AGENTS.md",
+        "git_blob": "3d4e2a5672b4b2e4c9d39ec409bd9fb52d0883fa",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/Cargo.toml",
+      "bytes": 2117,
+      "sha256": "61fe9f5c4a726beb73ac4117c0ca2a3b6604e115cf8cbdf3bc36889e9265b3b4",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "Cargo.toml",
+        "git_blob": "d4972dbbd620f8ec6d710c7c433c5d930c293c77",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/config.rs",
+      "bytes": 415,
+      "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/config.rs",
+        "git_blob": "9d9b6504b4dd1ba3c0f4a08f6118a0fee74ea4a1",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/fd.rs",
+      "bytes": 31241,
+      "sha256": "7245edcdcdb79aac86a26a1d408600b8265fb51605c9262d2740b8fbbd5c8870",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/fd.rs",
+        "git_blob": "89eca566c1614d5d8cc66fbfdfccdca108a5c331",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/lib.rs",
+      "bytes": 162115,
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/lib.rs",
+        "git_blob": "4a945cec6301aaa529fa72a1e940ffa3413930c0",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/procfs.rs",
+      "bytes": 247741,
+      "sha256": "834ae6bf0ea04eaa3915c37e3863349ad3e5d0d3684c2232334818dbc6d9ac71",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/procfs.rs",
+        "git_blob": "2018c7813e9fdb5acffc4b7e7ff052923c181e95",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/record_or_replay.rs",
+      "bytes": 1392,
+      "sha256": "e9d2b4d01996a94344b557b1ad086c6bcc5fdec2703c917ef4f26f5f9f1a547b",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/record_or_replay.rs",
+        "git_blob": "22d3abd6ac65c21ccb99aeeefe9ef43a44ab6534",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/resources.rs",
+      "bytes": 22595,
+      "sha256": "c3f71f4331b4d454fae23590510c5d7f1200c954864886dbede67027a5d0bd68",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/resources.rs",
+        "git_blob": "60e2533ed5f7c670bea92d3555fe49dcf12dde82",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/stat.rs",
+      "bytes": 8546,
+      "sha256": "4c6af4f4ad4584eaad424052a758ce931808be56b00d199323f95d4e603b932a",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/stat.rs",
+        "git_blob": "701688580912334ab3003fbaed127a075ab93e5a",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/tool_global.rs",
+      "bytes": 245704,
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/tool_global.rs",
+        "git_blob": "5c7017b67167f9001ce39ad6b23c033ce568e768",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore-model/src/config.rs",
+      "bytes": 73871,
+      "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-model/src/config.rs",
+        "git_blob": "6205e6751fb0256d363214404e37e17d420e384b",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore-model/src/fd.rs",
+      "bytes": 5998,
+      "sha256": "eb9e2524e73abe03e41096794312dda76067bb718b92669038308329cadb75bd",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-model/src/fd.rs",
+        "git_blob": "84df4d14b41bd23d41eb5e55fd2451260d67a621",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore-model/src/procfs.rs",
+      "bytes": 7518,
+      "sha256": "3efd417964cb79108f7d02e2ffc81b498346ce678c31e631ef2744ee3afb0044",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore-model/src/procfs.rs",
+        "git_blob": "f0fe31912c350c8b8f0fb7745f12100f09cc9a32",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/src/bin/hermit/container.rs",
+      "bytes": 69190,
+      "sha256": "342fe0c2568f3154fc3e065c4e8ffab48dcc691a14575b8c2d1a660ae5df2991",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/src/bin/hermit/container.rs",
+        "git_blob": "1378e5c1f98029fab7bc730d0b03f99785a53c8f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/src/bin/hermit/run.rs",
+      "bytes": 233547,
+      "sha256": "1d6fab0a0d7091770c43fb5c344473b85861eaeddae5cad6562edba963248665",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/src/bin/hermit/run.rs",
+        "git_blob": "27715523c0f43ea4af7d56d4c5311aa6dc23252f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/src/fd.rs",
+      "bytes": 3789,
+      "sha256": "76734c11e7d139c28ef8c6684fbc0cdf1ff012b43a51d0777aec16e241ea8ee6",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/src/fd.rs",
+        "git_blob": "8a8346fdd2583b7393f9f0b166d4f9f41b658114",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/check-reverie-pin.rs",
+      "bytes": 208619,
+      "sha256": "2add48f549b4e01c9374c7327c44d23ecb249784737532a2f0f74d7d8caecfd2",
+      "mode": "0o755",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/check-reverie-pin.rs",
+        "git_blob": "8d90870ee1301972dbbe4aa558b9efe80d046688",
+        "git_mode": "100755"
+      }
+    },
+    {
+      "path": "hermit/ci/manifest-plan/src/validation_dag.rs",
+      "bytes": 117322,
+      "sha256": "0d82d82a9987ee1f624aa96b4fdd6573aac51936d9997d226b3bf2fa41a63401",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/manifest-plan/src/validation_dag.rs",
+        "git_blob": "a97b1fed17826f905fc8174a776a4866c59c8018",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/publish-hermit-e2e-artifact.sh",
+      "bytes": 4801,
+      "sha256": "a7af5922cfeeb4f3603760a30764afc513cdcb8cb86baf298d47e6f74b3edf3c",
+      "mode": "0o755",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/publish-hermit-e2e-artifact.sh",
+        "git_blob": "c5285fe599e7adc874b409828ca31c10f89c2d23",
+        "git_mode": "100755"
+      }
+    },
+    {
+      "path": "hermit/rust-toolchain.toml",
+      "bytes": 122,
+      "sha256": "ebc34b4ae748901f43512c30bbb1881b6db8e014edab9317903bcfb868c7d140",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "rust-toolchain.toml",
+        "git_blob": "acb9297208527a3348d314fb1c4211b2bbe95b9c",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/Cargo.toml",
+      "bytes": 778,
+      "sha256": "199ae06c2ef8632dc11c94b7c9ccbf45e399538b40537c358beda98abb6b079c",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "Cargo.toml",
+        "git_blob": "4168dea2771f18a00fb1afdfd2218efba415ecbb",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/Cargo.toml",
+      "bytes": 614,
+      "sha256": "e57f461a611e2a9d300607191e9fbc8e8abc6082af1445028e237b1f7c66aba5",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/Cargo.toml",
+        "git_blob": "4377574a4849625f4b155ffff9aeb7664e18db2f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/elf.rs",
+      "bytes": 64373,
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/elf.rs",
+        "git_blob": "7959e7780cec9d3b41a6cf13088e474e3b03c1bf",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/executor.rs",
+      "bytes": 1393581,
+      "sha256": "8530ac7cbe85f3225ff0be958c275aa5e9b199a8828a32065225f57ea710ffc1",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/executor.rs",
+        "git_blob": "44ee9f7c26dd71075291aad4446051eeee6eba02",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/fdinfo.rs",
+        "git_blob": "2518463e81b35fb2c27ef823edc3d103ec3bba01",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/lib.rs",
+      "bytes": 1594,
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/lib.rs",
+        "git_blob": "b0645d69507e33ca76880691ccb5c5f9c8d9d190",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/memory.rs",
+      "bytes": 55591,
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/memory.rs",
+        "git_blob": "ce39403ae27b32ff5c0952868759951a10acbb40",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/proc_mounts.rs",
+      "bytes": 2674,
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/proc_mounts.rs",
+        "git_blob": "413c53832e52d380814741306e7a2ba528d78424",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/runtime.rs",
+      "bytes": 146482,
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/runtime.rs",
+        "git_blob": "b289ec97da382c588ae6ad2a81d845c3f0f35403",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie-kvm/src/vm.rs",
+      "bytes": 279455,
+      "sha256": "449c3287f9aa6de363292d5aaced5427a834a2dcda58779f0e3fa87b522d322d",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie-kvm/src/vm.rs",
+        "git_blob": "13aeec30c28f15cb96525f342261efde290d792f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie/src/guest.rs",
+      "bytes": 19585,
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie/src/guest.rs",
+        "git_blob": "fb4de8c2b10dd59031f07623f537528cfc7aecfa",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie/src/lib.rs",
+      "bytes": 4526,
+      "sha256": "305410f96c50f11ef5aadb545bb3d7bebf1b7c0a76598677803b7f3282ede208",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie/src/lib.rs",
+        "git_blob": "b99a2822fccc32c9dc4be251937ce1df5f52af67",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "reverie/reverie/src/tool.rs",
+      "bytes": 20963,
+      "sha256": "3625e831ac2e8e1d731447aa4e8bef4d9f59fcca01964162795f29102e272f30",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+        "revision": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+        "path": "reverie/src/tool.rs",
+        "git_blob": "4a2a3af5c83463f6734f5d9ff5397f85eb81fd5a",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/manifest-plan/src/ledger.rs",
+      "bytes": 109180,
+      "sha256": "1b26e135d55edfe20ea4d07fbad9beb56166c3eeff7c2d6dc118b9e423e8910c",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/manifest-plan/src/ledger.rs",
+        "git_blob": "aa0c72d46cd78c913bf62af5ef7ed5b0bc131af7",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/ci/manifest-plan/src/ledger/schema10/tests.rs",
+      "bytes": 39154,
+      "sha256": "a66bed9c90d228c8474303c713cb95a1eb9e7e130a30f1c9f17e8b7fcd60e2ff",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "ci/manifest-plan/src/ledger/schema10/tests.rs",
+        "git_blob": "e475ca50c63bc96117206f8af4fc007dc52d5ef0",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/detcore/src/consts.rs",
+      "bytes": 914,
+      "sha256": "65529142d69d916ffd2884f96307180b95e386ec25c75d9ce77484f32fc329e7",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "detcore/src/consts.rs",
+        "git_blob": "345636da8bad2da681543a2d47933fea87e3c5b9",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/lib/validate_evidence.rs",
+      "bytes": 20378,
+      "sha256": "774a68452ce753ca0b8c770ea06f11263888912ecb76bcc365214d6c7c05dd9f",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/lib/validate_evidence.rs",
+        "git_blob": "fbad2aea948873c42389bab53c44bc57bbae20ec",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/lib/validate_receipt.rs",
+      "bytes": 11333,
+      "sha256": "1a5256592e1906f3942d53cb485f57b0afbdf37dcb914e066c5c7baaf5bb55cb",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/lib/validate_receipt.rs",
+        "git_blob": "f497e377622d5440e6ad904ff4b183aee2b5f833",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/validate.rs",
+      "bytes": 996482,
+      "sha256": "093a91838ec43a0e5490947ed6058142602ad0d59599b08321437e244ff004f3",
+      "mode": "0o755",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/validate.rs",
+        "git_blob": "3d57645d10d989d48e6b1c1384c0e4a2c7d571c1",
+        "git_mode": "100755"
+      }
+    },
+    {
+      "path": "hermit/tests/e2e/manifests/backend-parity-c.yaml",
+      "bytes": 331762,
+      "sha256": "8076ae2a3eb0ae24b807b2a506a4eecbcc44d7b3afba820574642dc6a46fdaf8",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "tests/e2e/manifests/backend-parity-c.yaml",
+        "git_blob": "92e6eae315bf739d7e0262e28f8e02df12e5e51f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/tests/e2e/manifests/c-programs.yaml",
+      "bytes": 440345,
+      "sha256": "1eaef9efa92b50c32483b55b8066d76a8096902b867b7a972a309d7f40373a15",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "tests/e2e/manifests/c-programs.yaml",
+        "git_blob": "f15286fc27bdf4821d5bfc9a50b7aee77b09b819",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/tests/e2e/manifests/determinism-stress-c.yaml",
+      "bytes": 31812,
+      "sha256": "36b1b9c52696e25ca1f846e4eda816ddc1dd044200d69ce45b0558861a02c293",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "tests/e2e/manifests/determinism-stress-c.yaml",
+        "git_blob": "086c2fe6e8e6db9650319f03465ff906780f02ea",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/lib/rust_script_prelude.rs",
+      "bytes": 2336,
+      "sha256": "a490321b4c80c80758e6ac718d19c67c8a82620bec5ed4b332ffd7748ff32a6d",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/lib/rust_script_prelude.rs",
+        "git_blob": "4e1202dfa07cc3f51297592a916084ee8622c52f",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/lib/validate_runtime.rs",
+      "bytes": 90923,
+      "sha256": "a0cabdbbc007576a620c29573bad2e97cf58b6582bec0f8c207fcac3254995da",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/lib/validate_runtime.rs",
+        "git_blob": "4e6e4e0ab5d73ef0780b4411e1978c11db57506a",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/scripts/lib/validate_plan.rs",
+      "bytes": 34905,
+      "sha256": "1a59d818016e5234be699e1849d9b9d5328e91528c3fb01576a105c5dd7f7e23",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "scripts/lib/validate_plan.rs",
+        "git_blob": "cd5b3a686fa17fc8513b5f4f04398c4d8e5dea43",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/tests/liteinst_advanced.rs",
+      "bytes": 35965,
+      "sha256": "c3c21daaf5da69a40dde5229bd7cc05b70c44a396e0bfadfeb33f112f8de6148",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/tests/liteinst_advanced.rs",
+        "git_blob": "a88e555d02be3633e5e737d51e34d6c67f342e8d",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/tests/common/liteinst.rs",
+      "bytes": 3001,
+      "sha256": "e06fd8196a4e8ad1eea728aa86d5758a2d3f333f273e5c1c5ae9b6b2e5ca5a15",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/tests/common/liteinst.rs",
+        "git_blob": "6ea8170cc05a21d19d76762b85453cc0b7630f5d",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/tests/common/hermit_binary.rs",
+      "bytes": 7156,
+      "sha256": "2e7afa54130736051e600408b788c1ad0aafe1104553a75155a655782382852c",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/tests/common/hermit_binary.rs",
+        "git_blob": "ebb7eee36fc7695f8a577e37b9657af89961ae45",
+        "git_mode": "100644"
+      }
+    },
+    {
+      "path": "hermit/hermit-cli/src/bin/hermit/tracing.rs",
+      "bytes": 26835,
+      "sha256": "1338b023c4f5badcdddc3aee2c8cd8b44afd449a146b895b777fce4ad2a7dada",
+      "mode": "0o644",
+      "origin": {
+        "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+        "revision": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
+        "path": "hermit-cli/src/bin/hermit/tracing.rs",
+        "git_blob": "5ff6cc6e0400678fa350d637904cdcc69899099f",
+        "git_mode": "100644"
+      }
+    }
+  ]
+}

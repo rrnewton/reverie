@@ -1,0 +1,234 @@
+commit 3bdf5a78570494dcd8d82efae742c73261c07fbb
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 06:56:11 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 06:56:11 2026 -0700
+
+    wrkslots: stop a shared cgroup vouching for slots it never owned
+    
+    [opus 5]
+    
+    A cgroup is a container, not an identity. Three places refused to reclaim a
+    slot when any live process shared the recorded owner's cgroup, and two coarse
+    sandbox scopes outlive the agents that ran in them, so one surviving process
+    stood in for dozens of unrelated slots.
+    
+    MEASURED on one host, 252 registered slots against 3,619 live processes: the
+    comparison blocked 135 slots. Four had a live process in the recorded cgroup
+    that actually touched the checkout -- and all four are caught independently by
+    the direct-use test, which reads cwd, root, exe and open descriptors. The other
+    131 were vouched for by a process that touched nothing in them. One live
+    process supplied the refusal for 50 slots, another for 47, and the machine's
+    init scope for 17 more.
+    
+    THE NARROWING IS THE ONE ALREADY ACCEPTED IN THIS FILE, not a new idea. Commit
+    1de97af4 introduced "omit the recorded cgroup comparison once the exact
+    generation is proven dead" for disposable checkouts. Its reasoning -- unrelated
+    live processes in a coarse shared cgroup must not strand a checkout
+    indefinitely -- holds identically for ordinary slots; only the blast radius
+    differed. The rule now lives in one predicate, `_owner_cgroup_is_evidence`,
+    used at all three comparison sites and at the census refusal that demands
+    owner-cgroup evidence be complete, which would otherwise refuse for the absence
+    of a comparison it no longer makes.
+    
+    AN ASSERTION WAS DELIBERATELY REVERSED, and it is rewritten rather than
+    deleted: test_agent_remove_still_refuses_dead_owner_cgroup_with_live_process
+    existed to prove the 1de97af4 rule had NOT leaked into ordinary slots. It is
+    now test_agent_remove_ignores_a_dead_owner_cgroup_with_a_live_process, and its
+    docstring records what it used to assert and why the measurement overturned it.
+    
+    A SECOND ASSERTION WAS NARROWED FOR THE SAME REASON, and the validator found it
+    rather than I did: test_incomplete_owner_cgroup_census_refuses_owner_check
+    pinned the census refusing when owner-cgroup evidence is incomplete. Once the
+    comparison is not made for a proven-dead owner, that refusal fires for the
+    absence of evidence nothing is going to read. It is now
+    test_incomplete_owner_cgroup_census_refuses_only_when_it_will_compare, and its
+    live-owner half is the control that makes it a narrowing and not a deletion.
+    Nothing else is weakened: the direct-use test, the handoff and hold guards, the
+    registered-liveness authority, and the requirement that the owner generation be
+    proven dead all still run, and this predicate is only reached after that last
+    one is already satisfied. Residual risk, stated rather than dismissed: an
+    orphaned child of the dead owner working through absolute paths while holding
+    no descriptor would no longer be seen here, and would have to evade the
+    direct-use test to go unnoticed.
+    
+    SEPARATELY, a write-time guard: the machine's init can no longer be recorded as
+    an owner, coordinator or actor. 17 of those 252 rows recorded it, and the
+    read-time checks cannot help -- liveness compares the recorded generation
+    against the live one, and for init that answers "alive" until reboot, so the
+    slot is unreclaimable and indistinguishable from a real owner.
+    
+    THE GUARD ASKS WHAT THE PROCESS IS, NOT WHAT IT IS NUMBERED, and that was
+    measured the hard way: a first version refused PID 1 and 2 outright and broke
+    the process-and-git stress suite, which runs its harness under a PID namespace
+    where the runner legitimately IS PID 1. Host init is PID 1 in "/init.scope";
+    inside that namespace PID 1 reports the caller's own session scope. Only the
+    former is refused, and where the signature does not hold this degrades to
+    accepting the identity rather than to a false refusal.
+    
+    Test Plan: make validate, run bare and redirected. New unit coverage is
+    mutation-checked rather than merely run: removing the narrowing fails
+    test_a_dead_owner_cgroup_is_not_evidence while the live-owner control keeps
+    passing, and removing the init guard fails its two refusal tests while the
+    ordinary-PID control keeps passing. The rewritten lifecycle test was run
+    end-to-end and removes the slot.
+
+commit 70f4918f0fa009260a95c2fe08d49e0bf49ff0fe
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 14:18:13 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 14:18:13 2026 -0700
+
+    wrkslots: stop blocking removal on a historical owner identity
+    
+    [hermit2, disk-2, claude-opus-5, devbig014, role=impl]
+    
+    OWNER DIRECTIVE: a removal gate keyed on which agent once owned a slot is an
+    anti-pattern here. Agents die constantly, so a protocol that depends on one
+    surviving into the future cannot hold, and no owner directive ever asked for
+    this gate -- our own tooling invented it.
+    
+    WHAT IS REMOVED. Two refusals stood between an expired slot and removal:
+      "has no recorded owner process, so owner death is unknown ... preserve this
+       slot until an evidence-based migration can establish its historical owner"
+      "remove requires a proven-dead recorded owner"
+    The first is deleted. The second is skipped when the owner record is absent or
+    degenerate. No flag to remember, and no migration path for evidence already
+    proven absent.
+    
+    A DEGENERATE OWNER IS AN ABSENT OWNER. The machine's init can never have owned a
+    slot, so a row naming it records an ERROR, not a fact. The old code treated that
+    error as evidence and then demanded proof to overturn it that the same error made
+    impossible: PID 1 in /init.scope reads LIVE until reboot, so owner_state is never
+    "dead". Measured across an entire 6,841-entry append-only event log: for every
+    row in this state a non-degenerate identity is NEVER recorded in an `owner`
+    field, in any event, ever -- the create journal itself wrote init for both
+    `owner` and `coordinator_lease`.
+    
+    ⚠️ THERE WERE TWO ROUTES, NOT ONE, and the second was found only because the
+    wiring test still failed after the first was removed. The generation gate and
+    the cgroup gate read the SAME bad evidence: a row naming init also names
+    /init.scope, where a live process always sits, so `_owner_cgroup_is_evidence`
+    refused forever on the same error. Both now consult one predicate.
+    
+    WHAT STILL PROTECTS WORK, unchanged: the heartbeat must be expired; the handoff
+    read still runs; the direct-use check still runs; salvage still precedes delete.
+    Only the guard keyed on a historical identity is gone.
+    
+    Test Plan: py/wrkslots/tests/test_proc_status.py 33 passed, including a CONTROL
+    that fails if the unblocking escapes to properly-recorded owners, and one
+    pinning that PID 1 INSIDE ITS OWN NAMESPACE is a real process and is NOT swept
+    in. Lifecycle: 4 passed --
+    test_remove_releases_a_slot_whose_owner_record_is_degenerate (new, the wiring
+    test) plus both parametrisations of
+    test_remove_refuses_a_not_proven_dead_owner_even_when_the_authority_says_dead
+    and test_agent_remove_ignores_a_dead_owner_cgroup_with_a_live_process, all of
+    which must and do still pass. MUTATION: reverting the wiring fails the new test
+    in 2.4s -- my unit tests alone could not catch that, which is why the lifecycle
+    test exists.
+
+commit 86bedda5a899bee8f49f15734ebdfde3dc553a32
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 15:45:19 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:45:19 2026 -0700
+
+    wrkslots: publish each audited slot once so the census can be published at all
+    
+    [hermit2, disk-2, claude-opus-5, devbig014, role=impl]
+    
+    THE AUDIT COULD NOT REPORT A NUMBER. Its downstream contract refused the whole
+    census with "audit.attention_slots contains duplicates", so the operational tick
+    recorded NO_RESULT instead of a slot count -- and a tick that reports nothing
+    reads the same as one that found nothing.
+    
+    ⚠️ THIS WAS A DEADLOCK, NOT A WRONG NUMBER, which is the reason it is worth
+    fixing rather than tolerating. The duplicate is produced INSIDE the audit every
+    time two routes describe one slot, so nothing downstream could ever clear the
+    condition and no later participant could complete the operation from the record.
+    The refusal was correct and unclearable at the same time.
+    
+    THE MECHANISM. `rows` is assembled from FOUR separate `rows.append(...)` sites,
+    so one slot legitimately produces more than one row -- a registry row plus an
+    on-disk worktree row being the ordinary case, which is exactly why
+    `owner_state == "unregistered"` is itself an attention condition. The previous
+    code built `attention_ids` BECAUSE duplicates are possible, used it to dedupe
+    `unknown` against `attention`, and never deduped `attention` against itself.
+    That asymmetry is the whole bug.
+    
+    DEDUPLICATED ON THE PUBLISHED KEY, NOT THE INTERNAL ONE. The old key was
+    (slot, machine) but the published lists carry the slot NAME alone, so two
+    machines registering one name would still have emitted a duplicate the key could
+    not see. Both lists are now reduced on the value actually published, in
+    first-seen order so the report stays stable between runs.
+    
+    Test Plan: py/wrkslots/tests/test_proc_status.py 31 passed, including a new test
+    that CALLS THE REAL FUNCTION -- an earlier draft of it reimplemented the dedup
+    inline and would have passed whatever the production code did, which is the
+    exact shape of a check that cannot fail for the reason it names. MUTATION:
+    returning the list unchanged fails that test. Existing coverage:
+    test_lifecycle.py -k audit, 10 passed.
+
+commit 522d4c3c7a6df8dace152926c8457a9a84354a52
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 14:39:56 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:51:22 2026 -0700
+
+    herdr-run: manage persistent foreign agents and bridge native coordinators to chat
+    
+    [gpt-6-astra] Extract reusable foreign-agent backends, lifecycle commands, and MCP tools behind configurable project policy. Add named Herdr-managed Codex and Claude workers, durable delivery, and native Codex goal inspection and updates in both implementations.
+    
+    Add a Google Chat coordinator bridge with sender authorization, replay-safe replies, transport adapters, and packaged guides. Verified live Codex and Claude Chat round trips, Codex worker delegation, and native goal completion/replacement. Focused Python, Rust, differential, and typing checks pass; the complete repository validator runs before publication.
+
+commit dcd73b31ec7447928c0d7864a843a251c0ec4d3b
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 14:46:08 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:51:22 2026 -0700
+
+    herdr-run: submit native agent prompts and preserve explicit permission choices
+    
+    [gpt-6-astra] Use Herdr agent prompt for interactive harness delivery so bracketed paste and encoded Enter are handled correctly. Keep shell execution on pane run and preserve durable delivery uncertainty when lifecycle acknowledgement is unavailable.
+    
+    New foreign Codex workers inherit native permissions unless explicitly configured otherwise; persist that choice across turns and migration while retaining legacy record behavior. Document Python companion installation and the observed Claude detector limitation.
+    
+    Validated native Codex goal replacement and Claude prompt execution, focused Python and Rust suites, differential parity, strict typing, and packaged documentation checks.
+
+commit c2c2991bf42281936d7e86ce3f7da5a388eb332d
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 14:47:55 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:51:22 2026 -0700
+
+    herdr-run: retain worker permissions across legacy registry writers
+    
+    [gpt-6-astra] Persist the selected Codex permission mode beside registry data, keyed to the worker creation identity, so an older live writer cannot discard a new worker permission setting. Reject corrupt fallback metadata.
+    
+    Validated 83 foreign-runtime tests, strict typing, and the packaged public-docstring check, including a legacy writer regression that preserves native permissions despite an opposite caller setting.
+
+commit ae7b8682d3a2043b19ac44c6511bde9959f29150
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 14:56:33 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:51:22 2026 -0700
+
+    herdr-run: align packaged commands and documentation inventories
+    
+    [gpt-6-astra] Declare the foreign-worker dispatcher through a public package entrypoint and keep the native goal diagnostic callable as an internal module CLI. Account for the new Python companions and guides in package/dispatcher inventories.
+    
+    Update the lifecycle partition inventory for the owner regression already added upstream, preserving disjointness and completeness checks.
+    
+    Validated 42 CLI, goal, dispatcher, and package tests, strict typing, embedded guides, and isolated wheel/source-distribution installation and command smoke checks.
+
+commit 8720799f78f8ef56d796723dbc473a9171a4f4eb
+Author:     Ryan Newton <rrnewton@gmail.com>
+AuthorDate: Wed Sep 16 15:16:03 2026 -0700
+Commit:     Ryan Newton <rrnewton@gmail.com>
+CommitDate: Wed Sep 16 15:51:22 2026 -0700
+
+    wrkslots: align unbound-owner cleanup tests with the current policy
+    
+    [gpt-6-astra] Update two stale refusal expectations left by the historical-owner policy change. Verify that expired unused slots are removed and archived, and that a fresh heartbeat still prevents cleanup.
+    
+    Validated nine lifecycle controls in the same PID namespace used by make test, the ordinary live-process refusal control, and partition inventory checks. Runtime behavior is unchanged.

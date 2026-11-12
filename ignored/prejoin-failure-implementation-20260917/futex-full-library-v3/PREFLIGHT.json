@@ -1,0 +1,13 @@
+{
+  "status": "passed",
+  "time_unix": 1789669841.775376,
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "plan_sha256": "ce46884d151174f224bc29aa5850f8c65c684329582bafe42b61d4b36a537021",
+  "caller_sha256": "252cca41263bcda357e9668e27452832d73e613ce3cdaff5428cf6fbb80ec845",
+  "inputs": 199,
+  "actual_inventory": 454,
+  "full_source_input_artifact_checks": true,
+  "same_original_stage_except_versioned_outputs_and_emitted_hash": true,
+  "fresh_destinations": true,
+  "active_owned_work": []
+}

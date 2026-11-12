@@ -1,0 +1,16 @@
+{
+  "status": "failed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    },
+    {
+      "stage": "clippy",
+      "status": "failed",
+      "error": "clippy failed",
+      "stop_remaining_checks": false
+    }
+  ],
+  "scope": "Independent workspace formatting and Clippy checks on frozen Reverie source-v9. No test or guest execution, source or lock repair, host changes or publication."
+}

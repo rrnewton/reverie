@@ -1,0 +1,36 @@
+{
+  "authorization_received": true,
+  "payload": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-reports-plan.json",
+      "6adf3cd1fecc63fe6e75444abd68a5b782ef9dfb86d278824defd1af76303ed5"
+    ]
+  },
+  "pid": 3472644,
+  "start_ticks": 184538508,
+  "restored_limits": {
+    "cpu": [
+      -1,
+      -1
+    ],
+    "as": [
+      -1,
+      -1
+    ],
+    "core": [
+      -1,
+      -1
+    ]
+  },
+  "protocol_environment_keys": [],
+  "handshake_fds_closed": true,
+  "ignore_sigpipe": true,
+  "python_file_size_signals_restored_to_default": true,
+  "environment_sha256": "b75ead36a0237460cb23951501e5b938425f35bdb406ae69bb3648c87c580e4d",
+  "monotonic_ns": 1845385120007807,
+  "note": "Written before exec; this is not proof that the payload started."
+}

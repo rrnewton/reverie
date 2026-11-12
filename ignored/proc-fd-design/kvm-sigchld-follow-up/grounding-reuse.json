@@ -1,0 +1,33 @@
+{
+  "basis": "Prior complete primary reads in prescribed order are retained; exact bytes reauthenticated, not a substitute summary.",
+  "prior_manifest": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/retirement-local-handoff-20260916/grounding-reuse.json",
+  "sources": [
+    {
+      "path": "/tmp/codex-kvm-paper-JILNekxj/reproducible-containers.pdf",
+      "sha256": "6346dfa0e5ea193fb975d5330da80d030f2a7641d95c7063069c8f8d7d875539",
+      "expected": "6346dfa0e5ea193fb975d5330da80d030f2a7641d95c7063069c8f8d7d875539",
+      "matches": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/signal-delivery/implementation-plan/sources/hermit/detcore/src/scheduler.rs",
+      "sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+      "expected": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+      "matches": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/PROJECT_VISION.md",
+      "sha256": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540",
+      "expected": "b0453aa9e05cfe86c0f0d934a40fda4db2ca93f148cc62d57d732566b75b7540",
+      "matches": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ai_docs/hermit-v2-roadmap.md",
+      "sha256": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1",
+      "expected": "c7140f6f6cbdca706ed08b270ff1b2869d1448df49de2c2d9186b4a40eeccde1",
+      "matches": true
+    }
+  ],
+  "hermit_current": "31289f45984e4f9de29e25a4463d0936976e8b5d",
+  "current_scheduler_sha256": "b680b092356d513484485ea474aec2f7ab6bae2546a0abf2f1489fcebc3b11f7",
+  "current_scheduler_matches_prior_complete_read": true
+}

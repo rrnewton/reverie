@@ -1,0 +1,25 @@
+{
+  "status": "workspace lock refresh completed",
+  "old_sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469",
+  "new_sha256": "1c09663e46bf21ad7c07eedd7821cccb72ae21f42485192649ff5473962bc856",
+  "complete_diff_sha256": "296a12f16dd670f94acbc184c32d0c1cf6667524431740818b5bfaf74b82edbc",
+  "exact_change": {
+    "package": "liteinst2",
+    "version_unchanged": "0.1.0",
+    "old_locked_revision": "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c",
+    "new_locked_revision": "4dab7f01d4d6d394e968fbfad842019f72743c81",
+    "existing_manifest": "reverie-liteinst/Cargo.toml:32",
+    "base": "114b309413612fafc2657c74e83811c71aac7b19",
+    "manifest_changed": false
+  },
+  "only_change_proved": "replacing the old revision in its two occurrences on one source line produces byte-identical complete new lockfile",
+  "exit": 0,
+  "observer_exit": 0,
+  "cpu_seconds": 0.282275,
+  "wall_seconds": 0.872772238,
+  "accounting_complete": true,
+  "cgroup_empty": true,
+  "source_and_other_inputs_unchanged": true,
+  "result_sha256": "37ea76fa2665e7de1891aba55bb605b7e85cc8767b6444de107ba40817df2f79",
+  "scope": "Lock refresh only. V2 is retained as a pre-compilation refusal. No compiler, test inventory or native test execution."
+}

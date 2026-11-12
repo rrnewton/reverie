@@ -1,0 +1,185 @@
+{
+  "reviewed_at": "2026-09-17T08:27:07.386553+00:00",
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+  "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+  "review_target": "exact committed head and two-file patch",
+  "patch": {
+    "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/parent.patch",
+    "bytes": 27842,
+    "sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12",
+    "mode": "0o644"
+  },
+  "reconstructed_patch_matches_both_candidates": true,
+  "live_bytes_match_frozen": true,
+  "base_test_methods": 263,
+  "candidate_test_methods": 269,
+  "new_methods": [
+    "test_entry_cleanup_preserves_current_incomplete_frozen_result",
+    "test_frozen_cleanup_refuses_missing_record_and_wrong_roots",
+    "test_frozen_cleanup_rejects_provider_success_with_retained_path",
+    "test_frozen_inner_refusal_threads_actual_record_from_worker_slot",
+    "test_frozen_pre_record_refusal_does_not_invent_cleanup_record",
+    "test_frozen_receipt_cleanup_routes_preserve_provider_refusal"
+  ],
+  "removed_methods": [],
+  "changed_existing_methods": [
+    "test_ownerless_classification_requires_state_disposition_pair_and_census",
+    "test_new_dagrun_name_is_a_usable_fresh_checkout",
+    "test_fresh_checkout_uses_the_exact_tooling_wrkslots",
+    "test_crate_without_runner_executable_is_not_usable",
+    "test_cleanup_uses_wrkslots_even_when_source_is_missing",
+    "test_immediate_frozen_cleanup_uses_typed_wrkslots_recovery",
+    "test_immediate_cleanup_does_not_rmtree_managed_git_directory"
+  ],
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/parent-cleanup-slice-review/base/ci-hub/validate/start_unit.py",
+      "bytes": 290445,
+      "sha256": "cd57ad64e43afd206c21fa1276cfbf7b9ea7b5bbce1603112b4c10254a3ba4a0",
+      "mode": "0o644",
+      "git_blob": "4774f3d093cd90da912d3672d08cdd853bf1e77b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/parent-cleanup-slice-review/candidate/ci-hub/validate/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644",
+      "git_blob": "1a3f3c8421605ec1b4b4966d702ed81c55434da8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/parent-cleanup-slice-review/base/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 401134,
+      "sha256": "c56bcd215870479a14d30f2617f9bda0933c4ac487a5bf48db7391a27ed2c3a5",
+      "mode": "0o644",
+      "git_blob": "2308fcdc56c9b2fe569d9bdf78690e3863f06e4f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/parent-cleanup-slice-review/candidate/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 417442,
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "mode": "0o644",
+      "git_blob": "bc15657a99c47836aaa12923a323cba75ee40c6a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/ci-hub/validate/tests/test_start_unit.py",
+      "bytes": 417442,
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/parent-cleanup-slice-review/base/ci-hub/validate/run_registry.py",
+      "bytes": 75328,
+      "sha256": "cb973cfcbd5b302cb5cc7dd4cee528014c7f9d5a5d54550305be5d9993514045",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/parent.patch",
+      "bytes": 27387,
+      "sha256": "d8ea6f587c0ba1faacb627a309808b56689e7625592b76521ad415cb282603ad",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/test_start_unit.py",
+      "bytes": 416997,
+      "sha256": "b017bc88d74bd99f887be0c058714c7380dfb5e1042018c041ee9899bf680a82",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/plan.json",
+      "bytes": 4146,
+      "sha256": "43ddb68ad6d8b62d37a21e540d321d6d7ba68db149a50ebe47bf2ee719aa3dc0",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/tests.receipt.json",
+      "bytes": 3703,
+      "sha256": "7f86c821958489cf3471ca3204ed2949bf266584401a50bbb972d1c4751d5862",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/tests.stderr",
+      "bytes": 12417,
+      "sha256": "71f9e5fc4b5bd1da37a530387cebecdd0d519d67051b9b1caf1847e5a8cb7413",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-1/tests.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/parent.patch",
+      "bytes": 27842,
+      "sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/start_unit.py",
+      "bytes": 291028,
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/test_start_unit.py",
+      "bytes": 417442,
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/plan.json",
+      "bytes": 1112,
+      "sha256": "3e47105ac24951739452d2df75f0c573dc6c99b5544ae1dc112339b040aaf8fc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/tests.receipt.json",
+      "bytes": 920,
+      "sha256": "e00762fcda13963a2ec4567f6d9aac956e9d0fd34e94f7b3ade94e9e51152a17",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/tests.stderr",
+      "bytes": 752,
+      "sha256": "739987b9f1f96a13cd99f4fb7b30f59848e7f48914672541432bc96386b5bddc",
+      "mode": "0o644"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/queue-drain-20260916/parent-ledger/frozen-cleanup-repair-20260917/parent-implementation-2/tests.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mode": "0o644"
+    }
+  ],
+  "no_source_execution": true,
+  "no_tests_or_cleanup_by_reviewer": true,
+  "committed_head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+  "committed_tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+  "committed_source_identical": [
+    {
+      "path": "ci-hub/validate/start_unit.py",
+      "entry": "100644 blob 1a3f3c8421605ec1b4b4966d702ed81c55434da8\tci-hub/validate/start_unit.py",
+      "sha256": "4db675e70c37c3863c79e25f33e37e44047041355e962d036071e4f036f3be73",
+      "bytes": 291028
+    },
+    {
+      "path": "ci-hub/validate/tests/test_start_unit.py",
+      "entry": "100644 blob bc15657a99c47836aaa12923a323cba75ee40c6a\tci-hub/validate/tests/test_start_unit.py",
+      "sha256": "f281db2f1cbb551308ac6c684b75261fca5f423193359356ccd36b16e18d3b1d",
+      "bytes": 417442
+    }
+  ],
+  "commit_raw_sha256": "7e5bad3a120a6a9424c058f4f66d5157ac5eea9d1669d5420fb71790d6a096ab"
+}

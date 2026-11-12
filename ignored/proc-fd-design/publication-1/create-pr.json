@@ -1,0 +1,23 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "create",
+    "--repo",
+    "rrnewton/reverie",
+    "--draft",
+    "--base",
+    "main",
+    "--head",
+    "codex/kvm-proc-fd-identity-20260917",
+    "--title",
+    "Preserve KVM proc descriptor metadata and fdinfo semantics",
+    "--body-file",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/pr-preparation/body.md"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 2.176570839015767,
+  "stdout": "https://github.com/rrnewton/reverie/pull/565\n",
+  "stderr": ""
+}

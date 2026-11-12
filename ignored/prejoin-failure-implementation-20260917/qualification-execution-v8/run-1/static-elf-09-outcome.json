@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-09",
+  "test": "leader_exit::panicked_worker_interrupts_natural_join_without_losing_panic",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "2230dc73a7a9d0fa5c4eaef665698f37d33afd03709eac4f948e95a52b534215",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "01b00109bcdd79f3bc42950ce870449495d515f27e4e8e304c8af49153fae140",
+  "cpu_nsec": 378393000,
+  "wall_seconds": 0.953247292
+}

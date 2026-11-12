@@ -1,0 +1,18 @@
+[
+  {
+    "plan": "cargo-v15",
+    "inputs": 42,
+    "source_entries": 2586,
+    "checks": "full source/inputs, bounds/environment/payloads, fresh outputs; prior selectors retained",
+    "plan_sha256": "b3246b795db24a3134baec993eb417a2fbd30e9c8e88118fbc4f60a32cfc813a",
+    "caller_sha256": "f48c3ef0f8afdffe820cdf833a4636d6975458ceb9df707b4942c3c2763e70f2"
+  },
+  {
+    "plan": "lint-v12",
+    "inputs": 32,
+    "source_entries": 2586,
+    "checks": "full source/inputs, bounds/environment/payloads, fresh outputs; prior selectors retained",
+    "plan_sha256": "e8e3bceadf61f5492883aeb2b8becb35cd7d9acb78e092cc0d4d7fec39792b89",
+    "caller_sha256": "58381f3d4103de09af91587050d83d4b309944d696f8e457160450b79cd14fbb"
+  }
+]

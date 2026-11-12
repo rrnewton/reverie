@@ -1,0 +1,13 @@
+{
+  "recorded_at": "2026-09-17T07:31:09.553996+00:00",
+  "root_published_once": true,
+  "comment_url": "https://github.com/rrnewton/hermit/pull/3047#issuecomment-5710693759",
+  "head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+  "body_bytes": 16340,
+  "body_sha256": "296ea4dbe8509276f3ef67962cfe8861c4660a887d5cb4d71f2e567023cd3a37",
+  "literal_review_sha256": "ca36cfc5135f6d664195e456067936967e5a748449b4eee4e449b3c9d709ed07",
+  "root_readback_sha256": "2a3ca51d6650b0d80fd4a056a4d167ba34bfbef1d492de46dcdd45d3b2352eae",
+  "independent_complete_public_body_equals_prepared": true,
+  "literal_suffix_unchanged": true,
+  "no_worker_duplicate_post": true
+}

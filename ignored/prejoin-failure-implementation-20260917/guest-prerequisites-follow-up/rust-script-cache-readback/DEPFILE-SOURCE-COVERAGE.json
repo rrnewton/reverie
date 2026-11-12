@@ -1,0 +1,842 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/admission.rs",
+    "source_sha256": "6ae28cf972e2d991e829c76d6c9728349e739ae9f442b0e66ef1d8067a5ce568",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/admission.rs",
+      "bytes": 46824,
+      "mode": 420,
+      "sha256": "6ae28cf972e2d991e829c76d6c9728349e739ae9f442b0e66ef1d8067a5ce568"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/ambient.rs",
+    "source_sha256": "e212170fec0ff94c77dc449d7993a1e01d35b1889c2cad9240d8e9b4b9359fef",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/ambient.rs",
+      "bytes": 10588,
+      "mode": 420,
+      "sha256": "e212170fec0ff94c77dc449d7993a1e01d35b1889c2cad9240d8e9b4b9359fef"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/attribution.rs",
+    "source_sha256": "e071b8412a82805a123d81f727c1abf5805a39bb92552c46482e8cc06ba12a57",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/attribution.rs",
+      "bytes": 64807,
+      "mode": 420,
+      "sha256": "e071b8412a82805a123d81f727c1abf5805a39bb92552c46482e8cc06ba12a57"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/capabilities.rs",
+    "source_sha256": "9b4513cc89d211ea15932106d500a87e45fc5822bebd1b1863e9bb81b035e805",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/capabilities.rs",
+      "bytes": 20938,
+      "mode": 420,
+      "sha256": "9b4513cc89d211ea15932106d500a87e45fc5822bebd1b1863e9bb81b035e805"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cgroup.rs",
+    "source_sha256": "5946767fb10377f70fbf14260275417f232582ced80086b71fd5a4bbc1d665c1",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cgroup.rs",
+      "bytes": 128852,
+      "mode": 420,
+      "sha256": "5946767fb10377f70fbf14260275417f232582ced80086b71fd5a4bbc1d665c1"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cli.rs",
+    "source_sha256": "8211756c23a18f5e8799ccc5bd088c621ed048dab01f4cbf291df5aa0464cbec",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cli.rs",
+      "bytes": 260139,
+      "mode": 420,
+      "sha256": "8211756c23a18f5e8799ccc5bd088c621ed048dab01f4cbf291df5aa0464cbec"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cpuset_allocator.rs",
+    "source_sha256": "089a83853c8fd72e79071e19ad8d018dde8b2f427a8d09df059d8259ac300f54",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/cpuset_allocator.rs",
+      "bytes": 25292,
+      "mode": 420,
+      "sha256": "089a83853c8fd72e79071e19ad8d018dde8b2f427a8d09df059d8259ac300f54"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/embedded_userguide.md",
+    "source_sha256": "c1186aec4dcf9624e77223c40d19161f0bfb7cbccef5b599b3230d8e7a15c6c9",
+    "existing_binding": null,
+    "matches_existing": false
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/estimates.rs",
+    "source_sha256": "b392b24c6ca56fbff0e1fcc164bb17c70a317a422975ef336cfb60daa6aa292a",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/estimates.rs",
+      "bytes": 174395,
+      "mode": 420,
+      "sha256": "b392b24c6ca56fbff0e1fcc164bb17c70a317a422975ef336cfb60daa6aa292a"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/io.rs",
+    "source_sha256": "ca484e136a239d4ef0a33a3607ed1daa989aef8a91a533fa693ff814d1ef1c0a",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/io.rs",
+      "bytes": 96999,
+      "mode": 420,
+      "sha256": "ca484e136a239d4ef0a33a3607ed1daa989aef8a91a533fa693ff814d1ef1c0a"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/lib.rs",
+    "source_sha256": "f7dbf6b1f7ed48c4600aa84d894e4c0d14800347230c8cf46fde0f601c056d9f",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/lib.rs",
+      "bytes": 6877,
+      "mode": 420,
+      "sha256": "f7dbf6b1f7ed48c4600aa84d894e4c0d14800347230c8cf46fde0f601c056d9f"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/memory_feedback.rs",
+    "source_sha256": "877e4efed71058faa21faaca99a32ea782ded37d23efed5ea066968ec0385bb2",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/memory_feedback.rs",
+      "bytes": 56581,
+      "mode": 420,
+      "sha256": "877e4efed71058faa21faaca99a32ea782ded37d23efed5ea066968ec0385bb2"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/model.rs",
+    "source_sha256": "bf7d502acdb67e1734427aa8ace64d47edd25a0a29a387589e603c5272b023e0",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/model.rs",
+      "bytes": 107511,
+      "mode": 420,
+      "sha256": "bf7d502acdb67e1734427aa8ace64d47edd25a0a29a387589e603c5272b023e0"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/perflog.rs",
+    "source_sha256": "4847c6a7b834d4f1f2d4560380b3ffe31c6e86b076deadfd952fd2ba7646806a",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/perflog.rs",
+      "bytes": 41675,
+      "mode": 420,
+      "sha256": "4847c6a7b834d4f1f2d4560380b3ffe31c6e86b076deadfd952fd2ba7646806a"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/proccpu.rs",
+    "source_sha256": "ec1aa0112d194a3abebecd48765e02900de7e5eb0ddc21c67ee691d0ca5f939a",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/proccpu.rs",
+      "bytes": 11428,
+      "mode": 420,
+      "sha256": "ec1aa0112d194a3abebecd48765e02900de7e5eb0ddc21c67ee691d0ca5f939a"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_capture.rs",
+    "source_sha256": "c1efe4a15d537768d0381dd0f05ee54c46649ac3ef7d7f5bb75481eb3db3a10f",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_capture.rs",
+      "bytes": 123262,
+      "mode": 420,
+      "sha256": "c1efe4a15d537768d0381dd0f05ee54c46649ac3ef7d7f5bb75481eb3db3a10f"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_enrich.rs",
+    "source_sha256": "842f2bccf7d6d59461343ad63c34fe367944bf696fa7bed4fe679e9855f9c0d8",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_enrich.rs",
+      "bytes": 7395,
+      "mode": 420,
+      "sha256": "842f2bccf7d6d59461343ad63c34fe367944bf696fa7bed4fe679e9855f9c0d8"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_report.rs",
+    "source_sha256": "89cba90d61d67aa9c3c5bb115d0ce0cff810a571e541c70a72e1b1d0a7a4bfae",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/profile_report.rs",
+      "bytes": 90839,
+      "mode": 420,
+      "sha256": "89cba90d61d67aa9c3c5bb115d0ce0cff810a571e541c70a72e1b1d0a7a4bfae"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/reservation.rs",
+    "source_sha256": "a99095a2482f27135aec033b484e645217f97ef8d70173c1616867e9a96e51f1",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/reservation.rs",
+      "bytes": 22217,
+      "mode": 420,
+      "sha256": "a99095a2482f27135aec033b484e645217f97ef8d70173c1616867e9a96e51f1"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/resource_caps.rs",
+    "source_sha256": "44f8f056753c722e02baac9381c1c23cf87e88a71d5e14f7d00cbd609171d86c",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/resource_caps.rs",
+      "bytes": 31506,
+      "mode": 420,
+      "sha256": "44f8f056753c722e02baac9381c1c23cf87e88a71d5e14f7d00cbd609171d86c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/scheduler.rs",
+    "source_sha256": "01f79adaf9806dad5c3ba340b6a2dfc74b9dfcd00060eae5d34ff8170dc2aa00",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/scheduler.rs",
+      "bytes": 347062,
+      "mode": 420,
+      "sha256": "01f79adaf9806dad5c3ba340b6a2dfc74b9dfcd00060eae5d34ff8170dc2aa00"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sizing.rs",
+    "source_sha256": "2b529dd9e31d3e239ee5d41af22c14e9fdf0e033e9be9094d91fae2be1ff10ce",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sizing.rs",
+      "bytes": 48740,
+      "mode": 420,
+      "sha256": "2b529dd9e31d3e239ee5d41af22c14e9fdf0e033e9be9094d91fae2be1ff10ce"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/summary.rs",
+    "source_sha256": "b145ecc99386b151d41d077fba57162ac2cc9c0b4bddc252484940dc4fa39059",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/summary.rs",
+      "bytes": 33733,
+      "mode": 420,
+      "sha256": "b145ecc99386b151d41d077fba57162ac2cc9c0b4bddc252484940dc4fa39059"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sweep.rs",
+    "source_sha256": "e6221838d177ed60ff6f234db25e4270b1caf74fcf425d6cefbd78a934f2cb87",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sweep.rs",
+      "bytes": 18457,
+      "mode": 420,
+      "sha256": "e6221838d177ed60ff6f234db25e4270b1caf74fcf425d6cefbd78a934f2cb87"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sync.rs",
+    "source_sha256": "c22dc69845cd7f1b14baa03d70a881c29f5b74898c53874e19605a790b30d402",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/sync.rs",
+      "bytes": 27980,
+      "mode": 420,
+      "sha256": "c22dc69845cd7f1b14baa03d70a881c29f5b74898c53874e19605a790b30d402"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/test_results.rs",
+    "source_sha256": "f30bd386a0799b9deb14c7862aaaee3ba402e5454e7f0c856588f2177ab449a5",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/test_results.rs",
+      "bytes": 45721,
+      "mode": 420,
+      "sha256": "f30bd386a0799b9deb14c7862aaaee3ba402e5454e7f0c856588f2177ab449a5"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/viz.rs",
+    "source_sha256": "5751600ace5de69a7060d88401da24d1b824b91802e1584d8e2afb84cba50fa1",
+    "existing_binding": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/viz.rs",
+      "bytes": 15830,
+      "mode": 420,
+      "sha256": "5751600ace5de69a7060d88401da24d1b824b91802e1584d8e2afb84cba50fa1"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../../hermit-cli/src/canonical_verdict.rs",
+    "source_sha256": "3e952d654e4466e498e77d11fe4c8ee7918ad5d556f318be2e32c45c8fdc65e1",
+    "existing_binding": null,
+    "matches_existing": false
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../../hermit-cli/src/logdiff_report.rs",
+    "source_sha256": "27c48623217d0bab06250928c58672d161a537bee40cb02b138f17873e0b6947",
+    "existing_binding": null,
+    "matches_existing": false
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/../../cargo-guest-binaries.rs",
+    "source_sha256": "c70902ff6d046dcfffc0cc06829cb93527272a105b881b97d4c30b7c2f95a142",
+    "existing_binding": null,
+    "matches_existing": false
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/backend_parity.rs",
+    "source_sha256": "9524927d1f6db969ba3e01f01bb1608bad63929d773106c9f3cd01d73bf9b88a",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/backend_parity.rs",
+      "mode": "100644",
+      "sha256": "9524927d1f6db969ba3e01f01bb1608bad63929d773106c9f3cd01d73bf9b88a"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/backend_parity_policy.rs",
+    "source_sha256": "bbef04bafa35268322610ffbdf5a1779d804fbc1bc4fa379702f0a550341493e",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/backend_parity_policy.rs",
+      "mode": "100644",
+      "sha256": "bbef04bafa35268322610ffbdf5a1779d804fbc1bc4fa379702f0a550341493e"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/ci_selection.rs",
+    "source_sha256": "8e2b5207b11a80be52dbb4873bd3038d277c82a4291efaa10a62af65edacfae3",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/ci_selection.rs",
+      "mode": "100644",
+      "sha256": "8e2b5207b11a80be52dbb4873bd3038d277c82a4291efaa10a62af65edacfae3"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/cli_help.rs",
+    "source_sha256": "831c6a1cdfa514277c0897ef2160ededb2935a09240901db723c32fc16fd843c",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/cli_help.rs",
+      "mode": "100644",
+      "sha256": "831c6a1cdfa514277c0897ef2160ededb2935a09240901db723c32fc16fd843c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/environmental_block.rs",
+    "source_sha256": "b607cf4920e501c0b34cfe12bad163bff125adc30a5050ca8bc0c94eba636fd3",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/environmental_block.rs",
+      "mode": "100644",
+      "sha256": "b607cf4920e501c0b34cfe12bad163bff125adc30a5050ca8bc0c94eba636fd3"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/host_capability.rs",
+    "source_sha256": "c7ab6b0699f38dcc7422268a7c4dca466c3b22cffd3234791c890213236ff735",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/host_capability.rs",
+      "mode": "100644",
+      "sha256": "c7ab6b0699f38dcc7422268a7c4dca466c3b22cffd3234791c890213236ff735"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/ledger/schema10.rs",
+    "source_sha256": "2e9022c2b1830295b51e4d52f9960a41498bec1cf4b6e0439ae11700ab7f504b",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/ledger/schema10.rs",
+      "mode": "100644",
+      "sha256": "2e9022c2b1830295b51e4d52f9960a41498bec1cf4b6e0439ae11700ab7f504b"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/ledger.rs",
+    "source_sha256": "1b26e135d55edfe20ea4d07fbad9beb56166c3eeff7c2d6dc118b9e423e8910c",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/ledger.rs",
+      "mode": "100644",
+      "sha256": "1b26e135d55edfe20ea4d07fbad9beb56166c3eeff7c2d6dc118b9e423e8910c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/lib.rs",
+    "source_sha256": "16f2552eca5c8a32c395adc808989872e89abb14c7a272d66b455520424eda7b",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/lib.rs",
+      "mode": "100644",
+      "sha256": "16f2552eca5c8a32c395adc808989872e89abb14c7a272d66b455520424eda7b"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/manifest_metadata.rs",
+    "source_sha256": "19958fe4763178e52930bade5f26d147649e18705a23f9a9b6fda1adbbca9d81",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/manifest_metadata.rs",
+      "mode": "100644",
+      "sha256": "19958fe4763178e52930bade5f26d147649e18705a23f9a9b6fda1adbbca9d81"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/manifest_value.rs",
+    "source_sha256": "4190d161ca2caf474eba892685ad562923331aecc1c9608352089fd8f6c2dab8",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/manifest_value.rs",
+      "mode": "100644",
+      "sha256": "4190d161ca2caf474eba892685ad562923331aecc1c9608352089fd8f6c2dab8"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/nextest_binaries.rs",
+    "source_sha256": "a7afb31ecf52beb4e1448b3d5a7eb2c3f23a533f1d02ded8e03b924affdba770",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/nextest_binaries.rs",
+      "mode": "100644",
+      "sha256": "a7afb31ecf52beb4e1448b3d5a7eb2c3f23a533f1d02ded8e03b924affdba770"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/nextest_build_selections.rs",
+    "source_sha256": "9e4d1a9d8544a246be90d828613fc87740131195d4e1913ec00e14bbd219f05c",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/nextest_build_selections.rs",
+      "mode": "100644",
+      "sha256": "9e4d1a9d8544a246be90d828613fc87740131195d4e1913ec00e14bbd219f05c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/nextest_cpu.rs",
+    "source_sha256": "b6d3e1980e31301e1cf56c9784ba66d972329b22da6b7f5e7e85126b692e483c",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/nextest_cpu.rs",
+      "mode": "100644",
+      "sha256": "b6d3e1980e31301e1cf56c9784ba66d972329b22da6b7f5e7e85126b692e483c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/runner.rs",
+    "source_sha256": "97fd3a6095f0fc13c165622864d130e2db6c3422694a4f17fe3c57ad89ad55d5",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/runner.rs",
+      "mode": "100644",
+      "sha256": "97fd3a6095f0fc13c165622864d130e2db6c3422694a4f17fe3c57ad89ad55d5"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/service_result.rs",
+    "source_sha256": "74a904c703f1f62e3d4d4ca030bad7719c63b84a41b9154adc59afe45655b785",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/service_result.rs",
+      "mode": "100644",
+      "sha256": "74a904c703f1f62e3d4d4ca030bad7719c63b84a41b9154adc59afe45655b785"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/stress_series.rs",
+    "source_sha256": "04edfbb14ac446a0f39ee195f0c77d14940f940fab16fa62287847c1b4eb0bd9",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/stress_series.rs",
+      "mode": "100644",
+      "sha256": "04edfbb14ac446a0f39ee195f0c77d14940f940fab16fa62287847c1b4eb0bd9"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/timeouts.rs",
+    "source_sha256": "99817b2a64e4872b4f5d85e4f2da45c6e01c75c622e759a883c36fa9883b1e07",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/timeouts.rs",
+      "mode": "100644",
+      "sha256": "99817b2a64e4872b4f5d85e4f2da45c6e01c75c622e759a883c36fa9883b1e07"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/validation_dag.rs",
+    "source_sha256": "0d82d82a9987ee1f624aa96b4fdd6573aac51936d9997d226b3bf2fa41a63401",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/validation_dag.rs",
+      "mode": "100644",
+      "sha256": "0d82d82a9987ee1f624aa96b4fdd6573aac51936d9997d226b3bf2fa41a63401"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/manifest-plan/src/validation_dag_static.rs",
+    "source_sha256": "177fe75584ae18873c7fd0110e901b9fdf131cbbbb931fef8a72ae1e5844ed31",
+    "existing_binding": {
+      "path": "ci/manifest-plan/src/validation_dag_static.rs",
+      "mode": "100644",
+      "sha256": "177fe75584ae18873c7fd0110e901b9fdf131cbbbb931fef8a72ae1e5844ed31"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/backend_engagement.rs",
+    "source_sha256": "dd783f4e2b4bfe2140ffa804f44ca0fe76fe5d4923594e48200c8b69ade86c16",
+    "existing_binding": {
+      "path": "detcore-model/src/backend_engagement.rs",
+      "mode": "100644",
+      "sha256": "dd783f4e2b4bfe2140ffa804f44ca0fe76fe5d4923594e48200c8b69ade86c16"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/build_info.rs",
+    "source_sha256": "7a928013d523b7b500e804abf3db36d264d377811cdcec4779f2322a1ffae641",
+    "existing_binding": {
+      "path": "detcore-model/src/build_info.rs",
+      "mode": "100644",
+      "sha256": "7a928013d523b7b500e804abf3db36d264d377811cdcec4779f2322a1ffae641"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/collections/replay_cursor.rs",
+    "source_sha256": "b3fc04326c456240d0c725249b43e6469d7aa0115c395853eeee81a9a3dcee1e",
+    "existing_binding": {
+      "path": "detcore-model/src/collections/replay_cursor.rs",
+      "mode": "100644",
+      "sha256": "b3fc04326c456240d0c725249b43e6469d7aa0115c395853eeee81a9a3dcee1e"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/collections.rs",
+    "source_sha256": "229f12786584d7216539d973e4ca5d7c3c815d33369531604b535e1f056995f3",
+    "existing_binding": {
+      "path": "detcore-model/src/collections.rs",
+      "mode": "100644",
+      "sha256": "229f12786584d7216539d973e4ca5d7c3c815d33369531604b535e1f056995f3"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/config.rs",
+    "source_sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+    "existing_binding": {
+      "path": "detcore-model/src/config.rs",
+      "mode": "100644",
+      "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/fd.rs",
+    "source_sha256": "eb9e2524e73abe03e41096794312dda76067bb718b92669038308329cadb75bd",
+    "existing_binding": {
+      "path": "detcore-model/src/fd.rs",
+      "mode": "100644",
+      "sha256": "eb9e2524e73abe03e41096794312dda76067bb718b92669038308329cadb75bd"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/futex.rs",
+    "source_sha256": "4659e5bd5849db85a3542b0ff1f4ec5928ac7c67c8071b040b312ef7d0b11cce",
+    "existing_binding": {
+      "path": "detcore-model/src/futex.rs",
+      "mode": "100644",
+      "sha256": "4659e5bd5849db85a3542b0ff1f4ec5928ac7c67c8071b040b312ef7d0b11cce"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/happens_before.rs",
+    "source_sha256": "ba0c680fb2a9fbf8cf777fdc3704277c4c4097511aaa6ed8118edcb761077790",
+    "existing_binding": {
+      "path": "detcore-model/src/happens_before.rs",
+      "mode": "100644",
+      "sha256": "ba0c680fb2a9fbf8cf777fdc3704277c4c4097511aaa6ed8118edcb761077790"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/host_capability.rs",
+    "source_sha256": "51614d09cab6a4b96d0c876ddabef1d495cc9bdf67bdb69d08fd26921b1c6451",
+    "existing_binding": {
+      "path": "detcore-model/src/host_capability.rs",
+      "mode": "100644",
+      "sha256": "51614d09cab6a4b96d0c876ddabef1d495cc9bdf67bdb69d08fd26921b1c6451"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/lib.rs",
+    "source_sha256": "99edbdfb9b5f4c0a19e34e64ce7d94b069167ffcfc8e4395e9c740aef7b2e9af",
+    "existing_binding": {
+      "path": "detcore-model/src/lib.rs",
+      "mode": "100644",
+      "sha256": "99edbdfb9b5f4c0a19e34e64ce7d94b069167ffcfc8e4395e9c740aef7b2e9af"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/pedigree.rs",
+    "source_sha256": "5526b4acbccc94f5340247d1a7756757abdc2a93a11b90e0897bf32f3f423857",
+    "existing_binding": {
+      "path": "detcore-model/src/pedigree.rs",
+      "mode": "100644",
+      "sha256": "5526b4acbccc94f5340247d1a7756757abdc2a93a11b90e0897bf32f3f423857"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/pid.rs",
+    "source_sha256": "da274b0dd0809ec08078b9012d12790114336361809ac242b3616865f6b23c07",
+    "existing_binding": {
+      "path": "detcore-model/src/pid.rs",
+      "mode": "100644",
+      "sha256": "da274b0dd0809ec08078b9012d12790114336361809ac242b3616865f6b23c07"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/procfs.rs",
+    "source_sha256": "3efd417964cb79108f7d02e2ffc81b498346ce678c31e631ef2744ee3afb0044",
+    "existing_binding": {
+      "path": "detcore-model/src/procfs.rs",
+      "mode": "100644",
+      "sha256": "3efd417964cb79108f7d02e2ffc81b498346ce678c31e631ef2744ee3afb0044"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/schedule.rs",
+    "source_sha256": "f11ad4b841f870d234a400a801fb1106b83c46845017c7d2a08e403ecad85c1f",
+    "existing_binding": {
+      "path": "detcore-model/src/schedule.rs",
+      "mode": "100644",
+      "sha256": "f11ad4b841f870d234a400a801fb1106b83c46845017c7d2a08e403ecad85c1f"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/summary.rs",
+    "source_sha256": "b0aa6cba2e09b088791536edd7173d0388b69ac4108371094a41725fa9559f01",
+    "existing_binding": {
+      "path": "detcore-model/src/summary.rs",
+      "mode": "100644",
+      "sha256": "b0aa6cba2e09b088791536edd7173d0388b69ac4108371094a41725fa9559f01"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore-model/src/time.rs",
+    "source_sha256": "d65bf6190c679ec15dbeb82263bf71aae003d346929cc36fc95b4354356c656c",
+    "existing_binding": {
+      "path": "detcore-model/src/time.rs",
+      "mode": "100644",
+      "sha256": "d65bf6190c679ec15dbeb82263bf71aae003d346929cc36fc95b4354356c656c"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/rust_script_prelude.rs",
+    "source_sha256": "a490321b4c80c80758e6ac718d19c67c8a82620bec5ed4b332ffd7748ff32a6d",
+    "existing_binding": {
+      "path": "scripts/lib/rust_script_prelude.rs",
+      "mode": "100644",
+      "sha256": "a490321b4c80c80758e6ac718d19c67c8a82620bec5ed4b332ffd7748ff32a6d"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/safe_ci_scope.rs",
+    "source_sha256": "7c7fcfe85f3c0b1f21a7e83f35bb0369075334da6aee4010e77491d88123aabe",
+    "existing_binding": {
+      "path": "scripts/lib/safe_ci_scope.rs",
+      "mode": "100644",
+      "sha256": "7c7fcfe85f3c0b1f21a7e83f35bb0369075334da6aee4010e77491d88123aabe"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_artifacts.rs",
+    "source_sha256": "d8f21ba011b58cc558a2376dd06639ce8a3cb96bff0a3e4d6d999e799845ffa1",
+    "existing_binding": {
+      "path": "scripts/lib/validate_artifacts.rs",
+      "mode": "100644",
+      "sha256": "d8f21ba011b58cc558a2376dd06639ce8a3cb96bff0a3e4d6d999e799845ffa1"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_cell_results.rs",
+    "source_sha256": "9d75d0bc36fa44faa16e700027b831be6db7631cd2ab721e3ce9e7439cf061d6",
+    "existing_binding": {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "mode": "100644",
+      "sha256": "9d75d0bc36fa44faa16e700027b831be6db7631cd2ab721e3ce9e7439cf061d6"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_classification.rs",
+    "source_sha256": "323d82a61044a70ea0aba160f775ce007884ae994e945c096950a33edafaadf9",
+    "existing_binding": {
+      "path": "scripts/lib/validate_classification.rs",
+      "mode": "100644",
+      "sha256": "323d82a61044a70ea0aba160f775ce007884ae994e945c096950a33edafaadf9"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_corpus.rs",
+    "source_sha256": "fd958f7eaaa866cf2334f13550c9d4d19b0671e19409e14ca4300dcd3ddcf9c7",
+    "existing_binding": {
+      "path": "scripts/lib/validate_corpus.rs",
+      "mode": "100644",
+      "sha256": "fd958f7eaaa866cf2334f13550c9d4d19b0671e19409e14ca4300dcd3ddcf9c7"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_envelope.rs",
+    "source_sha256": "a61873498d6bef3350c7d949507fd8f9e5aa4d3f2f368d849cfe1d0f97eeb13f",
+    "existing_binding": {
+      "path": "scripts/lib/validate_envelope.rs",
+      "mode": "100644",
+      "sha256": "a61873498d6bef3350c7d949507fd8f9e5aa4d3f2f368d849cfe1d0f97eeb13f"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_evidence.rs",
+    "source_sha256": "774a68452ce753ca0b8c770ea06f11263888912ecb76bcc365214d6c7c05dd9f",
+    "existing_binding": {
+      "path": "scripts/lib/validate_evidence.rs",
+      "mode": "100644",
+      "sha256": "774a68452ce753ca0b8c770ea06f11263888912ecb76bcc365214d6c7c05dd9f"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_history.rs",
+    "source_sha256": "7c16eb6a58b861e3af3f449731dfbf930ba762589f0d36eefc45a8249f4ef7d1",
+    "existing_binding": {
+      "path": "scripts/lib/validate_history.rs",
+      "mode": "100644",
+      "sha256": "7c16eb6a58b861e3af3f449731dfbf930ba762589f0d36eefc45a8249f4ef7d1"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_plan.rs",
+    "source_sha256": "7e9704e7cf6f9defbb335a1c098ff937d48cd2f4d70d56ffc30c4f29d8c4d19d",
+    "existing_binding": {
+      "path": "scripts/lib/validate_plan.rs",
+      "mode": "100644",
+      "sha256": "7e9704e7cf6f9defbb335a1c098ff937d48cd2f4d70d56ffc30c4f29d8c4d19d"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_receipt.rs",
+    "source_sha256": "1a5256592e1906f3942d53cb485f57b0afbdf37dcb914e066c5c7baaf5bb55cb",
+    "existing_binding": {
+      "path": "scripts/lib/validate_receipt.rs",
+      "mode": "100644",
+      "sha256": "1a5256592e1906f3942d53cb485f57b0afbdf37dcb914e066c5c7baaf5bb55cb"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_runtime.rs",
+    "source_sha256": "a0cabdbbc007576a620c29573bad2e97cf58b6582bec0f8c207fcac3254995da",
+    "existing_binding": {
+      "path": "scripts/lib/validate_runtime.rs",
+      "mode": "100644",
+      "sha256": "a0cabdbbc007576a620c29573bad2e97cf58b6582bec0f8c207fcac3254995da"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_super.rs",
+    "source_sha256": "6364aa1375943e2f33b506215bdd94b3db8e27840006f9598a3397948c17b7d4",
+    "existing_binding": {
+      "path": "scripts/lib/validate_super.rs",
+      "mode": "100644",
+      "sha256": "6364aa1375943e2f33b506215bdd94b3db8e27840006f9598a3397948c17b7d4"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/validate_test_results.rs",
+    "source_sha256": "13a28be0415ffc08eb17067ce7ad3d2e804efca91b4b340349b9e05fa844a0fc",
+    "existing_binding": {
+      "path": "scripts/lib/validate_test_results.rs",
+      "mode": "100644",
+      "sha256": "13a28be0415ffc08eb17067ce7ad3d2e804efca91b4b340349b9e05fa844a0fc"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/validate.rs",
+    "source_sha256": "16128aad4b5f1761713ee595029b6daf5e298d11a7fcd8df3279c8dfca882a26",
+    "existing_binding": {
+      "path": "scripts/validate.rs",
+      "mode": "100755",
+      "sha256": "16128aad4b5f1761713ee595029b6daf5e298d11a7fcd8df3279c8dfca882a26"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/check-nested-lockfiles.rs",
+    "source_sha256": "7d3355260aab61a362fffd5b568867309b741497c3837b9e9f841583ff99b0e0",
+    "existing_binding": {
+      "path": "scripts/check-nested-lockfiles.rs",
+      "mode": "100755",
+      "sha256": "7d3355260aab61a362fffd5b568867309b741497c3837b9e9f841583ff99b0e0"
+    },
+    "matches_existing": true
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/scripts/lib/rust_script_prelude.rs",
+    "source_sha256": "a490321b4c80c80758e6ac718d19c67c8a82620bec5ed4b332ffd7748ff32a6d",
+    "existing_binding": {
+      "path": "scripts/lib/rust_script_prelude.rs",
+      "mode": "100644",
+      "sha256": "a490321b4c80c80758e6ac718d19c67c8a82620bec5ed4b332ffd7748ff32a6d"
+    },
+    "matches_existing": true
+  }
+]

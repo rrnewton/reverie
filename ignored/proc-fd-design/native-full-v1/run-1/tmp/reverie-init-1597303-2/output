@@ -1,0 +1,7 @@
+
+running 1 test
+INITIALIZATION CHILD VERIFIED open,1,5
+test vm::tests::initialization_tests::initialization_child ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 426 filtered out; finished in 0.08s
+

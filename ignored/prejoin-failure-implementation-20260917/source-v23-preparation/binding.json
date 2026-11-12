@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "base": "526c21cf06ef9e5098ec9002b93e40e2022e798f",
+  "base_tree": "e124fe2fa5106a9374204be64cb41f97009f7c82",
+  "head": "9db60ab95587d4cb5e0438dfeca409471eb9baf5",
+  "tree": "dd2542f238ef8f7e3cdfc86509e89b3e2e0d5d24",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/Cargo.toml",
+      "mode": "644",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "reverie-kvm/src/error.rs",
+      "mode": "644",
+      "bytes": 16191,
+      "sha256": "eb130f64177a6e9d0cd851ce069fd992e0c0eca6eea2eb444ba378506c3fe7ac"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "mode": "644",
+      "bytes": 1398935,
+      "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e"
+    },
+    {
+      "path": "reverie-kvm/src/failure.rs",
+      "mode": "644",
+      "bytes": 28158,
+      "sha256": "848ef6a5f74fdc26cd9109af44f016b08ba5b3c3f8267e53978bd49909695aa9"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "mode": "644",
+      "bytes": 1721,
+      "sha256": "3438c724c266568bd175451c32ce5b297872dab69abcad0a1a146d4872e78650"
+    },
+    {
+      "path": "reverie-kvm/src/runtime.rs",
+      "mode": "644",
+      "bytes": 160114,
+      "sha256": "401b33b2b7a099c52470804dbd2c53f2ccca1fc834ef15ec2584bf8f52a74946"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/failure_tests.rs",
+      "mode": "644",
+      "bytes": 52732,
+      "sha256": "a918ff5f389e47cc6a21d418e34ee8fc917072d2afa1618ff01a14529252cf44"
+    },
+    {
+      "path": "reverie-kvm/src/runtime/native_test_support.rs",
+      "mode": "644",
+      "bytes": 17882,
+      "sha256": "c3be9c6a4a0ad3e2910a1a1c490c203077da70e9b5308ea9f2f5c990536bb6c5"
+    },
+    {
+      "path": "reverie-kvm/src/terminal_runtime_tests.rs",
+      "mode": "644",
+      "bytes": 5646,
+      "sha256": "46e5d07d03dae22d2b663373419d09976daf64ff99cbc93b4509527744a56f19"
+    },
+    {
+      "path": "reverie-kvm/src/vm.rs",
+      "mode": "644",
+      "bytes": 306150,
+      "sha256": "5f6de8ca47096d9485f61814dcdc435cee4a19234c4a4dd1371a8f07332d8dfa"
+    },
+    {
+      "path": "reverie/src/tool.rs",
+      "mode": "644",
+      "bytes": 24381,
+      "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023"
+    }
+  ],
+  "patch_sha256": "b0f428aa806c7aa0fe81b1ad731a5c70121e8754d2e626b148e634fbca7d3957",
+  "patch_bytes": 248223,
+  "increment_sha256": "d0ce16ff37161b5e6d252aee1bd680aba59c92aaac9cc0e91777c4306406b6bf",
+  "increment_scope": "Only the 31 preserved upstream paths from pre-rebase qualified tip to final head; no KVM candidate change.",
+  "report_sha256": "4d9be6f2f243e2d8469003f1dabc8e8d3657de94da274b6077fbf46d923a4d84",
+  "source_manifest_sha256": "ea2a23b7996b55638a74a9ffc357a5ff43c947f2cd777daa7baca40a1b77b1ff",
+  "source_file_count": 2596,
+  "selected_tests_sha256": "b869cd9d07465700d5dcdf437c031a4d6c82ffde630aa31e8fb0ec4e6739b930",
+  "selected_no_vm_count": 44,
+  "original_qualification_vm_count": 4,
+  "original_qualification_static_count": 22,
+  "committed_copies_sha256": "6ca986e33e06fa204eaa885b86c744c3f80026e0b6b6ab1275bdebd915cc8ce7",
+  "qualified_previous_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "previous_committed_tip": "9dfffd7ef114c10ede7e092107a36a6da2fb3df0",
+  "source_preparation": "Committed forward source; candidate bytes identical to v22. Final-head build/lint/executable comparison not yet executed."
+}

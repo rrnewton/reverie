@@ -1,0 +1,189 @@
+{
+  "status": "passed",
+  "source_binding_sha256": "5948a664efb812f47d3f0f607ec3926f07139f8d5faf21e2bda886533bab41ee",
+  "inventory_count": 449,
+  "old_inventory_retained": 448,
+  "selected": [
+    "error::tests::worker_diagnostic_and_primary_survive_exec_and_cleanup_wrappers",
+    "executor::tests::child_process_cleanup_joins_every_handle_and_preserves_each_error",
+    "executor::tests::child_start_gate_resolves_once_and_preserves_failed_delivery",
+    "executor::tests::discarding_named_fork_joins_only_that_unstarted_child",
+    "executor::tests::discarding_unstarted_fork_propagates_the_child_result",
+    "executor::tests::exiting_workers_transfer_every_child_handle_in_virtual_order",
+    "executor::tests::failed_child_cleanup_cancels_all_gates_before_joining",
+    "executor::tests::forked_process_waits_for_parent_registration_gate",
+    "failure::tests::completion_keeps_distinct_shared_cleanup_causes_and_first_worker_identity",
+    "failure::tests::completion_promotes_joined_worker_cause_without_duplicate_diagnostic",
+    "failure::tests::concurrent_publishers_pair_first_typed_cause_with_first_terminal_event",
+    "failure::tests::independent_failure_subscribers_wake_before_and_after_publication",
+    "failure::tests::local_failure_wake_waits_for_synchronous_tool_terminal_transition",
+    "failure::tests::refused_host_spawn_returns_exact_initialized_owner",
+    "runtime::failure_tests::cached_worker_error_publishes_once_before_started_descendant_join",
+    "runtime::failure_tests::caught_worker_panic_publishes_before_retirement_and_pending_rpc_join",
+    "runtime::failure_tests::failure_precedes_ready_callback_and_keeps_child_start_gate_closed",
+    "runtime::failure_tests::fatal_notification_releases_pending_tool_rpc_before_owned_join",
+    "runtime::failure_tests::fatal_worker_primary_survives_separate_consuming_hook_error",
+    "runtime::failure_tests::host_owned_returned_error_releases_root_rpc_and_owned_join_with_worker_identity",
+    "runtime::failure_tests::missing_final_status_cancels_pending_descendant_gate",
+    "runtime::failure_tests::missing_final_status_publishes_before_owner_hooks_and_started_descendant_join",
+    "runtime::failure_tests::normal_post_worker_completion_preserves_start_status_and_owner_before_child_hooks",
+    "runtime::failure_tests::normal_rpc_keeps_status_and_worker_before_leader_hooks",
+    "runtime::failure_tests::peer_failure_cancellation_preserves_thread_status_and_primary_cause",
+    "runtime::failure_tests::terminal_after_local_success_cancels_pending_descendant_gate",
+    "runtime::terminal_tests::terminal_cancellation_and_into_guest_forwarding_do_not_inject_or_start_children",
+    "runtime::terminal_tests::terminal_exit_retires_only_current_identity_and_preserves_existing_status",
+    "runtime::tests::converts_linux_error_results",
+    "runtime::tests::erestartsys_requests_a_restart_and_every_other_result_is_returned",
+    "runtime::tests::handler_runtime_error_precedes_and_preserves_unstarted_child_gate",
+    "runtime::tests::handler_suspension_releases_registered_child_start",
+    "runtime::tests::signal_hook_ordinary_nonreturning_injection_is_rejected_before_side_effects",
+    "runtime::tests::signal_hook_tail_injection_is_rejected_before_every_executor_side_effect",
+    "runtime::tests::unresolved_children_refuse_every_nonreturning_injection_before_mutation",
+    "vm::tests::cancelling_named_tool_thread_joins_only_that_unstarted_worker",
+    "vm::tests::completed_failure_interrupts_a_later_natural_join",
+    "vm::tests::failure_cancels_pending_start_in_batch_being_joined",
+    "vm::tests::later_failure_interrupts_an_existing_natural_join",
+    "vm::tests::pending_start_registered_after_cancellation_is_drained"
+  ],
+  "selected_count": 40,
+  "structured_compiler_messages": [],
+  "retained_elf": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v13/run-1/retained-elf-v19/lib",
+    "bytes": 115730656,
+    "mode": 493,
+    "sha256": "281cb551a07d1b255dfa3757a166b401f82769ce321390d93753d1de1a11a6dc",
+    "device": 48,
+    "inode": 797101532
+  },
+  "retained_elf_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cargo-v13/run-1/retained-elf-v19/binding.json",
+    "bytes": 796,
+    "mode": 420,
+    "sha256": "048fafc344e794ef4ca6f9f6618e6515f886dad84b0f702e77527b9238db8049",
+    "device": 48,
+    "inode": 797101533
+  },
+  "stages": [
+    {
+      "stage": "compile",
+      "service": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 7830975000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T160958Z-3821190.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3821846,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1820327392199,
+          "CPUUsageNSec": 7830975000
+        }
+      },
+      "wall_seconds": 5.179857066,
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/compile/stdout",
+        "bytes": 125556,
+        "mode": 384,
+        "sha256": "0a7b1af89f56191b6e4f29f27c0ae7256128cafd2a1bb8c59579a018cc02bd64",
+        "device": 48,
+        "inode": 797100130
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/compile/stderr",
+        "bytes": 194,
+        "mode": 384,
+        "sha256": "7d1db141f091e3fae6e13190b46d48846a582fb8b92bc48a75073fe58314dcf2",
+        "device": 48,
+        "inode": 797100131
+      }
+    },
+    {
+      "stage": "list",
+      "service": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 217705000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T161005Z-3827759.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3828107,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1820334724428,
+          "CPUUsageNSec": 217705000
+        }
+      },
+      "wall_seconds": 0.907460391,
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/list/stdout",
+        "bytes": 35171,
+        "mode": 384,
+        "sha256": "8576e6fcb89da96bacd77407f3f474bffeb804bbb8ab43ae7cae39a159a620a0",
+        "device": 48,
+        "inode": 797100383
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/list/stderr",
+        "bytes": 0,
+        "mode": 384,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "device": 48,
+        "inode": 797100384
+      }
+    },
+    {
+      "stage": "native",
+      "service": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 236380000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T161008Z-3832530.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 3832939,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1820337603478,
+          "CPUUsageNSec": 236380000
+        }
+      },
+      "wall_seconds": 1.055218177,
+      "raw_stdout": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/native/stdout",
+        "bytes": 3849,
+        "mode": 384,
+        "sha256": "ae33250b1334248be784c8763bb064816d42927e0add5357777821d615d45430",
+        "device": 48,
+        "inode": 797100466
+      },
+      "raw_stderr": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/cargo-v13/native/stderr",
+        "bytes": 626,
+        "mode": 384,
+        "sha256": "314d7a942279133df092d7b183a62d2d9872ea36e70c64feda85d5e5f94c6a66",
+        "device": 48,
+        "inode": 797100467
+      }
+    }
+  ],
+  "scope": "No-VM native controls only; no actual VM, original static_elf or Hermit execution."
+}

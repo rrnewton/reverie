@@ -1,0 +1,20 @@
+{
+  "scope": "one authorized comment correction; immutable current source readback only",
+  "configure_build_jobs_matches_base805_exactly": true,
+  "inputs": [
+    {
+      "commit": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+      "path": "ci/configure-build-jobs.sh",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/integration-5bc8/ci/configure-build-jobs.sh",
+      "bytes": 55677,
+      "sha256": "e00ee8b82d3595038cec610eb6b3c0967801f6a63899e28f74bd0885aeef7a10"
+    },
+    {
+      "commit": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+      "path": "ci/run-with-reverie-dbt-budget.sh",
+      "copy_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-next-increment-20260917/inputs-v9/integration-5bc8/ci/run-with-reverie-dbt-budget.sh",
+      "bytes": 25438,
+      "sha256": "575379be4b049f4265356750fc68c4c1deb6d789007c2067c319197ab6fec1a4"
+    }
+  ]
+}

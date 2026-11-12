@@ -1,0 +1,234 @@
+{
+  "schema": 1,
+  "status": "prepared; root execution release required",
+  "observer": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+  "observer_sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+  "original_supervision_binding": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+  "original_supervision_binding_sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7",
+  "run_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2",
+  "native_workdir": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/workdir",
+  "fixture_elf": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation",
+  "fixture_source_sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/unit_reference.py",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "resolved_path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "bytes": 29416,
+      "mode": 493,
+      "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "resolved_path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "bytes": 42932,
+      "mode": 493,
+      "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "resolved_path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "bytes": 15385,
+      "mode": 493,
+      "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "resolved_path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "resolved_path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "bytes": 23892,
+      "mode": 420,
+      "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+    },
+    {
+      "path": "/usr/bin/busctl",
+      "resolved_path": "/usr/bin/busctl",
+      "bytes": 106664,
+      "mode": 493,
+      "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+    },
+    {
+      "path": "/usr/bin/systemctl",
+      "resolved_path": "/usr/bin/systemctl",
+      "bytes": 330440,
+      "mode": 493,
+      "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+    },
+    {
+      "path": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "resolved_path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "mode": 493,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+    },
+    {
+      "path": "/usr/bin/cc",
+      "resolved_path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "mode": 493,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+      "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+      "bytes": 10755,
+      "mode": 420,
+      "sha256": "c202622d6f5b5255fde87a5fb4b105bdaedc9628dd0681779f4d7f807114e865"
+    }
+  ],
+  "steps": [
+    {
+      "name": "compile",
+      "cpu_usec": 30000000,
+      "wall_seconds": 60,
+      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile",
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control",
+      "binary": "/usr/bin/cc",
+      "arguments": [
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+        "-o",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+      ],
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/compile",
+        "--cpu-usec",
+        "30000000",
+        "--wall-seconds",
+        "60",
+        "--log-bytes",
+        "1048576",
+        "/usr/bin/cc",
+        "-O2",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/fdinfo_observation.c",
+        "-o",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+      ]
+    },
+    {
+      "name": "native",
+      "cpu_usec": 5000000,
+      "wall_seconds": 15,
+      "out": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native",
+      "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/workdir",
+      "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation",
+      "arguments": [],
+      "argv": [
+        "/usr/bin/python3",
+        "-B",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+        "--out",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/native",
+        "--cpu-usec",
+        "5000000",
+        "--wall-seconds",
+        "15",
+        "--log-bytes",
+        "1048576",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/run-2/fdinfo_observation"
+      ]
+    }
+  ],
+  "expected_cases": [
+    "change-after-open",
+    "close-before-first-read",
+    "replace-before-first-read",
+    "partial-read-and-rewind",
+    "nonzero-seek-observation",
+    "positioned-read-regeneration",
+    "duplicate-description-buffer",
+    "vectored-first-read",
+    "fork-retains-original-task"
+  ],
+  "total_service_cpu_allowance_seconds": 35,
+  "total_service_wall_allowance_seconds": 75,
+  "service_memory_max_bytes": 17179869184,
+  "service_swap_max_bytes": 0,
+  "stderr_lethal_cap_per_service_bytes": 1048576,
+  "unchanged_observer_stdio_cap_per_file_bytes": 67108864,
+  "native_internal_bounds": {
+    "parent_alarm_seconds": 10,
+    "child_fork_count": 1,
+    "child_cpu_seconds": 1,
+    "child_alarm_seconds": 3,
+    "child_address_space_bytes": 134217728,
+    "handshake_poll_timeout_milliseconds": 2000
+  },
+  "host_environment_keys": [
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS"
+  ],
+  "host_environment_fixed": {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TZ": "UTC"
+  },
+  "compiler_provenance": "Exact cc entrypoint is bound. Compiler internal executables, libraries and headers are not exhaustively frozen; this native semantic control makes no compiler reproducibility claim.",
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-control/launch-2.py"
+  ],
+  "scope": "One compile and one native fixture with one fork child. No Hermit/KVM invocation, runtime retry, backend patch or parity qualification.",
+  "post_execution_required": [
+    "Retain both stage results and actual failures before stopping.",
+    "Native depends on successful compile and unchanged fixture bytes.",
+    "Every launched service has complete accounting, terminal empty cgroup and no observer error or truncation.",
+    "Successful services must be inactive with no MainPID or ControlGroup.",
+    "Revalidate all bound inputs and actual compiled fixture after each stage."
+  ]
+}

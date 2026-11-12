@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "ls-remote",
+    "https://github.com/rrnewton/hermit.git",
+    "refs/heads/main",
+    "refs/heads/fix/kvm-verify-stderr-oappend-leak"
+  ],
+  "started_at": "2026-09-17T07:45:06.326511+00:00",
+  "finished_at": "2026-09-17T07:45:06.740419+00:00",
+  "exit_code": 0,
+  "wall_seconds": 0.41388284298591316,
+  "stdout_bytes": 144,
+  "stderr_bytes": 0
+}

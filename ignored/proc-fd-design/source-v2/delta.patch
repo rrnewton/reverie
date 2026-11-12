@@ -1,0 +1,222 @@
+diff --git a/reverie-kvm/src/executor.rs b/reverie-kvm/src/executor.rs
+--- a/reverie-kvm/src/executor.rs
++++ b/reverie-kvm/src/executor.rs
+@@ -1307,6 +1307,15 @@
+         let Ok(count) = usize::try_from(args[2]) else {
+             return negative_errno(libc::EINVAL);
+         };
++        if positioned && (args[3] as i64) < 0 {
++            return negative_errno(libc::EINVAL);
++        }
++        // vfs_read admits the original userspace interval before limiting the
++        // transfer or entering seq_read. This is architecture admission only;
++        // permission faults still occur during the counted copy, after show.
++        if let Err(error) = validate_guest_iovec_address(args[1], count) {
++            return error;
++        }
+         let mut sequence = self
+             .sequence
+             .lock()
+@@ -11288,6 +11297,12 @@
+                 | libc::O_NOATIME
+                 | libc::O_NONBLOCK;
+             let flags = args[2] as libc::c_int & settable;
++            if source_fdinfo.is_some() && flags & libc::O_DIRECT != 0 {
++                // proc fdinfo lacks FMODE_CAN_ODIRECT, unlike its private
++                // memfd carrier. Reject before applying any requested status
++                // changes, including changes shared by descriptor aliases.
++                return negative_errno(libc::EINVAL);
++            }
+             if source_signalfd_mask.is_some() && flags & libc::O_NONBLOCK == 0 {
+                 // Blocking virtual signalfd waits require scheduler ownership;
+                 // reject before changing the shared open-file description.
+@@ -24203,6 +24218,114 @@
+             ),
+             negative_errno(libc::EINVAL)
+         );
++        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++        assert_eq!(f.seek(target, 41, libc::SEEK_SET), 41);
++        let retained = f.read(info, 4096);
++        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++        assert_eq!(f.read(info, 7), retained[..7]);
++        let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
++        assert!(alias >= 0);
++        assert_eq!(f.seek(target, 47, libc::SEEK_SET), 47);
++        let native = std::fs::File::open(format!(
++            "/proc/self/fdinfo/{}",
++            f.executor.state.files[&(target as i32)].as_raw_fd()
++        ))
++        .unwrap();
++        let mut native_buffer = [0_u8; 256];
++        // Real vfs_read rejects the original overflowing interval before seq.
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_read,
++                    native.as_raw_fd(),
++                    native_buffer.as_mut_ptr(),
++                    usize::MAX,
++                )
++            },
++            -1
++        );
++        assert_eq!(
++            std::io::Error::last_os_error().raw_os_error(),
++            Some(libc::EFAULT)
++        );
++        assert_eq!(
++            f.call(libc::SYS_read, [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]),
++            negative_errno(libc::EFAULT)
++        );
++        assert_eq!(
++            f.call(
++                libc::SYS_pread64,
++                [alias as u64, PAGE_SIZE, u64::MAX, 0, 0, 0]
++            ),
++            negative_errno(libc::EFAULT)
++        );
++        // Even a zero-length request needs an architectural userspace pointer;
++        // an unmapped but architecture-valid zero-length pointer is accepted.
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_read,
++                    native.as_raw_fd(),
++                    u64::MAX as *mut libc::c_void,
++                    0_usize,
++                )
++            },
++            -1
++        );
++        assert_eq!(
++            std::io::Error::last_os_error().raw_os_error(),
++            Some(libc::EFAULT)
++        );
++        assert_eq!(
++            f.call(libc::SYS_read, [alias as u64, u64::MAX, 0, 0, 0, 0]),
++            negative_errno(libc::EFAULT)
++        );
++        let unmapped = X86_64_GUEST_USER_LIMIT - PAGE_SIZE;
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_read,
++                    native.as_raw_fd(),
++                    unmapped as *mut libc::c_void,
++                    0_usize,
++                )
++            },
++            0
++        );
++        assert_eq!(
++            f.call(libc::SYS_read, [alias as u64, unmapped, 0, 0, 0, 0]),
++            0
++        );
++        assert_eq!(
++            unsafe {
++                libc::syscall(
++                    libc::SYS_pread64,
++                    native.as_raw_fd(),
++                    u64::MAX as *mut libc::c_void,
++                    0_usize,
++                    -1_i64,
++                )
++            },
++            -1
++        );
++        assert_eq!(
++            std::io::Error::last_os_error().raw_os_error(),
++            Some(libc::EINVAL)
++        );
++        assert_eq!(
++            f.call(
++                libc::SYS_pread64,
++                [alias as u64, u64::MAX, 0, u64::MAX, 0, 0]
++            ),
++            negative_errno(libc::EINVAL)
++        );
++        for fd in [info, alias] {
++            assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
++        }
++        assert_eq!(f.read(alias, 4096), retained[7..]);
++        assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++        let fresh = f.read(info, 4096);
++        f.check_object(&fresh, target, 47);
+     }
+ 
+     #[test]
+@@ -24432,6 +24555,57 @@
+                 ),
+                 status
+             );
++            let alias = f.call(libc::SYS_dup, [info as u64, 0, 0, 0, 0, 0]);
++            assert!(alias >= 0);
++            assert_eq!(f.seek(target, 13, libc::SEEK_SET), 13);
++            let original = f.read(info, 4096);
++            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++            assert_eq!(f.read(info, 7), original[..7]);
++            assert_eq!(f.seek(target, 37, libc::SEEK_SET), 37);
++            let requested = (status as libc::c_int ^ libc::O_NONBLOCK) | libc::O_DIRECT;
++            // Native proc fdinfo has no direct-I/O capability. The same
++            // mixed flag request must fail atomically, leaving NONBLOCK too.
++            assert_eq!(
++                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_SETFL, requested) },
++                -1
++            );
++            assert_eq!(
++                std::io::Error::last_os_error().raw_os_error(),
++                Some(libc::EINVAL)
++            );
++            assert_eq!(
++                unsafe { libc::fcntl(native.as_raw_fd(), libc::F_GETFL) } as i64,
++                status
++            );
++            assert_eq!(
++                f.call(
++                    libc::SYS_fcntl,
++                    [
++                        alias as u64,
++                        libc::F_SETFL as u64,
++                        requested as u64,
++                        0,
++                        0,
++                        0
++                    ]
++                ),
++                negative_errno(libc::EINVAL)
++            );
++            for fd in [info, alias] {
++                assert_eq!(
++                    f.call(
++                        libc::SYS_fcntl,
++                        [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0]
++                    ),
++                    status
++                );
++                assert_eq!(f.seek(fd, 0, libc::SEEK_CUR), 7);
++            }
++            assert_eq!(f.read(alias, 4096), original[7..]);
++            assert_eq!(f.seek(info, 0, libc::SEEK_SET), 0);
++            let after_refusal = f.read(info, 4096);
++            f.check_object(&after_refusal, target, 37);
++            assert_eq!(f.call(libc::SYS_close, [alias as u64, 0, 0, 0, 0, 0]), 0);
+             assert_eq!(f.call(libc::SYS_close, [info as u64, 0, 0, 0, 0, 0]), 0);
+         }
+         for flag in [libc::O_PATH, libc::O_DIRECT, libc::O_NOATIME, libc::O_ASYNC] {
+@@ -36841,7 +37015,15 @@
+             let mut memory = GuestMemory::new(0, 8192).unwrap();
+             memory.write(0x100, b"/proc/self/exe\0").unwrap();
+             memory.write(0x1000, &[0xa5; 4096]).unwrap();
+-            let count = readlink_at_impl(&mut memory, state, libc::AT_FDCWD, 0x100, 0x1000, 4096);
++            let count = readlink_at_impl(
++                &mut memory,
++                state,
++                libc::AT_FDCWD,
++                0x100,
++                0x1000,
++                4096,
++                false,
++            );
+             assert!((0..4096).contains(&count));
+             let mut output = [0; 4096];
+             memory.read(0x1000, &mut output).unwrap();

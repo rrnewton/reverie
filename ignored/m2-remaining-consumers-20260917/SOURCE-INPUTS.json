@@ -1,0 +1,30 @@
+[
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/run_matrix.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/run_matrix.py",
+    "bytes": 84430,
+    "sha256": "2f135f80c1918d7c85c17592385f36297a9eb9387f6b2d022e1c3520b3417024"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/e9patch_corpus.py",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/e9patch_corpus.py",
+    "bytes": 16102,
+    "sha256": "8e6e1aebf8796c84c37d39d97b5950cbe02dde085f96b72856ae6aeec4593266"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "hermit-cli/tests/verification_report_consumers.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/hermit-cli/tests/verification_report_consumers.rs",
+    "bytes": 24973,
+    "sha256": "5f79232ebbf264f59d9faa6d9808055a02f1d74c2d1804fdb30e752c9a306669"
+  },
+  {
+    "git_revision": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "git_path": "tests/backend-parity/README.md",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/m2-remaining-consumers-20260917/source/tests/backend-parity/README.md",
+    "bytes": 29575,
+    "sha256": "fb42e68367fde5a9dc19c23e75788252887bcf4c66bb699ee4bad733a00b29df"
+  }
+]

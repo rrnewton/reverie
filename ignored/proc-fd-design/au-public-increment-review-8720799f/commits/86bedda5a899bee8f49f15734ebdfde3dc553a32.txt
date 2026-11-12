@@ -1,0 +1,40 @@
+tree 169a854b61f09e470fbd5129f6ee96bf8fccc960
+parent 70f4918f0fa009260a95c2fe08d49e0bf49ff0fe
+author Ryan Newton <rrnewton@gmail.com> 1789598719 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789598719 -0700
+
+wrkslots: publish each audited slot once so the census can be published at all
+
+[hermit2, disk-2, claude-opus-5, devbig014, role=impl]
+
+THE AUDIT COULD NOT REPORT A NUMBER. Its downstream contract refused the whole
+census with "audit.attention_slots contains duplicates", so the operational tick
+recorded NO_RESULT instead of a slot count -- and a tick that reports nothing
+reads the same as one that found nothing.
+
+⚠️ THIS WAS A DEADLOCK, NOT A WRONG NUMBER, which is the reason it is worth
+fixing rather than tolerating. The duplicate is produced INSIDE the audit every
+time two routes describe one slot, so nothing downstream could ever clear the
+condition and no later participant could complete the operation from the record.
+The refusal was correct and unclearable at the same time.
+
+THE MECHANISM. `rows` is assembled from FOUR separate `rows.append(...)` sites,
+so one slot legitimately produces more than one row -- a registry row plus an
+on-disk worktree row being the ordinary case, which is exactly why
+`owner_state == "unregistered"` is itself an attention condition. The previous
+code built `attention_ids` BECAUSE duplicates are possible, used it to dedupe
+`unknown` against `attention`, and never deduped `attention` against itself.
+That asymmetry is the whole bug.
+
+DEDUPLICATED ON THE PUBLISHED KEY, NOT THE INTERNAL ONE. The old key was
+(slot, machine) but the published lists carry the slot NAME alone, so two
+machines registering one name would still have emitted a duplicate the key could
+not see. Both lists are now reduced on the value actually published, in
+first-seen order so the report stays stable between runs.
+
+Test Plan: py/wrkslots/tests/test_proc_status.py 31 passed, including a new test
+that CALLS THE REAL FUNCTION -- an earlier draft of it reimplemented the dedup
+inline and would have passed whatever the production code did, which is the
+exact shape of a check that cannot fail for the reason it names. MUTATION:
+returning the list unchanged fails that test. Existing coverage:
+test_lifecycle.py -k audit, 10 passed.

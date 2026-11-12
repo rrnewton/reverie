@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "git",
+    "branch",
+    "--show-current"
+  ],
+  "exit": 0,
+  "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+  "stderr": ""
+}

@@ -1,0 +1,4450 @@
+--- a/README.md
++++ b/README.md
+@@ -137,11 +137,14 @@
+ hook. Later invocations enter the LiteInst trampoline and return to the same
+ ptrace-owned Detcore lifecycle.
+ 
+-`--verify` compares captured status and output and applies the `Stripped`
+-comparison to selected Detcore scheduler messages. A successful result is a
+-useful diagnostic, but it is not strict determinism. Strict verification requires
+-`--verify-strict --verify-json REPORT.json`, `bitwise_parity: true`, and nonzero
+-compared-message counts.
++`--verify` compares captured status, output, and canonical INFO messages by
++default. Numeric fields are preserved; only the defined log envelope and
++explicitly marked address fields are canonicalized. Use `--verify-json REPORT.json`
++to retain the typed verdict, and require a matched canonical comparison,
++`bitwise_parity: true`, and equal positive compared-message counts before claiming
++strict verification. `--verify-strict` remains an accepted compatibility spelling
++for this default policy. Historical `Stripped` reports remain readable, but do
++not establish the current canonical guarantee.
+ Guests may create threads and child processes: `clone`, `clone3` and `fork` run
+ under the ordinary ptrace lifecycle. Hook installation is single-task only,
+ though -- the patch helper runs on a process-global stack and the installer is
+@@ -158,7 +161,7 @@
+ guest-kernel Linux ABI.
+ 
+ SaBRe is built only with the non-default `third-party-backends` feature. Its
+-measured post-0.2 `Stripped` envelope, build instructions, and explicit
++historical post-0.2 `Stripped` measurements, build instructions, and explicit
+ unsupported cases are documented in
+ [SaBRe backend compatibility](docs/SABRE_COMPATIBILITY.md).
+ 
+@@ -209,7 +212,7 @@
+ | Goal | Command | Status |
+ | --- | --- | --- |
+ | Deterministic execution | `hermit run -- PROGRAM ARGS...` | Default and recommended mode |
+-| Verify two executions | `hermit run --verify -- PROGRAM` | Runs the `Stripped` diagnostic over output, status, and selected logs; not strict determinism |
++| Verify two executions | `hermit run --verify -- PROGRAM` | Compares output, status, and canonical INFO logs; retain `--verify-json` and check the typed verdict and nonzero counts |
+ | Explore schedules | `hermit run --chaos --sched-seed=N -- PROGRAM` | Seeded, reproducible schedule variation |
+ | Record an execution | `hermit record start -- PROGRAM ARGS...` | Experimental |
+ | Replay the latest recording | `hermit replay --autopilot` | Experimental |
+--- a/ci/compat-envelope/README.md
++++ b/ci/compat-envelope/README.md
+@@ -88,11 +88,12 @@
+ for by either the comparable green cells or that custom-command list.
+ 
+ The Basic Sanity Milestone 1 `verify` cells run each selected backend twice against
+-itself. Bare `--verify` still uses the legacy Stripped comparator. These cells
+-therefore measure same-backend repeatability under the current contract; they
+-do not establish strict INFO-log determinism or cross-backend parity. The
+-scorecard says this directly and reports no cross-backend parity count until
+-the manifest has cells that really compare fresh ptrace and non-ptrace logs.
++itself. Bare `--verify` now selects canonical INFO comparison. A fresh typed
++report must establish a matched comparison with `bitwise_parity: true` and equal
++positive message counts; old Stripped results are not promoted by the new
++default. These remain same-backend comparisons, not cross-backend parity. No
++cross-backend parity count is justified until cells actually compare fresh
++ptrace and non-ptrace logs.
+ 
+ Scorecard colour records whether an enabled cell is in the selected plan.
+ Measurement is separate: importing a pass or divergence records what happened
+--- a/demos/05-qemu-busybox.sh
++++ b/demos/05-qemu-busybox.sh
+@@ -132,13 +132,10 @@
+   hermit_args+=(--skid-margin="$skid_margin")
+ fi
+ if [[ $verify == 1 ]]; then
+-  # ⚠️ `--verify-strict` IS LOAD-BEARING FOR THE L2 LABEL PRINTED BELOW.
+-  # A plain `--verify` stays on the lossy Stripped comparator on every backend
+-  # -- `RunOpts::verification_strictness` returns `Canonical` only under
+-  # `--verify-strict`/`--verify-verbose`, and
+-  # `comparator_choice_does_not_depend_on_the_backend` pins that. AGENTS.md is
+-  # explicit that default `--verify` "cannot establish L2", so requesting it
+-  # while printing `level=L2` claimed a tier the run never reached.
++  # Current --verify uses canonical INFO by default. Retain --verify-strict
++  # for compatibility with older binaries whose default was Stripped.
++  # The typed verdict and positive compared-message counts below still decide
++  # whether this execution qualifies; selecting the policy alone is not proof.
+   hermit_args+=(--verify --verify-strict --verify-json "$verify_json")
+ fi
+ hermit_args+=(--)
+@@ -198,10 +195,10 @@
+   "$(sha256sum "$console_log" | cut -d' ' -f1)"
+ 
+ if [[ $verify == 1 ]]; then
+-  # Read the TYPED verdict, not the banner. ":: Success: deterministic.
+-  # Determinism verified." is printed by a run whose own --verify-json says
+-  # `bitwise_parity: false`, so scraping it cannot tell a stripped match from a
+-  # canonical one -- which is precisely how this demo used to certify L2.
++  # Read the TYPED verdict, not the banner. Historically ":: Success:
++  # deterministic. Determinism verified." was also printed for Stripped
++  # matches with `bitwise_parity: false`. Keep rejecting those old results and
++  # any current comparison that lacks the evidence required below.
+   #
+   # These conjuncts mirror `verify_tier_from_json` in
+   # tests/backend-parity/run_matrix.py, the repository's enforcing definition of
+--- a/demos/README.md
++++ b/demos/README.md
+@@ -54,9 +54,11 @@
+ `VERIFY=1` adds `--verify --verify-strict --verify-json` and reads the typed
+ verdict rather than a banner, requiring `verified=true`, `verdict=matched`,
+ `bitwise_parity=true`, a canonical log comparison with no filtering, and equal
+-positive compared-INFO-message counts on both sides. `--verify-strict` is
+-required for that: a plain `--verify` stays on the lossy Stripped comparator and
+-cannot establish L2. It needs `jq`, which the demo preflights before booting.
++positive compared-INFO-message counts on both sides. Plain `--verify` now uses
++that canonical policy too; the demo retains `--verify-strict` as a compatibility
++spelling. The typed verdict and counts, rather than flag selection alone,
++establish what this invocation compared. It needs `jq`, which the demo preflights
++before booting.
+ 
+ It can take several minutes because QEMU's host threads execute under the strict
+ ptrace scheduler. Hermit captures guest output internally so it can compare both
+@@ -130,10 +132,11 @@
+ 
+ On the measured AMD EPYC 9D85 host, the repository PMU benchmark observed a
+ 33,138-RCB maximum skid over 1,000 samples and recommended a 66,276-RCB margin.
+-Current Reverie's 1,000-RCB processor default panicked during verification Run 1. The
++The measured Reverie revision's 1,000-RCB processor default panicked during verification Run 1. The
+ measured override passed the prior failure point, but Run 1 had not completed
+-after nine minutes and was stopped; current-main Stripped verification therefore
+-remains blocked on practical PMU calibration.
++after nine minutes and was stopped. That historical Stripped-verification
++attempt did not complete; it supplies no result for the current canonical
++default or evidence that the PMU calibration issue has been resolved.
+ 
+ Further diagnostics did not produce an acceptable workaround. Margins of
+ 10,000 and 40,000 RCBs avoided the assertion but still had not completed Run 1
+--- a/detcore/src/logdiff.rs
++++ b/detcore/src/logdiff.rs
+@@ -15,14 +15,11 @@
+ use std::collections::HashMap;
+ use std::io::Write;
+ use std::path::Path;
+-use std::process::Command;
+-use std::str::FromStr;
+ use std::sync::LazyLock;
+ 
+ use clap;
+ use clap::Parser;
+ use regex::Regex;
+-use tempfile::NamedTempFile;
+ 
+ use crate::detlog::DetLogEvent;
+ use crate::detlog::DetLogRecord;
+@@ -92,12 +89,10 @@
+ /// Selects the set of log messages compared for determinism.
+ #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+ pub enum LogComparisonMode {
+-    /// Compare deterministic Detcore and scheduler messages.
+-    #[default]
+-    Deterministic,
+     /// Compare every INFO message exactly, while leaving any captured DEBUG or
+     /// TRACE messages available for diagnostics. This is the observation
+     /// envelope used by the `BitwiseInfoV1` verification policy.
++    #[default]
+     Info,
+     /// Compare every captured log message without filtering.
+     FullTrace,
+@@ -135,22 +130,14 @@
+ /// Options for calling `log_diff`.
+ #[derive(Debug, Parser, Clone)]
+ pub struct LogDiffOpts {
+-    /// UNSAFE: strips numbers and temporary paths before comparison.
+-    ///
+-    /// This erases timestamps and syscall values that bitwise parity exists to
+-    /// compare. Never use this option to make a failing parity diff pass; doing
+-    /// so is cheating. It is only for non-parity diagnostic localization.
+-    #[clap(long = "unsafe-strip-lines")]
+-    pub strip_lines: bool,
+-
+     /// Canonicalize host memory addresses before comparison WITHOUT erasing them.
+     ///
+     /// Only addresses a producer has explicitly marked with the
+     /// `<hostaddr 0x...>` wrapper (see [`host_addr`]) are canonicalized; each
+     /// distinct marked address is rewritten to an ordinal placeholder
+     /// `<addr{N}>` assigned by order of first appearance within a single run
+-    /// (see `canonicalize_addresses_in_line`). Unlike [`Self::strip_lines`],
+-    /// this discards ONLY the host-specific raw pointer value: it preserves
++    /// (see `canonicalize_addresses_in_line`). This
++    /// discards ONLY the host-specific raw pointer value: it preserves
+     /// identity (same address -> same ordinal), ordering (introduction
+     /// sequence), and aliasing (two names for one address collapse to one
+     /// ordinal), and it leaves every other byte -- virtual-time timestamps,
+@@ -166,7 +153,7 @@
+     /// content digests, cpuid leaves. A blanket `0x` canonicalization would
+     /// collapse those too, silently erasing real syscall-argument divergence:
+     /// a "softer strip" and exactly the fake-green this policy exists to prevent.
+-    #[clap(skip)]
++    #[clap(skip = true)]
+     pub canonicalize_addresses: bool,
+ 
+     /// The internal message set to compare.
+@@ -193,10 +180,6 @@
+     /// Limit the number of differences printed. Set to 0 for no limit.
+     #[clap(long, default_value = "20")]
+     pub limit: u64,
+-
+-    /// Before comparison, filter out lines which contain this substring.
+-    #[clap(long)]
+-    pub ignore_lines: Vec<String>,
+ 
+     /// Show this many completed syscalls before each side-specific divergence point.
+     /// Set to 0 to omit history.
+@@ -205,75 +188,11 @@
+     /// Disable colored console output for line diffs.
+     #[clap(long)]
+     pub no_color: bool,
+-
+-    /// Do not consider "COMMIT" messages for deterministic checks.
+-    #[clap(long)]
+-    pub skip_commit: bool,
+-
+-    /// Do not consider "DETLOG" messages for deterministic checks.
+-    #[clap(long)]
+-    pub skip_detlog: bool,
+-
+-    /// Use git diff instead of the internal, basic log comparison.
+-    #[clap(long)]
+-    pub git_diff: bool,
+-
+-    /// In case --skip-detlog=false this parameter further filters which
+-    /// "DETLOG" messages will be included for deterministic checks
+-    #[clap(long, default_values = &["syscall", "syscallresult", "other"])]
+-    pub include_detlogs: Vec<DetLogFilter>,
+-}
+-
+-impl LogDiffOpts {
+-    fn is_skip(&self, filter: DetLogFilter) -> bool {
+-        !self.include_detlogs.contains(&filter)
+-    }
+-
+-    fn skip_detlog(&self, entry: &LogMessage<'_>) -> bool {
+-        if self.skip_detlog {
+-            return true;
+-        }
+-
+-        if is_detlog_syscall(entry) && self.is_skip(DetLogFilter::Syscall) {
+-            return true;
+-        }
+-        if is_detlog_syscall_result(entry) && self.is_skip(DetLogFilter::SyscallResult) {
+-            return true;
+-        }
+-
+-        if !is_detlog_syscall(entry)
+-            && !is_detlog_syscall_result(entry)
+-            && self.is_skip(DetLogFilter::Other)
+-        {
+-            return true;
+-        }
+-
+-        false
+-    }
+-
+-    fn filter_deterministic<'a>(&self, v: &[LogMessage<'a>]) -> Vec<LogMessage<'a>> {
+-        v.iter()
+-            .filter_map(|message| {
+-                if (is_detlog(message)
+-                    && !self.skip_detlog(message)
+-                    && !is_scheduler_committed_time(message))
+-                    || (is_commit(message)
+-                        && !self.skip_commit
+-                        && !is_internal_io_poll_commit(message))
+-                {
+-                    Some(*message)
+-                } else {
+-                    None
+-                }
+-            })
+-            .collect()
+-    }
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ enum LogNormalization {
+     Exact,
+-    Stripped,
+     Canonical,
+ }
+ 
+@@ -290,9 +209,7 @@
+ 
+ impl LogComparisonPolicy {
+     fn from_options(options: &LogDiffOpts) -> Self {
+-        let normalization = if options.strip_lines {
+-            LogNormalization::Stripped
+-        } else if options.canonicalize_addresses {
++        let normalization = if options.canonicalize_addresses {
+             LogNormalization::Canonical
+         } else {
+             LogNormalization::Exact
+@@ -305,50 +222,12 @@
+ 
+     fn name(self) -> &'static str {
+         match (self.comparison, self.normalization) {
+-            (LogComparisonMode::Deterministic, LogNormalization::Exact) => "Deterministic",
+-            (LogComparisonMode::Deterministic, LogNormalization::Stripped) => "Stripped",
+-            (LogComparisonMode::Deterministic, LogNormalization::Canonical) => {
+-                "Deterministic with Canonical host-address normalization"
+-            }
+             (LogComparisonMode::Info, LogNormalization::Exact) => "Info",
+-            (LogComparisonMode::Info, LogNormalization::Stripped) => {
+-                "Info with Stripped normalization"
+-            }
+             (LogComparisonMode::Info, LogNormalization::Canonical) => "Canonical",
+             (LogComparisonMode::FullTrace, LogNormalization::Exact) => "FullTrace",
+-            (LogComparisonMode::FullTrace, LogNormalization::Stripped) => {
+-                "FullTrace with Stripped normalization"
+-            }
+             (LogComparisonMode::FullTrace, LogNormalization::Canonical) => {
+                 "FullTrace with Canonical host-address normalization"
+             }
+-        }
+-    }
+-}
+-
+-/// Indicates which DETLOG entries to be used for log-diff comparison
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-pub enum DetLogFilter {
+-    ///the start of syscall will be used for logdiff
+-    Syscall,
+-    ///the syscall result  will be used for logdiff
+-    SyscallResult,
+-    ///all other unspecified DETLOG entries will be used for logdiff
+-    Other,
+-}
+-
+-impl FromStr for DetLogFilter {
+-    type Err = anyhow::Error;
+-
+-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+-        match s.to_lowercase().as_str() {
+-            "syscall" => Ok(DetLogFilter::Syscall),
+-            "syscallresult" => Ok(DetLogFilter::SyscallResult),
+-            "other" => Ok(DetLogFilter::Other),
+-            _ => Err(anyhow::Error::msg(format!(
+-                "unknown value {} for DetLogFilter",
+-                s
+-            ))),
+         }
+     }
+ }
+@@ -360,64 +239,6 @@
+         let v: Vec<String> = vec![];
+         LogDiffOpts::parse_from(v.iter())
+     }
+-}
+-
+-/// In fully-deterministic modes, many log lines should be fully determinstic across runs.
+-/// But as that is a work-in-progress, this utility strips known-nondeterministic
+-/// information from logs.
+-///
+-/// This erasure is deliberately lossy and is NOT a parity claim: it backs the
+-/// `Stripped` comparator only (`bitwise_parity: false`). `BitwiseInfoV1`
+-/// canonicalizes rather than erases -- see `canonicalize_addresses_in_line`.
+-/// Lossy as it is, each pattern must still erase only what it names: erasing a
+-/// neighbouring field turns a real divergence into a reported match.
+-///
+-/// Example input/output:
+-///   `Input:  COMMIT turn 3, dettid 231635 using resources Resources { tid: DetPid { inner: 231635 }, resources: {Path("/proc/231635/fd/1"): W} }`
+-///   `Output: COMMIT turn <NUM>, dettid <NUM> using resources Resources { tid: DetPid { inner: <NUM> }, resources: {Path("/proc/<pid>/fd/<num>"): W} }`
+-///
+-/// As you can see this is overkill and smarter strategies would be possible. For example,
+-/// ones that remember and post-facto-determinize certain identifiers.
+-pub fn strip_log_entry(log: &str) -> String {
+-    // Memory addresses, like 0x7fcfb7e7d450
+-    //
+-    // TODO: use a debug allocator that increases only, never reusing. Also, consider
+-    // post-facto processing all of these into new virtual addresses based on the order they're seen.
+-    static RE0: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b0[xX][A-Fa-f0-9]+\b").unwrap());
+-
+-    // Every number, plus common duration suffixes so fractional timing jitter is
+-    // not left behind. This one is terrible overkill: for `hermit run` itself and
+-    // for all command tests the full contents of a COMMIT line should already be
+-    // deterministic, so nothing here should need erasing. It is retained for
+-    // `spawn_fn_*` variants, which fork from another process and so exercise only
+-    // a *partial* detcore setup without a true process tree of their own.
+-    //
+-    // N.B. RE4 must run BEFORE this pattern, or `800.709_180s` is consumed here as
+-    // a bare number and never reaches the duration rule.
+-    static RE1: LazyLock<Regex> =
+-        LazyLock::new(|| Regex::new(r"\b[\d][\d_]*(?:\.[\d][\d_]*)?(?:ns|us|µs|ms)?\b").unwrap());
+-
+-    // A quoted /tmp path. `[^"]*` stops at the path's OWN closing quote: a greedy
+-    // `.*` here ran to the last quote on the line and erased every field after the
+-    // path, so two entries differing only downstream of a /tmp path compared equal.
+-    //
+-    // TODO: only strip this information if the config specified to the host /tmp through.
+-    // Otherwise we can determinize /tmp access fully.
+-    static RE2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"/tmp/[^"]*""#).unwrap());
+-
+-    // TODO: only strip this one if we're allowing through the host /proc or failing to determinize tids/pids:
+-    static RE3: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/proc/[\d]+/").unwrap());
+-
+-    // TODO: only strip this if we're running a library-based test where we can't
+-    // guarantee the starting state of the allocator/etc.
+-    static RE4: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[\d][\d_.]*s\b").unwrap());
+-
+-    let log = RE4.replace_all(log, "<NANOSECONDS>");
+-    let log = RE3.replace_all(&log, "/proc/<PID>/");
+-    let log = RE0.replace_all(&log, "<ADDR>");
+-    let log = RE1.replace_all(&log, "<NUM>");
+-    let log = RE2.replace_all(&log, "/tmp/<somewhere>\"");
+-    String::from(log)
+ }
+ 
+ /// Wrap a host memory address so `canonicalize_addresses_in_line` will
+@@ -445,7 +266,7 @@
+ ///
+ /// Canonical parity strips the wall-clock prefix, canonicalizes these marked
+ /// addresses, and compares everything else exactly. This step differs
+-/// from [`strip_log_entry`]'s `<ADDR>` erasure in one decisive way: erasure maps
++/// from wholesale `<ADDR>` erasure in one decisive way: erasure maps
+ /// every address to a single token, so two runs that allocate in a DIFFERENT
+ /// ORDER, or that ALIAS differently (one address printed twice vs. two distinct
+ /// addresses), compare EQUAL -- the exact defect parity exists to catch. An
+@@ -491,10 +312,6 @@
+     policy: LogComparisonPolicy,
+ ) -> Vec<String> {
+     match policy.normalization {
+-        LogNormalization::Stripped => messages
+-            .iter()
+-            .map(|message| strip_log_entry(message.text))
+-            .collect(),
+         LogNormalization::Canonical => {
+             let mut addresses = HashMap::new();
+             let mut next_address = 1usize;
+@@ -542,9 +359,8 @@
+ /// one captured log.
+ ///
+ /// This removes the real wall-clock prefix and rewrites only explicitly marked
+-/// host addresses to first-appearance ordinals. It does not run the lossy
+-/// `--unsafe-strip-lines` transformation: scheduler turns, virtual time, syscall
+-/// values, counts, flags, and every other substantive byte are preserved.
++/// host addresses to first-appearance ordinals. Scheduler turns, virtual time,
++/// syscall values, counts, flags, and every other substantive byte are preserved.
+ pub fn write_canonical_info(file: &Path, writer: &mut impl Write) -> std::io::Result<usize> {
+     write_canonical_info_with_filter(file, writer, |_| true)
+ }
+@@ -735,70 +551,6 @@
+     }
+ }
+ 
+-fn is_detlog(message: &LogMessage<'_>) -> bool {
+-    match message.event {
+-        Some(
+-            DetLogEvent::Other
+-            | DetLogEvent::Syscall
+-            | DetLogEvent::SyscallResult { .. }
+-            | DetLogEvent::SchedulerCommittedTime,
+-        ) => true,
+-        Some(_) => false,
+-        None => historical_is_detlog(message.text),
+-    }
+-}
+-
+-/// A scheduler COMMIT turn that only grants the `InternalIOPolling` resource, i.e. a
+-/// granted retry of a nonblocking poll (poll/epoll_wait/wait4/futex/recv/send...). These
+-/// grants are internal bookkeeping of Hermit's blocking-via-polling mechanism: how many
+-/// times a thread is re-granted permission to re-attempt a nonblocking syscall before it
+-/// stops returning would-block depends on when a concurrent external-IO action (e.g. a
+-/// child linker process writing to a pipe) becomes ready on the host, which is wall-clock
+-/// dependent and not tied to the (RCB-deterministic) logical schedule. The corresponding
+-/// `NONCOMMIT ... polling resource` skips are already excluded from comparison (they are
+-/// not tagged `COMMIT`); excluding the matching grant-COMMITs keeps the deterministic
+-/// comparison consistent and focused on guest-observable events (the actual syscall
+-/// results, still compared via their DETLOG entries).
+-///
+-/// SaBRe's inherited stdio pipes emit an outer device-resource turn before the inner polling
+-/// turn. The scheduler tags that outer turn with `[sabre-internal-pipe-io]`; it is the same
+-/// host-timing-sensitive operation and is normalized here as well. A SaBRe task with a loopback
+-/// peer similarly tags the strong yield before each zero-timeout poll with
+-/// `[sabre-loopback-poll-zero-timeout]`. The scheduler additionally suppresses the per-retry
+-/// "advance global time for scheduler turn" DETLOG line for these turns at the source (see
+-/// `Scheduler::bump_global_time`), so the two mechanisms together make the deterministic
+-/// comparison insensitive to host-timing-dependent polling-loop counts.
+-fn is_internal_io_poll_commit(message: &LogMessage<'_>) -> bool {
+-    match message.event {
+-        Some(DetLogEvent::SchedulerCommit {
+-            internal_io_poll, ..
+-        }) => internal_io_poll,
+-        Some(_) => false,
+-        None => {
+-            historical_is_commit(message.text)
+-                && (message.text.contains("{InternalIOPolling: ")
+-                    || message.text.contains(" [sabre-internal-pipe-io]")
+-                    || message.text.contains(" [sabre-loopback-poll-zero-timeout]"))
+-        }
+-    }
+-}
+-
+-/// The scheduler's per-turn `committed_time` advance bookkeeping. `committed_time` tracks
+-/// the global logical clock, which still moves forward when an `InternalIOPolling` retry
+-/// (see `is_internal_io_poll_commit`) advances time -- and the number of those retries is
+-/// host-timing nondeterministic. That makes the *presence* of this line on a given turn
+-/// retry-count sensitive, so we exclude it from the deterministic comparison. No
+-/// guest-observable signal is lost: the value is redundant with the (retained,
+-/// retry-count-insensitive) "advance global time for scheduler turn" DETLOG line and with
+-/// the per-turn committed time echoed on each COMMIT line.
+-fn is_scheduler_committed_time(message: &LogMessage<'_>) -> bool {
+-    match message.event {
+-        Some(DetLogEvent::SchedulerCommittedTime) => true,
+-        Some(_) => false,
+-        None => message.text.contains("advancing committed_time from "),
+-    }
+-}
+-
+ fn is_detcore(message: &LogMessage<'_>) -> bool {
+     static PREFIX: LazyLock<Regex> =
+         LazyLock::new(|| Regex::new("^(ERROR|WARN|INFO|DEBUG|TRACE).* detcore:").unwrap());
+@@ -975,21 +727,6 @@
+     (count, first)
+ }
+ 
+-fn filter_ignored<'a>(lines: Vec<LogMessage<'a>>, omits: &Vec<String>) -> Vec<LogMessage<'a>> {
+-    lines
+-        .into_iter()
+-        .filter(|message| {
+-            let mut keep = true;
+-            for omit in omits {
+-                if message.text.contains(omit) {
+-                    keep = false
+-                }
+-            }
+-            keep
+-        })
+-        .collect()
+-}
+-
+ fn collect_syscalls<'a>(v: &[LogMessage<'a>]) -> Vec<LogMessage<'a>> {
+     v.iter()
+         .filter(|entry| is_detlog_syscall(entry))
+@@ -1021,10 +758,9 @@
+ /// Keep the content that identifies a differing event while removing only
+ /// values already carried in separate fields beside it.
+ ///
+-/// This is deliberately narrower than [`strip_log_entry`]. Syscall arguments,
+-/// resource names, thread identities, payload bytes, and all other numbers stay
+-/// exact. Record position is not part of the message and remains a separate
+-/// observation.
++/// Syscall arguments, resource names, thread identities, payload bytes, and all
++/// other numbers stay exact. Record position is not part of the message and
++/// remains a separate observation.
+ fn first_divergent_message(message: &LogMessage<'_>) -> String {
+     static FINISHED_SYSCALL: LazyLock<Regex> =
+         LazyLock::new(|| Regex::new(r"(finish syscall #)[0-9][0-9_]*").unwrap());
+@@ -1301,7 +1037,7 @@
+ /// Returns `true` if a difference is found.
+ ///
+ /// We could use an existing diff library on the entire log, but this provides us more
+-/// control over how to present the (stripped/unstripped) differences, and to focus on the
++/// control over how to present original and canonical differences, and to focus on the
+ /// per-line divergence(s), and potentially focus on the first point of divergence.
+ //
+ // Future TODO:
+@@ -1350,7 +1086,7 @@
+             opts.side_labels.right,
+             Comparison::new(opts.no_color, left_compared, right_compared)
+         )?;
+-        if opts.strip_lines || opts.canonicalize_addresses {
++        if opts.canonicalize_addresses {
+             write!(
+                 w,
+                 "({which}) Original entries before normalization: {}",
+@@ -1430,47 +1166,6 @@
+     write_compared_messages(writer, compared_right)?;
+     writeln!(writer, "--- end {} compared log ---", labels.right)?;
+     Ok(())
+-}
+-
+-fn git_diff(
+-    which: &str,
+-    left: (&[LogMessage<'_>], &[String]),
+-    right: (&[LogMessage<'_>], &[String]),
+-    opts: &LogDiffOpts,
+-    w: &mut impl std::io::Write,
+-    left_syscalls: &[LogMessage<'_>],
+-    right_syscalls: &[LogMessage<'_>],
+-) -> std::io::Result<bool> {
+-    let (v1, compared_left) = left;
+-    let (v2, compared_right) = right;
+-    writeln!(w, "  Comparing {which} messages...\n")?;
+-
+-    let mut file1 = NamedTempFile::new()?;
+-    let mut file2 = NamedTempFile::new()?;
+-
+-    write_compared_messages(&mut file1, compared_left)?;
+-    write_compared_messages(&mut file2, compared_right)?;
+-
+-    match Command::new("git")
+-        .args(["diff", "--color", "--color-words", "-w"])
+-        .arg(file1.path())
+-        .arg(file2.path())
+-        .status()
+-    {
+-        Ok(code) => Ok(!code.success()),
+-        Err(error) => {
+-            eprintln!("Error launching git, falling back to basic diff: {error}");
+-            diff_vecs(
+-                which,
+-                (v1, compared_left),
+-                (v2, compared_right),
+-                opts,
+-                w,
+-                left_syscalls,
+-                right_syscalls,
+-            )
+-        }
+-    }
+ }
+ 
+ /// What a log comparison actually compared, alongside whether it differed.
+@@ -1544,17 +1239,15 @@
+ ///
+ /// With some complexities:
+ ///  * Some entries are multi-line (contain newlines).
+-///  * Some stripping of nondeterministic information is needed for direct comparability.
+-///  * Certain lines are intended to be deterministic/comparable, in their contents,
+-///    and others in their *presence* but not their details.
++///  * Real wall-clock prefixes are removed and marked host addresses are canonicalized.
++///  * Every selected message is compared exactly, including its numeric values.
+ ///
+ /// Reports only whether the two files differ. See [`log_diff_detailed`] when the
+ /// caller must also know how many messages were actually compared; a bare
+ /// `false` here cannot distinguish a match from an empty comparison.
+ //
+ // TODO: we should replace this with a diff algorithm that can handle insertions while maintaining
+-// alignment. There's also no reason we can't output the stripped relevant lines and use a separate
+-// diff tool.
++// alignment.
+ pub fn log_diff(file_a: &Path, file_b: &Path, opts: &LogDiffOpts) -> bool {
+     log_diff_detailed(file_a, file_b, opts).diff_found
+ }
+@@ -1717,24 +1410,14 @@
+ /// Construct the complete fixed policy used by `BitwiseInfoV1` callers.
+ fn bitwise_info_v1_options(side_labels: ComparisonSideLabels) -> LogDiffOpts {
+     LogDiffOpts {
+-        strip_lines: false,
+         canonicalize_addresses: true,
+         comparison: LogComparisonMode::Info,
+         side_labels,
+         require_structured_events: true,
+         print_logs: false,
+         limit: 20,
+-        ignore_lines: Vec::new(),
+         syscall_history: 5,
+         no_color: false,
+-        skip_commit: false,
+-        skip_detlog: false,
+-        git_diff: false,
+-        include_detlogs: vec![
+-            DetLogFilter::Syscall,
+-            DetLogFilter::SyscallResult,
+-            DetLogFilter::Other,
+-        ],
+     }
+ }
+ 
+@@ -1756,8 +1439,10 @@
+     // the identical prefixes of very large logs.
+     let vec_a = std::fs::read(file_a)?;
+     let vec_b = std::fs::read(file_b)?;
+-    let str_a = String::from_utf8_lossy(&vec_a);
+-    let str_b = String::from_utf8_lossy(&vec_b);
++    let str_a = std::str::from_utf8(&vec_a)
++        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
++    let str_b = std::str::from_utf8(&vec_b)
++        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+     log_diff_summary_from_strs_with_filter(str_a, str_b, opts, &mut std::io::stderr(), keep_record)
+ }
+ 
+@@ -1789,13 +1474,15 @@
+ ) -> std::io::Result<(LogDiffSummary, usize, usize)> {
+     let vec_a = std::fs::read(file_a)?;
+     let vec_b = std::fs::read(file_b)?;
+-    let str_a = String::from_utf8_lossy(&vec_a);
+-    let str_b = String::from_utf8_lossy(&vec_b);
+-    let records_a = record_count(&str_a);
+-    let records_b = record_count(&str_b);
++    let str_a = std::str::from_utf8(&vec_a)
++        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
++    let str_b = std::str::from_utf8(&vec_b)
++        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
++    let records_a = record_count(str_a);
++    let records_b = record_count(str_b);
+     let summary = log_diff_summary_from_strs_with_filter(
+-        &str_a,
+-        &str_b,
++        str_a,
++        str_b,
+         opts,
+         &mut std::io::stderr(),
+         keep_record,
+@@ -2046,20 +1733,14 @@
+         &extracted_b,
+         opts.require_structured_events,
+     )?;
+-    let all_a = filter_ignored(
+-        extracted_a
+-            .into_iter()
+-            .filter(|record| keep_record(record.text))
+-            .collect(),
+-        &opts.ignore_lines,
+-    );
+-    let all_b = filter_ignored(
+-        extracted_b
+-            .into_iter()
+-            .filter(|record| keep_record(record.text))
+-            .collect(),
+-        &opts.ignore_lines,
+-    );
++    let all_a: Vec<_> = extracted_a
++        .into_iter()
++        .filter(|record| keep_record(record.text))
++        .collect();
++    let all_b: Vec<_> = extracted_b
++        .into_iter()
++        .filter(|record| keep_record(record.text))
++        .collect();
+ 
+     writeln!(
+         w,
+@@ -2072,8 +1753,6 @@
+     let detcore_b = filter_detcore(&all_b);
+     let infos_a = filter_infos(&all_a);
+     let infos_b = filter_infos(&all_b);
+-    let detlogs_a = opts.filter_deterministic(&detcore_a);
+-    let detlogs_b = opts.filter_deterministic(&detcore_b);
+     let left_syscalls = collect_syscalls(&all_a);
+     let right_syscalls = collect_syscalls(&all_b);
+     writeln!(
+@@ -2088,21 +1767,9 @@
+         infos_a.len(),
+         infos_b.len(),
+     )?;
+-    writeln!(
+-        w,
+-        "Logs contain {} | {} DETLOG & scheduler COMMIT messages",
+-        detlogs_a.len(),
+-        detlogs_b.len(),
+-    )?;
+-
+     let policy = LogComparisonPolicy::from_options(opts);
+ 
+-    if policy.normalization == LogNormalization::Stripped {
+-        writeln!(
+-            w,
+-            "Normalizing known nondeterministic numerical data before comparison..."
+-        )?;
+-    } else if policy.normalization == LogNormalization::Canonical {
++    if policy.normalization == LogNormalization::Canonical {
+         writeln!(
+             w,
+             "Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly..."
+@@ -2110,7 +1777,6 @@
+     }
+ 
+     let (which, compared_a, compared_b) = match policy.comparison {
+-        LogComparisonMode::Deterministic => ("DETLOG", &detlogs_a, &detlogs_b),
+         LogComparisonMode::Info => ("INFO", &infos_a, &infos_b),
+         LogComparisonMode::FullTrace => ("full trace", &all_a, &all_b),
+     };
+@@ -2143,27 +1809,15 @@
+     let first_divergent_right_message = first_different
+         .and_then(|(_, right)| compared_message_at_record(compared_b, &prepared_b, right));
+ 
+-    let diff_found = if opts.git_diff {
+-        git_diff(
+-            which,
+-            (compared_a, &prepared_a),
+-            (compared_b, &prepared_b),
+-            opts,
+-            w,
+-            &left_syscalls,
+-            &right_syscalls,
+-        )?
+-    } else {
+-        diff_vecs(
+-            which,
+-            (compared_a, &prepared_a),
+-            (compared_b, &prepared_b),
+-            opts,
+-            w,
+-            &left_syscalls,
+-            &right_syscalls,
+-        )?
+-    };
++    let diff_found = diff_vecs(
++        which,
++        (compared_a, &prepared_a),
++        (compared_b, &prepared_b),
++        opts,
++        w,
++        &left_syscalls,
++        &right_syscalls,
++    )?;
+ 
+     let summary = LogDiffSummary {
+         diff_found,
+@@ -2233,15 +1887,9 @@
+         // BOTH runs' values are printed, not just run 1's, and this is a
+         // correctness requirement rather than a precaution.
+         //
+-        // Measured: with `strip_lines` -- the lossy comparator that plain
+-        // `--verify` uses -- known nondeterministic numerical data is normalized
+-        // before comparison, so a pair whose two runs committed the map read at
+-        // *different* virtual times is a MATCHING pair and reaches this branch.
+-        // Quoting one side there would report agreement on precisely the
+-        // quantity this record exists to expose: a drift that `--verify-strict`
+-        // catches and `--verify` does not. The counts above can likewise differ
+-        // on a matching pair -- under the default `Deterministic` mode a kick
+-        // asymmetry is not compared, so `1 | 0` is a pass.
++        // Earlier lossy comparisons could match different committed times.
++        // Keep both sides explicit even though the current exact comparison
++        // rejects those differences before reaching this matching-pair output.
+         //
+         // A run with no such record therefore has to read as "no such record"
+         // rather than being silently represented by the other run's value.
+@@ -2268,14 +1916,12 @@
+ 
+ #[cfg(test)]
+ mod test {
+-    use clap::CommandFactory;
+     use clap::Parser;
+     use pretty_assertions::assert_eq;
+ 
+     use super::finished_syscall_at_or_before;
+     use super::finished_syscall_number;
+     use crate::detlog::DetLogEvent;
+-    use crate::logdiff::DetLogFilter;
+ 
+     /// One well-formed log record. Records are delimited by their leading
+     /// timestamp, so `body` may contain newlines and still be one record.
+@@ -2324,30 +1970,57 @@
+     }
+ 
+     #[test]
++    fn public_file_comparisons_reject_invalid_utf8_on_either_side() -> std::io::Result<()> {
++        for invalid_left in [true, false] {
++            let left = temp_log("INFO detcore: DETLOG value=100");
++            let right = temp_log("INFO detcore: DETLOG value=100");
++            std::fs::write(
++                if invalid_left {
++                    left.path()
++                } else {
++                    right.path()
++                },
++                b"INFO detcore: DETLOG value=\xff",
++            )?;
++            let options = super::LogDiffOpts::default();
++            assert_eq!(
++                super::try_log_diff_detailed_with_filter(
++                    left.path(),
++                    right.path(),
++                    &options,
++                    |_| true
++                )
++                .unwrap_err()
++                .kind(),
++                std::io::ErrorKind::InvalidData
++            );
++            assert_eq!(
++                super::try_log_diff_with_records_and_filter(
++                    left.path(),
++                    right.path(),
++                    &options,
++                    |_| true
++                )
++                .unwrap_err()
++                .kind(),
++                std::io::ErrorKind::InvalidData
++            );
++        }
++        Ok(())
++    }
++
++    #[test]
+     fn bitwise_info_v1_binds_the_complete_policy() {
+         let labels = super::ComparisonSideLabels::new("left", "right");
+         let options = super::bitwise_info_v1_options(labels.clone());
+-        assert!(!options.strip_lines);
+         assert!(options.canonicalize_addresses);
+         assert_eq!(options.comparison, super::LogComparisonMode::Info);
+         assert_eq!(options.side_labels, labels);
+         assert!(options.require_structured_events);
+         assert!(!options.print_logs);
+         assert_eq!(options.limit, 20);
+-        assert!(options.ignore_lines.is_empty());
+         assert_eq!(options.syscall_history, 5);
+         assert!(!options.no_color);
+-        assert!(!options.skip_commit);
+-        assert!(!options.skip_detlog);
+-        assert!(!options.git_diff);
+-        assert_eq!(
+-            options.include_detlogs,
+-            [
+-                DetLogFilter::Syscall,
+-                DetLogFilter::SyscallResult,
+-                DetLogFilter::Other,
+-            ]
+-        );
+     }
+ 
+     #[test]
+@@ -2881,7 +2554,7 @@
+     }
+ 
+     #[test]
+-    fn structured_scheduler_flags_control_filtering_and_retained_counts() {
++    fn structured_scheduler_flags_preserve_info_and_retained_counts() {
+         let text = "INFO detcore::scheduler: COMMIT turn 999 at time 999";
+         let internal = super::LogMessage {
+             index: 0,
+@@ -2903,17 +2576,8 @@
+             ..internal
+         };
+ 
+-        assert!(
+-            super::LogDiffOpts::default()
+-                .filter_deterministic(&[internal])
+-                .is_empty()
+-        );
+-        assert_eq!(
+-            super::LogDiffOpts::default()
+-                .filter_deterministic(&[maps_read])
+-                .len(),
+-            1
+-        );
++        assert_eq!(super::filter_infos(&[internal]).len(), 1);
++        assert_eq!(super::filter_infos(&[maps_read]).len(), 1);
+         assert_eq!(super::maps_read_commits(&[internal]), (0, None));
+         assert_eq!(
+             super::maps_read_commits(&[maps_read]),
+@@ -2934,23 +2598,27 @@
+     }
+ 
+     #[test]
+-    fn unsafe_strip_lines_cli_name_and_warning_are_explicit() {
+-        let options = super::LogDiffOpts::try_parse_from(["log-diff", "--unsafe-strip-lines"])
+-            .expect("the explicitly unsafe spelling should parse");
+-        assert!(options.strip_lines);
+-
+-        assert!(super::LogDiffOpts::try_parse_from(["log-diff", "--strip-lines"]).is_err());
+-
+-        let mut help = Vec::new();
+-        super::LogDiffOpts::command()
+-            .write_long_help(&mut help)
+-            .expect("write clap help");
+-        let help = String::from_utf8(help).expect("help is UTF-8");
+-        assert!(help.contains("--unsafe-strip-lines"));
+-        assert!(help.contains("erases timestamps and syscall values"));
+-        assert!(help.contains("make a failing parity diff pass"));
+-        assert!(help.contains("doing so is cheating"));
+-        assert!(!help.contains("--strip-lines"));
++    fn legacy_comparison_options_are_deleted_and_default_is_canonical_info() {
++        let defaults = super::LogDiffOpts::try_parse_from(["log-diff"]).unwrap();
++        assert_eq!(defaults.comparison, super::LogComparisonMode::Info);
++        assert!(defaults.canonicalize_addresses);
++        for flag in [
++            "--strip-lines",
++            "--unsafe-strip-lines",
++            "--ignore-lines=payload",
++            "--skip-commit",
++            "--skip-detlog",
++            "--include-detlogs=syscall",
++            "--git-diff",
++        ] {
++            let error = super::LogDiffOpts::try_parse_from(["log-diff", flag]).unwrap_err();
++            assert_eq!(
++                error.kind(),
++                clap::error::ErrorKind::UnknownArgument,
++                "{flag}"
++            );
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
++        }
+     }
+ 
+     #[test]
+@@ -3156,29 +2824,19 @@
+             str2,
+             &super::LogDiffOpts {
+                 limit: 1,
+-                strip_lines: false,
+                 canonicalize_addresses: false,
+-                comparison: super::LogComparisonMode::Deterministic,
++                comparison: super::LogComparisonMode::Info,
+                 side_labels: super::ComparisonSideLabels::default(),
+                 require_structured_events: false,
+                 print_logs: false,
+                 syscall_history: 5,
+                 no_color: false,
+-                skip_commit: false,
+-                skip_detlog: false,
+-                git_diff: false,
+-                ignore_lines: Vec::new(),
+-                include_detlogs: vec![
+-                    DetLogFilter::Syscall,
+-                    DetLogFilter::SyscallResult,
+-                    DetLogFilter::Other,
+-                ],
+             },
+             &mut result,
+         )?;
+ 
+         let output = String::from_utf8(result).unwrap();
+-        assert!(output.contains("  Comparing DETLOG messages..."));
++        assert!(output.contains("  Comparing INFO messages..."));
+         assert!(output.contains("Mismatch at log messages 0 (run 1) and 0 (run 2)"));
+         assert!(output.contains("run 1, log message 0: INFO detcore: DETLOG [syscall][detcore, dtid 3]  finish syscall #11"));
+         assert!(output.contains("run 2, log message 0: INFO detcore: DETLOG [syscall][detcore, dtid 3]  finish syscall #15"));
+@@ -3334,116 +2992,72 @@
+ 
+     #[test]
+     fn printed_logs_are_the_exact_selected_comparator_inputs() -> std::io::Result<()> {
+-        let left = "2026-08-15T01:02:03.000000Z INFO detcore: DETLOG value=101\n\
+-2026-08-15T01:02:03.000001Z INFO unrelated: omitted value=303";
+-        let right = "2026-08-15T04:05:06.000000Z INFO detcore: DETLOG value=202\n\
+-2026-08-15T04:05:06.000001Z INFO unrelated: omitted value=404";
+-
+-        let exact = super::LogDiffOpts {
++        let left = "2026-08-15T01:02:03.000000Z INFO detcore: DETLOG value=100\n2026-08-15T01:02:03.000001Z INFO unrelated: value=303";
++        let right = "2026-08-15T04:05:06.000000Z INFO detcore: DETLOG value=200\n2026-08-15T04:05:06.000001Z INFO unrelated: value=404";
++        let options = super::LogDiffOpts {
+             print_logs: true,
+             no_color: true,
+             ..Default::default()
+         };
+-        let mut exact_output = Vec::new();
+-        let exact_summary =
+-            super::log_diff_summary_from_strs(left, right, &exact, &mut exact_output)?;
+-        let exact_output = String::from_utf8(exact_output).unwrap();
+-
+-        assert!(exact_summary.diff_found);
+-        assert!(exact_output.contains("Comparison policy: Deterministic\n"));
++        let mut output = Vec::new();
++        let summary = super::log_diff_summary_from_strs(left, right, &options, &mut output)?;
++        let output = String::from_utf8(output).unwrap();
++        assert!(summary.diff_found);
++        assert!(!summary.matched_with_evidence());
++        assert_eq!((summary.compared_left, summary.compared_right), (2, 2));
++        assert!(output.contains("Comparison policy: Canonical\n"));
+         assert_eq!(
+-            printed_log(&exact_output, 1).as_bytes(),
+-            b"INFO detcore: DETLOG value=101\n"
++            printed_log(&output, 1),
++            "INFO detcore: DETLOG value=100\nINFO unrelated: value=303\n"
+         );
+         assert_eq!(
+-            printed_log(&exact_output, 2).as_bytes(),
+-            b"INFO detcore: DETLOG value=202\n"
+-        );
+-
+-        let stripped = super::LogDiffOpts {
+-            strip_lines: true,
+-            print_logs: true,
+-            no_color: true,
+-            ..Default::default()
+-        };
+-        let mut stripped_output = Vec::new();
+-        let stripped_summary =
+-            super::log_diff_summary_from_strs(left, right, &stripped, &mut stripped_output)?;
+-        let stripped_output = String::from_utf8(stripped_output).unwrap();
+-
+-        assert!(stripped_summary.matched_with_evidence());
+-        assert!(stripped_output.contains("Comparison policy: Stripped\n"));
+-        assert_eq!(
+-            printed_log(&stripped_output, 1).as_bytes(),
+-            b"INFO detcore: DETLOG value=<NUM>\n"
+-        );
+-        assert_eq!(
+-            printed_log(&stripped_output, 1),
+-            printed_log(&stripped_output, 2)
+-        );
+-        assert_ne!(
+-            printed_log(&exact_output, 1),
+-            printed_log(&stripped_output, 1)
++            printed_log(&output, 2),
++            "INFO detcore: DETLOG value=200\nINFO unrelated: value=404\n"
+         );
+         Ok(())
+     }
+ 
+     #[test]
+     fn printed_policy_name_tracks_the_selected_scope_and_normalization() -> std::io::Result<()> {
+-        let log = "2026-08-15T01:02:03.000000Z INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\n\
+-2026-08-15T01:02:03.000001Z DEBUG unrelated: diagnostic=2";
+-
+-        let cases = [
++        let log = "2026-08-15T01:02:03.000000Z INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\n2026-08-15T01:02:03.000001Z DEBUG unrelated: diagnostic=2";
++        for (comparison, canonicalize_addresses, expected_name, expected_log) in [
+             (
+-                super::LogDiffOpts {
+-                    comparison: super::LogComparisonMode::Info,
+-                    print_logs: true,
+-                    no_color: true,
+-                    ..Default::default()
+-                },
+-                "Comparison policy: Info\n",
++                super::LogComparisonMode::Info,
++                false,
++                "Info",
+                 "INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\n",
+             ),
+             (
+-                super::LogDiffOpts {
+-                    comparison: super::LogComparisonMode::FullTrace,
+-                    print_logs: true,
+-                    no_color: true,
+-                    ..Default::default()
+-                },
+-                "Comparison policy: FullTrace\n",
++                super::LogComparisonMode::Info,
++                true,
++                "Canonical",
++                "INFO detcore: DETLOG stable=1 address=<addr1>\n",
++            ),
++            (
++                super::LogComparisonMode::FullTrace,
++                false,
++                "FullTrace",
+                 "INFO detcore: DETLOG stable=1 address=<hostaddr 0xaaaa>\nDEBUG unrelated: diagnostic=2\n",
+             ),
+             (
+-                super::LogDiffOpts {
+-                    comparison: super::LogComparisonMode::Deterministic,
+-                    canonicalize_addresses: true,
+-                    print_logs: true,
+-                    no_color: true,
+-                    ..Default::default()
+-                },
+-                "Comparison policy: Deterministic with Canonical host-address normalization\n",
+-                "INFO detcore: DETLOG stable=1 address=<addr1>\n",
++                super::LogComparisonMode::FullTrace,
++                true,
++                "FullTrace with Canonical host-address normalization",
++                "INFO detcore: DETLOG stable=1 address=<addr1>\nDEBUG unrelated: diagnostic=2\n",
+             ),
+-            (
+-                super::LogDiffOpts {
+-                    comparison: super::LogComparisonMode::Deterministic,
+-                    strip_lines: true,
+-                    print_logs: true,
+-                    no_color: true,
+-                    ..Default::default()
+-                },
+-                "Comparison policy: Stripped\n",
+-                "INFO detcore: DETLOG stable=<NUM> address=<hostaddr <ADDR>>\n",
+-            ),
+-        ];
+-
+-        for (options, expected_name, expected_log) in cases {
++        ] {
++            let options = super::LogDiffOpts {
++                comparison,
++                canonicalize_addresses,
++                print_logs: true,
++                no_color: true,
++                ..Default::default()
++            };
+             let mut output = Vec::new();
+             let summary = super::log_diff_summary_from_strs(log, log, &options, &mut output)?;
+             let output = String::from_utf8(output).unwrap();
+             assert!(summary.matched_with_evidence());
+-            assert!(output.contains(expected_name), "{output}");
++            assert!(output.contains(&format!("Comparison policy: {expected_name}\n")));
+             assert_eq!(printed_log(&output, 1), expected_log);
+             assert_eq!(printed_log(&output, 2), expected_log);
+         }
+@@ -3456,30 +3070,6 @@
+ 2026-08-15T01:02:03.000001Z INFO unrelated: value=101 address=<hostaddr 0xaaaa>";
+         let right = "2026-08-15T04:05:06.000000Z INFO detcore: DETLOG stable=1\n\
+ 2026-08-15T04:05:06.000001Z INFO unrelated: value=202 address=<hostaddr 0xbbbb>";
+-
+-        let deterministic = super::LogDiffOpts {
+-            print_logs: true,
+-            no_color: true,
+-            ..Default::default()
+-        };
+-        let mut deterministic_output = Vec::new();
+-        let deterministic_summary = super::log_diff_summary_from_strs(
+-            left,
+-            right,
+-            &deterministic,
+-            &mut deterministic_output,
+-        )?;
+-        let deterministic_output = String::from_utf8(deterministic_output).unwrap();
+-        assert!(deterministic_summary.matched_with_evidence());
+-        assert!(deterministic_output.contains("Comparison policy: Deterministic\n"));
+-        assert_eq!(
+-            printed_log(&deterministic_output, 1).as_bytes(),
+-            b"INFO detcore: DETLOG stable=1\n"
+-        );
+-        assert_eq!(
+-            printed_log(&deterministic_output, 1),
+-            printed_log(&deterministic_output, 2)
+-        );
+ 
+         let options = super::LogDiffOpts {
+             comparison: super::LogComparisonMode::Info,
+@@ -3509,22 +3099,20 @@
+     fn test_full_trace_detects_unnormalized_timing_difference() -> std::io::Result<()> {
+         let log_a = "INFO detcore: DETLOG [syscall] finish syscall #1: clock_gettime(CLOCK_MONOTONIC, 100) = Ok(0)";
+         let log_b = "INFO detcore: DETLOG [syscall] finish syscall #1: clock_gettime(CLOCK_MONOTONIC, 101) = Ok(0)";
+-        let normalized = super::LogDiffOpts {
+-            strip_lines: true,
++        let ordinary = super::LogDiffOpts {
+             no_color: true,
+             ..Default::default()
+         };
+ 
+-        assert!(!super::log_diff_from_strs(
++        assert!(super::log_diff_from_strs(
+             log_a,
+             log_b,
+-            &normalized,
++            &ordinary,
+             &mut Vec::new()
+         )?);
+ 
+         let verbose = super::LogDiffOpts {
+             comparison: super::LogComparisonMode::FullTrace,
+-            strip_lines: false,
+             syscall_history: 1,
+             no_color: true,
+             ..Default::default()
+@@ -3605,7 +3193,6 @@
+ 
+         let log_options = super::LogDiffOpts {
+             no_color: true,
+-            git_diff: false,
+             ..Default::default()
+         };
+         super::log_diff_from_strs(log_file_a, log_file_b, &log_options, &mut result)?;
+@@ -3620,84 +3207,53 @@
+     }
+ 
+     #[test]
+-    fn test_filter_deterministic() {
+-        let opts = super::LogDiffOpts {
+-            include_detlogs: vec![
+-                DetLogFilter::Syscall,
+-                DetLogFilter::SyscallResult,
+-                DetLogFilter::Other,
+-            ],
+-            ..Default::default()
+-        };
+-
+-        let v = opts.filter_deterministic(
+-            &[
+-                historical(
+-                    1,
+-                    "INFO detcore: registers [dtid 3]. user_regs_struct { r15...",
+-                ),
+-                historical(
+-                    2,
+-                    "INFO DETLOG detcore: registers [dtid 3]. user_regs_struct { r15...",
+-                ),
+-                historical(
+-                    3,
+-                    "INFO COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000",
+-                ),
+-            ],
+-        );
+-
++    fn test_info_selection() {
++        let input = [
++            historical(
++                1,
++                "INFO detcore: registers [dtid 3]. user_regs_struct { r15...",
++            ),
++            historical(
++                2,
++                "INFO DETLOG detcore: registers [dtid 3]. user_regs_struct { r15...",
++            ),
++            historical(
++                3,
++                "INFO COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000",
++            ),
++        ];
++        let v = super::filter_infos(&input);
+         assert_eq!(
+             indexed_text(&v),
+-            vec![
+-                (
+-                    2,
+-                    "INFO DETLOG detcore: registers [dtid 3]. user_regs_struct { r15..."
+-                ),
+-                (
+-                    3,
+-                    "INFO COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000",
+-                ),
+-            ]
+-        );
+-    }
+-
+-    #[test]
+-    fn test_filter_deterministic_with_filter() {
+-        let opts = super::LogDiffOpts {
+-            include_detlogs: vec![DetLogFilter::Syscall],
+-            skip_commit: true,
+-            ..Default::default()
+-        };
+-
+-        let v = opts.filter_deterministic(
+-            &[
+-                historical(
+-                    1,
+-                    "INFO detcore: registers [dtid 3]. user_regs_struct { r15...",
+-                ),
+-                historical(2, "INFO DETLOG detcore:[syscall] syscall 1"),
+-                historical(
+-                    3,
+-                    "INFO COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000",
+-                ),
+-            ],
+-        );
++            indexed_text(&[input[0], input[1], input[2]])
++        );
++    }
++
++    #[test]
++    fn test_info_selection_preserves_all_classes() {
++        let input = [
++            historical(
++                1,
++                "INFO detcore: registers [dtid 3]. user_regs_struct { r15...",
++            ),
++            historical(2, "INFO DETLOG detcore:[syscall] syscall 1"),
++            historical(
++                3,
++                "INFO COMMIT turn 5, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946684799205300000",
++            ),
++        ];
++        let v = super::filter_infos(&input);
+         assert_eq!(
+             indexed_text(&v),
+-            vec![(2, "INFO DETLOG detcore:[syscall] syscall 1")]
+-        );
+-    }
+-
+-    /// Regression: the deterministic comparison must ignore the scheduler bookkeeping emitted
+-    /// by nonblocking-IO poll retries, whose count is host-timing nondeterministic (e.g. how
+-    /// many times a thread re-polls a pipe before a child process makes it ready). Only the
+-    /// `{InternalIOPolling: ...}` COMMIT turn and the `advancing committed_time` clock line
+-    /// should be dropped; ordinary COMMIT turns and DETLOG entries must be retained.
+-    #[test]
+-    fn test_filter_deterministic_drops_io_polling_bookkeeping() {
+-        let opts = super::LogDiffOpts::default();
+-        let v = opts.filter_deterministic(&[
++            indexed_text(&[input[0], input[1], input[2]])
++        );
++    }
++
++    /// INFO scheduler bookkeeping remains compared; only DEBUG diagnostics are
++    /// outside the default observation scope.
++    #[test]
++    fn test_info_selection_preserves_io_polling_bookkeeping() {
++        let input = [
+             historical(
+                 0,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 17, dettid 5 using resources {InternalIOPolling: W}, on previously committed 1s",
+@@ -3714,28 +3270,17 @@
+                 3,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {Path(\"/proc/5/fd/3\"): R}, on previously committed 2s",
+             ),
+-        ]);
+-        // The InternalIOPolling COMMIT (0) and the committed_time line (1) are dropped; the
+-        // guest-observable syscall (2) and the ordinary COMMIT turn (3) survive.
++        ];
++        let v = super::filter_infos(&input);
+         assert_eq!(
+             indexed_text(&v),
+-            vec![
+-                (
+-                    2,
+-                    "INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #9: read(3, 0x1000, 1) = Ok(1)"
+-                ),
+-                (
+-                    3,
+-                    "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {Path(\"/proc/5/fd/3\"): R}, on previously committed 2s"
+-                ),
+-            ]
+-        );
+-    }
+-
+-    #[test]
+-    fn test_filter_deterministic_drops_sabre_internal_pipe_resource_turn() {
+-        let opts = super::LogDiffOpts::default();
+-        let v = opts.filter_deterministic(&[
++            indexed_text(&[input[0], input[2], input[3]])
++        );
++    }
++
++    #[test]
++    fn test_info_selection_preserves_sabre_internal_pipe_resource_turn() {
++        let input = [
+             historical(
+                 0,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 17, dettid 5 using resources {Device(ContainerStdout): W}, on previously committed 1s [sabre-internal-pipe-io]",
+@@ -3744,21 +3289,14 @@
+                 1,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {Device(ContainerStdout): W}, on previously committed 2s",
+             ),
+-        ]);
+-
+-        assert_eq!(
+-            indexed_text(&v),
+-            vec![(
+-                1,
+-                "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {Device(ContainerStdout): W}, on previously committed 2s"
+-            )]
+-        );
+-    }
+-
+-    #[test]
+-    fn test_filter_deterministic_drops_sabre_loopback_poll_yield() {
+-        let opts = super::LogDiffOpts::default();
+-        let v = opts.filter_deterministic(&[
++        ];
++        let v = super::filter_infos(&input);
++        assert_eq!(indexed_text(&v), indexed_text(&[input[0], input[1]]));
++    }
++
++    #[test]
++    fn test_info_selection_preserves_sabre_loopback_poll_yield() {
++        let input = [
+             historical(
+                 0,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 17, dettid 5 using resources {SchedYield: W}, on previously committed 1s [sabre-loopback-poll-zero-timeout]",
+@@ -3767,23 +3305,14 @@
+                 1,
+                 "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {SchedYield: W}, on previously committed 2s",
+             ),
+-        ]);
+-
+-        assert_eq!(
+-            indexed_text(&v),
+-            vec![(
+-                1,
+-                "INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 18, dettid 5 using resources {SchedYield: W}, on previously committed 2s"
+-            )]
+-        );
+-    }
+-
+-    /// Regression: two runs that differ only in how many nonblocking-IO poll retries occurred
+-    /// must compare as deterministic, while a genuine guest-observable divergence must still be
+-    /// reported. `run_b` below performs one extra poll retry (an extra InternalIOPolling COMMIT
+-    /// plus its committed_time advance) but the guest syscalls are identical.
+-    #[test]
+-    fn test_log_diff_ignores_extra_io_poll_retries() -> std::io::Result<()> {
++        ];
++        let v = super::filter_infos(&input);
++        assert_eq!(indexed_text(&v), indexed_text(&[input[0], input[1]]));
++    }
++
++    /// An extra INFO poll-retry turn is a difference even if guest syscalls agree.
++    #[test]
++    fn test_log_diff_detects_extra_io_poll_retries() -> std::io::Result<()> {
+         let common_head = "2022-09-06T14:15:47.000000Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: poll(0x1000, 1, -1) = ?";
+         let common_tail = "2022-09-06T14:15:47.100000Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #9: poll(0x1000, 1, -1) = Ok(1)";
+         let poll_retry = "2022-09-06T14:15:47.050000Z  INFO detcore::scheduler: [sched-step5] >>> COMMIT turn 17, dettid 5 using resources {InternalIOPolling: W}, on previously committed 1s\n2022-09-06T14:15:47.050000Z DEBUG detcore::scheduler: DETLOG [sched-step1] advancing committed_time from 1 to 2";
+@@ -3794,19 +3323,17 @@
+ 
+         let opts = super::LogDiffOpts {
+             no_color: true,
+-            strip_lines: true,
+             ..Default::default()
+         };
+-        // Differ only in retry count -> deterministic (no diff reported):
+-        assert!(!super::log_diff_from_strs(
++        // An extra INFO scheduler turn must be compared even if syscalls match:
++        assert!(super::log_diff_from_strs(
+             &run_a,
+             &run_b,
+             &opts,
+             &mut Vec::new()
+         )?);
+ 
+-        // But a real divergence in the guest-observable syscall result is still caught. (Use a
+-        // non-numeric change: numeric-only differences are erased by `strip_lines` normalization.)
++        // Real syscall return values remain exact too.
+         let run_c = run_a.replace("= Ok(1)", "= Err(Errno(EBADF))");
+         assert!(super::log_diff_from_strs(
+             &run_a,
+@@ -3884,17 +3411,15 @@
+             "an allocation-order difference must compare UNEQUAL under canonicalization"
+         );
+ 
+-        // And wholesale stripping DOES hide it: both addresses collapse to a
+-        // single <ADDR> token.
+-        let stripped = super::LogDiffOpts {
++        // The default canonical policy must retain the same distinction.
++        let default = super::LogDiffOpts {
+             comparison: super::LogComparisonMode::FullTrace,
+-            strip_lines: true,
+             no_color: true,
+             ..Default::default()
+         };
+         assert!(
+-            !super::log_diff_from_strs(run_a, run_b, &stripped, &mut Vec::new())?,
+-            "wholesale stripping erases the allocation-order difference (the defect)"
++            super::log_diff_from_strs(run_a, run_b, &default, &mut Vec::new())?,
++            "the default comparison must preserve allocation order"
+         );
+         Ok(())
+     }
+@@ -4275,59 +3800,99 @@
+     }
+ 
+     #[test]
+-    fn test_strip_log() {
+-        assert_eq!(super::strip_log_entry("800.709_180s"), "<NANOSECONDS>");
+-        assert_eq!(super::strip_log_entry("98.91618ms"), "<NUM>");
+-        assert_eq!(super::strip_log_entry("98.91619ms"), "<NUM>");
+-        assert_eq!(super::strip_log_entry("x86_64"), "x86_64");
+-        assert_eq!(
+-            super::strip_log_entry(
+-                "COMMIT turn 66, dettid 2 using resources {Path(\"/proc/2/fd/1\"): W} at time 946_684_800.709_180_000s"
++    fn default_comparison_preserves_numeric_values() -> std::io::Result<()> {
++        for (left, right) in [
++            (r#"value=100"#, r#"value=200"#),
++            (r#"CHAOSRAND value=100"#, r#"CHAOSRAND value=200"#),
++            (r#"SCHEDRAND value=100"#, r#"SCHEDRAND value=200"#),
++            (r#"time=800.709_180s"#, r#"time=800.709_181s"#),
++            (r#"value=98.91618ms"#, r#"value=98.91619ms"#),
++        ] {
++            let left = format!("INFO detcore: DETLOG {left}");
++            let right = format!("INFO detcore: DETLOG {right}");
++            let options = super::LogDiffOpts::default();
++            let summary =
++                super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++            assert!(summary.diff_found, "{left} versus {right}");
++            assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++            assert!(!summary.matched_with_evidence());
++            assert!(
++                super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                    .matched_with_evidence()
++            );
++        }
++        Ok(())
++    }
++
++    /// Preserve the exact fields after a temporary path.
++    #[test]
++    fn default_comparison_preserves_fields_after_tmp_paths() -> std::io::Result<()> {
++        let (left, right) = (
++            r#"open path="/tmp/scratch" flags="O_RDONLY""#,
++            r#"open path="/tmp/scratch" flags="O_WRONLY""#,
++        );
++        let left = format!("INFO detcore: DETLOG {left}");
++        let right = format!("INFO detcore: DETLOG {right}");
++        let options = super::LogDiffOpts::default();
++        let summary = super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++        assert!(summary.diff_found, "{left} versus {right}");
++        assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++        assert!(!summary.matched_with_evidence());
++        assert!(
++            super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                .matched_with_evidence()
++        );
++        Ok(())
++    }
++
++    /// Different temporary paths must remain distinguishable.
++    #[test]
++    fn default_comparison_preserves_differing_tmp_paths() -> std::io::Result<()> {
++        let (left, right) = (
++            r#"open path="/tmp/hermit-aaaa/f" flags="O_RDONLY""#,
++            r#"open path="/tmp/hermit-bbbb/f" flags="O_RDONLY""#,
++        );
++        let left = format!("INFO detcore: DETLOG {left}");
++        let right = format!("INFO detcore: DETLOG {right}");
++        let options = super::LogDiffOpts::default();
++        let summary = super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++        assert!(summary.diff_found, "{left} versus {right}");
++        assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++        assert!(!summary.matched_with_evidence());
++        assert!(
++            super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                .matched_with_evidence()
++        );
++        Ok(())
++    }
++
++    /// Every temporary path on one record remains exact.
++    #[test]
++    fn default_comparison_preserves_each_tmp_path() -> std::io::Result<()> {
++        for (left, right) in [
++            (
++                r#"rename from="/tmp/a" to="/tmp/b" ok="1""#,
++                r#"rename from="/tmp/a" to="/tmp/c" ok="1""#,
+             ),
+-            "COMMIT turn <NUM>, dettid <NUM> using resources {Path(\"/proc/<PID>/fd/<NUM>\"): W} at time <NANOSECONDS>"
+-        );
+-    }
+-
+-    /// Erasing a `/tmp` path must consume the path and nothing else.
+-    ///
+-    /// The pattern was previously `/tmp/.*"`, whose greedy `.*` ran to the LAST
+-    /// quote on the line rather than the path's own closing quote. Every field
+-    /// after the path was therefore erased too, so two entries differing only
+-    /// downstream of a `/tmp` path compared EQUAL under the stripped
+-    /// comparator -- a divergence silently reported as a match.
+-    #[test]
+-    fn strip_tmp_path_does_not_swallow_rest_of_line() {
+-        let read = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_RDONLY""#);
+-        let write = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_WRONLY""#);
+-
+-        assert_eq!(read, r#"open path="/tmp/<somewhere>" flags="O_RDONLY""#);
+-        assert_eq!(write, r#"open path="/tmp/<somewhere>" flags="O_WRONLY""#);
+-        assert_ne!(
+-            read, write,
+-            "entries differing after a /tmp path must not collapse to equal"
+-        );
+-    }
+-
+-    /// The narrowed pattern must still do its job: two entries whose only
+-    /// difference is the host-chosen `/tmp` path still compare equal, which is
+-    /// the whole reason this erasure exists.
+-    #[test]
+-    fn strip_tmp_path_still_erases_a_differing_tmp_path() {
+-        assert_eq!(
+-            super::strip_log_entry(r#"open path="/tmp/hermit-aaaa/f" flags="O_RDONLY""#),
+-            super::strip_log_entry(r#"open path="/tmp/hermit-bbbb/f" flags="O_RDONLY""#),
+-        );
+-    }
+-
+-    /// Two distinct `/tmp` paths on one line are each erased individually,
+-    /// rather than the first one swallowing the second along with everything
+-    /// between them.
+-    #[test]
+-    fn strip_tmp_path_erases_each_path_separately() {
+-        assert_eq!(
+-            super::strip_log_entry(r#"rename from="/tmp/a" to="/tmp/b" ok="1""#),
+-            r#"rename from="/tmp/<somewhere>" to="/tmp/<somewhere>" ok="<NUM>""#
+-        );
++            (
++                r#"rename from="/tmp/a" to="/tmp/b" ok="1""#,
++                r#"rename from="/tmp/c" to="/tmp/b" ok="1""#,
++            ),
++        ] {
++            let left = format!("INFO detcore: DETLOG {left}");
++            let right = format!("INFO detcore: DETLOG {right}");
++            let options = super::LogDiffOpts::default();
++            let summary =
++                super::log_diff_summary_from_strs(&left, &right, &options, &mut Vec::new())?;
++            assert!(summary.diff_found, "{left} versus {right}");
++            assert_eq!((summary.compared_left, summary.compared_right), (1, 1));
++            assert!(!summary.matched_with_evidence());
++            assert!(
++                super::log_diff_summary_from_strs(&left, &left, &options, &mut Vec::new())?
++                    .matched_with_evidence()
++            );
++        }
++        Ok(())
+     }
+ 
+     const KICK_LINE_PREFIX: &str = "Logs contain";
+@@ -4507,12 +4072,8 @@
+         Ok(())
+     }
+ 
+-    /// Every other test here forces `LogComparisonMode::Info`, but the default
+-    /// is `Deterministic`, which selects a different set of messages. Both
+-    /// retained lines must appear on that path too, and the kick counts must be
+-    /// attributed per side — under this mode a kick asymmetry is *not* compared,
+-    /// so `1 | 0` is a passing pair and quoting a single side would report it as
+-    /// agreement.
++    /// The default INFO scope compares kick asymmetry and preserves diagnostic
++    /// counts on a matching pair.
+     #[test]
+     fn both_records_are_retained_under_the_default_comparison_mode() -> std::io::Result<()> {
+         let default_opts = super::LogDiffOpts {
+@@ -4521,7 +4082,7 @@
+         };
+         assert_eq!(
+             default_opts.comparison,
+-            super::LogComparisonMode::Deterministic,
++            super::LogComparisonMode::Info,
+             "this test exists to cover the default mode; if the default changes \
+              it must be re-pointed, not deleted"
+         );
+@@ -4533,22 +4094,11 @@
+             &default_opts,
+             &mut out,
+         )?;
+-        let out = String::from_utf8(out).expect("diff output is utf-8");
+         assert!(
+-            summary.matched_with_evidence(),
+-            "a kick asymmetry is not compared under the default mode, so this \
+-             pair must pass; got:\n{out}"
+-        );
+-        assert!(
+-            out.contains(&format!("Logs contain 1 | 0 {KICK_LINE_SUFFIX}")),
+-            "the asymmetry must be visible per side on the default path, \
+-             got:\n{out}"
+-        );
+-        assert!(
+-            out.contains(&format!("Logs contain 0 | 0 {MAPS_LINE_SUFFIX}")),
+-            "the map-read line must also be emitted on the default path, \
+-             got:\n{out}"
+-        );
++            summary.diff_found,
++            "the default INFO comparison must include the kick asymmetry"
++        );
++        assert!(!summary.matched_with_evidence());
+ 
+         // The same path, with the map read present, must attribute both sides.
+         let scanned = log_with_maps_read("12.345_678_901s");
+@@ -4568,42 +4118,25 @@
+         Ok(())
+     }
+ 
+-    /// The reason both sides must be printed, as a reachable case rather than a
+-    /// precaution. `strip_lines` is the lossy comparator plain `--verify` uses:
+-    /// it normalizes numeric data before comparing, so two runs that committed
+-    /// the map read at different virtual times are a *matching* pair. Reporting
+-    /// only run 1 there would claim agreement on the exact quantity this record
+-    /// exists to expose — a drift `--verify-strict` catches and `--verify` does
+-    /// not.
+-    #[test]
+-    fn a_stripped_pass_shows_both_runs_diverging_map_read_times() -> std::io::Result<()> {
+-        let opts = super::LogDiffOpts {
+-            strip_lines: true,
++    /// Different committed virtual times must diverge under the default policy.
++    #[test]
++    fn default_comparison_rejects_diverging_map_read_times() -> std::io::Result<()> {
++        let options = super::LogDiffOpts {
+             no_color: true,
+             ..Default::default()
+         };
+-        let mut out = Vec::new();
++        let mut output = Vec::new();
+         let summary = super::log_diff_summary_from_strs(
+             log_with_maps_read("12.345_678_901s"),
+             log_with_maps_read("12.345_678_902s"),
+-            &opts,
+-            &mut out,
++            &options,
++            &mut output,
+         )?;
+-        let out = String::from_utf8(out).expect("diff output is utf-8");
+-        assert!(
+-            summary.matched_with_evidence(),
+-            "the stripped comparator normalizes the times, so this pair passes; \
+-             got:\n{out}"
+-        );
+-        assert!(
+-            out.contains(
+-                "(run 1 first at turn 10, committed virtual time 12345678901ns, \
+-                 run 2 first at turn 10, committed virtual time 12345678902ns)"
+-            ),
+-            "a passing pair whose runs committed at DIFFERENT times must show \
+-             both values; showing one would report agreement on a real drift, \
+-             got:\n{out}"
+-        );
++        assert!(summary.diff_found);
++        assert!(!summary.matched_with_evidence());
++        let output = String::from_utf8(output).unwrap();
++        assert!(output.contains("12.345_678_901s"));
++        assert!(output.contains("12.345_678_902s"));
+         Ok(())
+     }
+ 
+--- a/detcore/tests/testutils/src/lib.rs
++++ b/detcore/tests/testutils/src/lib.rs
+@@ -792,8 +792,8 @@
+                 )
+             }
+             for ix in 0..x.len().min(filtered.len()) {
+-                let str_a = detcore::logdiff::strip_log_entry(&x[ix]);
+-                let str_b = detcore::logdiff::strip_log_entry(&filtered[ix]);
++                let str_a = &x[ix];
++                let str_b = &filtered[ix];
+                 assert_eq!(
+                     str_a, str_b,
+                     "\n  Consecutive runs of test had different COMMITs #{}, run1:\n{:?}\n  Run2:\n{:?}",
+@@ -823,6 +823,37 @@
+     use super::install_global_test_subscriber;
+     use super::requested_test_workdir;
+     use super::test_fn_with_config;
++
++    #[test]
++    fn commit_comparison_preserves_numeric_values_and_record_count() {
++        let output = reverie::process::Output {
++            status: ExitStatus::Exited(0),
++            stdout: b"same output\n".to_vec(),
++            stderr: Vec::new(),
++        };
++        let line =
++            |time| format!("INFO detcore::scheduler: COMMIT turn 3, dettid 2 at time {time}");
++        let mut same = super::DetTestState::default();
++        super::check_output(&output, vec![line(100)], &mut same);
++        super::check_output(&output, vec![line(100)], &mut same);
++        std::assert_eq!(same.test_run_num, 2);
++        std::assert_eq!(
++            same.last_log,
++            Some(vec![" turn 3, dettid 2 at time 100".to_owned()])
++        );
++
++        for differing in [vec![line(200)], vec![line(100), line(100)]] {
++            let mut state = super::DetTestState::default();
++            super::check_output(&output, vec![line(100)], &mut state);
++            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++                super::check_output(&output, differing, &mut state);
++            }));
++            assert!(
++                failure.is_err(),
++                "a COMMIT value or count difference must fail"
++            );
++        }
++    }
+ 
+     #[test]
+     fn isolated_workdir_request_is_exact_and_fail_closed() {
+--- a/docs/ERROR_CATALOG.md
++++ b/docs/ERROR_CATALOG.md
+@@ -120,7 +120,8 @@
+ | `Nonzero exit not allowed.` | Configuration | `hermit-verify` ran a guest that exited nonzero without permission. | Fix the guest failure or pass `--allow-nonzero-exit` when that status is expected. |
+ | `Verification check failed` | Configuration | A selected `hermit-verify` use case returned false. | Read the preceding stdout/stderr/schedule comparison; its first mismatch is the primary error. |
+ | `expecting "global" key in the target json file` or `... has unexpected format` | Configuration | A verification schedule is not a Hermit schedule JSON object. | Supply an unmodified schedule/preemption file generated by the matching Hermit version. |
+-| `unknown value ... for DetLogFilter` | Configuration | A log-diff filter was not `syscall`, `syscallresult`, or `other`. | Use one of those values with `--include-detlogs`. |
++| `unknown value ... for DetLogFilter` | Configuration | An older Hermit build rejected a DETLOG filter value. | Current builds remove DETLOG filtering; compare the complete canonical INFO stream and inspect retained differences. |
++| `unexpected argument '--unsafe-strip-lines'` or another removed comparison option | Configuration | A caller requested stripping, substring filtering, message skipping, DETLOG-class selection, or Git comparison. | Remove the obsolete option. Canonical INFO comparison is the default; `--verify-strict` and `--canonical-info` remain compatibility spellings. |
+ | `Log line without expected tag: ...` | Configuration | `logdiff` input contains a nonempty message without an `ERROR`, `WARN`, `INFO`, `DEBUG`, or `TRACE` prefix. | Compare raw stdout separately or regenerate both files through Hermit's tracing logger. |
+ 
+ ## Analyze And Schedule Search
+--- a/docs/USER_GUIDE.md
++++ b/docs/USER_GUIDE.md
+@@ -181,12 +181,12 @@
+ before activation; an arbitrary shared object or constructor-free runtime is
+ rejected rather than silently falling back.
+ 
+-LiteInst uses the normal Hermit run and verification paths. A successful
+-`--strict --verify` run compares status/stdout/stderr exactly and applies the
+-`Stripped` comparison to selected Detcore scheduler messages; it is useful
+-diagnostic evidence, but it is not strict determinism. Strict verification requires
+-`--verify-strict --verify-json REPORT.json`, `bitwise_parity: true`, and nonzero
+-compared-message counts. Verification snapshots guest stdin once and supplies
++LiteInst uses the normal Hermit run and verification paths. `--strict --verify`
++compares status/stdout/stderr exactly and uses the canonical INFO comparison by
++default. `--verify-strict` remains a compatibility spelling. Use
++`--verify-json REPORT.json` to inspect `bitwise_parity`, nonzero compared-message
++counts, and the reported execution policy; selecting verification alone does not
++establish that a workload passes. Verification snapshots guest stdin once and supplies
+ the identical bytes to both runs. The supported execution scope is dynamically
+ linked, single-threaded, single-process Linux x86-64 guests. Thread clone,
+ `fork`, and `vfork` fail closed with `EOPNOTSUPP`, and `exec` remains
+@@ -205,9 +205,10 @@
+ 
+ SaBRe is available only in builds using the non-default
+ `third-party-backends` feature. See
+-[SaBRe backend compatibility](SABRE_COMPATIBILITY.md) for the measured
+-`Stripped` allowlist, build commands, and known gaps. An enabled probe is
+-not a blanket support claim for every workload in its subsystem.
++[SaBRe backend compatibility](SABRE_COMPATIBILITY.md) for historical measurements
++under the `Stripped` policy, build commands, and known gaps. Those measurements
++do not establish success under the current canonical default. An enabled probe
++is not a blanket support claim for every workload in its subsystem.
+ 
+ `e9patch` is an experimental hybrid rather than a standalone Detcore runtime.
+ It uses the cached offline instruction map and conservative `e9tool -O0` mode
+@@ -290,11 +291,16 @@
+ stderr, and its internal deterministic execution log. Verification fails if
+ the compared observations differ or if the guest exit status is not allowed.
+ 
+-The default log comparison is `Stripped`: it can erase numbers, addresses,
+-temporary paths, and time values from selected messages. It is a fast
+-diagnostic, not strict determinism. Use
+-`--verify-strict --verify-json REPORT.json` when a canonical strict result is
+-required.
++The default log comparison is canonical INFO: it removes real wall-clock
++prefixes, replaces explicitly marked host addresses with first-appearance
++ordinals, and compares every remaining INFO byte exactly. Numeric values,
++virtual time, temporary paths, syscall arguments and results remain compared.
++`--verify-strict` is an accepted compatibility spelling for this same default.
++Use `--verify-json REPORT.json` for the typed verdict and comparison evidence.
++An explicit DEBUG/TRACE log level preserves diagnostics without changing the
++INFO comparison; `--verify-verbose` requests an all-level diagnostic comparison.
++Historical reports naming `Stripped` remain readable, but no active option can
++select that lossy policy.
+ 
+ Matching verification logs are temporary by default; divergent comparisons
+ retain both. Hermit keeps the newest 64 implicitly retained failed comparisons
+@@ -327,13 +333,18 @@
+ than reporting a match.
+ 
+ For a two-log comparison, add `--print-logs` to print both selected streams to
+-stderr exactly as the comparator receives them. The output names the active
+-policy: `Deterministic` for the default DETLOG/scheduler-COMMIT subset,
+-`Stripped` when `--unsafe-strip-lines` applies its lossy substitutions, or
+-`Canonical` when `--canonical-info` selects the INFO stream and canonicalizes
+-marked host addresses. This output is produced by the shared comparator path,
+-after wall-clock-prefix removal, line filtering, message selection, and any
+-requested substitutions.
++stderr exactly as the comparator receives them. The active policy is
++`Canonical`, with or without JSON or the compatibility spelling
++`--canonical-info`. Follow mode uses the same policy on the complete common
++prefix. Printed comparison streams reflect the declared record envelope, INFO
++selection, wall-clock-prefix removal and marked host-address canonicalization.
++
++Lossy comparison options are removed: `--unsafe-strip-lines`, `--strip-lines`,
++`--ignore-lines`, `--skip-commit`, `--skip-detlog`, `--include-detlogs`, and
++`--git-diff` are rejected. Diagnose a difference using the retained logs and
++positions rather than discarding differing records. The analysis and
++hermit-verify callers also preserve CHAOSRAND, SCHEDRAND and other INFO records;
++previously filtered differences can therefore become visible.
+ 
+ The guest must be idempotent. A first run that modifies an input file,
+ database, cache, or other host-visible state can legitimately change the
+--- a/hermit-cli/src/bin/hermit/analyze/phases.rs
++++ b/hermit-cli/src/bin/hermit/analyze/phases.rs
+@@ -276,7 +276,7 @@
+         }
+     }
+ 
+-    /// A weaker log difference that does not expect certain lines to be conserved in preemption replay.
++    /// Compare canonical INFO messages without dropping preemption-replay records.
+     fn log_diff_preemption_replay(
+         &self,
+         global: &GlobalOpts,
+@@ -286,14 +286,12 @@
+         if self.verbose {
+             yellow_msg("[comparing] with log-diff command:");
+             eprintln!(
+-                "    hermit log-diff --record-envelope=all-records-v1 \
+-                 --ignore-lines=CHAOSRAND {} {}",
++                "    hermit log-diff --canonical-info --record-envelope=all-records-v1 {} {}",
+                 run1_log_path.display(),
+                 run2_log_path.display(),
+             );
+         }
+-        let mut ldopts = LogDiffCLIOpts::new(run1_log_path, run2_log_path);
+-        ldopts.more.ignore_lines = vec!["CHAOSRAND".to_string(), "SCHEDRAND".to_string()];
++        let ldopts = LogDiffCLIOpts::new(run1_log_path, run2_log_path);
+         ldopts.main(global)
+     }
+ 
+--- a/hermit-cli/src/bin/hermit/backends.rs
++++ b/hermit-cli/src/bin/hermit/backends.rs
+@@ -77,8 +77,6 @@
+ use super::verify::ComparisonOptions;
+ #[cfg(feature = "dbt")]
+ use super::verify::DbtCountedBranchComparison;
+-#[cfg(feature = "dbt")]
+-use super::verify::LogCompareStrictness;
+ #[cfg(feature = "dbt")]
+ use super::verify::Verdict;
+ #[cfg(feature = "dbt")]
+@@ -707,11 +705,7 @@
+     requested: Option<LevelFilter>,
+     diagnostic_full_trace: bool,
+ ) -> DbtEvidenceLogLevel {
+-    let level = verification_log_level(
+-        requested,
+-        LogCompareStrictness::Canonical,
+-        diagnostic_full_trace,
+-    );
++    let level = verification_log_level(requested, diagnostic_full_trace);
+     if level >= LevelFilter::TRACE {
+         DbtEvidenceLogLevel::Trace
+     } else if level >= LevelFilter::DEBUG {
+@@ -1199,7 +1193,6 @@
+         },
+         ComparisonOptions {
+             verbose: verify_verbose,
+-            strictness: LogCompareStrictness::Canonical,
+             compare_logs: true,
+             diagnostic_full_trace: verify_verbose,
+             compare_io_buffers: config.detlog_io_buffers,
+@@ -1778,7 +1771,6 @@
+             }),
+             guest_status: ExitStatus::Exited(guest_exit),
+             comparison: ComparisonSpec::new(
+-                LogCompareStrictness::Canonical,
+                 true,
+                 false,
+                 true,
+--- a/hermit-cli/src/bin/hermit/logdiff.rs
++++ b/hermit-cli/src/bin/hermit/logdiff.rs
+@@ -151,11 +151,10 @@
+     #[clap(long, value_name = "FILE")]
+     json: Option<PathBuf>,
+ 
+-    /// Compare the canonical INFO stream used by --verify-strict within the
+-    /// selected record envelope. With --json this comparison is mandatory and
+-    /// selected automatically.
+-    #[clap(long)]
+-    canonical_info: bool,
++    /// Compatibility spelling for the default canonical INFO comparison.
++    /// The selected record envelope also applies without this flag or --json.
++    #[clap(long = "canonical-info")]
++    _canonical_info: bool,
+ 
+     /// Versioned record envelope applied before selecting messages. DBT logs
+     /// must opt into their transport envelope explicitly; the default preserves
+@@ -195,7 +194,7 @@
+             file_a: PathBuf::from(a),
+             file_b: Some(PathBuf::from(b)),
+             json: None,
+-            canonical_info: false,
++            _canonical_info: false,
+             record_envelope: RecordEnvelopeArg::AllRecordsV1,
+             follow: false,
+             follow_interval_ms: 500,
+@@ -207,15 +206,9 @@
+ 
+     fn one_input_uses_only_canonical_options(&self) -> bool {
+         let defaults = logdiff::LogDiffOpts::default();
+-        !self.more.strip_lines
+-            && self.more.limit == defaults.limit
+-            && self.more.ignore_lines.is_empty()
++        self.more.limit == defaults.limit
+             && self.more.syscall_history == defaults.syscall_history
+             && !self.more.no_color
+-            && !self.more.skip_commit
+-            && !self.more.skip_detlog
+-            && !self.more.git_diff
+-            && self.more.include_detlogs == defaults.include_detlogs
+     }
+ 
+     /// Print one log canonically or compare two logs.
+@@ -269,15 +262,12 @@
+         };
+ 
+         let mut options = self.more.clone();
+-        if self.canonical_info || self.json.is_some() {
+-            if let Err(message) = canonical_comparison_is_unrelaxed(&options) {
+-                eprintln!("hermit log-diff: {message}");
+-                return ExitStatus::Exited(2);
+-            }
+-            options.comparison = logdiff::LogComparisonMode::Info;
+-            options.canonicalize_addresses = true;
+-        }
+-        if record_envelope.policy() == RecordEnvelopePolicy::CrossBackendDetcoreV1 {
++        options.comparison = logdiff::LogComparisonMode::Info;
++        options.canonicalize_addresses = true;
++        if matches!(
++            record_envelope.policy(),
++            RecordEnvelopePolicy::AllRecordsV1 | RecordEnvelopePolicy::CrossBackendDetcoreV1
++        ) {
+             options.require_structured_events = true;
+         }
+ 
+@@ -298,9 +288,7 @@
+             return self.follow_two_runs(file_b, &options, record_envelope);
+         }
+ 
+-        let comparison = if (self.canonical_info || self.json.is_some())
+-            && record_envelope.policy() == RecordEnvelopePolicy::AllRecordsV1
+-        {
++        let comparison = if record_envelope.policy() == RecordEnvelopePolicy::AllRecordsV1 {
+             try_bitwise_info_v1_with_records(&self.file_a, file_b, &options)
+                 .map(|(summary, left, right)| (summary, left, right, None))
+         } else {
+@@ -396,8 +384,7 @@
+         let deadline = (self.follow_timeout_secs > 0)
+             .then(|| Instant::now() + Duration::from_secs(self.follow_timeout_secs));
+ 
+-        let fixed_bitwise_info_v1 = (self.canonical_info || self.json.is_some())
+-            && record_envelope.policy() == RecordEnvelopePolicy::AllRecordsV1;
++        let fixed_bitwise_info_v1 = record_envelope.policy() == RecordEnvelopePolicy::AllRecordsV1;
+         let mut previous_sizes: Option<(usize, usize)> = None;
+         let mut unchanged_polls = 0u32;
+         let mut last_reported_records = usize::MAX;
+@@ -591,26 +578,6 @@
+     }
+ }
+ 
+-fn canonical_comparison_is_unrelaxed(options: &logdiff::LogDiffOpts) -> Result<(), &'static str> {
+-    let defaults = logdiff::LogDiffOpts::default();
+-    if options.strip_lines {
+-        return Err("canonical INFO comparison conflicts with --unsafe-strip-lines");
+-    }
+-    if !options.ignore_lines.is_empty() {
+-        return Err("canonical INFO comparison does not permit --ignore-lines");
+-    }
+-    if options.skip_commit || options.skip_detlog {
+-        return Err("canonical INFO comparison does not permit message skipping");
+-    }
+-    if options.git_diff {
+-        return Err("canonical INFO JSON does not support --git-diff");
+-    }
+-    if options.include_detlogs != defaults.include_detlogs {
+-        return Err("canonical INFO comparison does not permit DETLOG filtering");
+-    }
+-    Ok(())
+-}
+-
+ fn json_report(
+     summary: &logdiff::LogDiffSummary,
+     options: &logdiff::LogDiffOpts,
+@@ -627,19 +594,9 @@
+         LogDiffVerdict::Matched
+     };
+     let stream = match options.comparison {
+-        logdiff::LogComparisonMode::Deterministic => "deterministic",
+         logdiff::LogComparisonMode::Info => "info",
+         logdiff::LogComparisonMode::FullTrace => "full_trace",
+     };
+-    let included_detlog_kinds = options
+-        .include_detlogs
+-        .iter()
+-        .map(|kind| match kind {
+-            logdiff::DetLogFilter::Syscall => "syscall".to_owned(),
+-            logdiff::DetLogFilter::SyscallResult => "syscall_result".to_owned(),
+-            logdiff::DetLogFilter::Other => "other".to_owned(),
+-        })
+-        .collect();
+     LogDiffReport {
+         schema: LOG_DIFF_REPORT_SCHEMA,
+         verdict,
+@@ -656,14 +613,15 @@
+         comparison: LogDiffComparison {
+             stream: stream.to_owned(),
+             record_envelope,
+-            unsafe_strip_lines: options.strip_lines,
++            unsafe_strip_lines: false,
+             canonicalize_host_addresses: options.canonicalize_addresses,
+-            require_structured_events: options.require_structured_events,
+-            ignored_line_substrings: options.ignore_lines.clone(),
+-            skip_commit: options.skip_commit,
+-            skip_detlog: options.skip_detlog,
+-            included_detlog_kinds,
+-            git_diff: options.git_diff,
++            require_structured_events: options.require_structured_events
++                || record_envelope == RecordEnvelopePolicy::AllRecordsV1,
++            ignored_line_substrings: Vec::new(),
++            skip_commit: false,
++            skip_detlog: false,
++            included_detlog_kinds: vec!["syscall".into(), "syscall_result".into(), "other".into()],
++            git_diff: false,
+         },
+         first_divergent_scheduler_turn: summary.first_divergent_scheduler_turn,
+         first_divergent_virtual_nanoseconds: summary.first_divergent_virtual_nanoseconds,
+@@ -783,7 +741,7 @@
+ 
+         let mut options = LogDiffCLIOpts::new(&left, &right);
+         options.follow = true;
+-        options.canonical_info = true;
++        options._canonical_info = true;
+         options.json = Some(json.clone());
+         options.follow_interval_ms = 1;
+         options.follow_timeout_secs = 1;
+@@ -1437,20 +1395,99 @@
+     #[test]
+     fn canonical_json_refuses_relaxed_comparisons_and_starts_as_no_result() {
+         let options = logdiff::LogDiffOpts::default();
+-        assert!(canonical_comparison_is_unrelaxed(&options).is_ok());
+-
+-        let mut stripped = options.clone();
+-        stripped.strip_lines = true;
+-        assert!(canonical_comparison_is_unrelaxed(&stripped).is_err());
+-
+-        let mut ignored = options.clone();
+-        ignored.ignore_lines.push("difference".to_owned());
+-        assert!(canonical_comparison_is_unrelaxed(&ignored).is_err());
+-
++        for flag in [
++            "--strip-lines",
++            "--unsafe-strip-lines",
++            "--ignore-lines=payload",
++            "--skip-commit",
++            "--skip-detlog",
++            "--include-detlogs=syscall",
++            "--git-diff",
++        ] {
++            let error =
++                LogDiffCLIOpts::try_parse_from(["log-diff", "left", "right", flag]).unwrap_err();
++            assert_eq!(
++                error.kind(),
++                clap::error::ErrorKind::UnknownArgument,
++                "{flag}"
++            );
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
++        }
++        for argv in [
++            vec!["log-diff", "left", "right"],
++            vec!["log-diff", "--canonical-info", "left", "right"],
++        ] {
++            let parsed = LogDiffCLIOpts::try_parse_from(argv).unwrap();
++            assert_eq!(parsed.more.comparison, logdiff::LogComparisonMode::Info);
++            assert!(parsed.more.canonicalize_addresses);
++        }
+         let report = pending_json_report(&options, RecordEnvelopePolicy::AllRecordsV1);
+         assert_eq!(
+             serde_json::to_value(report).unwrap()["verdict"],
+             "no_result"
++        );
++    }
++
++    #[test]
++    fn plain_logdiff_compares_all_info_without_json_or_compatibility_flags() {
++        let directory = tempfile::tempdir().unwrap();
++        let left = directory.path().join("left.log");
++        let right = directory.path().join("right.log");
++        let json = directory.path().join("comparison.json");
++        let stable = current_record(1, "DETLOG stable");
++        let text = |value| format!("{stable}Apr 09 06:08:02.100  INFO unrelated: value={value}\n");
++        std::fs::write(&left, text(100)).unwrap();
++        let global = GlobalOpts::try_parse_from(["hermit"]).unwrap();
++        for compatibility in [false, true] {
++            for with_json in [false, true] {
++                let mut options = LogDiffCLIOpts::new(&left, &right);
++                options._canonical_info = compatibility;
++                options.json = with_json.then(|| json.clone());
++                std::fs::write(&right, text(200)).unwrap();
++                assert_eq!(
++                    options.main(&global),
++                    ExitStatus::Exited(HERMIT_VERIFICATION_DIVERGENCE_EXIT)
++                );
++                if with_json {
++                    let report: serde_json::Value =
++                        serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
++                    assert_eq!(report["verdict"], "diverged");
++                    assert_eq!(report["selected_messages"]["left"], 2);
++                    assert_eq!(report["selected_messages"]["right"], 2);
++                    assert_eq!(report["comparison"]["stream"], "info");
++                    assert_eq!(report["comparison"]["require_structured_events"], true);
++                    assert_eq!(report["comparison"]["unsafe_strip_lines"], false);
++                }
++                std::fs::write(&right, text(100)).unwrap();
++                assert_eq!(options.main(&global), ExitStatus::Exited(0));
++                std::fs::write(&right, b"INFO detcore: DETLOG invalid=\xff").unwrap();
++                assert_eq!(options.main(&global), ExitStatus::Exited(2));
++            }
++        }
++    }
++
++    #[test]
++    fn plain_follow_compares_all_info_without_json_or_compatibility_flags() {
++        let directory = tempfile::tempdir().unwrap();
++        let left = directory.path().join("left.log");
++        let right = directory.path().join("right.log");
++        let text = |value| {
++            format!(
++                "{}Apr 09 06:08:02.100  INFO unrelated: value={value}\n{}",
++                current_record(1, "DETLOG stable"),
++                current_record(3, "DETLOG unfinished tail"),
++            )
++        };
++        std::fs::write(&left, text(100)).unwrap();
++        std::fs::write(&right, text(200)).unwrap();
++        let mut options = LogDiffCLIOpts::new(&left, &right);
++        options.follow = true;
++        options.follow_interval_ms = 1;
++        options.follow_timeout_secs = 1;
++        let global = GlobalOpts::try_parse_from(["hermit"]).unwrap();
++        assert_eq!(
++            options.main(&global),
++            ExitStatus::Exited(HERMIT_VERIFICATION_DIVERGENCE_EXIT)
+         );
+     }
+ 
+--- a/hermit-cli/src/bin/hermit/record_start.rs
++++ b/hermit-cli/src/bin/hermit/record_start.rs
+@@ -54,7 +54,6 @@
+ use super::run::path_resolution_visits_prefix;
+ use super::verify::ComparedRun;
+ use super::verify::ComparisonOptions;
+-use super::verify::LogCompareStrictness;
+ use super::verify::announce_verification_outcome;
+ use super::verify::compare_two_runs;
+ use super::verify::setup_double_run;
+@@ -271,22 +270,10 @@
+     /// or opaque filtered match.
+     #[clap(long, requires = "verify", value_name = "PATH")]
+     verify_json: Option<PathBuf>,
+-
+-    /// With --verify, compare the record and replay logs under the CANONICAL
+-    /// parity policy: strip only the real wall-clock timestamp prefix, canonicalize
+-    /// host memory addresses to first-appearance ordinals (tolerating an ASLR
+-    /// shift while still diverging on allocation-order or aliasing changes), and
+-    /// compare every INFO message's remaining bytes — virtual-time timestamps,
+-    /// raw syscall argument/result values, counts, sizes, flags — exactly. An
+-    /// explicit DEBUG/TRACE level remains captured for diagnostics but does not
+-    /// change the INFO verdict. Without this the
+-    /// default `--verify` normalizes away numbers, addresses, tmp paths, and
+-    /// timestamps before comparing, so a "verified" result asserts only stripped
+-    /// parity, not bitwise identity. A record/replay determinism ratchet keying on
+-    /// the verdict should set this so it cannot be silently weakened to a stripped
+-    /// comparison.
+-    #[clap(long, requires = "verify")]
+-    verify_strict: bool,
++    /// Compatibility spelling for the default canonical INFO comparison.
++    /// Recording and replay still report their actual time-virtualization policy.
++    #[clap(long = "verify-strict", requires = "verify")]
++    _verify_strict: bool,
+ 
+     /// After recording, immediately replays the command to verify that it works
+     /// With provided gdb command (passed by `-ex`).
+@@ -503,13 +490,7 @@
+         if let Some(path) = &self.verify_json {
+             write_pending_verification_json(path)?;
+         }
+-        let strictness = if self.verify_strict {
+-            LogCompareStrictness::Canonical
+-        } else {
+-            LogCompareStrictness::Stripped
+-        };
+-        let ((global1, log1), (global2, log2)) =
+-            setup_double_run(global, "record", "replay", strictness);
++        let ((global1, log1), (global2, log2)) = setup_double_run(global, "record", "replay");
+ 
+         let (mut recording_container, record_identity_guard) = self.recording_container(global)?;
+ 
+@@ -567,7 +548,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness,
+                 compare_logs: true,
+                 diagnostic_full_trace: false,
+                 // Recording DOES enable the syscall output-buffer hash, so a
+@@ -733,7 +713,7 @@
+             record_timeout: None,
+             verify: false,
+             verify_json: None,
+-            verify_strict: false,
++            _verify_strict: false,
+             gdbex: Vec::new(),
+         }
+     }
+@@ -844,7 +824,7 @@
+             record_timeout: None,
+             verify: false,
+             verify_json: None,
+-            verify_strict: false,
++            _verify_strict: false,
+             gdbex: Vec::new(),
+         };
+         let error = options.resolve_e9patch_record_target().unwrap_err();
+--- a/hermit-cli/src/bin/hermit/run.rs
++++ b/hermit-cli/src/bin/hermit/run.rs
+@@ -69,6 +69,7 @@
+ use super::tracing::log_max_bytes;
+ use super::verify::ComparedRun;
+ use super::verify::ComparisonOptions;
++#[cfg(test)]
+ use super::verify::LogCompareStrictness;
+ use super::verify::NoResultReason;
+ use super::verify::VerificationReport;
+@@ -551,21 +552,11 @@
+     #[clap(long, requires = "verify")]
+     verify_verbose: bool,
+ 
+-    /// Compare the internal logs under the CANONICAL parity policy: strip only
+-    /// the real wall-clock timestamp prefix (genuinely irreproducible),
+-    /// canonicalize host memory addresses to first-appearance ordinals (so an
+-    /// ASLR shift is tolerated but allocation-order and aliasing changes still
+-    /// diverge), and compare every INFO message's remaining bytes — virtual-time
+-    /// timestamps, raw syscall argument/result values, counts, sizes, flags —
+-    /// exactly. An explicit `--log=debug` or `--log=trace` remains captured for
+-    /// `--print-verify-logs` diagnostics but does not change this INFO verdict; use
+-    /// `--verify-verbose` to request an all-level diagnostic comparison. Without
+-    /// this (and without --verify-verbose) the default `--verify` normalizes away
+-    /// numbers, addresses, tmp paths, and timestamps before comparing, so a
+-    /// "verified" result asserts only stripped parity, not bitwise identity.
+-    /// Unlike --verify-verbose this stays quiet: it changes only the comparison,
+-    /// not the diff output volume, so a determinism ratchet can require parity
+-    /// without drowning in trace logs.
++    /// Compatibility spelling for the default canonical INFO comparison.
++    /// Every --verify compares exit status, stdout and stderr exactly, and all
++    /// INFO records after removing real wall-clock prefixes and ordinalizing
++    /// explicitly marked host addresses. Numeric values remain exact.
++    /// Use --verify-verbose for an all-level diagnostic comparison.
+     #[clap(long, requires = "verify")]
+     verify_strict: bool,
+ 
+@@ -1347,7 +1338,7 @@
+ /// its return. `bitwise_parity_contract_accepts_only_named_canonical_envelopes`
+ /// already pins that only a canonical envelope may claim parity, but nothing
+ /// pinned WHICH REQUESTS REACH canonical — so re-introducing a backend term in
+-/// `verification_strictness` would have restored the original defect silently.
++/// verification option construction would have restored the original defect silently.
+ /// Iterating every `Backend` variant is what makes that impossible: a KVM-shaped
+ /// special case fails here by name.
+ #[test]
+@@ -1360,30 +1351,32 @@
+         ("kvm", Backend::Kvm),
+         ("e9patch", Backend::E9patch),
+     ] {
+-        let plain = RunOpts::parse_from(["fakehermit", "--backend", value, "--verify", "fakeprog"]);
+-        assert_eq!(plain.selected_backend(), backend);
+-        assert_eq!(
+-            plain.verification_strictness(),
+-            LogCompareStrictness::Stripped,
+-            "plain --verify on {value} must stay on the lossy comparator, so it \
+-             cannot claim canonical bitwise parity"
+-        );
+-
+-        for flag in ["--verify-strict", "--verify-verbose"] {
+-            let canonical = RunOpts::parse_from([
+-                "fakehermit",
+-                "--backend",
+-                value,
+-                "--verify",
+-                flag,
+-                "fakeprog",
+-            ]);
++        for flag in [None, Some("--verify-strict"), Some("--verify-verbose")] {
++            let mut argv = vec!["fakehermit", "--backend", value, "--verify"];
++            argv.extend(flag);
++            argv.push("fakeprog");
++            let run = RunOpts::parse_from(argv);
++            assert_eq!(run.selected_backend(), backend);
++            let options = run.verification_comparison_options();
++            assert!(
++                options.compare_logs,
++                "--verify on {value} must compare both logs"
++            );
+             assert_eq!(
+-                canonical.verification_strictness(),
+-                LogCompareStrictness::Canonical,
+-                "{flag} on {value} must reach the canonical comparator; KVM \
+-                 bypassing it unconditionally was the hermit#2217 defect"
++                options.diagnostic_full_trace,
++                flag == Some("--verify-verbose")
+             );
++            let spec = super::verify::ComparisonSpec::new(
++                options.compare_logs,
++                options.diagnostic_full_trace,
++                options.compare_io_buffers,
++                options.record_envelope.policy(),
++                options.virtualize_time,
++            );
++            assert_eq!(spec.strictness, LogCompareStrictness::Canonical);
++            assert!(!spec.strip_lines);
++            assert!(spec.canonicalize_addresses);
++            assert!(spec.exact_remainder);
+         }
+     }
+ }
+@@ -2880,33 +2873,6 @@
+         }
+     }
+ 
+-    /// Which comparator a `--verify` run uses, as a function of the request
+-    /// ALONE.
+-    ///
+-    /// DELIBERATELY BACKEND-INDEPENDENT, AND THAT IS THE PROPERTY UNDER GUARD.
+-    /// This used to read `let kvm_output_only = self.selected_backend() ==
+-    /// Backend::Kvm`, so plain KVM verification bypassed internal-log comparison
+-    /// entirely and `--verify-strict` could not reach the canonical comparator on
+-    /// that backend at all. The special case was not narrowed, it was removed:
+-    /// every backend now retains both logs and picks its comparator here from
+-    /// `verify_verbose`/`verify_strict` only.
+-    ///
+-    /// Removing a branch leaves nothing behind to notice its return, so
+-    /// `comparator_choice_does_not_depend_on_the_backend` pins the absence
+-    /// across every `Backend` variant. Re-introducing a backend term here is the
+-    /// regression it exists to catch.
+-    ///
+-    /// `--verify-verbose` historically implied a bitwise compare (it flipped
+-    /// `strip_lines` off and `FullTrace` on); that is preserved, and
+-    /// `--verify-strict` selects the same comparison quietly.
+-    fn verification_strictness(&self) -> LogCompareStrictness {
+-        if self.verify_verbose || self.verify_strict {
+-            LogCompareStrictness::Canonical
+-        } else {
+-            LogCompareStrictness::Stripped
+-        }
+-    }
+-
+     fn verification_comparison_options(&self) -> ComparisonOptions {
+         // Use the configuration the selected runtime backend actually receives.
+         // `run_with_output_backend` applies this same normalization before
+@@ -2917,7 +2883,6 @@
+             hermit::prepare_backend_config(self.effective_det_config(), self.runtime_backend());
+         ComparisonOptions {
+             verbose: self.verify_verbose,
+-            strictness: self.verification_strictness(),
+             // The original KVM defect made this false for one backend, reducing
+             // verification to guest-output comparison. Keep the actual options
+             // consumed by compare_two_runs behind the all-backend regression
+@@ -5001,8 +4966,7 @@
+         // `log_file` by value. Guaranteed by caller to never panic.
+         let log_file = log_file.take().unwrap();
+ 
+-        let strictness = self.verification_strictness();
+-        let level = verification_log_level(global.log, strictness, self.verify_verbose);
++        let level = verification_log_level(global.log, self.verify_verbose);
+ 
+         // Bound this log too. `hermit run --verify` opens its own file and
+         // calls `init_file_tracing` directly instead of going through
+--- a/hermit-cli/src/bin/hermit/verify.rs
++++ b/hermit-cli/src/bin/hermit/verify.rs
+@@ -96,16 +96,11 @@
+ 
+ pub(crate) struct ComparisonOptions {
+     /// Controls only how much diff *output* is printed (a larger syscall-history
+-    /// window), NOT the comparison semantics. Comparison strictness is carried
+-    /// separately in [`Self::strictness`] so a quiet run can still be
+-    /// bitwise-strict — the two knobs were historically conflated behind a single
+-    /// `verbose` flag, which made the only bitwise comparison also the loudest.
++    /// window), NOT the comparison semantics. The canonical comparison is always
++    /// enabled, so a quiet run is still bitwise-strict. The two knobs were
++    /// historically conflated behind a single `verbose` flag, which made the
++    /// only bitwise comparison also the loudest.
+     pub verbose: bool,
+-    /// How strictly the internal event stream is compared. This is the
+-    /// condition the verdict rests on, and is recorded verbatim in the resulting
+-    /// [`VerificationOutcome`] so a consumer can tell a stripped match from a
+-    /// bitwise one.
+-    pub strictness: LogCompareStrictness,
+     pub compare_logs: bool,
+     /// Compare DEBUG/TRACE diagnostics in addition to the canonical INFO
+     /// envelope. This is reserved for the explicit `--verify-verbose` diagnostic
+@@ -275,72 +270,32 @@
+ }
+ 
+ impl ComparisonSpec {
+-    /// Build the spec (and, implicitly, the concrete diff flags) from the
+-    /// requested strictness and whether logs are compared at all. This is the
+-    /// single place the strictness label maps onto `strip_lines`/`full_trace`,
+-    /// so the flags the diff engine sees and the flags the verdict reports can
+-    /// never drift apart.
++    /// Build the canonical policy and its report from the observation scope.
++    /// Historical stripped report values remain readable but cannot select an
++    /// active comparison here.
+     pub fn new(
+-        strictness: LogCompareStrictness,
+         compare_logs: bool,
+         diagnostic_full_trace: bool,
+         compare_io_buffers: bool,
+         record_envelope: RecordEnvelopePolicy,
+         virtualize_time: bool,
+     ) -> Self {
+-        // Map the strictness label onto the concrete diff flags AND the versioned
+-        // policy tokens in one place, so the flags the engine sees, the tokens
+-        // the verdict reports, and the strictness label can never drift apart.
+-        let (
+-            strip_lines,
+-            canonicalize_addresses,
+-            full_trace,
+-            exact_remainder,
+-            log_scope,
+-            stripped_prefixes,
+-            canonicalizations,
+-            display_name,
+-        ) = match strictness {
+-            // Lossy wholesale normalization: numbers/addresses/paths/timestamps
+-            // erased; the remainder is NOT compared exactly.
+-            LogCompareStrictness::Stripped => {
+-                debug_assert!(!diagnostic_full_trace);
+-                (
+-                    true,
+-                    false,
+-                    false,
+-                    false,
+-                    ComparedLogScope::Deterministic,
+-                    &[STRIP_WALL_CLOCK_PREFIX_V1, STRIP_UNSAFE_NORMALIZATION_V1][..],
+-                    // Under stripping, addresses are ERASED (to a single `<ADDR>`
+-                    // token), not canonicalized; there is no ordinal preserved.
+-                    &[][..],
+-                    "Stripped",
+-                )
+-            }
+-            // Canonical parity: strip only the wall-clock prefix,
+-            // canonicalize addresses, and compare every INFO message admitted
+-            // by the selected named record envelope exactly.
+-            // The explicit verbose diagnostic mode compares the all-level
+-            // superset without changing the canonicalization policy.
+-            LogCompareStrictness::Canonical => (
+-                false,
+-                true,
+-                true,
+-                true,
+-                if diagnostic_full_trace {
+-                    ComparedLogScope::FullTrace
+-                } else {
+-                    ComparedLogScope::Info
+-                },
+-                PARITY_STRIPPED_PREFIXES,
+-                PARITY_CANONICALIZATIONS,
+-                if diagnostic_full_trace {
+-                    "BitwiseFullTraceV1"
+-                } else {
+-                    "BitwiseInfoV1"
+-                },
+-            ),
++        let strictness = LogCompareStrictness::Canonical;
++        let strip_lines = false;
++        let canonicalize_addresses = true;
++        let full_trace = true;
++        let exact_remainder = true;
++        let log_scope = if diagnostic_full_trace {
++            ComparedLogScope::FullTrace
++        } else {
++            ComparedLogScope::Info
++        };
++        let stripped_prefixes = PARITY_STRIPPED_PREFIXES;
++        let canonicalizations = PARITY_CANONICALIZATIONS;
++        let display_name = if diagnostic_full_trace {
++            "BitwiseFullTraceV1"
++        } else {
++            "BitwiseInfoV1"
+         };
+         ComparisonSpec {
+             strictness,
+@@ -371,7 +326,9 @@
+     /// The `LogComparisonMode` this spec selects for the diff engine.
+     fn log_comparison_mode(&self) -> LogComparisonMode {
+         match self.log_scope {
+-            ComparedLogScope::Deterministic => LogComparisonMode::Deterministic,
++            ComparedLogScope::Deterministic => {
++                unreachable!("historical report scope is not an active comparator")
++            }
+             ComparedLogScope::Info => LogComparisonMode::Info,
+             ComparedLogScope::FullTrace => LogComparisonMode::FullTrace,
+         }
+@@ -807,12 +764,11 @@
+ /// Canonical verification defaults to INFO because INFO is the declared
+ /// `BitwiseInfoV1` observation envelope. An explicit DEBUG/TRACE request is
+ /// preserved in the capture for diagnostics, but ordinary canonical comparison
+-/// still selects INFO. Legacy stripped verification keeps its DEBUG default.
++/// still selects INFO.
+ /// The explicit full-trace diagnostic mode requires TRACE regardless of a lower
+ /// requested level.
+ pub(crate) fn verification_log_level(
+     requested: Option<LevelFilter>,
+-    strictness: LogCompareStrictness,
+     diagnostic_full_trace: bool,
+ ) -> LevelFilter {
+     if diagnostic_full_trace {
+@@ -820,10 +776,7 @@
+             .unwrap_or(LevelFilter::TRACE)
+             .max(LevelFilter::TRACE)
+     } else {
+-        requested.unwrap_or(match strictness {
+-            LogCompareStrictness::Stripped => LevelFilter::DEBUG,
+-            LogCompareStrictness::Canonical => LevelFilter::INFO,
+-        })
++        requested.unwrap_or(LevelFilter::INFO)
+     }
+ }
+ 
+@@ -855,7 +808,6 @@
+     global: &GlobalOpts,
+     name1: &str,
+     name2: &str,
+-    strictness: LogCompareStrictness,
+ ) -> ((GlobalOpts, NamedTempFile), (GlobalOpts, NamedTempFile)) {
+     let (file1, file2) = temp_log_files(name1, name2).unwrap();
+ 
+@@ -866,7 +818,7 @@
+     // screen.
+     let mut global = global.clone();
+     global.log_file = Some(path1);
+-    global.log = Some(verification_log_level(global.log, strictness, false));
++    global.log = Some(verification_log_level(global.log, false));
+ 
+     let mut global2 = global.clone();
+     global2.log_file = Some(path2);
+@@ -1190,11 +1142,8 @@
+     let mut first_divergent_left_message = None;
+     let mut first_divergent_right_message = None;
+ 
+-    // Resolve the strictness label to concrete diff flags once, and carry the
+-    // resulting spec through to the verdict so the returned outcome records
+-    // exactly which comparison certified it.
++    // Construct the canonical policy once and carry it through to the verdict.
+     let spec = ComparisonSpec::new(
+-        options.strictness,
+         options.compare_logs,
+         options.diagnostic_full_trace,
+         options.compare_io_buffers,
+@@ -1234,12 +1183,11 @@
+                 ":: {}",
+                 "Comparing captured verification logs...".yellow().bold()
+             );
+-            // The comparison semantics come from `spec` (strip_lines + mode); only
++            // The comparison semantics come from `spec`; only
+             // the printed syscall-history depth still tracks `verbose`. Historically
+             // both were flipped together, so the sole bitwise comparison was also the
+             // loudest — decoupling them lets a quiet run be bitwise-strict.
+             let diff_options = logdiff::LogDiffOpts {
+-                strip_lines: spec.strip_lines,
+                 // Thread canonical address normalization from the spec so the parity
+                 // (`Canonical`) policy actually rewrites host addresses to ordinals
+                 // in the engine; without this the verdict would REPORT
+@@ -1255,21 +1203,8 @@
+                 // structured event records.
+                 require_structured_events: true,
+                 syscall_history: if options.verbose { 10 } else { 5 },
+-                // Thread the filter facts from the spec so what the verdict *reports*
+-                // (`spec.skip_commit`/`spec.skip_detlog`) is exactly what the diff
+-                // engine *does*; the remaining filters stay at their no-op defaults.
+-                skip_commit: spec.skip_commit,
+-                skip_detlog: spec.skip_detlog,
+                 ..Default::default()
+             };
+-            // Bind the spec's recorded filter-absence to the engine's real defaults:
+-            // if `LogDiffOpts::default()` ever grew a filtering default, the spec
+-            // would silently misreport "no filters", so refuse to run in that case.
+-            debug_assert!(
+-                diff_options.ignore_lines.is_empty() != spec.ignore_lines,
+-                "ComparisonSpec.ignore_lines must match the diff engine's ignore_lines"
+-            );
+-
+             let summary = if spec.uses_bitwise_info_v1() {
+                 // This path cannot be weakened by caller-selected record or
+                 // normalization filters while its report names BitwiseInfoV1.
+@@ -1627,47 +1562,28 @@
+ 
+     #[test]
+     fn verification_capture_level_honors_info_and_preserves_explicit_debug() {
+-        assert_eq!(
+-            verification_log_level(None, LogCompareStrictness::Canonical, false),
++        assert_eq!(verification_log_level(None, false), LevelFilter::INFO);
++        assert_eq!(
++            verification_log_level(Some(LevelFilter::INFO), false,),
+             LevelFilter::INFO
+         );
+         assert_eq!(
+-            verification_log_level(
+-                Some(LevelFilter::INFO),
+-                LogCompareStrictness::Canonical,
+-                false,
+-            ),
+-            LevelFilter::INFO
+-        );
+-        assert_eq!(
+-            verification_log_level(
+-                Some(LevelFilter::DEBUG),
+-                LogCompareStrictness::Canonical,
+-                false,
+-            ),
++            verification_log_level(Some(LevelFilter::DEBUG), false,),
+             LevelFilter::DEBUG,
+             "explicit DEBUG remains captured for diagnostics"
+         );
+         assert_eq!(
+-            verification_log_level(None, LogCompareStrictness::Stripped, false),
+-            LevelFilter::DEBUG,
+-            "legacy stripped verification keeps its default"
+-        );
+-        assert_eq!(
+-            verification_log_level(
+-                Some(LevelFilter::INFO),
+-                LogCompareStrictness::Stripped,
+-                false,
+-            ),
++            verification_log_level(None, false),
++            LevelFilter::INFO,
++            "ordinary verification captures its full INFO comparison scope"
++        );
++        assert_eq!(
++            verification_log_level(Some(LevelFilter::INFO), false,),
+             LevelFilter::INFO,
+             "an explicit INFO request must not be promoted"
+         );
+         assert_eq!(
+-            verification_log_level(
+-                Some(LevelFilter::INFO),
+-                LogCompareStrictness::Canonical,
+-                true,
+-            ),
++            verification_log_level(Some(LevelFilter::INFO), true,),
+             LevelFilter::TRACE,
+             "explicit full-trace diagnostics require TRACE capture"
+         );
+@@ -1678,14 +1594,12 @@
+         left_log: TempPath,
+         right: &Output,
+         right_log: TempPath,
+-        strictness: LogCompareStrictness,
+     ) -> Result<VerificationOutcome, Error> {
+         compare_with_envelope(
+             left,
+             left_log,
+             right,
+             right_log,
+-            strictness,
+             RecordEnvelope::all_records_v1(),
+         )
+     }
+@@ -1695,7 +1609,6 @@
+         left_log: TempPath,
+         right: &Output,
+         right_log: TempPath,
+-        strictness: LogCompareStrictness,
+         record_envelope: RecordEnvelope,
+     ) -> Result<VerificationOutcome, Error> {
+         compare_two_runs(
+@@ -1711,7 +1624,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness,
+                 compare_logs: true,
+                 diagnostic_full_trace: false,
+                 compare_io_buffers: true,
+@@ -1723,20 +1635,14 @@
+         )
+     }
+ 
+-    // The default (stripped) comparison, matching what a bare `--verify` runs.
++    // The ordinary canonical comparison used by a bare `--verify`.
+     fn compare(
+         left: &Output,
+         left_log: TempPath,
+         right: &Output,
+         right_log: TempPath,
+     ) -> Result<VerificationOutcome, Error> {
+-        compare_with(
+-            left,
+-            left_log,
+-            right,
+-            right_log,
+-            LogCompareStrictness::Stripped,
+-        )
++        compare_with(left, left_log, right, right_log)
+     }
+ 
+     /// A DETLOG log message whose only variable is a numeric syscall value. The
+@@ -1875,13 +1781,13 @@
+         assert_eq!(outcome.verdict, Verdict::Matched);
+         assert!(outcome.verified());
+         assert_eq!(outcome.guest_status, ExitStatus::Exited(0));
+-        // The default `--verify` path is a stripped comparison; the verdict says so.
++        // Ordinary verification reports the canonical INFO comparison it performed.
+         assert_eq!(
+             outcome.comparison.strictness,
+-            LogCompareStrictness::Stripped
+-        );
+-        assert!(outcome.comparison.strip_lines);
+-        assert!(!outcome.comparison.full_trace);
++            LogCompareStrictness::Canonical
++        );
++        assert!(!outcome.comparison.strip_lines);
++        assert!(outcome.comparison.full_trace);
+     }
+ 
+     // Direction 1 of the exit-code/verdict decoupling: a guest that exits
+@@ -1908,7 +1814,7 @@
+         // The report also carries the comparison that produced the verdict.
+         assert_eq!(
+             report.comparison.unwrap().strictness,
+-            LogCompareStrictness::Stripped
++            LogCompareStrictness::Canonical
+         );
+         // Collapsing to the legacy exit convention still propagates the guest
+         // code; the verdict channel above is what a caller keys on.
+@@ -1976,7 +1882,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness: LogCompareStrictness::Stripped,
+                 compare_logs: false,
+                 diagnostic_full_trace: false,
+                 compare_io_buffers: false,
+@@ -2022,41 +1927,9 @@
+     }
+ 
+     #[test]
+-    fn comparison_spec_maps_strictness_to_concrete_flags() {
+-        let stripped = ComparisonSpec::new(
+-            LogCompareStrictness::Stripped,
+-            true,
+-            false,
+-            true,
+-            RecordEnvelopePolicy::AllRecordsV1,
+-            true,
+-        );
+-        assert!(stripped.strip_lines);
+-        assert!(!stripped.full_trace);
+-        assert_eq!(stripped.display_name, "Stripped");
+-        assert_eq!(
+-            stripped.stripped_prefixes,
+-            [STRIP_WALL_CLOCK_PREFIX_V1, STRIP_UNSAFE_NORMALIZATION_V1]
+-        );
+-        assert_eq!(
+-            comparison_evidence_line(&stripped).as_deref(),
+-            Some(
+-                ":: comparison=Stripped relaxations=unsafe-numeric-address-and-path-normalization/v1"
+-            )
+-        );
+-        assert_eq!(
+-            stripped.log_comparison_mode(),
+-            LogComparisonMode::Deterministic
+-        );
+-
+-        let canonical = ComparisonSpec::new(
+-            LogCompareStrictness::Canonical,
+-            true,
+-            false,
+-            true,
+-            RecordEnvelopePolicy::AllRecordsV1,
+-            true,
+-        );
++    fn comparison_spec_binds_canonical_policy_and_preserves_historical_reports() {
++        let canonical =
++            ComparisonSpec::new(true, false, true, RecordEnvelopePolicy::AllRecordsV1, true);
+         assert!(!canonical.strip_lines);
+         assert!(canonical.canonicalize_addresses);
+         assert!(canonical.exact_remainder);
+@@ -2071,6 +1944,26 @@
+         assert_eq!(canonical.log_scope, ComparedLogScope::Info);
+         assert_eq!(canonical.log_comparison_mode(), LogComparisonMode::Info);
+ 
++        let historical_stripped = ComparisonSpec {
++            strictness: LogCompareStrictness::Stripped,
++            strip_lines: true,
++            canonicalize_addresses: false,
++            full_trace: false,
++            exact_remainder: false,
++            log_scope: ComparedLogScope::Deterministic,
++            stripped_prefixes: &[STRIP_WALL_CLOCK_PREFIX_V1, STRIP_UNSAFE_NORMALIZATION_V1],
++            canonicalizations: &[],
++            display_name: "Stripped",
++            ..canonical
++        };
++        assert!(!historical_stripped.is_bitwise_parity());
++        assert_eq!(
++            comparison_evidence_line(&historical_stripped).as_deref(),
++            Some(
++                ":: comparison=Stripped relaxations=unsafe-numeric-address-and-path-normalization/v1"
++            )
++        );
++
+         let no_io_buffers = ComparisonSpec {
+             compare_io_buffers: false,
+             ..canonical
+@@ -2098,14 +1991,8 @@
+             Some(":: comparison=unknown relaxations=unknown")
+         );
+ 
+-        let diagnostic = ComparisonSpec::new(
+-            LogCompareStrictness::Canonical,
+-            true,
+-            true,
+-            true,
+-            RecordEnvelopePolicy::AllRecordsV1,
+-            true,
+-        );
++        let diagnostic =
++            ComparisonSpec::new(true, true, true, RecordEnvelopePolicy::AllRecordsV1, true);
+         assert_eq!(diagnostic.log_scope, ComparedLogScope::FullTrace);
+         assert_eq!(diagnostic.display_name, "BitwiseFullTraceV1");
+         assert_eq!(
+@@ -2150,8 +2037,7 @@
+         // Positive INFO bracket: the captured DEBUG diagnostics differ, while
+         // the one INFO event on each side matches exactly.
+         let (left, right) = make_logs(7);
+-        let matched =
+-            compare_with(&out, left, &out, right, LogCompareStrictness::Canonical).unwrap();
++        let matched = compare_with(&out, left, &out, right).unwrap();
+         assert_eq!(matched.verdict, Verdict::Matched);
+         assert_eq!(matched.comparison.log_scope, ComparedLogScope::Info);
+         assert_eq!(
+@@ -2165,8 +2051,7 @@
+         let (left, right) = make_logs(8);
+         let left_path = left.to_path_buf();
+         let right_path = right.to_path_buf();
+-        let info_diverged =
+-            compare_with(&out, left, &out, right, LogCompareStrictness::Canonical).unwrap();
++        let info_diverged = compare_with(&out, left, &out, right).unwrap();
+         assert_eq!(info_diverged.verdict, Verdict::Diverged);
+         let _ = fs::remove_file(left_path);
+         let _ = fs::remove_file(right_path);
+@@ -2190,7 +2075,6 @@
+             },
+             ComparisonOptions {
+                 verbose: true,
+-                strictness: LogCompareStrictness::Canonical,
+                 compare_logs: true,
+                 diagnostic_full_trace: true,
+                 compare_io_buffers: false,
+@@ -2210,52 +2094,30 @@
+         let _ = fs::remove_file(right_path);
+     }
+ 
+-    // The core of the strip-lines/verdict decoupling: two runs whose logs differ
+-    // ONLY in a numeric syscall value (a stand-in for a virtual-time timestamp or
+-    // a raw syscall argument) are reported MATCHED under the default stripped
+-    // comparison — because `strip_lines` normalizes the number away — but DIVERGED
+-    // under a bitwise comparison. The identical guest outputs are held constant so
+-    // the log comparison alone drives each verdict. A bare "verified" therefore
+-    // cannot say which comparison certified it; the carried `ComparisonSpec` can.
+-    #[test]
+-    fn stripped_matches_but_bitwise_diverges_on_numeric_only_log_difference() {
++    // Hold guest outputs/status constant: default verification must detect a
++    // difference in the actual numeric INFO payload and retain both logs.
++    #[test]
++    fn default_verification_diverges_on_numeric_only_log_difference() {
+         let out = output(0, b"hello\n", b"");
+-
+-        // Stripped: the numeric difference is normalized away -> Matched.
+-        let (log1, log2) = empty_logs();
+-        fs::write(&log1, detlog_with_value(100)).unwrap();
+-        fs::write(&log2, detlog_with_value(200)).unwrap();
+-        let stripped =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Stripped).unwrap();
+-        assert_eq!(stripped.verdict, Verdict::Matched);
+-        assert!(stripped.verified());
+-        assert!(stripped.comparison.strip_lines);
+-        assert!(!stripped.comparison.full_trace);
+-
+-        // Canonical: the same inputs, but every byte compared (a decimal value,
+-        // untouched by address canonicalization) -> Diverged. The verdict flips
+-        // on the comparison mode alone, and the outcome records it.
+         let (log1, log2) = empty_logs();
+         let path1 = log1.to_path_buf();
+         let path2 = log2.to_path_buf();
+         fs::write(&path1, detlog_with_value(100)).unwrap();
+         fs::write(&path2, detlog_with_value(200)).unwrap();
+-        let canonical =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
+-        assert_eq!(canonical.verdict, Verdict::Diverged);
+-        assert!(!canonical.verified());
+-        assert_eq!(
+-            canonical.comparison.strictness,
++        let outcome = compare(&out, log1, &out, log2).unwrap();
++        assert_eq!(outcome.verdict, Verdict::Diverged);
++        assert!(!outcome.verified());
++        assert_eq!(outcome.guest_status, ExitStatus::Exited(0));
++        assert_eq!(
++            outcome.comparison.strictness,
+             LogCompareStrictness::Canonical
+         );
+-        assert!(!canonical.comparison.strip_lines);
+-        assert!(canonical.comparison.full_trace);
+-        // A `--verify-json` consumer reads the strictness from the report and so
+-        // can refuse to treat a stripped match as parity.
+-        let report = verification_report(&canonical);
++        assert_eq!(outcome.comparison.display_name, "BitwiseInfoV1");
++        assert!(!outcome.comparison.strip_lines);
++        assert!(outcome.comparison.full_trace);
++        let report = verification_report(&outcome);
+         assert!(!report.verified);
+         assert_eq!(report.comparison.unwrap().strip_lines, Some(false));
+-
+         assert!(path1.exists(), "divergent run-1 log must be retained");
+         assert!(path2.exists(), "divergent run-2 log must be retained");
+         fs::remove_file(path1).unwrap();
+@@ -2291,7 +2153,6 @@
+                 },
+                 ComparisonOptions {
+                     verbose: false,
+-                    strictness: LogCompareStrictness::Canonical,
+                     compare_logs: true,
+                     diagnostic_full_trace: false,
+                     compare_io_buffers: false,
+@@ -2330,7 +2191,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness: LogCompareStrictness::Canonical,
+                 compare_logs: true,
+                 diagnostic_full_trace: false,
+                 compare_io_buffers: true,
+@@ -2470,7 +2330,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness: LogCompareStrictness::Canonical,
+                 compare_logs: true,
+                 diagnostic_full_trace: false,
+                 compare_io_buffers: false,
+@@ -2535,7 +2394,6 @@
+             },
+             ComparisonOptions {
+                 verbose: false,
+-                strictness: LogCompareStrictness::Canonical,
+                 compare_logs: true,
+                 diagnostic_full_trace: false,
+                 compare_io_buffers: false,
+@@ -2604,14 +2462,7 @@
+         )
+         .unwrap();
+ 
+-        let outcome = compare_with(
+-            &output,
+-            left,
+-            &output,
+-            right,
+-            LogCompareStrictness::Canonical,
+-        )
+-        .unwrap();
++        let outcome = compare_with(&output, left, &output, right).unwrap();
+         let report = verification_report(&outcome);
+         assert_eq!(report.verdict, Verdict::Diverged);
+         assert_eq!(report.first_divergent_scheduler_turn, Some(23));
+@@ -2663,14 +2514,7 @@
+         )
+         .unwrap();
+ 
+-        let outcome = compare_with(
+-            &left_output,
+-            left,
+-            &right_output,
+-            right,
+-            LogCompareStrictness::Canonical,
+-        )
+-        .unwrap();
++        let outcome = compare_with(&left_output, left, &right_output, right).unwrap();
+         let report = verification_report(&outcome);
+         assert_eq!(report.verdict, Verdict::Diverged);
+         assert_eq!(report.first_divergent_scheduler_turn, Some(23));
+@@ -2706,8 +2550,7 @@
+     fn empty_log_comparison_matches_but_is_never_parity() {
+         let out = output(0, b"hello\n", b"");
+         let (log1, log2) = empty_logs();
+-        let outcome =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
++        let outcome = compare_with(&out, log1, &out, log2).unwrap();
+ 
+         // The verdict itself is legitimately Matched: stdout, stderr and exit
+         // status all agree. Only the PARITY claim is refused.
+@@ -2840,7 +2683,7 @@
+         // A previous, successful invocation left a green record at this path.
+         let out = output(0, b"hello\n", b"");
+         let (log1, log2) = logs_with_identical_detlog();
+-        let good = compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
++        let good = compare_with(&out, log1, &out, log2).unwrap();
+         write_verification_json(&path, &good).unwrap();
+         let previous: serde_json::Value =
+             serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+@@ -2890,8 +2733,7 @@
+         write_pending_verification_json(&path).unwrap();
+         let out = output(0, b"hello\n", b"");
+         let (log1, log2) = logs_with_identical_detlog();
+-        let outcome =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
++        let outcome = compare_with(&out, log1, &out, log2).unwrap();
+         write_verification_json(&path, &outcome).unwrap();
+ 
+         let published: serde_json::Value =
+@@ -2907,8 +2749,7 @@
+         let path = file.path().to_path_buf();
+         let out = output(0, b"hello\n", b"");
+         let (log1, log2) = logs_with_identical_detlog();
+-        let outcome =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
++        let outcome = compare_with(&out, log1, &out, log2).unwrap();
+ 
+         write_skid_overshoot_verification_json(&path, &outcome, 2).unwrap();
+ 
+@@ -2961,8 +2802,7 @@
+         // bitwise_parity = true, which codified a green over ZERO compared
+         // events -- see `empty_log_comparison_matches_but_is_never_parity`.
+         let (log1, log2) = logs_with_identical_detlog();
+-        let outcome =
+-            compare_with(&out, log1, &out, log2, LogCompareStrictness::Canonical).unwrap();
++        let outcome = compare_with(&out, log1, &out, log2).unwrap();
+ 
+         let json = serde_json::to_string(&verification_report(&outcome)).unwrap();
+         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+@@ -3055,7 +2895,6 @@
+     fn a_green_report_says_what_it_compared_and_whether_time_was_virtual() {
+         for virtualize_time in [true, false] {
+             let spec = ComparisonSpec::new(
+-                LogCompareStrictness::Canonical,
+                 true,
+                 false,
+                 true,
+@@ -3090,14 +2929,7 @@
+     fn bitwise_parity_contract_accepts_only_named_canonical_envelopes() {
+         // Positive: the exact qualifying comparison the `--verify-strict` path
+         // produces.
+-        let full = ComparisonSpec::new(
+-            LogCompareStrictness::Canonical,
+-            true,
+-            false,
+-            true,
+-            RecordEnvelopePolicy::AllRecordsV1,
+-            true,
+-        );
++        let full = ComparisonSpec::new(true, false, true, RecordEnvelopePolicy::AllRecordsV1, true);
+         assert!(
+             full.is_bitwise_parity(),
+             "a full-INFO unstripped all-records comparison must qualify"
+@@ -3113,14 +2945,12 @@
+ 
+         // Negatives: each independent weakening of the qualifying spec must be
+         // refused, so no single relaxed dimension can pass as bitwise parity.
+-        let stripped = ComparisonSpec::new(
+-            LogCompareStrictness::Stripped,
+-            true,
+-            false,
+-            false,
+-            RecordEnvelopePolicy::AllRecordsV1,
+-            true,
+-        );
++        let stripped = ComparisonSpec {
++            strictness: LogCompareStrictness::Stripped,
++            strip_lines: true,
++            exact_remainder: false,
++            ..full
++        };
+         assert!(
+             !stripped.is_bitwise_parity(),
+             "a stripped comparison normalizes away the parity-relevant data"
+@@ -3255,7 +3085,6 @@
+             left,
+             &output,
+             right,
+-            LogCompareStrictness::Canonical,
+             RecordEnvelope::dbt_evidence_transport_v1(),
+         )
+         .unwrap();
+@@ -3290,7 +3119,6 @@
+             left,
+             &output,
+             right,
+-            LogCompareStrictness::Canonical,
+             RecordEnvelope::dbt_evidence_transport_v1(),
+         )
+         .unwrap();
+@@ -3321,7 +3149,6 @@
+             left,
+             &output,
+             right,
+-            LogCompareStrictness::Canonical,
+             RecordEnvelope::caller_defined(keep_everything),
+         )
+         .unwrap();
+@@ -3343,9 +3170,22 @@
+     // spec would silently misreport "no filters" — this catches that.
+     #[test]
+     fn default_log_diff_opts_apply_no_line_filters() {
++        use clap::Parser;
+         let default = logdiff::LogDiffOpts::default();
+-        assert!(default.ignore_lines.is_empty());
+-        assert!(!default.skip_commit);
+-        assert!(!default.skip_detlog);
+-    }
+-}
++        assert_eq!(default.comparison, LogComparisonMode::Info);
++        assert!(default.canonicalize_addresses);
++        for flag in [
++            "--strip-lines",
++            "--unsafe-strip-lines",
++            "--ignore-lines=payload",
++            "--skip-commit",
++            "--skip-detlog",
++            "--include-detlogs=syscall",
++            "--git-diff",
++        ] {
++            let error = logdiff::LogDiffOpts::try_parse_from(["log-diff", flag]).unwrap_err();
++            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
++            assert!(error.to_string().contains(flag.split('=').next().unwrap()));
++        }
++    }
++}
+--- a/hermit-cli/src/canonical_verdict.rs
++++ b/hermit-cli/src/canonical_verdict.rs
+@@ -621,6 +621,21 @@
+             self.require_exact_output_match()?;
+         }
+         if self.verified && self.verdict == Verdict::Matched && self.bitwise_parity {
++            if !self
++                .compared_log_messages
++                .as_ref()
++                .is_some_and(|counts| counts.left == counts.right)
++            {
++                return Err(format!(
++                    "canonical match has unequal compared log-message counts: {}/{}",
++                    self.compared_log_messages
++                        .as_ref()
++                        .map_or(0, |counts| counts.left),
++                    self.compared_log_messages
++                        .as_ref()
++                        .map_or(0, |counts| counts.right),
++                ));
++            }
+             Ok(())
+         } else {
+             Err(format!(
+@@ -824,6 +839,31 @@
+         let mut weak = report(LogCompareStrictness::Canonical, true, 1, 1);
+         weak.comparison.as_mut().unwrap().record_envelope = RecordEnvelopeReport::CallerDefined;
+         assert!(weak.require_canonical_match().is_err());
++    }
++
++    #[test]
++    fn canonical_match_rejects_unequal_counts_without_rewriting_history() {
++        let unequal = report(LogCompareStrictness::Canonical, true, 2, 3);
++        let raw = serde_json::to_vec(&unequal).unwrap();
++        let retained = VerificationReport::from_json_slice(&raw).unwrap();
++        assert_eq!(retained, unequal);
++        assert_eq!(serde_json::to_vec(&retained).unwrap(), raw);
++        assert!(retained.require_canonical_comparison().is_ok());
++        assert_eq!(
++            retained.require_canonical_match().unwrap_err(),
++            "canonical match has unequal compared log-message counts: 2/3"
++        );
++        let mut divergence = retained;
++        divergence.verdict = Verdict::Diverged;
++        divergence.verified = false;
++        divergence.bitwise_parity = false;
++        assert!(divergence.require_canonical_comparison().is_ok());
++        assert!(divergence.require_canonical_match().is_err());
++        assert!(
++            report(LogCompareStrictness::Canonical, true, 2, 2)
++                .require_canonical_match()
++                .is_ok()
++        );
+     }
+ 
+     /// The exact bytes hermit writes for a run that reached no verdict, copied
+--- a/hermit-cli/tests/verification_report_consumers.rs
++++ b/hermit-cli/tests/verification_report_consumers.rs
+@@ -8,6 +8,9 @@
+ 
+ #[path = "common/hermit_binary.rs"]
+ mod hermit_test;
++
++#[path = "../../scripts/lib/verified_command.rs"]
++mod verified_command;
+ 
+ use std::fs;
+ use std::fs::OpenOptions;
+@@ -30,6 +33,18 @@
+ }
+ 
+ const CONSUMERS: &[Consumer] = &[
++    Consumer {
++        path: "tests/e2e/lib/applications/common.sh",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verdict_file\"",
++        minimum_invocations: 1,
++    },
++    Consumer {
++        path: "tests/reproducible-builds/run.sh",
++        requirement: "canonical-match",
++        invocation: "\"$VERIFICATION_REPORT_BIN\" canonical-match \"$verify_report\"",
++        minimum_invocations: 1,
++    },
+     Consumer {
+         path: "tests/backend-parity/e9patch_corpus.py",
+         requirement: "matched",
+@@ -384,7 +399,7 @@
+ #[test]
+ fn every_named_consumer_delegates_to_the_shared_typed_reader() {
+     let root = root();
+-    assert_eq!(CONSUMERS.len(), 11, "the published consumer list changed");
++    assert_eq!(CONSUMERS.len(), 13, "the published consumer list changed");
+     for consumer in CONSUMERS {
+         let source = fs::read_to_string(root.join(consumer.path))
+             .unwrap_or_else(|error| panic!("cannot read {}: {error}", consumer.path));
+@@ -626,3 +641,342 @@
+     }
+     fs::remove_dir_all(temporary).expect("remove temporary directory");
+ }
++
++#[test]
++fn generated_verification_commands_validate_fresh_evidence_before_guest_status() {
++    let temporary = temporary_directory();
++    let cell = temporary.join("cell with spaces");
++    fs::create_dir_all(cell.join("captures")).unwrap();
++    std::os::unix::fs::symlink(
++        env!("CARGO_BIN_EXE_verification-report"),
++        temporary.join("verification-report"),
++    )
++    .unwrap();
++    let producer = temporary.join("producer");
++    write_executable(
++        &producer,
++        r#"#!/usr/bin/env bash
++set -eu
++printf 'entered\n' >"$PRODUCER_ENTRY"
++case "$REPORT_MODE" in
++  copy) cp -- "$REPORT_INPUT" "$1";;
++  empty) : >"$1";;
++  absent) :;;
++  *) exit 99;;
++esac
++exit "$PRODUCER_STATUS"
++"#,
++    );
++    let input = temporary.join("input.json");
++    let entry = temporary.join("producer-entered");
++    let valid = current_synthetic_match();
++    let mut status23 = valid.clone();
++    status23["guest_exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["left"]["exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["right"]["exit_code"] = serde_json::json!(23);
++    let mut cases = vec![
++        ("valid", valid.clone(), "copy", 0, Some(0)),
++        ("guest23", status23, "copy", 23, Some(23)),
++        ("absent", valid.clone(), "absent", 23, None),
++        ("empty", valid.clone(), "empty", 23, None),
++        (
++            "invalid-json-type",
++            Value::String("not a report".into()),
++            "copy",
++            23,
++            None,
++        ),
++    ];
++    for field in [
++        "strictness",
++        "compare_logs",
++        "verified",
++        "missing",
++        "zero",
++        "unequal",
++    ] {
++        let mut report = valid.clone();
++        match field {
++            "strictness" => report["comparison"]["strictness"] = serde_json::json!("stripped"),
++            "compare_logs" => report["comparison"]["compare_logs"] = serde_json::json!(false),
++            "verified" => report["verified"] = serde_json::json!(false),
++            "missing" => {
++                report.as_object_mut().unwrap().remove("guest_signal");
++            }
++            "zero" => report["compared_log_messages"] = serde_json::json!({"left": 0, "right": 0}),
++            "unequal" => report["compared_log_messages"]["right"] = serde_json::json!(3),
++            _ => unreachable!(),
++        }
++        cases.push((field, report, "copy", 23, None));
++    }
++    for mode in ["verify", "replay", "chaos"] {
++        let report_path = cell.join("captures").join(if mode == "chaos" {
++            "verify-seed-17.json"
++        } else {
++            "verify.json"
++        });
++        let command = verified_command::hermit_verification_command(
++            mode,
++            Some(17),
++            "\"$FAKE_PRODUCER\" \"$verify_report\"",
++        );
++        for (name, report, report_mode, status, expected) in &cases {
++            write_report(&input, report);
++            // A report from a previous attempt must never qualify this one.
++            write_report(&report_path, &valid);
++            let output = Command::new("bash")
++                .args(["-c", &command])
++                .env("cell", &cell)
++                .env("hermit_bin", temporary.join("synthetic-hermit"))
++                .env_remove("VERIFICATION_REPORT_BIN")
++                .env("FAKE_PRODUCER", &producer)
++                .env("REPORT_INPUT", &input)
++                .env("REPORT_MODE", report_mode)
++                .env("PRODUCER_STATUS", status.to_string())
++                .env("PRODUCER_ENTRY", &entry)
++                .output()
++                .expect("execute the actual generated shell wrapper and typed reader");
++            assert!(entry.is_file(), "{mode}/{name} did not reach its producer");
++            fs::remove_file(&entry).unwrap();
++            if let Some(code) = expected {
++                assert_eq!(
++                    output.status.code(),
++                    Some(*code),
++                    "{mode}/{name}: {output:?}"
++                );
++            } else {
++                assert!(
++                    matches!(output.status.code(), Some(1 | 2)),
++                    "{mode}/{name}: {output:?}"
++                );
++                assert!(String::from_utf8_lossy(&output.stderr).contains("verification-report"));
++            }
++        }
++        let output = Command::new("bash")
++            .args(["-c", &command])
++            .env("cell", &cell)
++            .env("hermit_bin", temporary.join("synthetic-hermit"))
++            .env("VERIFICATION_REPORT_BIN", temporary.join("absent-reader"))
++            .env("FAKE_PRODUCER", &producer)
++            .env("PRODUCER_ENTRY", &entry)
++            .output()
++            .unwrap();
++        assert_eq!(output.status.code(), Some(2));
++        assert!(
++            !entry.exists(),
++            "missing reader must refuse before the producer"
++        );
++    }
++    assert_eq!(
++        verified_command::hermit_verification_command("custom", None, "exit 23"),
++        "exit 23"
++    );
++    let generator = fs::read_to_string(root().join("scripts/manifest-to-commands.rs")).unwrap();
++    assert!(
++        generator.contains("verified_command::hermit_verification_command(mode, seed, &command)")
++    );
++    fs::remove_dir_all(temporary).unwrap();
++}
++
++#[test]
++fn application_shell_consumer_uses_the_real_typed_reader() {
++    let output = Command::new("bash")
++        .arg(root().join("tests/e2e/lib/applications/test_verdict_discrimination.sh"))
++        .env(
++            "VERIFICATION_REPORT_BIN",
++            env!("CARGO_BIN_EXE_verification-report"),
++        )
++        .env_remove("HERMIT_E2E_EMPTY_WORKDIR")
++        .output()
++        .expect("run synthetic producers through the actual application shell consumer");
++    assert!(output.status.success(), "{output:?}");
++    let stdout = String::from_utf8(output.stdout).unwrap();
++    for case in [
++        "strict-parity",
++        "valid-guest-status23",
++        "contradictory-compare_logs",
++        "contradictory-strictness",
++        "contradictory-verified",
++        "empty-report",
++        "infrastructure-error",
++        "pinned-root-workdir",
++    ] {
++        assert!(
++            stdout.contains(case),
++            "missing actual case {case}: {stdout}"
++        );
++    }
++    assert!(stdout.contains("all verdict-discrimination cases passed"));
++}
++
++#[test]
++fn canonical_reader_rejects_unequal_counts_while_matched_and_inspection_stay_distinct() {
++    let temporary = temporary_directory();
++    let path = temporary.join("verify.json");
++    let mut report = current_synthetic_match();
++    report["compared_log_messages"]["right"] = serde_json::json!(3);
++    write_report(&path, &report);
++    // `matched` is a weaker named requirement; it is not canonical qualification.
++    let matched = verdict("matched", &path);
++    assert_eq!(matched.status.code(), Some(0), "{matched:?}");
++    let canonical = Command::new(env!("CARGO_BIN_EXE_verification-report"))
++        .args(["--json", "canonical-match"])
++        .arg(&path)
++        .output()
++        .unwrap();
++    assert_eq!(canonical.status.code(), Some(1), "{canonical:?}");
++    assert!(
++        String::from_utf8_lossy(&canonical.stderr)
++            .contains("canonical match has unequal compared log-message counts: 2/3")
++    );
++    let inspected: Value = serde_json::from_slice(&canonical.stdout).unwrap();
++    assert_eq!(
++        inspected["compared_log_messages"],
++        report["compared_log_messages"]
++    );
++    report["compared_log_messages"]["right"] = serde_json::json!(2);
++    write_report(&path, &report);
++    let canonical = verdict("canonical-match", &path);
++    assert_eq!(canonical.status.code(), Some(0), "{canonical:?}");
++    fs::remove_dir_all(temporary).unwrap();
++}
++
++#[test]
++fn reproducible_build_consumer_keeps_artifact_and_typed_verdict_requirements() {
++    let temporary = temporary_directory();
++    let script = temporary.join("tests/reproducible-builds/run.sh");
++    fs::create_dir_all(script.parent().unwrap()).unwrap();
++    fs::copy(root().join("tests/reproducible-builds/run.sh"), &script).unwrap();
++    let fixture = script.parent().unwrap().join("build-time-0.1.3");
++    fs::create_dir_all(fixture.join("target/release/deps")).unwrap();
++    fs::write(
++        fixture.join("target/release/deps/libbuild_time-control.so"),
++        b"synthetic",
++    )
++    .unwrap();
++    let tools = temporary.join("tools");
++    fs::create_dir(&tools).unwrap();
++    // Controlled command outputs exercise the real shell pipeline. No compiler,
++    // Hermit guest, proc macro, or VM executes in this native consumer control.
++    write_executable(&tools.join("cargo"), "#!/usr/bin/env bash\nexit 0\n");
++    write_executable(&tools.join("sleep"), "#!/usr/bin/env bash\nexit 0\n");
++    write_executable(
++        &tools.join("rustc"),
++        r#"#!/usr/bin/env python3
++import os,pathlib,sys
++if sys.argv[1:] == ['--version']:
++    print('rustc nightly synthetic-control')
++else:
++    output=pathlib.Path(sys.argv[sys.argv.index('-o')+1])
++    output.write_text('same' if os.environ['NATIVE_EQUAL']=='1' else output.name)
++"#,
++    );
++    let producer = tools.join("hermit");
++    write_executable(
++        &producer,
++        r#"#!/usr/bin/env python3
++import os,pathlib,shutil,sys
++args=sys.argv[1:]
++if '--verify-json' in args:
++    pathlib.Path(os.environ['PRODUCER_ENTRY']).write_text('entered')
++    report=pathlib.Path(args[args.index('--verify-json')+1])
++    mode=os.environ['REPORT_MODE']
++    if mode=='copy': shutil.copyfile(os.environ['REPORT_INPUT'],report)
++    elif mode=='empty': report.write_bytes(b'')
++    elif mode!='absent': raise AssertionError(mode)
++    sys.exit(int(os.environ['PRODUCER_STATUS']))
++output=pathlib.Path(args[args.index('-o')+1])
++output.write_text(output.name if os.environ['HERMIT_DIFFERENT']=='1' else 'same')
++"#,
++    );
++    let valid = current_synthetic_match();
++    let input = temporary.join("input.json");
++    let entry = temporary.join("verification-entered");
++    let artifacts = fixture.join("target/reproducible-builds");
++    fs::create_dir_all(&artifacts).unwrap();
++    let mut contradictory = valid.clone();
++    contradictory["comparison"]["compare_logs"] = serde_json::json!(false);
++    let mut status23 = valid.clone();
++    status23["guest_exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["left"]["exit_code"] = serde_json::json!(23);
++    status23["compared_outputs"]["right"]["exit_code"] = serde_json::json!(23);
++    for (
++        name,
++        report,
++        report_mode,
++        guest_status,
++        native_equal,
++        hermit_different,
++        expected,
++        entered,
++    ) in [
++        ("valid", valid.clone(), "copy", 0, "0", "0", 0, true),
++        ("guest23", status23, "copy", 23, "0", "0", 23, true),
++        (
++            "contradictory",
++            contradictory,
++            "copy",
++            23,
++            "0",
++            "0",
++            1,
++            true,
++        ),
++        ("absent", valid.clone(), "absent", 23, "0", "0", 1, true),
++        ("empty", valid.clone(), "empty", 23, "0", "0", 1, true),
++        ("native-equal", valid.clone(), "copy", 0, "1", "0", 1, false),
++        (
++            "hermit-different",
++            valid.clone(),
++            "copy",
++            0,
++            "0",
++            "1",
++            1,
++            false,
++        ),
++    ] {
++        write_report(&input, &report);
++        write_report(&artifacts.join("verify.json"), &valid);
++        let output = Command::new("bash")
++            .arg(&script)
++            .env(
++                "PATH",
++                format!("{}:{}", tools.display(), std::env::var("PATH").unwrap()),
++            )
++            .env("HERMIT_BIN", &producer)
++            .env(
++                "VERIFICATION_REPORT_BIN",
++                env!("CARGO_BIN_EXE_verification-report"),
++            )
++            .env("REPORT_INPUT", &input)
++            .env("REPORT_MODE", report_mode)
++            .env("PRODUCER_STATUS", guest_status.to_string())
++            .env("PRODUCER_ENTRY", &entry)
++            .env("NATIVE_EQUAL", native_equal)
++            .env("HERMIT_DIFFERENT", hermit_different)
++            .output()
++            .expect("execute actual artifact checks and typed-report consumption");
++        assert_eq!(output.status.code(), Some(expected), "{name}: {output:?}");
++        assert_eq!(entry.exists(), entered, "{name}: {output:?}");
++        if entered {
++            fs::remove_file(&entry).unwrap();
++        }
++        assert_eq!(
++            String::from_utf8_lossy(&output.stdout)
++                .contains("PASS: native artifacts differ; strict ptrace Hermit artifacts match."),
++            expected == 0,
++            "{name}: {output:?}"
++        );
++        if name == "native-equal" {
++            assert!(
++                String::from_utf8_lossy(&output.stderr)
++                    .contains("Native builds unexpectedly matched")
++            );
++        }
++        if name == "hermit-different" {
++            assert!(String::from_utf8_lossy(&output.stderr).contains("Hermit builds differed"));
++        }
++    }
++    fs::remove_dir_all(temporary).unwrap();
++}
+--- a/hermit-verify/src/chaos_replay.rs
++++ b/hermit-verify/src/chaos_replay.rs
+@@ -93,14 +93,9 @@
+             output_stderr: true,
+             verify_stdout: true,
+             verify_stderr: true,
+-            verify_detlog_syscalls: true,
+-            verify_detlog_syscall_results: true,
+-            verify_detlog_others: true,
+-            verify_commits: false,
+             verify_exit_statuses: true,
+             verify_desync: true,
+             verify_schedules: true,
+-            ignore_lines: vec![String::from("CHAOSRAND")],
+         }
+     }
+ }
+--- a/hermit-verify/src/common/verify.rs
++++ b/hermit-verify/src/common/verify.rs
+@@ -25,16 +25,6 @@
+ pub struct LogDiffOptions {
+     /// Number of syscalls to display when failure
+     pub syscall_history: usize,
+-    /// Whether to skip commits for determinism check
+-    pub skip_commits: bool,
+-    /// Whether to skip syscalls for determinism check
+-    pub skip_detlog_syscalls: bool,
+-    /// Whether to skip syscall results for determinism check
+-    pub skip_detlog_syscall_results: bool,
+-    /// Whether to skip the rest of DETLOGs for determinism check
+-    pub skip_detlog_others: bool,
+-    /// Which lines to ignore for DETLOGs
+-    pub ignore_lines: Vec<String>,
+ }
+ 
+ impl LogDiffOptions {
+@@ -44,33 +34,12 @@
+         // explicitly here: `hermit_bin` defaults to whatever `HERMIT_BIN` or
+         // the PATH supplies, which can be a published bundle built without the
+         // flag, and passing it there is `error: unexpected argument`, exit 2.
+-        let mut result: Vec<String> = Vec::new();
+-        if self.skip_detlog_others && self.skip_detlog_syscalls && self.skip_detlog_syscall_results
+-        {
+-            result.push("--skip-detlog".to_owned());
+-        } else {
+-            if !self.skip_detlog_others {
+-                result.push("--include-detlogs=other".to_owned());
+-            }
+-            if !self.skip_detlog_syscall_results {
+-                result.push("--include-detlogs=syscallresult".to_owned());
+-            }
+-            if !self.skip_detlog_syscalls {
+-                result.push("--include-detlogs=syscall".to_owned());
+-            }
+-        }
+-
+-        if self.skip_commits {
+-            result.push("--skip-commit".to_owned())
+-        }
+-
+-        result.push(format!("--syscall-history={}", self.syscall_history));
+-
+-        for ignore_lines in self.ignore_lines {
+-            result.push(format!("--ignore-lines={}", ignore_lines));
+-        }
+-
+-        result
++        // An older binary may still have a lossy default. Require its explicit
++        // canonical capability; an unsupported flag must fail without a fallback.
++        vec![
++            "--canonical-info".to_owned(),
++            format!("--syscall-history={}", self.syscall_history),
++        ]
+     }
+ }
+ 
+@@ -191,15 +160,25 @@
+         result
+     }
+ 
+-    pub fn verify_logs(
++    fn log_diff_command(
+         &self,
+         left: &RunEnvironment,
+         right: &RunEnvironment,
+         options: LogDiffOptions,
+-    ) -> anyhow::Result<bool> {
+-        println!("{}", "::  Comparing log files".bold());
++    ) -> std::process::Command {
+         let mut command = std::process::Command::new(&self.hermit_bin);
+         command.args(self.build_command_args(left, right, options));
++        command
++    }
++
++    pub fn verify_logs(
++        &self,
++        left: &RunEnvironment,
++        right: &RunEnvironment,
++        options: LogDiffOptions,
++    ) -> anyhow::Result<bool> {
++        println!("{}", "::  Comparing log files".bold());
++        let mut command = self.log_diff_command(left, right, options);
+ 
+         println!("{}", format!("    {}", display_cmd(&command)).bold());
+         Ok(command.status()?.success())
+@@ -231,38 +210,44 @@
+     use crate::common::TemporaryEnvironmentBuilder;
+ 
+     #[test]
+-    fn test_build_command_args_ignore_lines_provided() -> anyhow::Result<()> {
+-        let env = TemporaryEnvironmentBuilder::new().run_count(2).build()?;
+-        let verify = Verify::new(PathBuf::from("hermit"));
+-        let args = verify.build_command_args(
++    fn log_diff_command_requires_canonical_info_without_filters() -> anyhow::Result<()> {
++        let env = TemporaryEnvironmentBuilder::new().run_count(2).build()?;
++        let verify = Verify::new(PathBuf::from("hermit"));
++        let command = verify.log_diff_command(
+             &env.runs()[0],
+             &env.runs()[1],
+-            LogDiffOptions {
+-                ignore_lines: vec![String::from("test")],
+-                ..Default::default()
+-            },
+-        );
+-
+-        assert_eq!(args.into_iter().any(|x| x == "--ignore-lines=test"), true);
+-        Ok(())
+-    }
+-
+-    #[test]
+-    fn test_build_command_args_ignore_lines_not_provided() -> anyhow::Result<()> {
+-        let env = TemporaryEnvironmentBuilder::new().run_count(2).build()?;
+-        let verify = Verify::new(PathBuf::from("hermit"));
+-        let args = verify.build_command_args(
+-            &env.runs()[0],
+-            &env.runs()[1],
+-            LogDiffOptions {
+-                ignore_lines: Vec::new(),
+-                ..Default::default()
+-            },
+-        );
+-
++            LogDiffOptions { syscall_history: 5 },
++        );
++        assert_eq!(command.get_program(), OsStr::new("hermit"));
+         assert_eq!(
+-            args.into_iter().any(|x| x.contains("--ignore-lines")),
+-            false
++            command.get_args().collect::<Vec<_>>(),
++            vec![
++                OsStr::new("log-diff"),
++                OsStr::new("--canonical-info"),
++                OsStr::new("--syscall-history=5"),
++                env.runs()[0].log_file_path.as_os_str(),
++                env.runs()[1].log_file_path.as_os_str(),
++            ]
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn log_diff_command_preserves_default_diagnostic_history() -> anyhow::Result<()> {
++        let env = TemporaryEnvironmentBuilder::new().run_count(2).build()?;
++        let verify = Verify::new(PathBuf::from("hermit"));
++        let command =
++            verify.log_diff_command(&env.runs()[0], &env.runs()[1], LogDiffOptions::default());
++        assert_eq!(command.get_program(), OsStr::new("hermit"));
++        assert_eq!(
++            command.get_args().collect::<Vec<_>>(),
++            vec![
++                OsStr::new("log-diff"),
++                OsStr::new("--canonical-info"),
++                OsStr::new("--syscall-history=0"),
++                env.runs()[0].log_file_path.as_os_str(),
++                env.runs()[1].log_file_path.as_os_str(),
++            ]
+         );
+         Ok(())
+     }
+--- a/hermit-verify/src/trace_replay.rs
++++ b/hermit-verify/src/trace_replay.rs
+@@ -119,30 +119,11 @@
+             output_stderr: true,
+             verify_stdout: true,
+             verify_stderr: true,
+-            verify_detlog_syscalls: true,
+-            verify_detlog_syscall_results: true,
+-            // A chaos recording uses precise ptrace single-stepping while schedule replay does
+-            // not. On x86, syscall saves RFLAGS in r11, so the tracer-owned Trap Flag (0x100)
+-            // appears only in the recording's register DETLOGs. Scheduler bookkeeping also
+-            // differs by design. Keep comparing guest-visible syscall traffic and results, but
+-            // exclude these instrumentation-only entries for chaos trace replay.
+-            verify_detlog_others: !self.split_branches && !self.chaos,
+-            verify_commits: false,
++            // Comparison includes all INFO records, including instrumentation
++            // differences. A mismatch must be diagnosed rather than filtered.
+             verify_exit_statuses: true,
+             verify_desync: true,
+             verify_schedules: false,
+-            ignore_lines: if self.chaos {
+-                vec![
+-                    "CHAOSRAND".to_string(),
+-                    "advance global time for scheduler turn".to_string(),
+-                    // exit_group has no result, and schedule replay can finish at the end of the
+-                    // recorded schedule without re-entering its syscall callback. Exit status is
+-                    // compared separately.
+-                    "inbound syscall: exit_group".to_string(),
+-                ]
+-            } else {
+-                Vec::new()
+-            },
+         }
+     }
+ 
+@@ -197,26 +178,22 @@
+     }
+ 
+     #[test]
+-    fn non_chaos_replay_compares_all_detlogs() {
++    fn non_chaos_replay_preserves_output_and_status_checks() {
+         let options = trace_replay_opts(false).options();
+ 
+-        assert!(options.verify_detlog_syscalls);
+-        assert!(options.verify_detlog_syscall_results);
+-        assert!(options.verify_detlog_others);
++        assert!(options.verify_stdout);
++        assert!(options.verify_stderr);
++        assert!(options.verify_exit_statuses);
++        assert!(options.verify_desync);
+     }
+ 
+     #[test]
+-    fn chaos_replay_excludes_instrumentation_only_detlogs() {
++    fn chaos_replay_preserves_output_and_status_checks() {
+         let options = trace_replay_opts(true).options();
+ 
+-        assert!(options.verify_detlog_syscalls);
+-        assert!(options.verify_detlog_syscall_results);
+-        assert!(!options.verify_detlog_others);
+-        assert!(
+-            options
+-                .ignore_lines
+-                .iter()
+-                .any(|line| line == "inbound syscall: exit_group")
+-        );
++        assert!(options.verify_stdout);
++        assert!(options.verify_stderr);
++        assert!(options.verify_exit_statuses);
++        assert!(options.verify_desync);
+     }
+ }
+--- a/hermit-verify/src/use_case.rs
++++ b/hermit-verify/src/use_case.rs
+@@ -24,23 +24,9 @@
+     pub output_stderr: bool,
+     pub verify_stdout: bool,
+     pub verify_stderr: bool,
+-    pub verify_detlog_syscalls: bool,
+-    pub verify_detlog_syscall_results: bool,
+-    pub verify_detlog_others: bool,
+     pub verify_desync: bool,
+-    pub verify_commits: bool,
+     pub verify_exit_statuses: bool,
+     pub verify_schedules: bool,
+-    pub ignore_lines: Vec<String>,
+-}
+-
+-impl UseCaseOptions {
+-    fn should_log_diff(&self) -> bool {
+-        self.verify_commits
+-            || self.verify_detlog_others
+-            || self.verify_detlog_syscalls
+-            || self.verify_detlog_syscall_results
+-    }
+ }
+ 
+ pub trait UseCase {
+@@ -50,14 +36,9 @@
+             output_stderr: true,
+             verify_stdout: true,
+             verify_stderr: true,
+-            verify_detlog_syscalls: true,
+-            verify_detlog_syscall_results: true,
+-            verify_detlog_others: true,
+-            verify_commits: true,
+             verify_exit_statuses: true,
+             verify_desync: true,
+             verify_schedules: false,
+-            ignore_lines: Vec::new(),
+         }
+     }
+ 
+--- a/hermit-verify/src/use_case/run_usecase.rs
++++ b/hermit-verify/src/use_case/run_usecase.rs
+@@ -35,20 +35,7 @@
+         result &= verify.verify_stderr(left, right)?;
+     }
+ 
+-    if options.should_log_diff() {
+-        result &= verify.verify_logs(
+-            left,
+-            right,
+-            LogDiffOptions {
+-                ignore_lines: options.ignore_lines,
+-                skip_commits: !options.verify_commits,
+-                skip_detlog_others: !options.verify_detlog_others,
+-                skip_detlog_syscalls: !options.verify_detlog_syscalls,
+-                skip_detlog_syscall_results: !options.verify_detlog_syscall_results,
+-                syscall_history: 5,
+-            },
+-        )?;
+-    }
++    result &= verify.verify_logs(left, right, LogDiffOptions { syscall_history: 5 })?;
+ 
+     if options.verify_exit_statuses {
+         result &= verify.verify_exit_statuses(left, right)?;
+--- /dev/null
++++ b/scripts/lib/verified_command.rs
+@@ -0,0 +1,24 @@
++//! Shell rendering shared by the manifest command generator and its native controls.
++
++/// Preserve the producer's exit status only after its fresh `--verify-json`
++/// report satisfies the current typed canonical-match requirement.
++///
++/// The caller owns the outer timeout, environment, and complete command argv.
++/// This adds no build or fallback: the maintained sibling reader must already
++/// exist, or the caller must select it with `VERIFICATION_REPORT_BIN`.
++pub fn hermit_verification_command(mode: &str, seed: Option<i64>, command: &str) -> String {
++    let report_path = match mode {
++        "verify" | "replay" => "\"$cell/captures/verify.json\"".to_owned(),
++        "chaos" => format!("\"$cell/captures/verify-seed-{}.json\"", seed.unwrap_or(0)),
++        _ => return command.to_owned(),
++    };
++    format!(
++        "( verification_report_bin=${{VERIFICATION_REPORT_BIN:-$(dirname -- \"$hermit_bin\")/verification-report}}; \
++         if [ ! -x \"$verification_report_bin\" ]; then \
++         printf 'verification-report reader unavailable: %s; build with cargo build -p hermit --bin verification-report or set VERIFICATION_REPORT_BIN\\n' \"$verification_report_bin\" >&2; exit 2; fi; \
++         verify_report={report_path}; rm -f -- \"$verify_report\" || exit; \
++         verify_status=0; {command} || verify_status=$?; \
++         \"$verification_report_bin\" canonical-match \"$verify_report\" || exit; \
++         exit \"$verify_status\" )"
++    )
++}
+--- a/scripts/manifest-to-commands.rs
++++ b/scripts/manifest-to-commands.rs
+@@ -17,6 +17,9 @@
+ //! shell command per enabled `(test, mode, backend)` cell. Commands compile
+ //! implicit C/Rust guests and prepare shell wrappers before invoking Hermit, so
+ //! any individual line can be rerun from the repository root.
++//! Verification cells also require the sibling `verification-report` binary
++//! (`cargo build --release -p hermit --bin hermit --bin verification-report`),
++//! or an already-built reader selected with `VERIFICATION_REPORT_BIN`.
+ //!
+ //! ```cargo
+ //! [dependencies]
+@@ -28,6 +31,9 @@
+ 
+ #[path = "lib/rust_script_prelude.rs"]
+ mod rust_script_prelude;
++
++#[path = "lib/verified_command.rs"]
++mod verified_command;
+ 
+ #[path = "../ci/manifest-plan/src/manifest_value.rs"]
+ mod manifest_value;
+@@ -365,7 +371,7 @@
+         }
+         other => fail(format!("unsupported mode `{other}`")),
+     };
+-    command
++    verified_command::hermit_verification_command(mode, seed, &command)
+ }
+ 
+ fn bounded_invocation(command: &str, id: &str, attempt: &str) -> String {
+--- a/tests/backend-parity/README.md
++++ b/tests/backend-parity/README.md
+@@ -11,12 +11,14 @@
+ publisher `compat-envelope/publish-scorecard.py`, whose exact invocation the
+ runner prints at the end of the run.
+ 
+-## Current ratchet
++## Recorded ratchets
+ 
+ The L1 ratchet (`--strict`, run three times, byte-identical stdout) and the
+-Stripped verification ratchet (`--strict --verify`, Hermit's double-run
+-comparison after selected numeric, address, path, and time fields are stripped)
+-are tracked separately. Stripped verification is not L2.
++historical Stripped verification ratchet are recorded separately below. The
++Stripped measurements used a double-run comparison that removed selected
++numeric, address, path, and time fields; they are not L2. Current `--verify`
++selects canonical INFO comparison and requires fresh typed evidence. The
++policy change does not remeasure any row in these tables.
+ 
+ L1 (`hermit run --strict`):
+ 
+@@ -38,9 +40,10 @@
+ means Hermit re-ran the guest and found the two normalized DETLOG
+ streams equal after stripping selected fields; it does not mean the full syscall
+ and scheduling traces were bitwise-identical and does not establish L2.
+-KVM now compares retained logs too. Plain `--verify` uses the Stripped policy on
+-every backend; `--verify-strict` selects canonical `BitwiseInfoV1` on every
+-backend. Whether a KVM cell matches is a measured property of that workload.
++KVM now compares retained logs too. Plain `--verify` selects canonical
++`BitwiseInfoV1` on every backend; `--verify-strict` remains an accepted
++compatibility spelling. Whether a KVM cell matches is a measured property of
++that workload, established from the typed report and equal positive counts.
+ The historical 22/28 guest-visible count predates retained-log comparison and
+ is therefore not reused as a current result.
+ 
+@@ -181,18 +184,26 @@
+ an assurance level. With `--strict`, they are L1 strict-mode evidence backed by
+ three byte-identical runs. The runner disables PMU timeslicing for portability.
+ 
+-### Stripped verification (`--verify`)
++### Canonical verification (`--verify`)
+ 
+ Passing `--verify` adds a two-run comparison: the runner invokes
+-`hermit run --strict --verify --verify-allow both`. Plain `--verify` now uses
+-the Stripped retained-log comparison for ptrace, DBT, and KVM;
+-`--verify-strict` selects canonical `BitwiseInfoV1` for all three. The KVM
+-statuses above predate that change and came from the older guest-output and
+-exit-status comparison; they must not be reused as current log-comparison
+-results. A fresh matrix run must be judged from its typed `--verify-json`
+-report. The matrix still hard-codes KVM's expected tier, printed ratchet, and
+-observation description to `guest`; those three consumers must be updated
+-before the 28 cells can be remeasured under the current comparator.
++`hermit run --strict --verify --verify-allow both`. Plain `--verify` selects
++canonical `BitwiseInfoV1` for ptrace, DBT, and KVM. `--verify-strict` remains a
++compatibility spelling for the same policy. The historical KVM statuses above
++came from the older guest-output and exit-status comparison; they must not be
++reused as current log-comparison results. A fresh matrix run must be judged
++from its typed `--verify-json` report. Historical `guest` and Stripped tier
++decoding remains useful for old reports, but cannot substitute for a current
++matched canonical verdict with `bitwise_parity: true` and equal positive
++compared-message counts.
++
++The current matrix still expects `stripped` for non-KVM cells and `guest` for
++KVM cells, and prints those policy/ratchet labels. Those are active consumers,
++not merely historical decoding: a `bitwise` result can satisfy their weaker
++expected tier, while the printed requested-policy description remains stale.
++Updating those expectations and labels, with their discrimination controls,
++remains a separate obligation; this default-policy change does not update the
++matrix or remeasure its cells.
+ 
+ Because `--verify` diverts the guest's own stdout into per-run temporary logs,
+ this path cannot re-check stdout the way the L1 path does; instead it enforces
+@@ -507,9 +518,9 @@
+ python3 tests/backend-parity/run_matrix.py --backend kvm --require-backend
+ ```
+ 
+-Enforce the Stripped verification ratchet on any backend by adding `--verify`
+-(it implies `--strict`); Hermit's double-run then asserts the recorded
+-verification kind per contract:
++Request canonical verification on any backend by adding `--verify` (it implies
++`--strict`). Judge the fresh typed report under the current contract; the old
++Stripped ratchet values above remain historical measurements:
+ 
+ ```bash
+ python3 tests/backend-parity/run_matrix.py --backend ptrace --verify --require-backend
+--- a/tests/bin/README.md
++++ b/tests/bin/README.md
+@@ -92,9 +92,10 @@
+ ### Polling-mode diagnostic
+ 
+ Polling mode observes the kernel's owner-death word update instead of relying
+-on Detcore's precise waiter queue. It passes Stripped verification, not L2
+-(ptrace backend, ERROR log level, `--debug-futex-mode polling`, no determinism
+-relaxations):
++on Detcore's precise waiter queue. The historical attempt below passed
++Stripped verification, not L2 (ptrace backend, ERROR log level,
++`--debug-futex-mode polling`, no determinism relaxations). Its banner does not
++establish a result under the current canonical default:
+ 
+ ```text
+ $ timeout 20s target/release/hermit --log error run --strict --verify \
+--- a/tests/e2e/determinism-stress/README.md
++++ b/tests/e2e/determinism-stress/README.md
+@@ -1,14 +1,14 @@
+ # Targeted determinism stress tests
+ 
+-These scripts exercise the ptrace backend with Stripped verification, not L2.
+-Every test case invokes the exact verifier path:
++These scripts exercise the ptrace backend with the default canonical INFO
++comparison. Every test case invokes the exact verifier path:
+ 
+ ```text
+ hermit --log info run --strict --verify -- PROGRAM [ARGS...]
+ ```
+ 
+-Canonical strictness reports `relaxations=none`. Stripped strictness records two
+-stripped-prefix policy tokens: `real-wall-clock-prefix/v1` and
++Canonical strictness reports `relaxations=none`. Historical Stripped reports
++recorded two stripped-prefix policy tokens: `real-wall-clock-prefix/v1` and
+ `unsafe-numeric-address-and-path-normalization/v1`; the latter erases numbers,
+ addresses, and paths wholesale. The stress summary reports the comparison and
+ its comparator relaxations exactly as Hermit emitted them. This is
+@@ -27,10 +27,11 @@
+ ```
+ 
+ `DETERMINISM_STRESS_REPETITIONS=20` repeats every internal two-run comparison
+-twenty times for repeated Stripped stress evidence. Repetition does not promote
+-Stripped evidence to L4 because the underlying comparison is not L2. The
+-default is one Stripped comparison so the full targeted matrix remains
+-practical. Other controls are:
++twenty times. Each repetition needs its own valid comparison evidence; a
++repetition count or success marker alone does not establish L4. Historical
++Stripped results are not promoted by the default-policy change. The default is
++one canonical comparison so the full targeted matrix remains practical. Other
++controls are:
+ 
+ ```text
+ HERMIT_BIN                           release Hermit path
+@@ -100,6 +101,7 @@
+ `make_det_test_variants!` and direct `#[test]` cases for syscall semantics in
+ `detcore/tests/{misc,time,...}`, including Jason White's historical lit-test
+ and scheduler-affinity work. There is no generated one-test-per-syscall
+-completeness manifest. This shell suite therefore adds explicit Stripped
+-verification coverage at the CLI boundary rather than treating green unit
+-tests as complete end-to-end syscall coverage. It does not establish L2.
++completeness manifest. This shell suite exercises the CLI verifier boundary;
++green unit tests are not complete end-to-end syscall coverage. Its marker-based
++acceptance and textual summaries alone do not establish a typed nonempty
++canonical verdict, and the policy change supplies no new measured result.
+--- a/tests/e2e/lib/applications/common.sh
++++ b/tests/e2e/lib/applications/common.sh
+@@ -12,6 +12,7 @@
+ REPO_ROOT=$(cd -- "$APPLICATION_DIR/../../../.." && pwd)
+ readonly REPO_ROOT
+ readonly HERMIT_BIN=${HERMIT_BIN:-"$REPO_ROOT/target/debug/hermit"}
++readonly VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-$(dirname -- "$HERMIT_BIN")/verification-report}
+ readonly HERMIT_APPLICATION_TIMEOUT=${HERMIT_APPLICATION_TIMEOUT:-120}
+ 
+ function require_commands {
+@@ -58,6 +59,9 @@
+ # too. `bitwise_parity` is true only under the canonical (`--verify-strict`)
+ # policy with syscall output-buffer hashes present, and `compared_log_messages` is what makes it falsifiable: a strict
+ # CONFIGURATION is not evidence that the configured comparison had any data.
++# The field reads below preserve established diagnostics. Positive acceptance
++# additionally requires the producer-owned verification-report canonical-match
++# reader, which rejects contradictory, incomplete, or filtered evidence.
+ #
+ # Four outcomes are kept distinct, because collapsing them is how a harness
+ # reports green for work it never did:
+@@ -134,6 +138,12 @@
+         execution_root_args=("--mount=type=tmpfs,target=/test" "--workdir=/test")
+     fi
+ 
++    if [[ ! -x $VERIFICATION_REPORT_BIN ]]; then
++        printf '%s: REFUSED: verification-report reader unavailable: %s; build with cargo build -p hermit --bin verification-report or set VERIFICATION_REPORT_BIN\n' \
++            "$label" "$VERIFICATION_REPORT_BIN" >&2
++        return 1
++    fi
++
+     local stdout_file stderr_file verdict_file status=0
+     stdout_file=$(mktemp "${TMPDIR:-/tmp}/hermit-app-stdout.XXXXXX")
+     stderr_file=$(mktemp "${TMPDIR:-/tmp}/hermit-app-stderr.XXXXXX")
+@@ -203,6 +213,8 @@
+             failure="NO-RESULT: compared 0 log messages (left=$counts_left right=$counts_right); a strict configuration is not evidence the comparison had data"
+         elif [[ $parity != True ]]; then
+             failure="DIVERGED: bitwise_parity=$parity verdict=$verdict_name (a stripped match does NOT earn L2)"
++        elif ! "$VERIFICATION_REPORT_BIN" canonical-match "$verdict_file"; then
++            failure="REFUSED: typed report did not establish nonempty canonical parity"
+         fi
+     fi
+ 
+--- a/tests/e2e/lib/applications/test_verdict_discrimination.sh
++++ b/tests/e2e/lib/applications/test_verdict_discrimination.sh
+@@ -25,6 +25,13 @@
+ trap 'rm -rf -- "$WORK"' EXIT
+ 
+ failures=0
++
++# The producer is synthetic; the report reader is the real current binary.
++export VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-"$HERE/../../../../target/debug/verification-report"}
++if [[ ! -x $VERIFICATION_REPORT_BIN ]]; then
++    printf 'Build the current reader with cargo build -p hermit --bin verification-report, or set VERIFICATION_REPORT_BIN\n' >&2
++    exit 1
++fi
+ 
+ # A fake Hermit that writes $FAKE_REPORT (if set) to the --verify-json path and
+ # exits $FAKE_STATUS. Nothing here depends on a real guest or a real comparison.
+@@ -40,6 +47,9 @@
+ if [[ -n ${FAKE_REPORT:-} && -n $verdict_path ]]; then
+     printf '%s' "$FAKE_REPORT" >"$verdict_path"
+ fi
++if [[ ${FAKE_EMPTY_REPORT:-0} == 1 && -n $verdict_path ]]; then
++    : >"$verdict_path"
++fi
+ if [[ -n ${FAKE_ARGS_FILE:-} ]]; then
+     printf '%s\n' "$@" >"$FAKE_ARGS_FILE"
+ fi
+@@ -69,6 +79,16 @@
+     out=$(cd "${EXPECT_CWD:-$PWD}" && \
+         run_hermit_verify "$name" "${invocation[@]}" 2>&1) || rc=$?
+     unset FAKE_REPORT FAKE_STATUS
++
++    if [[ $want == STATUS23 ]]; then
++        if ((rc == 23)) && [[ $out == *'strict L2 parity held, but the guest exited nonzero (status 23)'* ]]; then
++            printf '  ok   %-28s valid evidence before guest status 23\n' "$name"
++        else
++            printf '  FAIL %-28s expected typed parity and status 23, got rc=%s:\n%s\n' "$name" "$rc" "$out"
++            failures=$((failures + 1))
++        fi
++        return
++    fi
+ 
+     if [[ $want == PASS ]]; then
+         if ((rc == 0)); then
+@@ -80,7 +100,7 @@
+         return
+     fi
+ 
+-    if ((rc == 0)); then
++    if ((rc == 0 || rc == 23)); then
+         printf '  FAIL %-28s expected refusal (%s) but it PASSED\n' "$name" "$want"
+         failures=$((failures + 1))
+     elif [[ $out != *"$want"* ]]; then
+@@ -91,13 +111,63 @@
+     fi
+ }
+ 
+-parity_report='{"verified":true,"bitwise_parity":true,"verdict":"matched","comparison":{"strictness":"canonical"},"compared_log_messages":{"left":1200,"right":1200},"guest_exit_code":0,"guest_signal":null}'
++# Complete synthetic current producer report, including both output operands.
++# The retained historical reports below intentionally remain unchanged.
++parity_report=$(python3 - <<'PY'
++import json
++empty = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
++output = dict(exit_code=0, signal=None, stdout_sha256=empty, stdout_bytes=0,
++              stderr_sha256=empty, stderr_bytes=0)
++print(json.dumps(dict(
++    verified=True, bitwise_parity=True, verdict='matched',
++    infrastructure_error=None, no_result_reason=None,
++    comparison=dict(strictness='canonical', display_name='BitwiseInfoV1',
++        compare_logs=True, compare_io_buffers=True, log_scope='info',
++        record_envelope='all_records_v1', virtualize_time=True, strip_lines=False,
++        canonicalize_addresses=True, full_trace=True, exact_remainder=True,
++        stripped_prefixes=['real-wall-clock-prefix/v1'],
++        canonicalizations=['host-address-to-first-appearance-ordinal/v1'],
++        ignore_lines=False, skip_commit=False, skip_detlog=False),
++    compared_log_messages=dict(left=1200, right=1200),
++    compared_outputs=dict(left=output, right=output),
++    guest_exit_code=0, guest_signal=None,
++    first_divergent_scheduler_turn=None, first_divergent_virtual_nanoseconds=None,
++    first_divergent_record=None, first_divergent_syscall=None,
++    first_divergent_left_message=None, first_divergent_right_message=None)))
++PY
++)
+ 
+ printf 'run_hermit_verify verdict discrimination\n'
+ 
+ # POSITIVE. Without this the negatives prove nothing: a reader that always
+ # refused would pass every one of them.
+ expect strict-parity PASS "$parity_report" 0
++
++status23_report=$(python3 -c 'import json,sys; r=json.loads(sys.argv[1]); r["guest_exit_code"]=23; r["compared_outputs"]["left"]["exit_code"]=23; r["compared_outputs"]["right"]["exit_code"]=23; print(json.dumps(r))' "$parity_report")
++expect valid-guest-status23 STATUS23 "$status23_report" 23
++
++for mutation in strictness compare_logs verified missing_field unequal_counts; do
++    report=$(python3 - "$parity_report" "$mutation" <<'PY'
++import json,sys
++r=json.loads(sys.argv[1])
++if sys.argv[2] == 'strictness': r['comparison']['strictness']='stripped'
++elif sys.argv[2] == 'compare_logs': r['comparison']['compare_logs']=False
++elif sys.argv[2] == 'verified': r['verified']=False
++elif sys.argv[2] == 'missing_field': del r['guest_signal']
++elif sys.argv[2] == 'unequal_counts': r['compared_log_messages']['right']=1199
++else: raise AssertionError(sys.argv[2])
++print(json.dumps(r))
++PY
++)
++    expect "contradictory-$mutation" REFUSED "$report" 23
++done
++
++export FAKE_EMPTY_REPORT=1
++expect empty-report REFUSED "$parity_report" 0
++unset FAKE_EMPTY_REPORT
++
++expect infrastructure-error 'INFRASTRUCTURE ERROR: kind=skid_overshoot count=2' \
++    '{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error","infrastructure_error":{"kind":"skid_overshoot","count":2},"comparison":null,"compared_log_messages":null}' 1
+ 
+ export HERMIT_E2E_EMPTY_WORKDIR=/test FAKE_ARGS_FILE="$WORK/pinned-root-args"
+ expect pinned-root-workdir PASS "$parity_report" 0
+--- a/tests/reproducible-builds/README.md
++++ b/tests/reproducible-builds/README.md
+@@ -9,15 +9,20 @@
+ under Hermit. Native object files differ because they embed host wall time.
+ Hermit virtualizes that clock, so its two object files are byte-for-byte
+ identical. It also runs the compiler command with `--strict --verify` to check
+-status, output, and Stripped execution logs. That comparison removes selected
+-numeric, address, path, and time fields; it is not an L2 comparison.
++status, output, and canonical INFO logs under the default policy. The runner
++retains `verify.json` beside the objects and requires the current typed reader's
++nonempty canonical match before accepting the verification command's status.
++The independent object-file comparison remains the artifact oracle.
+ 
+ ```bash
+-cargo build --release -p hermit --bin hermit
++cargo build --release -p hermit --bin hermit --bin verification-report
+ with-proxy ./tests/reproducible-builds/run.sh
+ ```
+ 
+-Set `HERMIT_BIN` to test another Hermit binary. Generated objects remain under
++Set `HERMIT_BIN` to test another Hermit binary. The typed reader defaults to its
++sibling `verification-report`; use `VERIFICATION_REPORT_BIN` to select an
++already-built reader at another path. Missing readers are refused before the
++fixture builds. Generated objects remain under
+ the fixture's ignored `target/reproducible-builds/` directory for inspection.
+ 
+ ## Scope
+@@ -25,9 +30,9 @@
+ - Backend: ptrace (the default).
+ - Hermit mode: strict, with no determinism relaxations.
+ - Assurance: two independent L1 builds with a direct bitwise artifact check,
+-  plus a Stripped `--strict --verify` run of the same compiler command. The
+-  direct object-file comparison, not bare `--verify`, supplies the bitwise
+-  artifact claim.
++  plus a default canonical `--strict --verify` invocation of the same compiler
++  command whose current typed report must satisfy canonical-match. The
++  direct object-file comparison supplies the bitwise artifact claim.
+ - Artifact: an ELF object produced with `rustc --emit=obj`. Avoiding the linker
+   keeps the example focused on the compile-time clock input.
+ - Compiler: Hermit's pinned nightly with `-Z threads=1`, which keeps `rustc`
+--- a/tests/reproducible-builds/run.sh
++++ b/tests/reproducible-builds/run.sh
+@@ -5,11 +5,18 @@
+ repo_root=$(cd -- "$script_dir/../.." && pwd)
+ fixture="$script_dir/build-time-0.1.3"
+ hermit_bin=${HERMIT_BIN:-"$repo_root/target/release/hermit"}
++VERIFICATION_REPORT_BIN=${VERIFICATION_REPORT_BIN:-$(dirname -- "$hermit_bin")/verification-report}
+ artifact_dir="$fixture/target/reproducible-builds"
+ 
+ if [[ ! -x "$hermit_bin" ]]; then
+     printf 'Hermit binary not found: %s\n' "$hermit_bin" >&2
+     printf 'Build it with: cargo build --release -p hermit --bin hermit\n' >&2
++    exit 1
++fi
++
++if [[ ! -x "$VERIFICATION_REPORT_BIN" ]]; then
++    printf 'verification-report reader unavailable: %s\n' "$VERIFICATION_REPORT_BIN" >&2
++    printf 'Build it with: cargo build --release -p hermit --bin verification-report, or set VERIFICATION_REPORT_BIN\n' >&2
+     exit 1
+ fi
+ 
+@@ -67,11 +74,20 @@
+ 
+ # Pre-create the output so both verification runs observe the same unlink.
+ : > "$artifact_dir/verified.o"
++verify_report="$artifact_dir/verify.json"
++rm -f -- "$verify_report"
++verify_status=0
+ # The single-quoted variables expand in the guest bash process.
+ # shellcheck disable=SC2016
+-"$hermit_bin" run --strict --verify --workdir "$fixture" -- \
++"$hermit_bin" run --strict --verify --verify-json "$verify_report" --workdir "$fixture" -- \
+     bash -c 'output=$1; shift; rm -f "$output"; "$@" -o "$output"' \
+-    _ "$artifact_dir/verified.o" "${compile[@]}"
++    _ "$artifact_dir/verified.o" "${compile[@]}" || verify_status=$?
++
++"$VERIFICATION_REPORT_BIN" canonical-match "$verify_report" || exit 1
++if ((verify_status != 0)); then
++    printf 'Compiler verification matched, but the guest exited %s\n' "$verify_status" >&2
++    exit "$verify_status"
++fi
+ 
+ printf 'native-one  %s\n' "$native_one"
+ printf 'native-two  %s\n' "$native_two"

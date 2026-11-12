@@ -1,0 +1,83 @@
+[
+  {
+    "path": "/home/newton/.cargo/bin/rustc",
+    "resolved_path": "/home/newton/.cargo/bin/rustup",
+    "bytes": 20838840,
+    "mode": 493,
+    "sha256": "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10",
+    "symlink": "rustup",
+    "already_bound": true
+  },
+  {
+    "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc",
+    "resolved_path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc",
+    "bytes": 645000,
+    "mode": 493,
+    "sha256": "d3a664c970a9fd8361b64194861bebc1ae37b9054e5ee3400dc1c9e691797eea",
+    "symlink": null,
+    "already_bound": true
+  },
+  {
+    "path": "/home/newton/.cargo/bin/rust-script",
+    "resolved_path": "/home/newton/.cargo/bin/rust-script",
+    "bytes": 3589808,
+    "mode": 493,
+    "sha256": "90a6cc5197f2d35f9d9a7c3b30a1a8ca7dcfcfa645024fa4b7a1d565461d7a00",
+    "symlink": null,
+    "already_bound": true
+  },
+  {
+    "path": "/usr/bin/env",
+    "resolved_path": "/usr/bin/env",
+    "bytes": 45088,
+    "mode": 493,
+    "sha256": "1caef498bf8afe1633c37cbe6ec6e10908cfdf032505d85c0b14ce906bae489f",
+    "symlink": null,
+    "already_bound": true
+  },
+  {
+    "path": "/usr/bin/bash",
+    "resolved_path": "/usr/bin/bash",
+    "bytes": 1389072,
+    "mode": 493,
+    "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf",
+    "symlink": null,
+    "already_bound": true
+  },
+  {
+    "path": "/usr/bin/dirname",
+    "resolved_path": "/usr/bin/dirname",
+    "bytes": 27952,
+    "mode": 493,
+    "sha256": "dcccd2b58cda47c25292457d1153e612a68599ad7086c3b90a66ed568ab8950b",
+    "symlink": null,
+    "already_bound": false
+  },
+  {
+    "path": "/usr/bin/mkdir",
+    "resolved_path": "/usr/bin/mkdir",
+    "bytes": 69752,
+    "mode": 493,
+    "sha256": "da3bde12d5b5f917f33c06b9227a83628620b4900dd39029443eac6c91801993",
+    "symlink": null,
+    "already_bound": false
+  },
+  {
+    "path": "/usr/bin/mktemp",
+    "resolved_path": "/usr/bin/mktemp",
+    "bytes": 40560,
+    "mode": 493,
+    "sha256": "3b0e9db4727c2e13ad1e441f392ee544ea77e03ccccd4556a15d69ef6884c44e",
+    "symlink": null,
+    "already_bound": false
+  },
+  {
+    "path": "/usr/bin/rm",
+    "resolved_path": "/usr/bin/rm",
+    "bytes": 61432,
+    "mode": 493,
+    "sha256": "a094d9cb463a6d9906d66153a3c3cee6ca47cc0b54fb4eedfe0d4b877c174a7d",
+    "symlink": null,
+    "already_bound": false
+  }
+]

@@ -1,0 +1,206 @@
+[
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/scheduler.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/scheduler.rs",
+    "bytes": 353840,
+    "sha256": "d9b94c41fb688d46bfae5420bb0319a8ad26249f39691f11d2dec908394da358",
+    "git_entry": "100644 blob 466b0e8957223da6be5742f0ab226aa6ffa216a7\tdetcore/src/scheduler.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/tool_global.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/tool_global.rs",
+    "bytes": 254033,
+    "sha256": "a8d1df963c23b7143346f080c5eabc0bbcf3db81c977fcf4d8e994231aa66e61",
+    "git_entry": "100644 blob 8d0c19e140d5fb190467f6e1c14ef25231f3f3f8\tdetcore/src/tool_global.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/tool_local.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/tool_local.rs",
+    "bytes": 149300,
+    "sha256": "21b1c6a82dd74eb521654d529be96c200d787ea86973c6e5b6ccfc3e3a037327",
+    "git_entry": "100644 blob 1097fcc4c629e28085aadbcaeea3c229265c5161\tdetcore/src/tool_local.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/lib.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/lib.rs",
+    "bytes": 162820,
+    "sha256": "5dcad52c85ca1a6dc2e1ab93f484ea54142e3aebf58cf26fe25dd55814572554",
+    "git_entry": "100644 blob 0b80163383d2fe770bfd4652e798d1f1b4cd9569\tdetcore/src/lib.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/syscalls/threads.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/syscalls/threads.rs",
+    "bytes": 138063,
+    "sha256": "8a7adc4492141e6c6a62952ee0ecd989586ec1e638f9c5178f309b11c0d33381",
+    "git_entry": "100644 blob c367b029f07870fa06640589a94fccea45636b40\tdetcore/src/syscalls/threads.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/config.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/config.rs",
+    "bytes": 415,
+    "sha256": "a38a140412681d24ce088372e407bd577d6167f9f7915c7a31f04b69b98bcfa2",
+    "git_entry": "100644 blob 9d9b6504b4dd1ba3c0f4a08f6118a0fee74ea4a1\tdetcore/src/config.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "hermit-cli/src/lib.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/hermit-cli/src/lib.rs",
+    "bytes": 205203,
+    "sha256": "2c354a05de69312b0c2ccebecfc2b023d5fc3d8de6f06704b1e8d2bcd63eade0",
+    "git_entry": "100644 blob 771ee698016eaca572a347de236903a3459339ac\thermit-cli/src/lib.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie/src/guest.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie/src/guest.rs",
+    "bytes": 19585,
+    "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a",
+    "git_entry": "100644 blob fb4de8c2b10dd59031f07623f537528cfc7aecfa\treverie/src/guest.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/runtime.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/runtime.rs",
+    "bytes": 160114,
+    "sha256": "401b33b2b7a099c52470804dbd2c53f2ccca1fc834ef15ec2584bf8f52a74946",
+    "git_entry": "100644 blob e99508f85dba6f1f0d07bddbf020dcd01eecb3c1\treverie-kvm/src/runtime.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/executor.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/executor.rs",
+    "bytes": 1398935,
+    "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e",
+    "git_entry": "100644 blob 85f69a79eff33e34cc4c1acd1f9b8b28a8252a57\treverie-kvm/src/executor.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/vm.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/vm.rs",
+    "bytes": 311450,
+    "sha256": "42ecbb5238c074cb901f50e1e04b45b0ddf9d9dcdecb56dbd54fdb0610db952d",
+    "git_entry": "100644 blob fc60e9050869ca82a4c97c01f82390e74b88351c\treverie-kvm/src/vm.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie/src/signal.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie/src/signal.rs",
+    "bytes": 6673,
+    "sha256": "ee8d4b4415be5465473aac2528b9f140367c722cc6dc38531243f8c8a8da88bb",
+    "git_entry": "100644 blob 7ed7202809b7f0c508cffdf403be84988bf72047\treverie/src/signal.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie/src/tool.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie/src/tool.rs",
+    "bytes": 24381,
+    "sha256": "6f65c3689503298f09ed71d43ee2212a5e3ca3af160a112772379ec80b685023",
+    "git_entry": "100644 blob 27eefff62feb5b64fafab295a9acaf3d4ea7f7ea\treverie/src/tool.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/child_exit_signal_tests.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/child_exit_signal_tests.rs",
+    "bytes": 21507,
+    "sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b",
+    "git_entry": "100644 blob 024adb4dd9df85d684786026076c369493c98ea2\treverie-kvm/src/child_exit_signal_tests.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/child_exit_runtime_tests.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/child_exit_runtime_tests.rs",
+    "bytes": 5724,
+    "sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115",
+    "git_entry": "100644 blob 876491ee67a4a20115d2f7ced4195c2d77de3a89\treverie-kvm/src/child_exit_runtime_tests.rs",
+    "same_as_retained_earlier_source": true
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore-model/src/config.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore-model/src/config.rs",
+    "bytes": 73871,
+    "sha256": "61224aa5e8c05f312a4a37eb868fb8bab48d14f1238c38bb46ee28886a96aa37",
+    "git_entry": "100644 blob 6205e6751fb0256d363214404e37e17d420e384b\tdetcore-model/src/config.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/resources.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/resources.rs",
+    "bytes": 22595,
+    "sha256": "c3f71f4331b4d454fae23590510c5d7f1200c954864886dbede67027a5d0bd68",
+    "git_entry": "100644 blob 60e2533ed5f7c670bea92d3555fe49dcf12dde82\tdetcore/src/resources.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/tool_global/tests/backend_failure_tests.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/hermit/detcore/src/tool_global/tests/backend_failure_tests.rs",
+    "bytes": 27241,
+    "sha256": "115357f22d3b42c0a44b701789476a107a1284acbd70e0d17dfa6bc2be8ff97d",
+    "git_entry": "100644 blob 929716888550aedfdc6c33aaee226a7964619938\tdetcore/src/tool_global/tests/backend_failure_tests.rs",
+    "same_as_retained_earlier_source": false
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "path": "detcore/src/thread_tree.rs",
+    "unavailable": true,
+    "stderr": "fatal: path 'detcore/src/thread_tree.rs' does not exist in '5bc8dfd9a2c024426aaefe504f250a71394bbb09'\n"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/runtime/failure.rs",
+    "unavailable": true,
+    "stderr": "fatal: path 'reverie-kvm/src/runtime/failure.rs' does not exist in '7d863ab3f02639731713a01467b2548c41e3dbfb'\n"
+  },
+  {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+    "revision": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+    "path": "reverie-kvm/src/runtime/native_test_support.rs",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/sources/reverie/reverie-kvm/src/runtime/native_test_support.rs",
+    "bytes": 17882,
+    "sha256": "c3be9c6a4a0ad3e2910a1a1c490c203077da70e9b5308ea9f2f5c990536bb6c5",
+    "git_entry": "100644 blob c2711888541b54f027b3edc066b784f59dd6a3e5\treverie-kvm/src/runtime/native_test_support.rs",
+    "same_as_retained_earlier_source": false
+  }
+]

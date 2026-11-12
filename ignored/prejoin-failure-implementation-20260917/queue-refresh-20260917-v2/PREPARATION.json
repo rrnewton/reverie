@@ -1,0 +1,6 @@
+{
+  "prior_caller": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/read_operation.py",
+  "prior_caller_sha256": "f41bc04c0181d2ec85e17aac18495624a2775185fb47071652dd9eec16062422",
+  "delta": "Remove only the extra 1 GiB RLIMIT_AS, returning to the established queue reader address-space behavior. Keep actual argv, proxy, 60-second wall, 15-second CPU and 16 MiB stream bounds.",
+  "prior_observation": "All three requests aborted with runtime/cgo pthread_create failure and SIGABRT under the added cap; exact operation causing resource refusal is not traced. No response body obtained. Prior raw records remain intact."
+}

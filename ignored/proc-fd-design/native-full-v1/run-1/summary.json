@@ -1,0 +1,10 @@
+{
+  "status": "failed",
+  "error": "native-full failed",
+  "outcome_counts": {
+    "ok": 426,
+    "failed": 1,
+    "ignored": 0
+  },
+  "scope": "Retained native outcome or preparation/accounting failure; no repair or retry."
+}

@@ -1,0 +1,167 @@
+{
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/frozen-cleanup-inventory-supplement-d750224/source",
+  "base": "1145835fc804f47ae48b29b89009e6937184175a",
+  "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+  "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+  "files": [
+    {
+      "path": "agent-utils/py/tests/test_packaging_infrastructure.py",
+      "bytes": 21532,
+      "sha256": "281efe49f6009689a8f110a4dd75456d36129cd70c525a2f1aaf50203e77c85b",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/tests/test_packaging_infrastructure.py",
+      "git_blob": "6a0f60208292a60fff0c61fe4724a245d32b9f0f",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/Makefile",
+      "bytes": 5840,
+      "sha256": "76c4f53cb5f6438344e283fa22ff16bd4b35bee4c1ec35fcc6cadc43f2dcff8f",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "Makefile",
+      "git_blob": "54ef589879ab38499691dfcc4ac2f4878d24f106",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/py/pyproject.toml",
+      "bytes": 974,
+      "sha256": "774ef2794445ad6bd89a93e4d67acb451d9c1b28966822162808e264eaf85779",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/pyproject.toml",
+      "git_blob": "e24ecf26549febb94887aad46e8bcd81aebe865d",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/py/wrkslots/tests/conftest.py",
+      "bytes": 263,
+      "sha256": "51b32b1f30cb363b49cb34468997fb30b01fb8bca6caac991005d52652781c67",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/wrkslots/tests/conftest.py",
+      "git_blob": "55e2fe0ba598e49a28ab23a8aa1862175f9a1fdb",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/py/tests/conftest.py",
+      "bytes": 2462,
+      "sha256": "2c4fb723f32dbb8843a0549016c5540ac7009edb0ba73cebd5fad4e4298ee210",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/tests/conftest.py",
+      "git_blob": "5f088917d93a7a9f07984fa0e5198b23dad72c3a",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/wrkslots/tests/test_lifecycle.py",
+      "git_blob": "e743489d28c601cc5b208aef4dd4318bcd99b402",
+      "git_mode": "100644"
+    },
+    {
+      "path": "agent-utils/py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "mode": "0o755",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "py/wrkslots/cli.py",
+      "git_blob": "f3e2bdd46775145124369ef1265ce5f965c23872",
+      "git_mode": "100755"
+    },
+    {
+      "path": "agent-utils/AGENTS.md",
+      "bytes": 9687,
+      "sha256": "e686649a85d3764a4a3f00df3756ff46e6364254e0d31038ab01d9d0753c0163",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "git_path": "AGENTS.md",
+      "git_blob": "35e67cc78b71e45885abcba8458f43be1270317d",
+      "git_mode": "100644"
+    },
+    {
+      "path": "base/py/tests/test_packaging_infrastructure.py",
+      "bytes": 20896,
+      "sha256": "49fae7da74a5ecb42682352ef4fe656eedddf88d617a0b31bb9c38db0e4ce810",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "1145835fc804f47ae48b29b89009e6937184175a",
+      "git_path": "py/tests/test_packaging_infrastructure.py",
+      "git_blob": "a246346f4d47d33ab4339af9f09e5c1fa8eb6015",
+      "git_mode": "100644"
+    },
+    {
+      "path": "prior-base/py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 786856,
+      "sha256": "5c32f4ddebce138685bf330ad467e6f3ef46cebb80790277c944a3184afd20ab",
+      "mode": "0o644",
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "revision": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "git_path": "py/wrkslots/tests/test_lifecycle.py",
+      "git_blob": "b5a913d3895722388e43a0d935cb9dc652e81284",
+      "git_mode": "100644"
+    }
+  ],
+  "repositories": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "1145835fc804f47ae48b29b89009e6937184175a",
+      "head": "d750224cbf10c5a3b35eec40fa4d57d0e98493cb",
+      "tree": "8a41f1130199bc2dde1f60e6d053f1817375c94a",
+      "changed": [
+        "py/tests/test_packaging_infrastructure.py"
+      ],
+      "patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0"
+    }
+  },
+  "candidate_patch_sha256": "cd9bf13efb96c3cafa2c12e2c88cef1190fd8843b9138ccd0ffe682af37739b0",
+  "prior_approved_pair": {
+    "parent": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917",
+      "base": "0510ee72b3c94f164b62d6a0d24be912b23b490b",
+      "head": "fba5d50c96756889bc5c2d3e6caffb9adc8bcb7a",
+      "tree": "f127f6563d771eb172980af74e398fed8b6e0edd",
+      "changed": [
+        "ci-hub/validate/start_unit.py",
+        "ci-hub/validate/tests/test_start_unit.py"
+      ],
+      "patch_sha256": "2fed738285f0a8d1426293e2d804faee5f603921abf6adec82b10796b3563d12"
+    },
+    "agent-utils": {
+      "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils",
+      "base": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+      "head": "1145835fc804f47ae48b29b89009e6937184175a",
+      "tree": "e470a86697cbb9590c23d45ee5fab9ade12aab01",
+      "changed": [
+        "py/wrkslots/cli.py",
+        "py/wrkslots/tests/test_lifecycle.py"
+      ],
+      "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940"
+    }
+  },
+  "prior_literal_review_sha256": "b4bb147c3ad525d26962745beca5fc90fea0bb311c0ef7a96fe02c6cb5beeaae"
+}

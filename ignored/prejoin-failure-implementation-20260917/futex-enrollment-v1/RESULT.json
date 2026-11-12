@@ -1,0 +1,262 @@
+{
+  "status": "passed",
+  "error": null,
+  "active_stage": null,
+  "accepted_count": 4,
+  "accepted_vm_count": 4,
+  "accepted_static_count": 0,
+  "unexecuted_count": 0,
+  "unexecuted": [],
+  "observed": [
+    {
+      "stage": "vm-01",
+      "test": "vm::tests::fatal_worker_ro_delayed_waiter_qualifies",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 7.134291836,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 455962000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T175420Z-934136.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 941698,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1826593528812,
+          "CPUUsageNSec": 455962000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-enrollment-v1/vm-01/result.json",
+      "result_sha256": "10c086e0bdf9367c6373ce709ac051dc50c4e499a1c70ac3033dea3012b307c0",
+      "stdout_bytes": 178,
+      "stdout_sha256": "acabd7149ca676f9ed5775712918b57e308dd41f0783e337a076466e38290872",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "7ced28ab120bab1cc67d1baed4944e93b6e67ca8f0a256627eaf14683b1c6e9b",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T175420Z-934136.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "vm-02",
+      "test": "vm::tests::fatal_worker_rw_delayed_waiter_qualifies",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 3.855429346,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 424450000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T175430Z-953468.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 955527,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1826600317861,
+          "CPUUsageNSec": 424450000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-enrollment-v1/vm-02/result.json",
+      "result_sha256": "dd810fe70070dace0cf5b1bee279e71b9e79d651b90ee9d782dedd767aa7ffa9",
+      "stdout_bytes": 178,
+      "stdout_sha256": "aecf24e038748cfbaa40ef4b262297ed20cca3897796e5628d01ae0f76d242d8",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "0477768b0b387361fd47fbaa451b1fa10ef0152272f10728d24031b5f556e980",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T175430Z-953468.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "vm-03",
+      "test": "vm::tests::fatal_worker_ro_failed_store_still_wakes",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 3.231693839,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 281353000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T175436Z-966037.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 968834,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1826605835561,
+          "CPUUsageNSec": 281353000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-enrollment-v1/vm-03/result.json",
+      "result_sha256": "5f2d9d4e516201fb724366e75e8241ef3c3630ddf627f3ac44f663158b85a7c5",
+      "stdout_bytes": 178,
+      "stdout_sha256": "14a87f397be11cf41099712ff3431059c133ae1e9839eacbf22307605d83d8e6",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "b32bec1dfd292d62c376a6125e0d3a28fc74c593fd440f2d6bcf9128594f4a92",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T175436Z-966037.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "vm-04",
+      "test": "vm::tests::fatal_worker_rw_store_wake_and_slot_release",
+      "accepted": true,
+      "observer_exit": 0,
+      "wrapper_exit": 0,
+      "accounting_complete": true,
+      "comparison_eligible": true,
+      "observer_error": null,
+      "stop_reason": null,
+      "wall_seconds": 4.031627177,
+      "final_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 320440000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T175442Z-977033.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 981753,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1826613976997,
+          "CPUUsageNSec": 320440000
+        }
+      },
+      "refusal_final_accounting": null,
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-futex-enrollment-v1/vm-04/result.json",
+      "result_sha256": "a71bb3050210b889adf8f33cdb8ddccde875245cd5d7f27b72e9eb4a1cadee9b",
+      "stdout_bytes": 181,
+      "stdout_sha256": "ec83a5b25a15f5b7c8d755fa412226d466d873881d8d58c8cf484f91452e23b4",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "admission_sha256": "675c58322e7bb688680146fff4d525367846ba8bbe66544ef9243c1c41d09853",
+      "admission_exit": {
+        "exit": 0
+      },
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T175442Z-977033.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "source_binding_sha256": "043b859fea40ae2da1a95eab4774e57c1e72eeacf35eafbdc10534f31057119f",
+  "plan_sha256": "61dbe63af1022ae9ce4e26d6d53b5ffa399ce748dd41b403e6124ff2363e74c3",
+  "caller_sha256": "f9cbfcf70516ad151f4f577263dec63f4bfe368c60d401d044b74626b7cb3dea",
+  "launch_sha256": "f587d009affcacf3137546ae077ae53da9e75c484906deaa401d6a960cced6c3",
+  "source_and_artifact_checks_after": "Full source/explicit inputs and the selected compiler-emitted library executable still match. Prior record bytes retained.",
+  "scope": "Reverie selected real VM/static execution only; no Hermit strict INFO, determinism or canonical parity claim."
+}

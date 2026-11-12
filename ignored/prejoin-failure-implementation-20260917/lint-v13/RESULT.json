@@ -1,0 +1,90 @@
+{
+  "status": "passed",
+  "source_binding_sha256": "e8f8b012bb8a570b853f6390d5ad0400eace79233b761e4c284075cd4cb8cea7",
+  "plan_sha256": "6ad31f26abd07dc5cc19122ea016a14d02e7029ddd0d92c95adbd4bd05e34154",
+  "caller_sha256": "bc90881483756af37aae0a62abdaab25829fa0737c409cc9436b29c129950179",
+  "launch_sha256": "412033902849dbcb95bfefada4b220b9b805d4f41253f8ad9a6670a0e0ed0ea7",
+  "stages": [
+    {
+      "stage": "format",
+      "cpu_seconds": 1.713332,
+      "wall_seconds": 2.365068742,
+      "service": {
+        "Id": "safehermit-20260917T165626Z-3437355.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 3437969,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1823116095231,
+        "CPUUsageNSec": 1713332000
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v13/format/result.json",
+      "result_sha256": "9684c9eed71d8fe12394e894b0af10dd271d9e2b62b16f2095922c372de95cdd",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T165626Z-3437355.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "clippy",
+      "cpu_seconds": 8.159869,
+      "wall_seconds": 5.237101655,
+      "service": {
+        "Id": "safehermit-20260917T165629Z-3440864.service",
+        "LoadState": "loaded",
+        "ActiveState": "inactive",
+        "SubState": "dead",
+        "ControlGroup": "",
+        "MainPID": 0,
+        "ExecMainPID": 3441353,
+        "ExecMainCode": 1,
+        "ExecMainStatus": 0,
+        "ExecMainStartTimestampMonotonic": 1823119005730,
+        "CPUUsageNSec": 8159869000
+      },
+      "result_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v13/clippy/result.json",
+      "result_sha256": "fb691196e1a70b252fbba8b5b0444c73bfcf356b9b7d2cc65001a46cd23ab15d",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7b98f112799f728ec240a11e6615108a949b092b59e2d18640f1d043bb79deed",
+      "post": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T165629Z-3440864.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "scope": "Workspace format check and default-feature reverie-kvm all-targets Clippy; no VM/test/guest execution. Source/input comparisons passed after each stage and again on readback."
+}

@@ -1,0 +1,44 @@
+046139e3affc6548054befe809f76fdafcb6846a
+0a2a9c0008bab3c41284bcd84de95019e59dd0b3
+46670790208e71be0b1aa0e249297c0f4b38663a
+Ryan Newton
+rrnewton@gmail.com
+Preserve inherited stdio aliases during live discovery
+
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]
+
+Plain Language Summary and Project Impact
+
+Use the same exact open-file-description comparison for both inherited stdio
+initialization routes. Live discovery now preserves alias status/resource
+identity while retaining its existing pipe/socket classification, observed
+nonblocking state, conservative flock provenance, and descriptor-local CLOEXEC.
+Comparison errors retain the original descriptor pair and errno and discard
+partial metadata. Preserve unnamed raw F_GETFL bits in initialization and
+on-demand discovery without widening the existing F_SETFL permission mask.
+
+Task: astra-lane-drains-hermit-reverie-pr-queues-to-zero
+
+This corrects the initialization/raw-word portion of
+https://github.com/rrnewton/hermit/pull/2694. SaBRe initialization-failure
+termination, shared status across real fork/exec, and the KVM Pwritev2
+integration remain separate unresolved findings.
+
+Validation
+
+At candidate tree 0a2a9c0008bab3c41284bcd84de95019e59dd0b3, all eleven
+selected native tests pass: seven inherited-stdio tests and four existing
+metadata/exec-override controls. The error tests retain their four actual
+KCMP/seccomp child invocations. The parent libtest logfile identifies the
+seven selected cases independently of inherited child output. Scoped Clippy
+with -D warnings and workspace formatting pass; source and dependency
+bindings remain unchanged and all owned cgroups finish empty or absent.
+
+All 64 prior test bodies in this file remain byte-identical. The four added
+controls retain exact alias, raw-bit, errno, empty-state, and five-second
+child-deadline assertions. This is native model/error evidence, not SaBRe
+runtime, full fork/exec, KVM, or full-validation qualification.
+
+Full review and command/executable/source/resource/cleanup evidence are in
+TaskGraph and /tmp/astra-demo-2694-init-native-preparation-20260913/native-execution-v1/.
+

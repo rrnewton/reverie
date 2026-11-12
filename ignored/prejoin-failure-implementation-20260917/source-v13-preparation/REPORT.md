@@ -1,0 +1,7 @@
+# Reverie source-v13 VM admission correction
+
+The only source change from source-v12 is the new held-hook VM test's admission: it now uses the established backend_at_completed_tool_boundary optional result and returns when ordinary no-KVM execution permits a skip. REVERIE_REQUIRE_KVM=1 still makes missing hardware fail inside that helper. The dedicated qualification caller must set that variable, independently admit the real device and reject any skip before counting this method as VM evidence. No old selector, guard, assertion, bound, or production behavior changed.
+
+The complete source-v12 report remains adjacent and applies except for this test-admission correction. Its binding is e7c6e8e677c2a937ae94f62d4da427a754a5070e148823ca72b3a35083f8d79b; actual 37 native passes are retained under cargo-v9/REPORT.md and belong to v12. Source-v13 is preparation only: targeted rustfmt and git diff --check passed, no compile/test/VM/guest/publication performed. The separate static_elf exact diagnostics and live-sibling status assertions remain unchanged and still require measurement, including their existing successful exec neighbors. Root's instruction is to repair any status-0 regression, not change those assertions to 255.
+
+F4(b) successful-exec RPC cancellation, F9 unmeasured per-exit cost and multi-error direct phase framing, arbitrary panic unwinding, the retained whole-suite fatal_worker_ro_delayed_waiter failure, virtual SIGCHLD and real Hermit qualification remain explicit limitations from source-v12. No full-suite or parity claim is made.

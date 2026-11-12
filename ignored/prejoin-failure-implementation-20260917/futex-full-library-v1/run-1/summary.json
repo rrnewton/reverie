@@ -1,0 +1,11 @@
+{
+  "status": "failed",
+  "error": "native-full failed",
+  "outcome_counts": {
+    "ok": 450,
+    "failed": 3,
+    "ignored": 0
+  },
+  "observer_result_present": true,
+  "scope": "One first current full-library run of all 453 registered methods at source 9db60ab9, whose whole tree is identically landed as c8f4ca9d. Original serial unfiltered JSON libtest invocation and all 427 old identities retained. Actual KVM admission required. Historical 426-pass/1-failure result and four later focused first passes remain separate. No new build, source/ref change, retry, assertion/deadline relaxation, Hermit INFO, determinism or canonical parity claim."
+}

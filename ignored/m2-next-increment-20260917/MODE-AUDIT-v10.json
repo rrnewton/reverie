@@ -1,0 +1,431 @@
+{
+  "scope": "all preview modes checked against immutable 805 and 5bc Git modes; patch has no mode headers; new helper uses regular-file 100644",
+  "files": [
+    {
+      "path": "README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "e7540f8911ff45bca7a1a10680e21dfdb8afc0ab51986c53b8a2be8499d7f37d",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "ci/compat-envelope/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "dd0c6228f17781783529eccd7631b75e7dc974d2401828d37af60ac37dc5ef6b",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "ci/configure-build-jobs.sh",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o644",
+      "text_sha256": "8cff119ec58fdccd051df33a8341efecb45113bf8bf321fe5c4840057bedb8aa",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "demos/05-qemu-busybox.sh",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "dd8d23b0c9d02eb27a8b1d87a2022b2ef11c48bac5111a58ad48355b457f2e23",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "demos/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "d918db50d45747e982a6b99d82e29da00e42e43bacd2df065eaff1e57e85d870",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "detcore/src/logdiff.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "1c06f7605d5f708e9fe952c1692c0b52f6d323b981b67e70426dc05fd928ed8c",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "46f4ce21d44193aed462754592d5a7741ff9e115c36d93b386a8537576c04c0e",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "docs/ERROR_CATALOG.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "7a1bbe181df84ccf1f2bece0c53a271940385e1b1daf2ed58b06b57f998dd3fe",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "docs/USER_GUIDE.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "b9c6e0b4e028f86f9bd5ac6292d2849a74cc264ef062dbc2cad7b8673a78c616",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "9d6697b6c04bd57e6d4e0d6f07d86f4576d415ee473dda5323fce64439349bfd",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "3414ef8350d5c047ba4048401e1cd86127d29b6651cb15c3887fac9e8319b65c",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "c5e1e50e8ce323d007ee827a51908c9738587f5748d8b10ac4132e82d50c2429",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "cda184f7e4dee1e9a1869666878c25910218283c769225dc947375a5aa8031c2",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "bfff71ff40179e301cb47fd3177f3ef2a1ebe3ed7ec1ef67b8c3b43de838978a",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "7638e6321c0119de46e1b3bf0ea0eaf8ec4098eefbc03f901022aa58420db612",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "30ccd37d099d04df43485f6acabf9679ea8b0d15946e1c3ba7b8773cd1f449f9",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "902db2134b33b0467323fcf0e55cfdac04e835ce80e828341781740e086cb101",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "2c1acdb200d7d661cd0bec53d9f9f778578c7f6a4ea3f52a81fd0c59c90f94b8",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "27c48623217d0bab06250928c58672d161a537bee40cb02b138f17873e0b6947",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/src/metadata.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "f48699b96f052a533c3ed38ef29dd4e98584659590e9f2fe9c9344b8879cc3b0",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "8a5f18d356fc40b9492a7a42e9b9a3329c621b80d5db48c9384a2cf50c9b0945",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-cli/tests/verification_report_consumers.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "e4df750bfd816fab1fd337a688c669a20134d5fdef468f78e40a01ff766840fc",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "b24ce39d6e54cfc4e93ef6409a2d4e613b8076d261cc64bf31ce60d003d8ff08",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "040a4fc39ad39316e80ebe7f1506da2a5a285c0bdda2e8837b4209aec2561b4a",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "14a8a75c78111c77b237b5b8ef9cc08e93cacd93bd15ad8fd83313b505d6e416",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "39ee743207ae76e79e25d1efe8ee2785abf96bd267707fec799110f1aec727fc",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "feb93a343b1ee0cd309403b721e83c1bc245adbc4d34202143a52677856f7d55",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/lib/validate_cell_results.rs",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "58e63ea8cf4a50f7a6c7e267b3aa7e14adea1c0c8060022be780bc4f7475629d",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/lib/verified_command.rs",
+      "base_git_mode": null,
+      "current_git_mode": null,
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "814e3b7284ccebe7e660c138ef80f685cdfbe686c14c0a9c83d290d8075fe2e4",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "scripts/manifest-to-commands.rs",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "60b71fc50ad9e6eb992e8cfabaad411ea8f4ff9069683417e6f19950a4560398",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/backend-parity/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "be60766cb1ea1994becd723b49e68f5ab29029553cf3d628eab9ed0ebfd47136",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/bin/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "41010131c741bc9f1a30bd3102c648472f1b6e77862528f020aa89de8fa505ed",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/determinism-stress/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "c405371620c01fdbbacedb5bdd6de3d495448c7fc359d4f2b6ba9d24245adee3",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/common.sh",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "54f4117aae6a18a1ad0c314dcef7f7afce03d5e637eb511a684895f0a1418747",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/e2e/lib/applications/test_verdict_discrimination.sh",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "20c0ab5521b15ec55386cdddff89ed232dc858c1a850653d7ee9af2d7e81c7f1",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/qemu-boot/strict_l2_test.sh",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "eb2a03ce53b3ae6457d931222ec13ab1a930386d0be8fcd0e348f1377b04e9cc",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/reproducible-builds/README.md",
+      "base_git_mode": "100644",
+      "current_git_mode": "100644",
+      "expected_patch_output_mode": "100644",
+      "old_preview_mode": "0o644",
+      "new_preview_mode": "0o644",
+      "text_sha256": "64735ff7b386ea1c2a40097cce38982cec90833662a1bd53f4e17708670e2591",
+      "text_unchanged": true,
+      "mode_matches": true
+    },
+    {
+      "path": "tests/reproducible-builds/run.sh",
+      "base_git_mode": "100755",
+      "current_git_mode": "100755",
+      "expected_patch_output_mode": "100755",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o755",
+      "text_sha256": "e672c2e097da578b44bdb20e1b4b3fd450c21bec87e2228f9b33c04a345cc183",
+      "text_unchanged": true,
+      "mode_matches": true
+    }
+  ],
+  "deltas": [
+    {
+      "path": "ci/configure-build-jobs.sh",
+      "old_preview_mode": "0o755",
+      "new_preview_mode": "0o644",
+      "product_mode_change": false
+    }
+  ]
+}

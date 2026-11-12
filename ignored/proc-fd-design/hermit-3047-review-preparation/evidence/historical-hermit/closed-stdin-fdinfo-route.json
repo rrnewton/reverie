@@ -1,0 +1,49 @@
+{
+  "recorded_at": "2026-09-17T03:45:23.768853+00:00",
+  "hermit_head": "7628b6d5939472ac575707b4e3b8c44b85f918a6",
+  "reverie_head": "a2cc1868795b19ae77e55242d614c43116e42609",
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a",
+      "matches_committed_blob": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore/src/procfs.rs",
+      "bytes": 247741,
+      "sha256": "834ae6bf0ea04eaa3915c37e3863349ad3e5d0d3684c2232334818dbc6d9ac71",
+      "matches_committed_blob": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/detcore/src/syscalls.rs",
+      "bytes": 3340,
+      "sha256": "aacabce215d502f58ff902e887daf66102d0f23ca3923d41aa3b6aa8d52764ca",
+      "matches_committed_blob": true
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/tests/c/fixtures/stdio_inode_identity.c",
+      "bytes": 11218,
+      "sha256": "2981cd8521adc7e9d7be82b7e62c73814a744ad946b60251392be8c4c607bd47",
+      "matches_committed_blob": true
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/a2cc186/reverie-kvm/src/executor.rs",
+      "bytes": 1321368,
+      "sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878",
+      "matches_committed_blob": true
+    }
+  ],
+  "measurement_result_sha256": "c3fa0e7d02ccdcec41ec6e51422af757d84de68bf57c7bb8e298095086959ed5",
+  "new_execution": false,
+  "source_changes": false,
+  "static_path": [
+    "Detcore handle_openat files.rs771 requests path and calls record_or_replay before procfs classification; EACCES returns through Err arm.",
+    "Pinned executor syscall dispatch503 -> openat4862 -> open_file4886.",
+    "synthetic_proc_content10075 has no fdinfo case; is_synthetic_proc_directory accepts only /proc; guest_fd_path5108 recognizes fd/ but not fdinfo/.",
+    "host_dirfd_and_path10789 passes this absolute pathname unchanged.",
+    "open_file4973 invokes host openat2 RESOLVE_NO_MAGICLINKS. Successful file then passes ensure_not_procfs5008 -> ensure_fd_not_procfs5261; PROC_SUPER_MAGIC is refused EACCES.",
+    "Detcore initialize_procfs_snapshot1247 applies corrected resource-qualified inode only after successful guest open/read; unreachable for this failed open."
+  ],
+  "evidence_limit": "Actual INFO establishes EACCES at guest syscall93. It does not expose whether the host openat2 itself returned EACCES or the subsequent procfs check did; the static route necessarily lacks guest fdinfo handling and rejects any successfully opened real procfs descriptor."
+}

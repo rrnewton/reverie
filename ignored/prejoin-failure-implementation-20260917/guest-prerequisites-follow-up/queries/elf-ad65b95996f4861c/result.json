@@ -1,0 +1,36 @@
+{
+  "name": "elf-ad65b95996f4861c",
+  "argv": [
+    "/usr/bin/readelf",
+    "-W",
+    "-l",
+    "-d",
+    "/usr/lib64/libctf-nobfd.so.0.0.0"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up",
+  "pid": 1915819,
+  "exit_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.004060420906171203,
+  "cpu_seconds": 0.003011999999999987,
+  "bounds": {
+    "cpu_seconds_per_process": 5,
+    "wall_seconds": 15,
+    "address_space_bytes": 1073741824,
+    "file_bytes_per_stream": 1048576,
+    "core_bytes": 0
+  },
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea",
+  "streams": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/elf-ad65b95996f4861c/stdout",
+      "bytes": 3417,
+      "sha256": "fa06c9229c692b7c26a2f4d39abd0986d0d2f7a408a11608a551b08940be966a"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/elf-ad65b95996f4861c/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

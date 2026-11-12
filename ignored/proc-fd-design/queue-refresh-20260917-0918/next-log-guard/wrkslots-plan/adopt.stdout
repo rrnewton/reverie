@@ -1,0 +1,12 @@
+usage: wrkslots adopt [-h] --agent AGENT --owner-pid PID --expected-generation N slot
+
+Bind the exact live process generation that will own a newly created slot. This is only valid for a slot created without --owner-pid and does not transfer an existing owner.
+
+positional arguments:
+  slot                     active slot awaiting an owner
+
+options:
+  -h, --help               show this help message and exit
+  --agent AGENT            agent name already recorded on the slot
+  --owner-pid PID          live owner PID to bind
+  --expected-generation N  current slot generation; refuses stale callers

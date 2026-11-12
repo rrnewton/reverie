@@ -1,0 +1,40 @@
+{
+  "status": "prepared only; source-v3/native prerequisite pending; no execution",
+  "input_count": 46,
+  "all_input_bytes_modes_paths_match": true,
+  "source_v2_live_unchanged": true,
+  "caller_sha256": "a1e6426ee8cb19251d4d45103065e9f09838ed0960e2bce0378e2592c29c5c22",
+  "plan_sha256": "a13af803508b0175c78755499b366801312da4cf8fbd584b7162c2b11bc89ec5",
+  "ast_parse": "passed without importing/executing caller",
+  "exact_clippy_payload": [
+    "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo",
+    "clippy",
+    "--locked",
+    "--offline",
+    "-p",
+    "reverie-kvm",
+    "--lib",
+    "--tests",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "bound_toolchain_components": [
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "bytes": 1269192,
+      "mode": 493,
+      "sha256": "19828a90d246b16a14220eaefe5eb16f65d3926dadad72c49fbedbef8278bd87"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "resolved_path": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "bytes": 17154944,
+      "mode": 493,
+      "sha256": "657754f6f51ce79d7bbc5ed9d002001d1dd82b926c6f19c20db000a81296c930"
+    }
+  ],
+  "output_roots_absent": true,
+  "boundaries": "same600CPU900wall16GiB0swap, twojobs, lockedoffline,16MiB diagnostics; native37 prerequisite and fresh inactive units before target reuse"
+}

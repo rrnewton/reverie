@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--json",
+    "url,number,title,body,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,mergeable,mergeStateStatus,reviewDecision,labels,statusCheckRollup"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "started_at_utc": "2026-09-17T05:45:09.520392+00:00",
+  "finished_at_utc": "2026-09-17T05:45:10.441815+00:00",
+  "elapsed_wall_seconds": 0.9214516079518944,
+  "returncode": 0,
+  "stdout_bytes": 3535,
+  "stderr_bytes": 0,
+  "stdout_sha256": "392e63f49cdf45bfd824d01ca7cb1c6db5995a1412ecf3973914d89c4406c766",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

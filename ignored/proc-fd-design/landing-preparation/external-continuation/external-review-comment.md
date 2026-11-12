@@ -1,0 +1,7 @@
+[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=relay]
+
+APPROVED-AT: claude 696f0476aa46cf29e31b947a89379d80b4542ce3
+
+Relaying the completed independent Claude continuation: APPROVE for the complete six-file change at tree b86bfdb0703e96d377007c102eccfa57ba362396. Final report SHA256 303e20dafd2f82a3af1c1cba0e2160f4666864eef6fd9cd23f582640a0471786 supersedes the earlier CHANGES REQUESTED verdict without rewriting that historical record. The reviewer withdrew the anonymous-inode and lock-duration findings after checking primary Linux source, authenticated the actual 37 native passes and Clippy success, and found no goalpost moving. The continuation exited normally; all 26 bound inputs and six source files remained unchanged. This is a review relay, not a critical-change attestation.
+
+Approval is for the Reverie component, with no Hermit guest, parity, determinism or cat result inferred. Before https://github.com/rrnewton/hermit/pull/3047 may land, preserve the reviewed source union and b3049e54 ancestry, update the pin through the maintained updater, carry unchanged DBT build budgets, integrate reviewed mount provenance, rebuild normally, and pass BOTH the unchanged descriptor-reuse fixture and the retained followed-stat fixture. The original cat assertion and historical failures remain obligations. Existing reader-DetFd normalization and proc-snapshot rewind limitations are not cleared. Running all 427 registered native tests is a nonblocking follow-up recommendation; the measured selection remains 37 of 427.

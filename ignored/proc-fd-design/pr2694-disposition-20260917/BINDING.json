@@ -1,0 +1,1093 @@
+{
+  "recorded_at": "2026-09-17T07:51:10.859839+00:00",
+  "scope": "Read-only PR2694 preservation disposition; no source/ref/index/claim/public mutation and no build/test/guest execution",
+  "pr": "https://github.com/rrnewton/hermit/pull/2694",
+  "repository_read_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+  "refs": {
+    "base": "dade02611a0988aaa2f234411c16462fdbfb5519",
+    "public": "46670790208e71be0b1aa0e249297c0f4b38663a",
+    "main": "1ef956b6b16a19080c94838ead0c88926f7231ff",
+    "private": "046139e3affc6548054befe809f76fdafcb6846a"
+  },
+  "trees": {
+    "base": "7d2393d2149143d7056d2acf5ea1bb07076b73bd",
+    "public": "2c5ffe82932954367046ae55a43c0a94e1afa6a1",
+    "main": "487b6e232d3969de6c3453359d832ceed868e3fe",
+    "private": "0a2a9c0008bab3c41284bcd84de95019e59dd0b3"
+  },
+  "public_patch_sha256": "54e26f4f5c1255df691cd78343bb6a82865d584afc1fe62b020ad24734c45e92",
+  "private_patch_sha256": "d89ebd8cd4a486541bbf1e3e9c5029c4eac8e90293862e0087096d28d75b5275",
+  "source_entries": {
+    "base": [
+      {
+        "path": "ci/dag/validate.json",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ceca826e6e90f058785c0d19de5bd5f2603aa8a6"
+      },
+      {
+        "path": "ci/manifest-plan/src/validation_dag_static.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "6232f45eea6e325e6f958da3d4ec2c5b96361fdf"
+      },
+      {
+        "path": "detcore-dbt/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "f716831c71797e6ecc91534859d408c04902f390"
+      },
+      {
+        "path": "detcore/src/fd.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "89eca566c1614d5d8cc66fbfdfccdca108a5c331"
+      },
+      {
+        "path": "detcore/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "b1e66da75bbe751b2b44077e95ed50345f0d6c00"
+      },
+      {
+        "path": "detcore/src/syscalls/files.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "c96b43fd56dc91777e1567bc3a49b98cf63cf8ab"
+      },
+      {
+        "path": "detcore/src/tool_global.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "324615fa11327e04b24f50a562d326fc24967de6"
+      },
+      {
+        "path": "detcore/src/tool_local.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "0d18c93088ae7c35ca353980b84ea90a0896173b"
+      },
+      {
+        "path": "hermit-cli/src/event_stream.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "86b755faa3ab190359d961450201cfa39dd8ef67"
+      },
+      {
+        "path": "hermit-cli/tests/cli.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "fa29eebd10ed718647fe82a82efd384967d025c4"
+      },
+      {
+        "path": "scripts/validate.rs",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "0c442cafba45459ba410bda3ad8a3fc1befad795"
+      }
+    ],
+    "public": [
+      {
+        "path": "ci/dag/validate.json",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "baf8237f5a7aa1a66bf765cc17de43fd9618f072"
+      },
+      {
+        "path": "ci/manifest-plan/src/validation_dag_static.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "6b27da79b27c2b7c1dfc459dbecf4ee34e00a8d5"
+      },
+      {
+        "path": "detcore-dbt/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "81f605da316aca55f29d9c780ea1e6ac6e33987d"
+      },
+      {
+        "path": "detcore/src/fd.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "4a845276a3ed288a15bc4019a1dce1074d9dd9dc"
+      },
+      {
+        "path": "detcore/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "8436890fffd9d39aba42e7385c9827f6cb89db5a"
+      },
+      {
+        "path": "detcore/src/syscalls/files.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "188d7ba818c3069ff81a17f504e28693f732b9bd"
+      },
+      {
+        "path": "detcore/src/syscalls/files/append_tests.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "046832b2f97f6f48be1251f751d274dfe0283a9e"
+      },
+      {
+        "path": "detcore/src/tool_global.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "869e5f0db83d889640d4cc761c60c6bf804f6971"
+      },
+      {
+        "path": "detcore/src/tool_local.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ca4bd54e9e294e0d360fcb927718f84751692dd2"
+      },
+      {
+        "path": "hermit-cli/src/event_stream.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "36b4596555d3d76abbd5802d1c6229e0b7985b47"
+      },
+      {
+        "path": "hermit-cli/src/event_stream/append_record_replay_test.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "e6721744d697b813dc1c95977649f6615b921386"
+      },
+      {
+        "path": "hermit-cli/tests/cli.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "92c7146911dd01d35fd5909f5352aa21b48370d6"
+      },
+      {
+        "path": "scripts/validate.rs",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "9e8cbb0b4d952af49d7548235b46a50e53d79e98"
+      },
+      {
+        "path": "tests/c/nonblocking_stdin_recv.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "399268281b92fa7272de37084e5e868eb0eab6d7"
+      },
+      {
+        "path": "tests/c/nonstdio_status_flags.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ca18a6b8f7e1062c263066ffeef2f8f78b5ab5f2"
+      },
+      {
+        "path": "tests/c/stdio_append_record_replay.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "a478acb542d816964b9cbda0c071d25db7dff498"
+      },
+      {
+        "path": "tests/c/stdio_append_write_paths.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "df3985864278dcb9ee995a70893e8ac4f68ee6f3"
+      },
+      {
+        "path": "tests/c/stdio_initial_nonblocking.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "16b23935aaebd9c8c62c468d52842e116f6a2255"
+      },
+      {
+        "path": "tests/c/stdio_nonblock_then_append.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "36caa23d49d7c0f9e2c0b71b8b3606205f8303c5"
+      },
+      {
+        "path": "tests/c/stdio_status_alias.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "30f152dd2af03375453e5bcea654e29da2b88043"
+      },
+      {
+        "path": "tests/c/stdio_status_flag_containment.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "9e5ccd1ee012dfd34bd8ee187167619225e6c3aa"
+      },
+      {
+        "path": "tests/c/stdio_unsupported_status_flags.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "dd6df714f33b2b5f5e9af8f1bed453ad70e087c4"
+      }
+    ],
+    "main": [
+      {
+        "path": "ci/dag/validate.json",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "90c1292ecf74e313258c9fa44341d5837a2233f7"
+      },
+      {
+        "path": "ci/manifest-plan/src/validation_dag_static.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "bb779b2d8745218d81efdf434f487de907433bc0"
+      },
+      {
+        "path": "detcore-dbt/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "f716831c71797e6ecc91534859d408c04902f390"
+      },
+      {
+        "path": "detcore/src/fd.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "89eca566c1614d5d8cc66fbfdfccdca108a5c331"
+      },
+      {
+        "path": "detcore/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "4a945cec6301aaa529fa72a1e940ffa3413930c0"
+      },
+      {
+        "path": "detcore/src/syscalls/files.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "c96b43fd56dc91777e1567bc3a49b98cf63cf8ab"
+      },
+      {
+        "path": "detcore/src/tool_global.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "5c7017b67167f9001ce39ad6b23c033ce568e768"
+      },
+      {
+        "path": "detcore/src/tool_local.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "2207d6533f9dffc7fb8d1ad6ca259fdf03d83e00"
+      },
+      {
+        "path": "hermit-cli/src/event_stream.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "86b755faa3ab190359d961450201cfa39dd8ef67"
+      },
+      {
+        "path": "hermit-cli/tests/cli.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "7fd4f5488dbee6ee02ca14e16fbcdae03537a02b"
+      },
+      {
+        "path": "scripts/validate.rs",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "3d57645d10d989d48e6b1c1384c0e4a2c7d571c1"
+      }
+    ],
+    "private": [
+      {
+        "path": "ci/dag/validate.json",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "baf8237f5a7aa1a66bf765cc17de43fd9618f072"
+      },
+      {
+        "path": "ci/manifest-plan/src/validation_dag_static.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "6b27da79b27c2b7c1dfc459dbecf4ee34e00a8d5"
+      },
+      {
+        "path": "detcore-dbt/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "81f605da316aca55f29d9c780ea1e6ac6e33987d"
+      },
+      {
+        "path": "detcore/src/fd.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "4a845276a3ed288a15bc4019a1dce1074d9dd9dc"
+      },
+      {
+        "path": "detcore/src/lib.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "8436890fffd9d39aba42e7385c9827f6cb89db5a"
+      },
+      {
+        "path": "detcore/src/syscalls/files.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "188d7ba818c3069ff81a17f504e28693f732b9bd"
+      },
+      {
+        "path": "detcore/src/syscalls/files/append_tests.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "046832b2f97f6f48be1251f751d274dfe0283a9e"
+      },
+      {
+        "path": "detcore/src/tool_global.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "869e5f0db83d889640d4cc761c60c6bf804f6971"
+      },
+      {
+        "path": "detcore/src/tool_local.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "36a87d8c42b574f56bc1bbaf8df02546a65d8c50"
+      },
+      {
+        "path": "hermit-cli/src/event_stream.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "36b4596555d3d76abbd5802d1c6229e0b7985b47"
+      },
+      {
+        "path": "hermit-cli/src/event_stream/append_record_replay_test.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "e6721744d697b813dc1c95977649f6615b921386"
+      },
+      {
+        "path": "hermit-cli/tests/cli.rs",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "92c7146911dd01d35fd5909f5352aa21b48370d6"
+      },
+      {
+        "path": "scripts/validate.rs",
+        "mode": "100755",
+        "kind": "blob",
+        "object": "9e8cbb0b4d952af49d7548235b46a50e53d79e98"
+      },
+      {
+        "path": "tests/c/nonblocking_stdin_recv.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "399268281b92fa7272de37084e5e868eb0eab6d7"
+      },
+      {
+        "path": "tests/c/nonstdio_status_flags.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "ca18a6b8f7e1062c263066ffeef2f8f78b5ab5f2"
+      },
+      {
+        "path": "tests/c/stdio_append_record_replay.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "a478acb542d816964b9cbda0c071d25db7dff498"
+      },
+      {
+        "path": "tests/c/stdio_append_write_paths.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "df3985864278dcb9ee995a70893e8ac4f68ee6f3"
+      },
+      {
+        "path": "tests/c/stdio_initial_nonblocking.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "16b23935aaebd9c8c62c468d52842e116f6a2255"
+      },
+      {
+        "path": "tests/c/stdio_nonblock_then_append.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "36caa23d49d7c0f9e2c0b71b8b3606205f8303c5"
+      },
+      {
+        "path": "tests/c/stdio_status_alias.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "30f152dd2af03375453e5bcea654e29da2b88043"
+      },
+      {
+        "path": "tests/c/stdio_status_flag_containment.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "9e5ccd1ee012dfd34bd8ee187167619225e6c3aa"
+      },
+      {
+        "path": "tests/c/stdio_unsupported_status_flags.c",
+        "mode": "100644",
+        "kind": "blob",
+        "object": "dd6df714f33b2b5f5e9af8f1bed453ad70e087c4"
+      }
+    ]
+  },
+  "complete_changed_paths": 22,
+  "new_rust_test_identities": 33,
+  "all_new_same_path_test_identities_absent_main": true,
+  "main_base_identical_existing_paths": [
+    "detcore-dbt/src/lib.rs",
+    "detcore/src/fd.rs",
+    "detcore/src/syscalls/files.rs",
+    "hermit-cli/src/event_stream.rs"
+  ],
+  "new_files_absent_main": [
+    "detcore/src/syscalls/files/append_tests.rs",
+    "hermit-cli/src/event_stream/append_record_replay_test.rs",
+    "tests/c/nonblocking_stdin_recv.c",
+    "tests/c/nonstdio_status_flags.c",
+    "tests/c/stdio_append_record_replay.c",
+    "tests/c/stdio_append_write_paths.c",
+    "tests/c/stdio_initial_nonblocking.c",
+    "tests/c/stdio_nonblock_then_append.c",
+    "tests/c/stdio_status_alias.c",
+    "tests/c/stdio_status_flag_containment.c",
+    "tests/c/stdio_unsupported_status_flags.c"
+  ],
+  "map_interpretation": "content-map main_equals_base also compares null for both-absent files. Only non-null entries are existing byte-identical blobs. The first report-binding preparation assertion omitted this non-null filter and failed before writing; corrected here. All original map/source bytes are preserved.",
+  "authority": {
+    "command_exit": 1,
+    "state": "drift",
+    "snapshot_captured_at_epoch": 1789631080.041734,
+    "snapshot_captured_at_utc": "2026-09-17T07:44:40.041734+00:00",
+    "claimed_task": {
+      "id": "kvm-lane-to-full-determinism-and-parity",
+      "landed": false,
+      "owner": "Ensure deterministic KVM parity | dev-hermit",
+      "status": "IN_PROGRESS",
+      "tags": [
+        "owner-directive",
+        "kvm"
+      ],
+      "title": "KVM backend lane: drive to 100 percent determinism and 100 percent parity"
+    },
+    "receipt": "final-authority.receipt.json",
+    "future_action_requires_current_authority": true
+  },
+  "complete_policy_read": {
+    "path": "PR_SWEEP_VERDICTS.md",
+    "lines": 2778
+  },
+  "artifacts": [
+    {
+      "path": "PR_SWEEP_VERDICTS.md",
+      "bytes": 150721,
+      "mode": "0o644",
+      "sha256": "decb66dbe87aaaeee7c7d98152b774789045c0077eb625f4407ca9f3881f8c26"
+    },
+    {
+      "path": "REPORT.md",
+      "bytes": 16396,
+      "mode": "0o644",
+      "sha256": "03e408e1529192be8da52a77936ab81e91f7b596ae97f7f18f1e3ac743ade662"
+    },
+    {
+      "path": "authored-test-identities.json",
+      "bytes": 5084,
+      "mode": "0o644",
+      "sha256": "e56e57573dec93a41f9c2b578c67cd64df2dd3bdbc295af21181b6bbc1968c78"
+    },
+    {
+      "path": "authority.receipt.json",
+      "bytes": 228,
+      "mode": "0o644",
+      "sha256": "745acd56d48e6f8498117cc7745204ae56be3d693bea3ccb11c0ebedad47ac9d"
+    },
+    {
+      "path": "authority.stderr",
+      "bytes": 102,
+      "mode": "0o644",
+      "sha256": "cfa3fa890e568437e1803e6729e536297aead2dbd596c7b0e530dfa38040adbc"
+    },
+    {
+      "path": "authority.stdout",
+      "bytes": 110801,
+      "mode": "0o644",
+      "sha256": "0f45a6c4e3ac63eb38ba41e7241e57e973166516b069bdbaa56480f455d77827"
+    },
+    {
+      "path": "base-commit.txt",
+      "bytes": 1317,
+      "mode": "0o644",
+      "sha256": "a4e15e04d4cfcf55eabc12ceda543bd905f4d6022c36dc3084f4fd17fd7d4b08"
+    },
+    {
+      "path": "comment-5656780761.md",
+      "bytes": 22247,
+      "mode": "0o644",
+      "sha256": "a000366b6d9d833d833d2e24116e1faa96411dd0962604e979bcca808f7bfbf3"
+    },
+    {
+      "path": "comment-5690782488.md",
+      "bytes": 12499,
+      "mode": "0o644",
+      "sha256": "2ae7f52cf969e62902d747bde9d214b8b599d7d68d1a86c4fb7a22e5f184b81e"
+    },
+    {
+      "path": "comment-5690790907.md",
+      "bytes": 1654,
+      "mode": "0o644",
+      "sha256": "fa023e19d24be648fe47245c8add8f66f709d72fe79f1a463e44c20fc05fbae8"
+    },
+    {
+      "path": "comments.receipt.json",
+      "bytes": 260,
+      "mode": "0o644",
+      "sha256": "8fb12e82428b6cd4b257907f40a4f982b27bdb3f397bdf88024b4ca6d9fc0817"
+    },
+    {
+      "path": "comments.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "comments.stdout",
+      "bytes": 197497,
+      "mode": "0o644",
+      "sha256": "db5910a24e8b14c0600c4fb344ffbb88ba8386dcc13d9a87102777489d0ffd26"
+    },
+    {
+      "path": "content-map.json",
+      "bytes": 11163,
+      "mode": "0o644",
+      "sha256": "20bd4555972094c07901a7d23ed11155fb740bed62049ee8b2167fe3e5c9fd93"
+    },
+    {
+      "path": "dependency/b3049e54c644e28e2894402a36bb65664ab4508b/experimental/reverie-sabre/src/reverie_adapter.rs",
+      "bytes": 87505,
+      "mode": "0o644",
+      "sha256": "084a097d7bd44d64f3ed1ae2462d0302e94d691093f0dc2216b37f8a23c8305d"
+    },
+    {
+      "path": "dependency/b3049e54c644e28e2894402a36bb65664ab4508b/reverie-dbt/src/lib.rs",
+      "bytes": 123541,
+      "mode": "0o644",
+      "sha256": "10a393d08b6ad932ae0233bbc4d9e42ab158f57b333c45614324c62f4b4d35ac"
+    },
+    {
+      "path": "dependency/b3049e54c644e28e2894402a36bb65664ab4508b/reverie-kvm/src/executor.rs",
+      "bytes": 1321368,
+      "mode": "0o644",
+      "sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878"
+    },
+    {
+      "path": "dependency-relevant-increment.patch",
+      "bytes": 3324,
+      "mode": "0o644",
+      "sha256": "ec8d0d1e4f418e641e0a301b90c15a4ec80bede2b335f35b026578bde339e333"
+    },
+    {
+      "path": "diffs/ci/dag/validate.json.patch",
+      "bytes": 19163,
+      "mode": "0o644",
+      "sha256": "3d882d07cbe4f55939c622f76bd9a066217a5d374d1ef4cae4eb66c319adf366"
+    },
+    {
+      "path": "diffs/ci/manifest-plan/src/validation_dag_static.rs.patch",
+      "bytes": 13550,
+      "mode": "0o644",
+      "sha256": "13134cc45b2a889dcdcdba2636147ba37a9ea7e0e0651303138d79446a9b5f46"
+    },
+    {
+      "path": "diffs/detcore/src/fd.rs.patch",
+      "bytes": 1114,
+      "mode": "0o644",
+      "sha256": "9f900b5b6095919b8c4ef36f796880aa78872879bda9b7852e45872a75573717"
+    },
+    {
+      "path": "diffs/detcore/src/lib.rs.patch",
+      "bytes": 1829,
+      "mode": "0o644",
+      "sha256": "49a42b8b32a52fc180431bf1e565daf2f6a5ac53301790dbb3b686ada986d47a"
+    },
+    {
+      "path": "diffs/detcore/src/syscalls/files/append_tests.rs.patch",
+      "bytes": 30590,
+      "mode": "0o644",
+      "sha256": "c7c8d5b44035a58ad9b7b4eb7f35b680dbdb93995878c673efc0afa98b91acf9"
+    },
+    {
+      "path": "diffs/detcore/src/syscalls/files.rs.patch",
+      "bytes": 24261,
+      "mode": "0o644",
+      "sha256": "7bb6bb632c0fed1882f81b8791b4b8bc1d298bcd08632b293a2c654536bb00a1"
+    },
+    {
+      "path": "diffs/detcore/src/tool_global.rs.patch",
+      "bytes": 2397,
+      "mode": "0o644",
+      "sha256": "e95d250832b682cc64feaedfef69cf182d5d8cb7c85f376d966c4cc74250deb6"
+    },
+    {
+      "path": "diffs/detcore/src/tool_local.rs.patch",
+      "bytes": 17212,
+      "mode": "0o644",
+      "sha256": "e8105ca0ec8c09c5d8c69c3a2a5993ffbd4aa961e3ea3d34c66fad0fe0e11265"
+    },
+    {
+      "path": "diffs/detcore-dbt/src/lib.rs.patch",
+      "bytes": 18224,
+      "mode": "0o644",
+      "sha256": "81e14d796edae0c908a745a58a33774dcfb677b126c32c532f5f7016da8ea239"
+    },
+    {
+      "path": "diffs/hermit-cli/src/event_stream/append_record_replay_test.rs.patch",
+      "bytes": 13396,
+      "mode": "0o644",
+      "sha256": "28ff66a6113ffdf63c9db366f36ff8fd686cb2a9b69caaa594d7654d0a7f27ba"
+    },
+    {
+      "path": "diffs/hermit-cli/src/event_stream.rs.patch",
+      "bytes": 397,
+      "mode": "0o644",
+      "sha256": "573120b5c42f9c103887589df00ba82ac9f70bb5f5a124d1878ba5ba09039c7a"
+    },
+    {
+      "path": "diffs/hermit-cli/tests/cli.rs.patch",
+      "bytes": 44202,
+      "mode": "0o644",
+      "sha256": "fce221d7354c6291feb062635170787c884f2a182d64049b0d2f31e9656a2e1b"
+    },
+    {
+      "path": "diffs/scripts/validate.rs.patch",
+      "bytes": 556,
+      "mode": "0o644",
+      "sha256": "fd985305a0a91148d30aa200aa86d463740afd16a9500b9b04ab5767f70008b0"
+    },
+    {
+      "path": "diffs/tests/c/nonblocking_stdin_recv.c.patch",
+      "bytes": 2111,
+      "mode": "0o644",
+      "sha256": "8d393fe6a70a3cbd6df6592ca74d1136aebb00d7e02fefbed52c5ba181d4168f"
+    },
+    {
+      "path": "diffs/tests/c/nonstdio_status_flags.c.patch",
+      "bytes": 2277,
+      "mode": "0o644",
+      "sha256": "668d14acad9eb0ea1d1b15f615aa1d7cb66e9b4e00b38c68d645ebed5ec5d724"
+    },
+    {
+      "path": "diffs/tests/c/stdio_append_record_replay.c.patch",
+      "bytes": 2021,
+      "mode": "0o644",
+      "sha256": "64a7d3445153108e48b87d85045e14b826339cf525fa9f063e41aac69bae148b"
+    },
+    {
+      "path": "diffs/tests/c/stdio_append_write_paths.c.patch",
+      "bytes": 3936,
+      "mode": "0o644",
+      "sha256": "cbadf2f531884c52efe6b7c9e82524ac4c7fce6f89c9cf8d1e456aa4b11a7f3b"
+    },
+    {
+      "path": "diffs/tests/c/stdio_initial_nonblocking.c.patch",
+      "bytes": 1438,
+      "mode": "0o644",
+      "sha256": "521613447ee5f39e3dda55d5a083a1694bf0e19d899d8f23159e0a316140b669"
+    },
+    {
+      "path": "diffs/tests/c/stdio_nonblock_then_append.c.patch",
+      "bytes": 2351,
+      "mode": "0o644",
+      "sha256": "48a6c3b3cc5fe7c32c3adb8b808c3a9bdf3198d56206145d44ebb920073b70d3"
+    },
+    {
+      "path": "diffs/tests/c/stdio_status_alias.c.patch",
+      "bytes": 1152,
+      "mode": "0o644",
+      "sha256": "9b92f592f50ccc455d08f5532d82f7254ba3885ad396da3182de3396068052cb"
+    },
+    {
+      "path": "diffs/tests/c/stdio_status_flag_containment.c.patch",
+      "bytes": 2954,
+      "mode": "0o644",
+      "sha256": "62dc7968a30611ed79497869d4ebd8ba715d009b159a32f6407636a063736f94"
+    },
+    {
+      "path": "diffs/tests/c/stdio_unsupported_status_flags.c.patch",
+      "bytes": 3188,
+      "mode": "0o644",
+      "sha256": "537992c141ad316faf6e24e49fd5b97df5f375265b6c31e2790595230d82d53c"
+    },
+    {
+      "path": "final-authority.receipt.json",
+      "bytes": 387,
+      "mode": "0o644",
+      "sha256": "9ef16c7b4fd96549272e330ff4cb760bebfdec13ce1d5513cc6fe0f0592a2414"
+    },
+    {
+      "path": "final-authority.stderr",
+      "bytes": 102,
+      "mode": "0o644",
+      "sha256": "04eb02a0c9ae8d766efb232962deb2279c0fcd20c50f162565c6b5b6a1561267"
+    },
+    {
+      "path": "final-authority.stdout",
+      "bytes": 110472,
+      "mode": "0o644",
+      "sha256": "377b37fc5c45ad8ab9f0dbedc6fe94ee16f90a24c56ed102baef9acaab00142c"
+    },
+    {
+      "path": "final-refs.receipt.json",
+      "bytes": 393,
+      "mode": "0o644",
+      "sha256": "812ca1be0f6985d31e6b389860f05e9747b55152f5055f032fa5fe3036a0e7fb"
+    },
+    {
+      "path": "final-refs.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "final-refs.stdout",
+      "bytes": 144,
+      "mode": "0o644",
+      "sha256": "eb96c1f4f4141860db004a671a6c679e9630f6839d4dd42054270768426ade8f"
+    },
+    {
+      "path": "generated-changes.json",
+      "bytes": 15046,
+      "mode": "0o644",
+      "sha256": "1c21e43c16e1d81959cb597c69dd548ef08e289979301f501616b29bd967bd8c"
+    },
+    {
+      "path": "head-commit.txt",
+      "bytes": 1009,
+      "mode": "0o644",
+      "sha256": "0abaff8e797562aac8c5cbb7a0dca01e8b87ae1899de29dc524ec5586a0c7faa"
+    },
+    {
+      "path": "main-AGENTS.md",
+      "bytes": 34047,
+      "mode": "0o644",
+      "sha256": "be97a2a0e93b8c2ce3a37bf88c9d98e60722bb9b0e5ed47a7e8cdd7332f324cc"
+    },
+    {
+      "path": "main-commit.txt",
+      "bytes": 1369,
+      "mode": "0o644",
+      "sha256": "3f183657df22953ee8d77e277030bd25dceb0cd536d7896366d07478d4d703f0"
+    },
+    {
+      "path": "main.receipt.json",
+      "bytes": 214,
+      "mode": "0o644",
+      "sha256": "6d53447b4ada102d8ee8866171a3ddfc6884a2776a0da77b3126e96de49e7971"
+    },
+    {
+      "path": "main.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "main.stdout",
+      "bytes": 328,
+      "mode": "0o644",
+      "sha256": "9e99b5e3567ef7d09724710325f44e293281e5a779809f1532a73dfe957561f1"
+    },
+    {
+      "path": "mechanism-search.json",
+      "bytes": 859,
+      "mode": "0o644",
+      "sha256": "5177809664e94bc4f40a2858b45a03aacb3013d6de41f20c4224182fa570c967"
+    },
+    {
+      "path": "own-source-status.json",
+      "bytes": 160,
+      "mode": "0o644",
+      "sha256": "fb9bd964f79d02abc213ff954fe73ed2d45e35a5fcb75226c5615aae6e828b1f"
+    },
+    {
+      "path": "pr.receipt.json",
+      "bytes": 206,
+      "mode": "0o644",
+      "sha256": "4e538204f05c1b53ec9319106beb1eb129b9c4c23623981316e29110535eeb1a"
+    },
+    {
+      "path": "pr.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "pr.stdout",
+      "bytes": 29107,
+      "mode": "0o644",
+      "sha256": "10ef0572b54b60a6350834edd7c42637cabe63cbd35a621684bc3845b20e3dab"
+    },
+    {
+      "path": "private-commit.txt",
+      "bytes": 2138,
+      "mode": "0o644",
+      "sha256": "1227b6ac42a2314f4aacd676e8454b760ed85df9b7d8c8fbb9af9f42d9ac883a"
+    },
+    {
+      "path": "private-followup-notes.json",
+      "bytes": 24713,
+      "mode": "0o644",
+      "sha256": "da1db9234f1311df1600d025b593dad57e88d4fcb99fc162600cfbd5c24bb943"
+    },
+    {
+      "path": "private-followup.patch",
+      "bytes": 23350,
+      "mode": "0o644",
+      "sha256": "d89ebd8cd4a486541bbf1e3e9c5029c4eac8e90293862e0087096d28d75b5275"
+    },
+    {
+      "path": "public-complete.patch",
+      "bytes": 208319,
+      "mode": "0o644",
+      "sha256": "54e26f4f5c1255df691cd78343bb6a82865d584afc1fe62b020ad24734c45e92"
+    },
+    {
+      "path": "public-paths.json",
+      "bytes": 1041,
+      "mode": "0o644",
+      "sha256": "840e8c4345529ec7e4c7a7565ac2982ae12464fa96e8784670d471736ddd909a"
+    },
+    {
+      "path": "reviews.receipt.json",
+      "bytes": 261,
+      "mode": "0o644",
+      "sha256": "48ce5f332918c99bb8e18075d98593861a6b50c76bc05656c81cc5f86f92ee0e"
+    },
+    {
+      "path": "reviews.stderr",
+      "bytes": 0,
+      "mode": "0o644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "reviews.stdout",
+      "bytes": 4,
+      "mode": "0o644",
+      "sha256": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+    },
+    {
+      "path": "source/main/ci/dag/validate.json",
+      "bytes": 2855212,
+      "mode": "0o644",
+      "sha256": "fb329e97850bbf5048de28e86c9a680c64d120dfae9ceda8fa3686dc062069d7"
+    },
+    {
+      "path": "source/main/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 347671,
+      "mode": "0o644",
+      "sha256": "54f0a611658fe70aae53705dedb74b3caf6c88e3b70e12de9c3c8e2e66168a83"
+    },
+    {
+      "path": "source/main/detcore/src/fd.rs",
+      "bytes": 31241,
+      "mode": "0o644",
+      "sha256": "7245edcdcdb79aac86a26a1d408600b8265fb51605c9262d2740b8fbbd5c8870"
+    },
+    {
+      "path": "source/main/detcore/src/lib.rs",
+      "bytes": 162115,
+      "mode": "0o644",
+      "sha256": "d8acd6b525f9276750bc6baef7cc0f2570b8b0016255cd682984dffeec139c83"
+    },
+    {
+      "path": "source/main/detcore/src/syscalls/files.rs",
+      "bytes": 195739,
+      "mode": "0o644",
+      "sha256": "84bd0679b6bc1446e1ab6e28a626be478bed25011ea1e426e73e51ec2d92ff96"
+    },
+    {
+      "path": "source/main/detcore/src/tool_global.rs",
+      "bytes": 245704,
+      "mode": "0o644",
+      "sha256": "d96dc862ad325660213ecdba553c5f5d08c2753891e2a31ba804af6975413512"
+    },
+    {
+      "path": "source/main/detcore/src/tool_local.rs",
+      "bytes": 144777,
+      "mode": "0o644",
+      "sha256": "e42013777f9fac0b6e3432d3d1981d8679ee030d26fd6076c832bc81f46ff7a3"
+    },
+    {
+      "path": "source/main/detcore-dbt/src/lib.rs",
+      "bytes": 144545,
+      "mode": "0o644",
+      "sha256": "7a727392d7414fd5e634aa92d78203e25f86b0df3312a0e4bf9d6ac09b7fc14c"
+    },
+    {
+      "path": "source/main/hermit-cli/src/event_stream.rs",
+      "bytes": 21145,
+      "mode": "0o644",
+      "sha256": "c78ba8c25b9fd46a1e853cde0b52bbce3ea6a2a3e39c1e5366823def0fc57d14"
+    },
+    {
+      "path": "source/main/hermit-cli/src/lib.rs",
+      "bytes": 194652,
+      "mode": "0o644",
+      "sha256": "a5f6b9e8a8fefa2891359d3106f998deec0b029dfa2d6c94ba3af099ee2486c1"
+    },
+    {
+      "path": "source/main/hermit-cli/tests/cli.rs",
+      "bytes": 265023,
+      "mode": "0o644",
+      "sha256": "e54cf2ea6078f2e7b0da238d5bd04f294f8f68a78026269e7fae3dce971e2992"
+    },
+    {
+      "path": "source/main/scripts/validate.rs",
+      "bytes": 996482,
+      "mode": "0o644",
+      "sha256": "093a91838ec43a0e5490947ed6058142602ad0d59599b08321437e244ff004f3"
+    },
+    {
+      "path": "source/private/detcore/src/tool_local.rs",
+      "bytes": 171934,
+      "mode": "0o644",
+      "sha256": "056a69f542fb3f36620145d31b0428100b59d002e29296fee0e627b9550e961d"
+    },
+    {
+      "path": "source/public/ci/dag/validate.json",
+      "bytes": 2799344,
+      "mode": "0o644",
+      "sha256": "960d29976cbff0ba40a552fdad138e53833a45566b9f51d4aea1d51c8f2aeb29"
+    },
+    {
+      "path": "source/public/ci/manifest-plan/src/validation_dag_static.rs",
+      "bytes": 348098,
+      "mode": "0o644",
+      "sha256": "953b69f76a17172c76fc09a4b35a1db3e33f6729b1818033f6eb423022bc4c7b"
+    },
+    {
+      "path": "source/public/detcore/src/fd.rs",
+      "bytes": 32009,
+      "mode": "0o644",
+      "sha256": "d4a6a1096c5a116ce900ccf9e880f10800c0f4de783b3db9851a916ac50e9712"
+    },
+    {
+      "path": "source/public/detcore/src/lib.rs",
+      "bytes": 159917,
+      "mode": "0o644",
+      "sha256": "55cc73ec758b4556a5f93cbcab1a7e50a705fa537df0b493a97f02aa265f5ee4"
+    },
+    {
+      "path": "source/public/detcore/src/syscalls/files/append_tests.rs",
+      "bytes": 29499,
+      "mode": "0o644",
+      "sha256": "1eda2ea2edd3fa5371dd8b00bdd08884f374f2581f7a22979f5011bead5a9216"
+    },
+    {
+      "path": "source/public/detcore/src/syscalls/files.rs",
+      "bytes": 211654,
+      "mode": "0o644",
+      "sha256": "c5726aeb56a6926d92d6a60662668d09b0590feabed238f1f42b8198920da5f0"
+    },
+    {
+      "path": "source/public/detcore/src/tool_global.rs",
+      "bytes": 200505,
+      "mode": "0o644",
+      "sha256": "c6f5c1c3b181f31f54e0520e2a227b69c8cf1e953e279bb82bea9e8a9136f0ec"
+    },
+    {
+      "path": "source/public/detcore/src/tool_local.rs",
+      "bytes": 155312,
+      "mode": "0o644",
+      "sha256": "98d553ba9a2aa3ddffd7e5f764abade3f7c6a76ea2a5c781ea1a56c5d2b629f2"
+    },
+    {
+      "path": "source/public/detcore-dbt/src/lib.rs",
+      "bytes": 156878,
+      "mode": "0o644",
+      "sha256": "3310667a1da601a2f8dd6fe4770e6902f41ad0e90d900cdb2c5b07bb763cacf6"
+    },
+    {
+      "path": "source/public/hermit-cli/src/event_stream/append_record_replay_test.rs",
+      "bytes": 12761,
+      "mode": "0o644",
+      "sha256": "e8a50df17ab15689007cb680bd37787443702214f825b72e4769f3bb15715be4"
+    },
+    {
+      "path": "source/public/hermit-cli/src/event_stream.rs",
+      "bytes": 21244,
+      "mode": "0o644",
+      "sha256": "227952b85ba996e1b4c06c116f17c2d77f92e481cd51756a76a25bf60474ab06"
+    },
+    {
+      "path": "source/public/hermit-cli/tests/cli.rs",
+      "bytes": 307192,
+      "mode": "0o644",
+      "sha256": "0e96222bf53d74b3d66a3ba052d42bd278e6f9718b0250ca967eef4a50cf7641"
+    },
+    {
+      "path": "source/public/scripts/validate.rs",
+      "bytes": 939651,
+      "mode": "0o644",
+      "sha256": "0d9d468b743cbeb3f9cd4bd1dae419f5cc5ae39419e7df867099aabef88f1afa"
+    },
+    {
+      "path": "source/public/tests/c/nonblocking_stdin_recv.c",
+      "bytes": 1856,
+      "mode": "0o644",
+      "sha256": "e11ec89ac03bc3fb7ae156367d8a8a4f7ce9a7301035de73a6596c83ee021ed9"
+    },
+    {
+      "path": "source/public/tests/c/nonstdio_status_flags.c",
+      "bytes": 2020,
+      "mode": "0o644",
+      "sha256": "76fad98faa0acfdb98798bc9b2715e882c02173ea635325d481b42b9524c3298"
+    },
+    {
+      "path": "source/public/tests/c/stdio_append_record_replay.c",
+      "bytes": 1770,
+      "mode": "0o644",
+      "sha256": "1a3c15ccd69d8f9218f1e1bf1119b4fe92e314ef3409a93d061e6227479a4576"
+    },
+    {
+      "path": "source/public/tests/c/stdio_append_write_paths.c",
+      "bytes": 3624,
+      "mode": "0o644",
+      "sha256": "896f96ea1d550b614dd6875580df26f7f62a475e3e4f49503b901e40dbb87880"
+    },
+    {
+      "path": "source/public/tests/c/stdio_initial_nonblocking.c",
+      "bytes": 1184,
+      "mode": "0o644",
+      "sha256": "b8b641f2ff7aba538c2ffafc3b9e2823af7e6f966907896b892e686813136f94"
+    },
+    {
+      "path": "source/public/tests/c/stdio_nonblock_then_append.c",
+      "bytes": 2081,
+      "mode": "0o644",
+      "sha256": "207171f6f25b408022402d149612a6b806c9c0f663f9b0c2f8c6b4dbd58264fd"
+    },
+    {
+      "path": "source/public/tests/c/stdio_status_alias.c",
+      "bytes": 931,
+      "mode": "0o644",
+      "sha256": "dbf1f28c52d6bfac3aba2b6bc2609bccb5c09e83a13cbe0abde6850ce708bed7"
+    },
+    {
+      "path": "source/public/tests/c/stdio_status_flag_containment.c",
+      "bytes": 2657,
+      "mode": "0o644",
+      "sha256": "6476139c0b45cc219515d805bb000704a9f2a5eab0203e54d6ec829e2672d6d2"
+    },
+    {
+      "path": "source/public/tests/c/stdio_unsupported_status_flags.c",
+      "bytes": 2877,
+      "mode": "0o644",
+      "sha256": "634de00fafbc4fe4c684abd219fd42ad0dafb5f0235d01ea0528ed2809b50f67"
+    },
+    {
+      "path": "taskgraph-notes.json",
+      "bytes": 2817241,
+      "mode": "0o644",
+      "sha256": "4be0b8dd7683c43243aaf0b607b154ac661a4c98e06503e3ef4a7479a92d6db4"
+    },
+    {
+      "path": "taskgraph-tasks.json",
+      "bytes": 45815,
+      "mode": "0o644",
+      "sha256": "b548074c1e730b7a4344cab3f10a352db21a645edd0efe8d57da2a5bcafe3a66"
+    }
+  ],
+  "verdict": "Keep open; not superseded. Preserve complete authored content plus private initializer follow-up; resolve actual backend obligations and standing refusals before any landing."
+}

@@ -1,0 +1,154 @@
+{
+  "scope": "read-only source mapping and historical evidence; no product execution",
+  "hermit": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+  "reverie": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+  "source_files": 11,
+  "source_declared_controls": 9,
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/REPORT.md",
+      "bytes": 9576,
+      "sha256": "a890e383ac256a3b92d636006660386cfe56ab947802b0ebf62eb0cbeb6bf349"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/controls.json",
+      "bytes": 6885,
+      "sha256": "b6c1d9c2f722b1c24ece3cb32fabd8d21b52dd5cf04a817e24135c6a468e582d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/fork-tree-recipe.json",
+      "bytes": 8812,
+      "sha256": "3b36894e5388e6a0d61653812e225bc95db2b6959920bfa1d9bb033d56890e42"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-bindings.json",
+      "bytes": 7975,
+      "sha256": "2d40ce0ee9b139fc3dee71c1acf556b069628c1b09bfb67b7f4b196cf4aa4b6f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/corrected-execution-readback.json",
+      "bytes": 16245,
+      "sha256": "17eeb2138687c16b8cbef3cc741f2ff414e783279073fcf2f17d3c2d3d3b8482"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-before-exec.json",
+      "bytes": 2544,
+      "sha256": "f88d124eac945a79e1f5390de18eccf84d7cd0ab8041a168f6aaf5fbbd93cd50"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-result.json",
+      "bytes": 57047,
+      "sha256": "ecae39800bc8f05ab35e8f93ca459ccd8eea3d95eb97d3e925a68c713c907e23"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/kvm-verify.json",
+      "bytes": 1916,
+      "sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-before-exec.json",
+      "bytes": 2553,
+      "sha256": "902ddb405b346d13bd105ea6c720b27729ea7bae84c411fc2808e0ee6b13b680"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-result.json",
+      "bytes": 37390,
+      "sha256": "daa42665ef8c83dc033f0d3fb6a13788447020ffa6df65e199a078587fe7cad7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/ptrace-verify.json",
+      "bytes": 1548,
+      "sha256": "77b7867a065a229f8e87ed5d624e523cf9fb491a7dcc5d2d17174701c827f265"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/historical-inputs/source-evidence.json",
+      "bytes": 86955,
+      "sha256": "cd02196a05c492b629b21ca142d9e4a7948a50f737d6b9f70cab661c8e43b8e8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-bindings.json",
+      "bytes": 1978,
+      "sha256": "46f94efb28a6acdd0cb6b20bdb7174d9251757f7297b3c38d90350e649209d6c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/0-REPORT.md",
+      "bytes": 16244,
+      "sha256": "bbd35ce71d3a2e54c11149747d6121b783ad56aade6edfff530d5ed98bc942cb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/1-source-bindings.json",
+      "bytes": 7275,
+      "sha256": "fdac787cb62fcad51c68e72f011f555dd6977c36419349ed0edd9ee3a153b6b0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/2-prior-evidence-readback.json",
+      "bytes": 11347,
+      "sha256": "62173361398cbdad8d85b31e4e23d3901d52f5ec0835933f98267ed3bb49810b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/prior-inputs/3-REPORT.md",
+      "bytes": 10698,
+      "sha256": "42cea2daa62e1c382007f2a8fb92b74bde0139ed13c62d10abe235005c7c438b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/source-bindings.json",
+      "bytes": 7542,
+      "sha256": "8d9a086a6e40e8b0e4ca40e41929c77e9344ace9d35f1e6a42cd6faa8aaf134b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/hermit/scripts/manifest-to-commands.rs",
+      "bytes": 45562,
+      "sha256": "aa834d4f47a64e80fae94bdd62871b76979b609cdd4375b577e3a412d48f3dff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/hermit/tests/e2e/determinism-stress/fork_tree.c",
+      "bytes": 3917,
+      "sha256": "04cd48f271f152353ca330c0cb703b5e7cc2012397c0c6649db05f9ff176b6c2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/hermit/tests/e2e/manifests/defaults.yaml",
+      "bytes": 54,
+      "sha256": "f626d700dfeb32ecc66878957ab2b062799198536215e5d189f9b3f9ac45252e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/hermit/tests/e2e/manifests/determinism-stress-c.yaml",
+      "bytes": 31812,
+      "sha256": "36b1b9c52696e25ca1f846e4eda816ddc1dd044200d69ce45b0558861a02c293"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie/src/guest.rs",
+      "bytes": 19585,
+      "sha256": "73274c9774389c13aa8e3e3eb6d4286e5a5c53a5cb088a89de3e180e45177e9a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie/src/signal.rs",
+      "bytes": 6673,
+      "sha256": "ee8d4b4415be5465473aac2528b9f140367c722cc6dc38531243f8c8a8da88bb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie-kvm/Cargo.toml",
+      "bytes": 664,
+      "sha256": "1d80c68b123c52bd8ebf28e42a8f7c6d3f893aa083a7eb9086537f5921bc9340"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie-kvm/src/child_exit_runtime_tests.rs",
+      "bytes": 5724,
+      "sha256": "f7f729114c502cd1e4b2e4359fd37c89bc0bd6224f8409d6ed2deafec0071115"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie-kvm/src/child_exit_signal_tests.rs",
+      "bytes": 21507,
+      "sha256": "a0aa99d5ace6593420655361fa86cb2fba6f54d2650dc8a9039321225b2d2f5b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie-kvm/src/executor.rs",
+      "bytes": 1398935,
+      "sha256": "53688c0f6af88ecdbdf880a74d9ba352f5d6f8fade5d670b07cdaedcabebe04e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/reverie/reverie-kvm/src/runtime.rs",
+      "bytes": 160114,
+      "sha256": "401b33b2b7a099c52470804dbd2c53f2ccca1fc834ef15ec2584bf8f52a74946"
+    }
+  ]
+}

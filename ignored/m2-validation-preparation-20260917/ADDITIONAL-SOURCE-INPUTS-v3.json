@@ -1,0 +1,139 @@
+[
+  {
+    "path": "hermit-cli/tests/hermit_modes.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "dd2c4e4de311d6a85b160da8b4a19c8178f7a9cf",
+    "bytes": 46828,
+    "sha256": "f01e3b931556f66a0ed7025f148504ffe85f6d8a903eab1abf458857c3d1b2af"
+  },
+  {
+    "path": "hermit-cli/tests/record_replay.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "dc2710993e2220c53ca6efe8c45eaeef43b57df1",
+    "bytes": 89073,
+    "sha256": "4a56cf64aa5a30ee53b4f42e0f66e6d6a7462cf193c794864bd4296043b6e575"
+  },
+  {
+    "path": "hermit-cli/tests/stress_suite.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "d418feb4e794ba1a16c9a3b35d73e175100680a6",
+    "bytes": 20287,
+    "sha256": "ad7152251e95b1dd91a5990c6b750133390e38752122fd99b8bfed26573ff883"
+  },
+  {
+    "path": "hermit-cli/tests/verification_report_consumers.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "92d001c7f998e072bed715fc9aff425cb4eac4a1",
+    "bytes": 24973,
+    "sha256": "5f79232ebbf264f59d9faa6d9808055a02f1d74c2d1804fdb30e752c9a306669"
+  },
+  {
+    "path": "detcore/tests/misc/mod.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "0259d45dd706f42bc81757dfe3c25ae2a401c389",
+    "bytes": 71108,
+    "sha256": "4b4f8b683d6bc13a2bdc1d1f4d3fa8948d4c46c77cd33516ad58f89f5ab3b0b0"
+  },
+  {
+    "path": "detcore/tests/misc/vfork.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "89685719d37617b0c3067ca56fc7afa4441b16fa",
+    "bytes": 2786,
+    "sha256": "d63bf0b2de003cb7528c78e90f1429441c0c8fcfb6541b4a6f00421420dd5f71"
+  },
+  {
+    "path": "detcore/tests/parallelism/mod.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "ce9ca9db453d8c9eb6325a577b981000d009cd8a",
+    "bytes": 14830,
+    "sha256": "62bafc02862f7e0f2207b225110facd0633497a860840285707ee3c9ec82c478"
+  },
+  {
+    "path": "detcore/tests/stats/mod.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "8235593591839a6ce5dc518f55a78901d8337dcb",
+    "bytes": 8802,
+    "sha256": "840164d78b011f272e78c59098405bbabd50ba8054818687d64b7c521c08a6a1"
+  },
+  {
+    "path": "detcore/tests/tests_misc.rs",
+    "unavailable_at_base": true,
+    "error": "fatal: path 'detcore/tests/tests_misc.rs' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+  },
+  {
+    "path": "detcore/tests/tests_parallelism.rs",
+    "unavailable_at_base": true,
+    "error": "fatal: path 'detcore/tests/tests_parallelism.rs' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+  },
+  {
+    "path": "detcore/tests/tests_stats.rs",
+    "unavailable_at_base": true,
+    "error": "fatal: path 'detcore/tests/tests_stats.rs' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+  },
+  {
+    "path": "ci/run-with-reverie-dbt-budget.sh",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "f9675e6f80315ba27b161ded17bceade575fb66c",
+    "bytes": 24746,
+    "sha256": "1b175d6820837b861524f45f30133bc3ec41986a04f98b8dced4a6aad5fd9be9"
+  },
+  {
+    "path": "ci/verify-smoke.sh",
+    "unavailable_at_base": true,
+    "error": "fatal: path 'ci/verify-smoke.sh' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+  },
+  {
+    "path": "ci/record-replay-smoke.sh",
+    "unavailable_at_base": true,
+    "error": "fatal: path 'ci/record-replay-smoke.sh' does not exist in '8051335e87104f7cf832204f74920d38416393b2'\n"
+  },
+  {
+    "path": "tests/BUCK",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "4bc9bf78cfbcbee163e926ab8d49de4ea4e5017d",
+    "bytes": 17791,
+    "sha256": "2d797d78ac846e88776fab8ccbe770b324a2439537a5ec964d5956a9582c71f1"
+  },
+  {
+    "path": "Makefile",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "33ab3b31c340a335dcd3fe7043ba686975cf1a62",
+    "bytes": 17838,
+    "sha256": "5eb0f2afac348b142d63e20d639c052324be035e9636c5d810a28887a3dfa921"
+  },
+  {
+    "path": "flaky-tests/hello_race.rs",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "a5a648a3b8a3bca6eb12cb9a96e56a1737f943de",
+    "bytes": 2566,
+    "sha256": "ae1c77f011eb6c5d7157eb63ca46f205130958678efeb8933e76658a474d5d10"
+  },
+  {
+    "path": "tests/c/simple/racewrite_nostdlib.c",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "00bda7efe950dcadc3f45c91057bb03ead56d141",
+    "bytes": 1738,
+    "sha256": "88f0da64dc373d750d0fe215050191d21ba226154366e012f236e61b447648c4"
+  },
+  {
+    "path": "tests/c/simple/nanosleep-threads-nocrash.c",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "be043dfab3b4548888bd16b866fedeb74aa8b4ff",
+    "bytes": 923,
+    "sha256": "8888a3245da024e496ff228984b643af37d2bec84bc835d60d6d1a2bf60c2a38"
+  },
+  {
+    "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-passing.json",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "f780e106b1c3c23484f3d130ce5dca8a04f52a51",
+    "bytes": 96010,
+    "sha256": "aa67d56256c0fd9f9adc8864d1d0346e6c55790ef7a9ee32a186e8b78335b049"
+  },
+  {
+    "path": "hermit-cli/test-resources/flaky_cas_sequence_schedules-failing.json",
+    "base": "8051335e87104f7cf832204f74920d38416393b2",
+    "blob": "604f064dfe820811db3869e833a23cd505c3198c",
+    "bytes": 96329,
+    "sha256": "dc597a8ba75822875df3a47d3f34491b75615becc76a6e86cc53ce319542ef4d"
+  }
+]

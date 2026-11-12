@@ -1,0 +1,50 @@
+{
+  "name": "mount-01-config",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2232785-1789626000389880168.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 92.263617,
+  "wall_seconds": 47.87259216886014,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "06e1f6b26c0b07599f85dc6dceb35540e7efd596d202e26425680f3cb82dcec4",
+  "full_source_snapshots_equal": true,
+  "actual_methods": [
+    {
+      "method": "tests::kvm_mountinfo_config_captures_validated_ambient_namespace",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_preserves_captured_provenance",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+      "status": "ok"
+    },
+    {
+      "method": "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+      "status": "ok"
+    }
+  ],
+  "expected_method_names_equal": true,
+  "test_summary": [
+    {
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 338
+    }
+  ]
+}

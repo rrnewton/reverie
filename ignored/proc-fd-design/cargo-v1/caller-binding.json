@@ -1,0 +1,28 @@
+{
+  "execution": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v1/launch.py"
+  ],
+  "source_binding_sha256": "8bd08d276d1a7a3955bd1f6eefdf16eac6e9dab87a13cddb9d0a328ae1e453b9",
+  "files": {
+    "launch.py": {
+      "sha256": "8f5f7485179d5bac28cc5e72820b2726ebf7a9e3c6c55e2608b37fc3c8c7b60e",
+      "bytes": 13104,
+      "mode": "0o644"
+    },
+    "plan.json": {
+      "sha256": "465afcfc42cd95f78b86fa163e5e14ef5bcab1674d56b33ba78cd9284151c554",
+      "bytes": 25731,
+      "mode": "0o644"
+    },
+    "caller-vs-native-control.diff": {
+      "sha256": "ea2898db985525cf0f9be1038f93ee0512044ec12f3c7e9cae0a0501693356d8",
+      "bytes": 19324,
+      "mode": "0o644"
+    }
+  },
+  "output_root_absent": true,
+  "source_unchanged": true,
+  "no_execution": true
+}

@@ -1,0 +1,63 @@
+{
+  "boot_id": "b597126a-0485-436b-b809-4c28c423193d",
+  "previous": {
+    "pid": 32320,
+    "parent": 1,
+    "start_ticks": "5521",
+    "argv": "/usr/lib/systemd/systemd --user --deserialize=51",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/init.scope\n"
+  },
+  "actual": {
+    "pid": 32320,
+    "parent": 1,
+    "start_ticks": "5521",
+    "argv": "/usr/lib/systemd/systemd --user --deserialize=51",
+    "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/init.scope\n"
+  },
+  "uid": 212630,
+  "raw_cmdline_hex": "2f7573722f6c69622f73797374656d642f73797374656d64002d2d75736572002d2d646573657269616c697a653d353100",
+  "argv": [
+    "/usr/lib/systemd/systemd",
+    "--user",
+    "--deserialize=51"
+  ],
+  "stat_before": "32320 (systemd) S 1 32320 32320 0 -1 4194560 36405822 131483842391 12895 108427032 360605 218427 308754324 77548684 20 0 1 0 5521 30248960 1912 18446744073709551615 1 1 0 0 0 0 671173123 4096 0 0 0 0 17 221 0 0 0 0 22446 0 0 0 0 0 0 0 0\n",
+  "stat_after": "32320 (systemd) S 1 32320 32320 0 -1 4194560 36405822 131483842391 12895 108427032 360605 218427 308754324 77548684 20 0 1 0 5521 30248960 1912 18446744073709551615 1 1 0 0 0 0 671173123 4096 0 0 0 0 17 221 0 0 0 0 22446 0 0 0 0 0 0 0 0\n",
+  "ps": {
+    "argv": [
+      "/bin/ps",
+      "-p",
+      "32320",
+      "-o",
+      "pid=,ppid=,args="
+    ],
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "wall_limit_seconds": 5,
+    "forced": false,
+    "returncode": 0,
+    "elapsed_seconds": 0.15180680016055703,
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-systemd-ps.stdout",
+      "bytes": 65,
+      "mode": 420,
+      "sha256": "dfc3a642f570af7c7008a03321e25b837b6a01baba8ad9e63a48399c58ebfcb9"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-detcore-systemd-ps.stderr",
+      "bytes": 0,
+      "mode": 420,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "executable_file": {
+    "path": "/usr/lib/systemd/systemd",
+    "bytes": 147616,
+    "mode": 493,
+    "sha256": "82e5f9e7fc093088b76d596431e4a161d5119bea36c5a4118034df130a1c9878"
+  },
+  "proc_exe": {
+    "permission_denied": true,
+    "observed_inode": false
+  },
+  "meaning": "Only the decimal deserialize argument may change during preparation. The runtime census still requires the complete newly frozen identity. No other process or descendant is exempted."
+}

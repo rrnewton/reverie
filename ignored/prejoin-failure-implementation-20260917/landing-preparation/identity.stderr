@@ -1,0 +1,19 @@
+who-am-i: fields: team, agent, model, machine, role
+who-am-i: DEGRADED: identity resolver returned UNRESOLVED
+who-am-i: NEXT: run with --diagnostics to see the missing or conflicting signals. If --pid was supplied, pass a live agent PID or omit --pid to inspect the caller.
+state=UNRESOLVED
+agent=
+model=gpt-6-astra
+model_source=process-cmdline
+client_family=codex
+primary_source=
+basis=
+signal source=caller-environ state=unavailable agent= candidates= detail=pid=1628178 lacks DG_AGENT_NAME
+signal source=process-ancestry state=unavailable agent= candidates= detail=no identity-bearing ancestor
+signal source=process-model state=resolved agent= candidates= detail=model=gpt-6-astra explicit at pid(s) 1210520,1209701
+signal source=client-family state=resolved agent= candidates= detail=client=codex at pid(s) 1210520,1209701
+signal source=cwd-slot-owner state=unavailable agent= candidates= detail=cannot read /home/newton/work/dev-hermit/worktree-state.json: /home/newton/work/dev-hermit/worktree-state.json has no producer in this project: scripts/release-worktree.rs writes it and refuses whenever .wrkslots.yml is present, so these bytes are the last legacy invocation rather than current state. Read the wrkslots registry at worktrees/ACTIVE.<machine>.json instead
+signal source=pane-owner state=unavailable agent= candidates= detail=cannot read /home/newton/work/dev-hermit/worktree-state.json: /home/newton/work/dev-hermit/worktree-state.json has no producer in this project: scripts/release-worktree.rs writes it and refuses whenever .wrkslots.yml is present, so these bytes are the last legacy invocation rather than current state. Read the wrkslots registry at worktrees/ACTIVE.<machine>.json instead
+signal source=cgroup-owner state=unavailable agent= candidates= detail=cannot read /home/newton/work/dev-hermit/worktree-state.json: /home/newton/work/dev-hermit/worktree-state.json has no producer in this project: scripts/release-worktree.rs writes it and refuses whenever .wrkslots.yml is present, so these bytes are the last legacy invocation rather than current state. Read the wrkslots registry at worktrees/ACTIVE.<machine>.json instead
+signal source=supervisor-owner state=unavailable agent= candidates= detail=cannot read /home/newton/work/dev-hermit/worktree-state.json: /home/newton/work/dev-hermit/worktree-state.json has no producer in this project: scripts/release-worktree.rs writes it and refuses whenever .wrkslots.yml is present, so these bytes are the last legacy invocation rather than current state. Read the wrkslots registry at worktrees/ACTIVE.<machine>.json instead
+signal source=taskgraph-owner state=unavailable agent= candidates= detail=task=kvm-lane-to-full-determinism-and-parity: no TaskGraph database bound: TG_DB_PATH is unset and no --db was given; ci-hub refuses tg's implicit 'tasks' default because an unbound read returns 0 rows and would report an empty fleet as clean

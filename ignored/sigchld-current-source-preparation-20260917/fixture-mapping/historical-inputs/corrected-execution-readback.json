@@ -1,0 +1,352 @@
+{
+  "actual_log_files": {
+    "kvm": [
+      {
+        "bytes": 552285,
+        "device": 48,
+        "gid": 100,
+        "inode": 782325798,
+        "iobuf_records": 7,
+        "mode": 384,
+        "mtime_ns": 1789609872546244622,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run1_log_8vfmV",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run1_log_8vfmV",
+        "run": 1,
+        "sha256": "5710d7f1443d07b9780f8b154477f9ad8696b4749f2a889e5e6473a06c04e1d2",
+        "stdout_write_iobuf_records": 1,
+        "symlink": null,
+        "uid": 212630
+      },
+      {
+        "bytes": 551917,
+        "device": 48,
+        "gid": 100,
+        "inode": 782325799,
+        "iobuf_records": 7,
+        "mode": 384,
+        "mtime_ns": 1789609873547475558,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run2_log_HGw8D",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs/run2_log_HGw8D",
+        "run": 2,
+        "sha256": "db103881777e43daece402cbefa818303d6c8a2a18453fdd78c8872bc929dba0",
+        "stdout_write_iobuf_records": 1,
+        "symlink": null,
+        "uid": 212630
+      }
+    ],
+    "ptrace": [
+      {
+        "bytes": 564453,
+        "device": 48,
+        "gid": 100,
+        "inode": 782313614,
+        "iobuf_records": 7,
+        "mode": 384,
+        "mtime_ns": 1789609855821387743,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run1_log_x1I2n",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run1_log_x1I2n",
+        "run": 1,
+        "sha256": "c9bc71bd07b8240b9203efab2fa584eb6682f981e0825ea8f38218e1772fa9da",
+        "stdout_write_iobuf_records": 1,
+        "symlink": null,
+        "uid": 212630
+      },
+      {
+        "bytes": 564453,
+        "device": 48,
+        "gid": 100,
+        "inode": 782313615,
+        "iobuf_records": 7,
+        "mode": 384,
+        "mtime_ns": 1789609856049471525,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run2_log_nAtMN",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/logs/run2_log_nAtMN",
+        "run": 2,
+        "sha256": "49fed03b36ccaaf6eacc0cdc4f6f3e1f5968f28b5ddf377cf5ba4d36da8c465e",
+        "stdout_write_iobuf_records": 1,
+        "symlink": null,
+        "uid": 212630
+      }
+    ]
+  },
+  "additions_to_118_or_119": 0,
+  "aggregate_service_cpu_nsec": 3095078000,
+  "binary_sha256": "77b75f844625ebb022bf3ec691967a1acf4dfb3f84aa9fbe8c0d91fcc13c460a",
+  "caller_exit_code": 1,
+  "caller_field_limit": "The caller appends its completed counter only after accepting expected zero capture exit; the failed KVM service has its own complete result receipt and is preserved here.",
+  "caller_observer_invocations_completed_field": 2,
+  "cause": "The first KVM self comparison diverged under the unchanged strict all-records policy; the planned pilot stopped before cross comparison or the second ID.",
+  "common_input_trees_unchanged": 2,
+  "completed_cross_comparisons": 0,
+  "completed_guests": 4,
+  "completed_within_backend_comparisons": 2,
+  "elapsed_seconds": 28.350161287002265,
+  "feature_probes": 1,
+  "ids_with_guest_execution": 1,
+  "immutable_input_files_unchanged": 149,
+  "input_after": {
+    "bytes": 95185,
+    "device": 48,
+    "gid": 100,
+    "inode": 782353072,
+    "mode": 384,
+    "mtime_ns": 1789609875381399733,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/input-after.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/input-after.json",
+    "sha256": "4d6040474a941169179eb05b535e1e43530289810fca17b04c7d113ff53cd5d5",
+    "symlink": null,
+    "uid": 212630
+  },
+  "input_before": {
+    "bytes": 96967,
+    "device": 48,
+    "gid": 100,
+    "inode": 782280461,
+    "mode": 384,
+    "mtime_ns": 1789609847549382811,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/input-before.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/input-before.json",
+    "sha256": "294adf00e34f8b03b8427880d2bd28a4245b70afd2f86aa8b6533deb57e18258",
+    "symlink": null,
+    "uid": 212630
+  },
+  "kvm_compared_log_messages": {
+    "left": 2911,
+    "right": 2909
+  },
+  "kvm_equal_outputs": {
+    "exit_code": 0,
+    "signal": null,
+    "stderr_bytes": 0,
+    "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "stdout_bytes": 113,
+    "stdout_sha256": "8ddf8b17d77780a3d7a236df0e42893354e51a485e840d08fc7906ef2207637f"
+  },
+  "kvm_equal_runtime": {
+    "scheduler_turns": 55,
+    "syscalls": 1386,
+    "virtual_nanoseconds": 37440090
+  },
+  "kvm_first_divergence": {
+    "first_divergent_left_message": "INFO detcore::scheduler: [dtid 6] signal SIGCHLD not delivered: the thread exited before it landed. Expected race; nothing to deliver and nothing to wake.",
+    "first_divergent_record": 1160,
+    "first_divergent_right_message": "INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 18, dettid 4 using resources {ParentContinue { parent: DetPid(4), child: DetPid(8) }: W}, on previously committed 1_767_225_600.013_137_330s",
+    "first_divergent_scheduler_turn": 17,
+    "first_divergent_syscall": 101,
+    "first_divergent_virtual_nanoseconds": 1767225600012637330
+  },
+  "kvm_report": {
+    "bytes": 1916,
+    "device": 48,
+    "gid": 100,
+    "inode": 782343461,
+    "mode": 384,
+    "mtime_ns": 1789609873769345982,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+    "sha256": "7dc22697d988d011d8595390aa66fadb59672d3980c170df64de9e2595af6695",
+    "symlink": null,
+    "uid": 212630
+  },
+  "observer_processes_started": 3,
+  "old_preparation_failure_preserved": {
+    "bytes": 2999,
+    "device": 48,
+    "gid": 100,
+    "inode": 782027611,
+    "mode": 420,
+    "mtime_ns": 1789608949391428589,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/execution-readback.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/execution-readback.json",
+    "sha256": "adc12ac7f134b253af494c51a9af34f1abbdfa19c6ef546433418a273ec9a22e",
+    "symlink": null,
+    "uid": 212630
+  },
+  "planned_cross_comparisons": 4,
+  "planned_guests": 8,
+  "planned_ids": 2,
+  "planned_within_backend_comparisons": 4,
+  "ptrace_report": {
+    "bytes": 1548,
+    "device": 48,
+    "gid": 100,
+    "inode": 782315129,
+    "mode": 384,
+    "mtime_ns": 1789609856176387954,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/verify.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/verify.json",
+    "sha256": "77b7867a065a229f8e87ed5d624e523cf9fb491a7dcc5d2d17174701c827f265",
+    "symlink": null,
+    "uid": 212630
+  },
+  "retry_count": 0,
+  "services": [
+    {
+      "actual_exit_code": 0,
+      "command": "feature-probe",
+      "cpu_usage_nsec": 662237000,
+      "final_cgroup_empty": true,
+      "post_run_service_readback": {
+        "argv": [
+          "systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T015049Z-3436114.service",
+          "--property=Id",
+          "--property=LoadState",
+          "--property=ActiveState",
+          "--property=SubState",
+          "--property=ControlGroup",
+          "--property=MainPID"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Id=safehermit-20260917T015049Z-3436114.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n"
+      },
+      "properties_at_completion": {
+        "ActiveState": "inactive",
+        "CPUUsageNSec": 662237000,
+        "ControlGroup": "",
+        "ExecMainCode": 1,
+        "ExecMainPID": 3436472,
+        "ExecMainStartTimestampMonotonic": 1768778608805,
+        "ExecMainStatus": 0,
+        "Id": "safehermit-20260917T015049Z-3436114.service",
+        "LoadState": "loaded",
+        "MainPID": 0,
+        "SubState": "dead"
+      },
+      "result": {
+        "bytes": 48799,
+        "device": 48,
+        "gid": 100,
+        "inode": 782287148,
+        "mode": 384,
+        "mtime_ns": 1789609851384410558,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/feature-probe/result.json",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/feature-probe/result.json",
+        "sha256": "614b572675dd2df43bdb232b63be2ec846662074698c86f77b336b1a858e324a",
+        "symlink": null,
+        "uid": 212630
+      },
+      "unit": "safehermit-20260917T015049Z-3436114.service"
+    },
+    {
+      "actual_exit_code": 0,
+      "command": "capture/determinism-stress-c--fork-tree/ptrace",
+      "cpu_usage_nsec": 1190067000,
+      "final_cgroup_empty": true,
+      "post_run_service_readback": {
+        "argv": [
+          "systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T015054Z-3439138.service",
+          "--property=Id",
+          "--property=LoadState",
+          "--property=ActiveState",
+          "--property=SubState",
+          "--property=ControlGroup",
+          "--property=MainPID"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Id=safehermit-20260917T015054Z-3439138.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n"
+      },
+      "properties_at_completion": {
+        "ActiveState": "inactive",
+        "CPUUsageNSec": 1190067000,
+        "ControlGroup": "",
+        "ExecMainCode": 1,
+        "ExecMainPID": 3439374,
+        "ExecMainStartTimestampMonotonic": 1768783158658,
+        "ExecMainStatus": 0,
+        "Id": "safehermit-20260917T015054Z-3439138.service",
+        "LoadState": "loaded",
+        "MainPID": 0,
+        "SubState": "dead"
+      },
+      "result": {
+        "bytes": 37390,
+        "device": 48,
+        "gid": 100,
+        "inode": 782316449,
+        "mode": 384,
+        "mtime_ns": 1789609856644548934,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/result.json",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/ptrace/result.json",
+        "sha256": "daa42665ef8c83dc033f0d3fb6a13788447020ffa6df65e199a078587fe7cad7",
+        "symlink": null,
+        "uid": 212630
+      },
+      "unit": "safehermit-20260917T015054Z-3439138.service"
+    },
+    {
+      "actual_exit_code": 1,
+      "command": "capture/determinism-stress-c--fork-tree/kvm",
+      "cpu_usage_nsec": 1242774000,
+      "final_cgroup_empty": true,
+      "post_run_service_readback": {
+        "argv": [
+          "systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T015109Z-3452566.service",
+          "--property=Id",
+          "--property=LoadState",
+          "--property=ActiveState",
+          "--property=SubState",
+          "--property=ControlGroup",
+          "--property=MainPID"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "Id=safehermit-20260917T015109Z-3452566.service\nLoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n"
+      },
+      "properties_at_completion": {
+        "ActiveState": "inactive",
+        "CPUUsageNSec": 1242774000,
+        "ControlGroup": "",
+        "ExecMainCode": 1,
+        "ExecMainPID": 3453599,
+        "ExecMainStartTimestampMonotonic": 1768799308346,
+        "ExecMainStatus": 1,
+        "Id": "safehermit-20260917T015109Z-3452566.service",
+        "LoadState": "loaded",
+        "MainPID": 0,
+        "SubState": "dead"
+      },
+      "result": {
+        "bytes": 57047,
+        "device": 48,
+        "gid": 100,
+        "inode": 782348355,
+        "mode": 384,
+        "mtime_ns": 1789609874295366596,
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/result.json",
+        "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/result.json",
+        "sha256": "ecae39800bc8f05ab35e8f93ca459ccd8eea3d95eb97d3e925a68c713c907e23",
+        "symlink": null,
+        "uid": 212630
+      },
+      "unit": "safehermit-20260917T015109Z-3452566.service"
+    }
+  ],
+  "source_head": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+  "status": "incomplete",
+  "summary": {
+    "bytes": 7753,
+    "device": 48,
+    "gid": 100,
+    "inode": 782353075,
+    "mode": 384,
+    "mtime_ns": 1789609875383676308,
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/summary.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/summary.json",
+    "sha256": "ab593455d2475a9f2b067d9f296b0727a994ad45924f5e282a3d3360673ee183",
+    "symlink": null,
+    "uid": 212630
+  },
+  "within_backend_divergences": 1,
+  "within_backend_matches": 1
+}

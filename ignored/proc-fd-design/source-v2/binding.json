@@ -1,0 +1,71 @@
+{
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "files": [
+    {
+      "path": "reverie-kvm/src/elf.rs",
+      "bytes": 64373,
+      "mode": "0o644",
+      "sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7",
+      "base_sha256": "d71983ee9819ffcb47317a2c7fbdf65e9e70aacdd0d43bd558f48262ceffede2",
+      "v1_sha256": "cd7ba9259ea5eb2cc6f1f06d70ccca81afc93d3a171e32da72eb20f117fd0de7"
+    },
+    {
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1389901,
+      "mode": "0o644",
+      "sha256": "513b0b7f88440e76f2f0a5c84a396a5b3c8db87eade2486ede92847e12848b25",
+      "base_sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878",
+      "v1_sha256": "fe1e2f5fd2d480c7e6ddd13b6e352cc70a82a18adcc499d2b69fbdc631c00bc2"
+    },
+    {
+      "path": "reverie-kvm/src/fdinfo.rs",
+      "bytes": 3629,
+      "mode": "0o644",
+      "sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3",
+      "base_sha256": null,
+      "v1_sha256": "0cc3e8234a4a2f61bd7231724b833e5f5baf315688cba1b4fa177b133e54b6b3"
+    },
+    {
+      "path": "reverie-kvm/src/lib.rs",
+      "bytes": 1594,
+      "mode": "0o644",
+      "sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9",
+      "base_sha256": "b53231138434831d7ce1d08d2e770b336a31a96eda9516e3696b882a7b7633e0",
+      "v1_sha256": "6a261ede0e722876cf9828b89ab75bfd27f7be3976c25ba9275b0000ffac21f9"
+    },
+    {
+      "path": "reverie-kvm/src/memory.rs",
+      "bytes": 55591,
+      "mode": "0o644",
+      "sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6",
+      "base_sha256": "228ed762dda6b892286149757530d2a6e55539e0898721e255642b32c4ec708c",
+      "v1_sha256": "97cf718ef8315644d6389b3a94d05376bc32da0f7d6ed43efd64091604fec5f6"
+    },
+    {
+      "path": "reverie-kvm/src/proc_mounts.rs",
+      "bytes": 2674,
+      "mode": "0o644",
+      "sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494",
+      "base_sha256": null,
+      "v1_sha256": "75ee0f649d6ab0f61f572d6b769d00c56b5fa94a305f254205126aad447fc494"
+    }
+  ],
+  "candidate_patch_sha256": "cfa6c3ad6372e243adf33e461d4e014c61fad6627767e9fd64914560f79e35d8",
+  "candidate_patch_bytes": 109276,
+  "selected_test_count": 36,
+  "new_test_count": 17,
+  "tracked_source_manifest_sha256": "411bcd8ce9d6550155305218b3eaf6b1bf68581c4fe3d29fe895d6cc09fbd50b",
+  "checks": {
+    "artifact_rustfmt_exit": 0,
+    "build": "not run",
+    "tests": "not run",
+    "guest": "not run"
+  },
+  "no_publication": true,
+  "live_source_still_v1": true,
+  "status": "ignored-only proposal, not applied or executed",
+  "delta_from_v1_sha256": "807d3772cf23bf35767524c5747674e353b7ad9d34a5f26b12fb33100e60a2f7",
+  "preserved_compile_failure_readback_sha256": "9cb42add9eeb071e9cc459819cd74e68bc10bb68f13fb993248f09df9bca8fba"
+}

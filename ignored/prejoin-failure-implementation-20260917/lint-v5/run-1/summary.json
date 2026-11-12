@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "outcomes": [
+    {
+      "stage": "format",
+      "status": "passed"
+    },
+    {
+      "stage": "clippy",
+      "status": "passed"
+    }
+  ],
+  "scope": "Read-only workspace formatting and Clippy on source-v13 after actual Claude corrections. No native, VM or guest execution."
+}

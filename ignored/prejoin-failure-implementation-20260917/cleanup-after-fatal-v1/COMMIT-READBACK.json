@@ -1,0 +1,152 @@
+{
+  "status": "passed",
+  "base": "c8f4ca9d2e95460e027678ff23f6dec2529d255d",
+  "head": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879",
+  "tree": "ba584b989e7dc89fce4ac7eabaa05166ba035069",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "only_path": "reverie-kvm/src/vm.rs",
+  "source_v24_patch_sha256": "6ab538810a69d8e6bbfa493645eb52a9c489e93a53aa7078e4a7bc2a8f98e530",
+  "candidate_bytes_unchanged": true,
+  "commit_message_sha256": "05090d92dc0a7011a516884890eb5bb933d3ed7e977043d86e0339c6128c81bf",
+  "normal_commit_hooks": true,
+  "public_publication": false,
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "c8f4ca9d2e95460e027678ff23f6dec2529d255d\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "add",
+        "--",
+        "reverie-kvm/src/vm.rs"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--cached",
+        "--name-only"
+      ],
+      "exit": 0,
+      "stdout": "reverie-kvm/src/vm.rs\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "commit",
+        "-F",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/cleanup-after-fatal-v1/commit-message.txt"
+      ],
+      "exit": 0,
+      "stdout": "[codex/kvm-proc-fd-identity-20260917 12d4ce8c] Do not treat fatal child cancellation as a cleanup failure\n 1 file changed, 121 insertions(+), 5 deletions(-)\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "12d4ce8c0bc426f1ae41416f5b4a699e2c300879\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD^{tree}"
+      ],
+      "exit": 0,
+      "stdout": "ba584b989e7dc89fce4ac7eabaa05166ba035069\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "rev-parse",
+        "HEAD^"
+      ],
+      "exit": 0,
+      "stdout": "c8f4ca9d2e95460e027678ff23f6dec2529d255d\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--name-only",
+        "HEAD"
+      ],
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "show",
+        "-s",
+        "--format=%B",
+        "12d4ce8c0bc426f1ae41416f5b4a699e2c300879"
+      ],
+      "exit": 0,
+      "stdout": "Do not treat fatal child cancellation as a cleanup failure\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nPlain Language Summary and Project Impact\n\nKeep the original parent action error when an exactly owned, unstarted KVM\nchild completes fatal-cancellation cleanup with only RunAborted. The parent\nhas already retained and published the fatal error. Physical joins, consuming\nhooks, fatal child status and all real cleanup errors remain intact.\nOrdinary cancellation continues to propagate even a bare RunAborted.\n\nTask: kvm-lane-to-full-determinism-and-parity\n\nThe first complete 453-method run on the preceding landed tree produced\n450 passes and three failures. Two original boundary-restoration controls\nmistook the derived child marker for a second cleanup failure. Preserve their\ndirect InvalidGuestAddress requirement and strengthen it to the exact address\nand frame length. Correct the partial-start fixture to require the explicit\nCancelAfterFailure command after its lost gate, retaining all drain, registry\nand already-started-worker assertions and separate ordinary Cancel controls.\n\nAdd an eight-case control through actual child cancellation, registry removal\nand owned OS-thread joins. It covers fork and Tool-thread ownership, ordinary\nand fatal commands, and bare versus aggregate errors; the original non-Clone\nHostIo cleanup Arc must survive unchanged.\n\nValidation: source review and diff checks completed; compilation, actual test\ninventories, complete serial library execution, original 22 static integration\nmethods, workspace formatting and all-feature Clippy are recorded separately\nagainst this final commit before publication. Prior failures remain retained.\nThe historical futex enrollment failure has not been explained; its four\ncontrols passed both the focused and current full-library attempts. No Hermit\ndeterminism, strict INFO or canonical cross-backend parity claim follows.\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "branch",
+        "--show-current"
+      ],
+      "exit": 0,
+      "stdout": "codex/kvm-proc-fd-identity-20260917\n",
+      "stderr": ""
+    }
+  ]
+}

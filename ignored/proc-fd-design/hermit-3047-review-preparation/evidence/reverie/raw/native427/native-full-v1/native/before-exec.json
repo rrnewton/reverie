@@ -1,0 +1,23 @@
+{
+  "payload": {
+    "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "binary_sha256": "b899a2eec14c966aa64dcadd2064177cd412e3a2e57abe68efbf2e327075a783",
+    "arguments": [
+      "--test-threads=1",
+      "--nocapture",
+      "-Z",
+      "unstable-options",
+      "--format=json"
+    ]
+  },
+  "token": "54585f57eb3483e4ab0aedfafdd09b8e5db3ce8c52a5d8ade8b24874881e89f3",
+  "observer_pid": 1596661,
+  "locale_environment": {
+    "LC_CTYPE": null,
+    "LC_ALL": "C",
+    "LANG": "C"
+  },
+  "ignore_sigpipe": true,
+  "observer_start_ticks": 178436803,
+  "deadline_monotonic_ns": 1784393165120466
+}

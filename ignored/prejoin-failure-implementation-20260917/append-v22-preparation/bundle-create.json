@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "git",
+    "bundle",
+    "create",
+    "ignored/prejoin-failure-implementation-20260917/append-v22-preparation/v22-before-forward.bundle",
+    "refs/rescue/kvm-prejoin-v22-before-forward-20260917"
+  ],
+  "exit": 0
+}

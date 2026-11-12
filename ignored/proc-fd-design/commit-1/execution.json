@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "git",
+    "commit",
+    "-F",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/commit-preparation/commit-message.txt"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 0.20160028501413763,
+  "normal_hooks": true,
+  "no_amend_no_override": true
+}

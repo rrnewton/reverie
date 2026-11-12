@@ -1,0 +1,107 @@
+{
+  "schema": 1,
+  "status": "design only; no candidate implementation or execution",
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "branch": "codex/kvm-proc-fd-identity-20260917",
+  "base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "owner": "kvm_reverie_queue",
+  "owner_pid": 1210520,
+  "inputs": [
+    {
+      "repository": "reverie",
+      "commit": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+      "path": "reverie-kvm/src/executor.rs",
+      "bytes": 1321368,
+      "sha256": "0d9637d545fd1aea0d16fa4c5d3559951aeeda0c396ee243f82cab51090b8878",
+      "copy": "ignored/proc-fd-design/sources/reverie/reverie-kvm/src/executor.rs"
+    },
+    {
+      "repository": "reverie",
+      "commit": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+      "path": "reverie-kvm/src/elf.rs",
+      "bytes": 63432,
+      "sha256": "d71983ee9819ffcb47317a2c7fbdf65e9e70aacdd0d43bd558f48262ceffede2",
+      "copy": "ignored/proc-fd-design/sources/reverie/reverie-kvm/src/elf.rs"
+    },
+    {
+      "repository": "reverie",
+      "commit": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+      "path": "reverie-kvm/src/runtime.rs",
+      "bytes": 146482,
+      "sha256": "a7be97e32d0b89cf43fcc3b197800d3531b2f6c9ba2b62f02674f9f93c635c3e",
+      "copy": "ignored/proc-fd-design/sources/reverie/reverie-kvm/src/runtime.rs"
+    },
+    {
+      "repository": "reverie",
+      "commit": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+      "path": "reverie-kvm/Cargo.toml",
+      "bytes": 614,
+      "sha256": "e57f461a611e2a9d300607191e9fbc8e8abc6082af1445028e237b1f7c66aba5",
+      "copy": "ignored/proc-fd-design/sources/reverie/reverie-kvm/Cargo.toml"
+    },
+    {
+      "repository": "hermit",
+      "commit": "7628b6d5939472ac575707b4e3b8c44b85f918a6",
+      "path": "hermit-cli/src/lib.rs",
+      "bytes": 194652,
+      "sha256": "a5f6b9e8a8fefa2891359d3106f998deec0b029dfa2d6c94ba3af099ee2486c1",
+      "copy": "ignored/proc-fd-design/sources/hermit/hermit-cli/src/lib.rs"
+    },
+    {
+      "repository": "hermit",
+      "commit": "7628b6d5939472ac575707b4e3b8c44b85f918a6",
+      "path": "detcore/src/syscalls/files.rs",
+      "bytes": 196186,
+      "sha256": "b4f56303af3eab51be782582d95b8e368a3be7007157c1d6dcaca50ad6a4729a",
+      "copy": "ignored/proc-fd-design/sources/hermit/detcore/src/syscalls/files.rs"
+    },
+    {
+      "repository": "hermit",
+      "commit": "7628b6d5939472ac575707b4e3b8c44b85f918a6",
+      "path": "detcore/src/procfs.rs",
+      "bytes": 247741,
+      "sha256": "834ae6bf0ea04eaa3915c37e3863349ad3e5d0d3684c2232334818dbc6d9ac71",
+      "copy": "ignored/proc-fd-design/sources/hermit/detcore/src/procfs.rs"
+    },
+    {
+      "repository": "https://github.com/torvalds/linux",
+      "ref": "v6.12",
+      "path": "fs/proc/fd.c",
+      "git_blob": "5e391cbca7a3be0cb02f55e96d6728ad98e3ea16",
+      "sha256": "72d4ce6b4cfef31b7366baf467c42f363b86e1bc0e55e443c178584cf68534ef",
+      "bytes": 9408,
+      "copy": "ignored/proc-fd-design/linux-v6.12/fd.c"
+    },
+    {
+      "repository": "https://github.com/torvalds/linux",
+      "ref": "v6.12",
+      "path": "fs/seq_file.c",
+      "git_blob": "e676c8b0cf5d8af861724222c006c67d908c2849",
+      "sha256": "51611d69c6eb1526c9c1365a08bf0d5fa66957ddf4904a8e843da6525e6977b5",
+      "bytes": 26177,
+      "copy": "ignored/proc-fd-design/linux-v6.12/seq_file.c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/CLOSED-STDIN-FDINFO-ROUTE-7628.md",
+      "sha256": "5e64daa42d1b0cb9e6d8c47bbbacab9641d5bfd2a19dbe721fb1095476c4207e",
+      "bytes": 4477
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/closed-stdin-fdinfo-route.json",
+      "sha256": "28da173029f092eee615f8b4e3e8a8038ff454ad39922dd756b8655ef542a938",
+      "bytes": 2828
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/CLOSED-STDIN-FDINFO-MOUNT-PROVENANCE-7628.md",
+      "sha256": "c6cd1389505c408360e71634d77422e6bfa2c168dd244a1175095f2f568d1b71",
+      "bytes": 2823
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/REVERIE-PROC-FD-STAT-PROPOSAL.md",
+      "sha256": "a78dfa2773af11a4f9aa8fdd7af61aaab8dd8a4b9ac2718440e82a31ec5bf724",
+      "bytes": 6212
+    }
+  ],
+  "plan_sha256": "2bc1ded30faef26856e6f295e2f80c4ee1b27b6e97c23eebd7fad5c1ccf15576",
+  "observed_host_kernel": "7.1.3-0_fbk0_rc18_0_gd373cd4b8dbf"
+}

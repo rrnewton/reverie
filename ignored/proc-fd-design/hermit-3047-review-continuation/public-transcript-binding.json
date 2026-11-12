@@ -1,0 +1,11 @@
+{
+  "original_stream_sha256": "df3548c9ed1c9dc678ceecef79de5a4c1baba9e5e3761b6c25078169db797518",
+  "public_text_blocks": 2,
+  "successful_tool_pairs": 75,
+  "failed_tool_pairs_omitted": 1,
+  "hidden_blocks_excluded": 47,
+  "terminal_result_count": 0,
+  "original_actual_exit": 124,
+  "original_elapsed_seconds": 900.0190454360563,
+  "schema": "Only whitelisted public text/tool requests/tool results; no thinking/signature/system/session fields copied."
+}

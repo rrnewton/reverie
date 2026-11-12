@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "timeout",
+    "15s",
+    "git",
+    "diff",
+    "--check"
+  ],
+  "returncode": 0,
+  "elapsed_seconds": 0.09154548007063568
+}

@@ -1,0 +1,33 @@
+{
+  "name": "cc-file-crtbeginS.o",
+  "argv": [
+    "/usr/bin/cc",
+    "-print-file-name=crtbeginS.o"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up",
+  "pid": 1705544,
+  "exit_status": 0,
+  "timed_out": false,
+  "wall_seconds": 0.0020508619491010904,
+  "cpu_seconds": 0.001076000000000004,
+  "bounds": {
+    "cpu_seconds_per_process": 5,
+    "wall_seconds": 15,
+    "address_space_bytes": 1073741824,
+    "file_bytes_per_stream": 1048576,
+    "core_bytes": 0
+  },
+  "environment_sha256": "46488a9861ec1cec62818e852cd712018f5d77030f3323c006c21d973d59eeea",
+  "streams": {
+    "stdout": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/cc-file-crtbeginS.o/stdout",
+      "bytes": 48,
+      "sha256": "ce5f3c9864d4c2bf94d2a196f12291ab33ec8c59fe78ec6827d0971386c0c1d3"
+    },
+    "stderr": {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/queries/cc-file-crtbeginS.o/stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

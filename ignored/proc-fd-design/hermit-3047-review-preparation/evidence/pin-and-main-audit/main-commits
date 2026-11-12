@@ -1,0 +1,3 @@
+8dcf9a6d5036dc5329fe9cf56ba2965e25b8eb15 Restore missing LiteInst verify arguments
+afdaf632301b5e8650ebbb55f61597f70ed37b21 Fix current receipt and parity command self-tests
+b03fd6c16a438060f0013d58948643d8f3d81ab5 Retain cumulative evidence for cell requalification

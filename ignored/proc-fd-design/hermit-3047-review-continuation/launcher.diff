@@ -1,0 +1,11 @@
+--- prior-approved/launch-review.py
++++ prepared-continuation/launch-review.py
+@@ -4,7 +4,7 @@
+ p = Path(__file__).resolve().parent
+ # Disabled by default. The explicit argument is an accidental-launch guard,
+ # not authorization; root must review/release the exact package first.
+-if sys.argv[1:] != ['--execute-reviewed-aa7ea482']:
++if sys.argv[1:] != ['--execute-reviewed-a9d3b1fa']:
+     raise SystemExit('review launch is disabled pending root review; no subprocess started')
+ source = json.loads((p / 'candidate-binding.json').read_text())
+ inputs = json.loads((p / 'input-binding.json').read_text())

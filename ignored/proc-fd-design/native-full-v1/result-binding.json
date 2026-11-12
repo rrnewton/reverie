@@ -1,0 +1,27 @@
+[
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/RESULTS.md",
+    "bytes": 5055,
+    "sha256": "f04c31cabafd691bdd1e627d7cc8c61301901a1b84956ef5e34b1c04b3872158"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/execution-readback.json",
+    "bytes": 570492,
+    "sha256": "9b701e2669aae08de50d4005d6c3b222944609781c9d94ed93f213eea380df56"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/run-1/native-outcomes.json",
+    "bytes": 187236,
+    "sha256": "cf4bd5f4140303ab93e76d617af6e0ff74fea5a9e952bc06c2643bea191d8c5d"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/run-1/summary.json",
+    "bytes": 227,
+    "sha256": "0fc8dd7e89a749ac35a75393f46ce5935a9f560747900a4a8e810899b8b0848f"
+  },
+  {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/run-1/native-full-readback.json",
+    "bytes": 42467,
+    "sha256": "6eacc1f8790d27e139f02a243fda6ea650f5fe314ebbc9ea0befa788fd721c23"
+  }
+]

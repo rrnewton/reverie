@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "pr",
+    "view",
+    "565",
+    "--repo",
+    "rrnewton/reverie",
+    "--json",
+    "state,isDraft,headRefOid,baseRefOid,mergeCommit,mergedAt,files,url"
+  ],
+  "exit": 0,
+  "utc": "2026-09-17T05:56:35.377967+00:00"
+}

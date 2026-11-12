@@ -1,0 +1,654 @@
+[
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "android_system_properties",
+    "version": "0.1.6",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc",
+    "dependencies": [
+      "libc"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/android_system_properties-0.1.6",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 11,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/android_system_properties-0.1.6.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/android_system_properties-0.1.6.crate",
+      "bytes": 5625,
+      "mode": 420,
+      "sha256": "ae221649c9976a6f6c56ae1facf410f3ddb33cc661c4b7b61020a912d4237fbc",
+      "device": 48,
+      "inode": 340078856,
+      "mtime_ns": 1786994212373279188,
+      "roles": [
+        "registry archive checksum for android_system_properties-0.1.6"
+      ]
+    },
+    "archive_members_match_extracted_files": 10
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "bitflags",
+    "version": "2.13.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+    "dependencies": [
+      "serde_core"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.2",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 65,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.2.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/bitflags-2.13.2.crate",
+      "bytes": 51678,
+      "mode": 420,
+      "sha256": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+      "device": 48,
+      "inode": 706384753,
+      "mtime_ns": 1789012390224529506,
+      "roles": [
+        "registry archive checksum for bitflags-2.13.2"
+      ]
+    },
+    "archive_members_match_extracted_files": 64
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "bytesize",
+    "version": "2.7.0",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "7354288c522e7e980fafd2075d63d1285794c3a6a16cdd492f189ea406e5f18b",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bytesize-2.7.0",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 28,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/bytesize-2.7.0.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/bytesize-2.7.0.crate",
+      "bytes": 26011,
+      "mode": 420,
+      "sha256": "7354288c522e7e980fafd2075d63d1285794c3a6a16cdd492f189ea406e5f18b",
+      "device": 48,
+      "inode": 171442695,
+      "mtime_ns": 1785646307099288896,
+      "roles": [
+        "registry archive checksum for bytesize-2.7.0"
+      ]
+    },
+    "archive_members_match_extracted_files": 27
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "cc",
+    "version": "1.4.5",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "005ec2760ca554fae18df7a11195552ec576cd665632a881bc011d5bb2fd4d80",
+    "dependencies": [
+      "find-msvc-tools",
+      "shlex"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cc-1.4.5",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 29,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/cc-1.4.5.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/cc-1.4.5.crate",
+      "bytes": 101464,
+      "mode": 420,
+      "sha256": "005ec2760ca554fae18df7a11195552ec576cd665632a881bc011d5bb2fd4d80",
+      "device": 48,
+      "inode": 635645825,
+      "mtime_ns": 1788565868953342145,
+      "roles": [
+        "registry archive checksum for cc-1.4.5"
+      ]
+    },
+    "archive_members_match_extracted_files": 28
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "cfg-if",
+    "version": "1.0.5",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.5",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 15,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.5.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.5.crate",
+      "bytes": 9578,
+      "mode": 420,
+      "sha256": "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600",
+      "device": 48,
+      "inode": 772001538,
+      "mtime_ns": 1789580496684116745,
+      "roles": [
+        "registry archive checksum for cfg-if-1.0.5"
+      ]
+    },
+    "archive_members_match_extracted_files": 14
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "clap",
+    "version": "4.6.7",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946",
+    "dependencies": [
+      "clap_builder",
+      "clap_derive"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 148,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap-4.6.7.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap-4.6.7.crate",
+      "bytes": 65831,
+      "mode": 420,
+      "sha256": "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946",
+      "device": 48,
+      "inode": 749486384,
+      "mtime_ns": 1789412414249146353,
+      "roles": [
+        "registry archive checksum for clap-4.6.7"
+      ]
+    },
+    "archive_members_match_extracted_files": 147
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "clap_builder",
+    "version": "4.6.7",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d",
+    "dependencies": [
+      "anstream",
+      "anstyle",
+      "clap_lex",
+      "strsim",
+      "terminal_size",
+      "unicase",
+      "unicode-width"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_builder-4.6.7",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 65,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_builder-4.6.7.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_builder-4.6.7.crate",
+      "bytes": 171709,
+      "mode": 420,
+      "sha256": "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d",
+      "device": 48,
+      "inode": 749486586,
+      "mtime_ns": 1789412414272530619,
+      "roles": [
+        "registry archive checksum for clap_builder-4.6.7"
+      ]
+    },
+    "archive_members_match_extracted_files": 64
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "clap_derive",
+    "version": "4.6.7",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0",
+    "dependencies": [
+      "heck",
+      "proc-macro2",
+      "quote",
+      "syn 3.0.6"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_derive-4.6.7",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 24,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_derive-4.6.7.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_derive-4.6.7.crate",
+      "bytes": 33942,
+      "mode": 420,
+      "sha256": "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0",
+      "device": 48,
+      "inode": 749486557,
+      "mtime_ns": 1789412414256637830,
+      "roles": [
+        "registry archive checksum for clap_derive-4.6.7"
+      ]
+    },
+    "archive_members_match_extracted_files": 23
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "clap_lex",
+    "version": "1.1.1",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap_lex-1.1.1",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 10,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_lex-1.1.1.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/clap_lex-1.1.1.crate",
+      "bytes": 13572,
+      "mode": 420,
+      "sha256": "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486",
+      "device": 48,
+      "inode": 749486544,
+      "mtime_ns": 1789412414255851200,
+      "roles": [
+        "registry archive checksum for clap_lex-1.1.1"
+      ]
+    },
+    "archive_members_match_extracted_files": 9
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "find-msvc-tools",
+    "version": "0.1.12",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.12",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 19,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.12.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.12.crate",
+      "bytes": 31570,
+      "mode": 420,
+      "sha256": "3e0f1c7c3a72c66fd80abe965175f7523475c0489a87d3ff9d6e8c87d87a9d2d",
+      "device": 48,
+      "inode": 635645859,
+      "mtime_ns": 1788565868959679613,
+      "roles": [
+        "registry archive checksum for find-msvc-tools-0.1.12"
+      ]
+    },
+    "archive_members_match_extracted_files": 18
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "futures-core",
+    "version": "0.3.34",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-core-0.3.34",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 15,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-core-0.3.34.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-core-0.3.34.crate",
+      "bytes": 14692,
+      "mode": 420,
+      "sha256": "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e",
+      "device": 48,
+      "inode": 294011585,
+      "mtime_ns": 1786493023804910955,
+      "roles": [
+        "registry archive checksum for futures-core-0.3.34"
+      ]
+    },
+    "archive_members_match_extracted_files": 14
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "futures-task",
+    "version": "0.3.34",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-task-0.3.34",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 15,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-task-0.3.34.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-task-0.3.34.crate",
+      "bytes": 11376,
+      "mode": 420,
+      "sha256": "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd",
+      "device": 48,
+      "inode": 294011643,
+      "mtime_ns": 1786493023812026810,
+      "roles": [
+        "registry archive checksum for futures-task-0.3.34"
+      ]
+    },
+    "archive_members_match_extracted_files": 14
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "futures-util",
+    "version": "0.3.34",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc",
+    "dependencies": [
+      "futures-core",
+      "futures-task",
+      "pin-project-lite",
+      "slab"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 194,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.34.crate",
+      "bytes": 169782,
+      "mode": 420,
+      "sha256": "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc",
+      "device": 48,
+      "inode": 294011661,
+      "mtime_ns": 1786493023825637299,
+      "roles": [
+        "registry archive checksum for futures-util-0.3.34"
+      ]
+    },
+    "archive_members_match_extracted_files": 193
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "indexmap",
+    "version": "2.14.2",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
+    "dependencies": [
+      "equivalent",
+      "hashbrown"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/indexmap-2.14.2",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 44,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/indexmap-2.14.2.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/indexmap-2.14.2.crate",
+      "bytes": 103014,
+      "mode": 420,
+      "sha256": "cc4e190f5d26ca7051642629da2c52fc03bde85a03197c99408dcd291734c855",
+      "device": 48,
+      "inode": 636417567,
+      "mtime_ns": 1788573245309913849,
+      "roles": [
+        "registry archive checksum for indexmap-2.14.2"
+      ]
+    },
+    "archive_members_match_extracted_files": 43
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "js-sys",
+    "version": "0.3.105",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e",
+    "dependencies": [
+      "cfg-if",
+      "futures-util",
+      "wasm-bindgen"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.105",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 19,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.105.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.105.crate",
+      "bytes": 113002,
+      "mode": 420,
+      "sha256": "ce57d20d1ea864ce2ac172ab472d409214f4fd359f0b2a2775abdf522e2af99e",
+      "device": 48,
+      "inode": 659693456,
+      "mtime_ns": 1788685448856542802,
+      "roles": [
+        "registry archive checksum for js-sys-0.3.105"
+      ]
+    },
+    "archive_members_match_extracted_files": 18
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "log",
+    "version": "0.4.34",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/log-0.4.34",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 24,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/log-0.4.34.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/log-0.4.34.crate",
+      "bytes": 53395,
+      "mode": 420,
+      "sha256": "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6",
+      "device": 48,
+      "inode": 374313210,
+      "mtime_ns": 1787538410731310351,
+      "roles": [
+        "registry archive checksum for log-0.4.34"
+      ]
+    },
+    "archive_members_match_extracted_files": 23
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "rustix",
+    "version": "1.1.5",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d",
+    "dependencies": [
+      "bitflags",
+      "errno",
+      "libc",
+      "linux-raw-sys",
+      "windows-sys"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustix-1.1.5",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 332,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/rustix-1.1.5.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/rustix-1.1.5.crate",
+      "bytes": 425681,
+      "mode": 420,
+      "sha256": "891efababe418670775f199f0d233d84843c227a0949a883ce15b37c78d6629d",
+      "device": 48,
+      "inode": 778776118,
+      "mtime_ns": 1789599961015129543,
+      "roles": [
+        "registry archive checksum for rustix-1.1.5"
+      ]
+    },
+    "archive_members_match_extracted_files": 331
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "syn",
+    "version": "3.0.6",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee",
+    "dependencies": [
+      "proc-macro2",
+      "quote",
+      "unicode-ident"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-3.0.6",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 105,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/syn-3.0.6.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/syn-3.0.6.crate",
+      "bytes": 313821,
+      "mode": 420,
+      "sha256": "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee",
+      "device": 48,
+      "inode": 777999783,
+      "mtime_ns": 1789598268226513774,
+      "roles": [
+        "registry archive checksum for syn-3.0.6"
+      ]
+    },
+    "archive_members_match_extracted_files": 104
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "unicode-ident",
+    "version": "1.0.26",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954",
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.26",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 27,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.26.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.26.crate",
+      "bytes": 48425,
+      "mode": 420,
+      "sha256": "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954",
+      "device": 48,
+      "inode": 789047546,
+      "mtime_ns": 1789626607318282187,
+      "roles": [
+        "registry archive checksum for unicode-ident-1.0.26"
+      ]
+    },
+    "archive_members_match_extracted_files": 26
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "wasm-bindgen",
+    "version": "0.2.128",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf",
+    "dependencies": [
+      "cfg-if",
+      "once_cell",
+      "rustversion",
+      "wasm-bindgen-macro",
+      "wasm-bindgen-shared"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-0.2.128",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 27,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-0.2.128.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-0.2.128.crate",
+      "bytes": 70345,
+      "mode": 420,
+      "sha256": "aecb87a33d3b0c5e3b7aa46336eaf486cffafbd281b195e4c8b80d50df2351bf",
+      "device": 48,
+      "inode": 659693481,
+      "mtime_ns": 1788685448864978953,
+      "roles": [
+        "registry archive checksum for wasm-bindgen-0.2.128"
+      ]
+    },
+    "archive_members_match_extracted_files": 26
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "wasm-bindgen-macro",
+    "version": "0.2.128",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed",
+    "dependencies": [
+      "quote",
+      "wasm-bindgen-macro-support"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-0.2.128",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 10,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-0.2.128.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-0.2.128.crate",
+      "bytes": 9595,
+      "mode": 420,
+      "sha256": "a690d511e3c1a8b3a55e33511e3c2c00c78415cd23650f32b808627f5696b9ed",
+      "device": 48,
+      "inode": 659693424,
+      "mtime_ns": 1788685448821620181,
+      "roles": [
+        "registry archive checksum for wasm-bindgen-macro-0.2.128"
+      ]
+    },
+    "archive_members_match_extracted_files": 9
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "wasm-bindgen-macro-support",
+    "version": "0.2.128",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a",
+    "dependencies": [
+      "bumpalo",
+      "proc-macro2",
+      "quote",
+      "syn 3.0.6",
+      "wasm-bindgen-shared"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-support-0.2.128",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 15,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-support-0.2.128.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-support-0.2.128.crate",
+      "bytes": 118512,
+      "mode": 420,
+      "sha256": "411e4887f0071ef2d2164a9d5fdf2d20efbef78fccd3a78b0c10a1dc5295e48a",
+      "device": 48,
+      "inode": 659693514,
+      "mtime_ns": 1788685448871360681,
+      "roles": [
+        "registry archive checksum for wasm-bindgen-macro-support-0.2.128"
+      ]
+    },
+    "archive_members_match_extracted_files": 14
+  },
+  {
+    "project": "validate_b81ceab65609123303f94190",
+    "name": "wasm-bindgen-shared",
+    "version": "0.2.128",
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "checksum": "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e",
+    "dependencies": [
+      "unicode-ident"
+    ],
+    "source_directory": "/home/newton/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-shared-0.2.128",
+    "existing_bound_file_count": 0,
+    "cargo_checksum_file_present": false,
+    "missing_source_file_count": 12,
+    "archive": {
+      "path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-shared-0.2.128.crate",
+      "resolved_path": "/home/newton/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-shared-0.2.128.crate",
+      "bytes": 12994,
+      "mode": 420,
+      "sha256": "81941cd78d0c92026c33e5e01312845a4cb1e9af3407f9134b100dd03144103e",
+      "device": 48,
+      "inode": 659693440,
+      "mtime_ns": 1788685448853453796,
+      "roles": [
+        "registry archive checksum for wasm-bindgen-shared-0.2.128"
+      ]
+    },
+    "archive_members_match_extracted_files": 11
+  }
+]

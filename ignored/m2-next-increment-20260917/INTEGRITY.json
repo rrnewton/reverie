@@ -1,0 +1,104 @@
+{
+  "checks": [
+    {
+      "path": "detcore/src/logdiff.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "detcore/tests/testutils/src/lib.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/analyze/phases.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/backends.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/logdiff.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/main.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/record_start.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/run.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/bin/hermit/verify.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/canonical_verdict.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/logdiff_report.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/src/metadata.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-cli/tests/kvm_info_log_determinism.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-verify/src/chaos_replay.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-verify/src/common/verify.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-verify/src/trace_replay.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-verify/src/use_case/run_usecase.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    },
+    {
+      "path": "hermit-verify/src/use_case.rs",
+      "immutable_base_matches": true,
+      "strict_patch_application_matches_preview": true
+    }
+  ],
+  "changed_files": 13,
+  "v2_patch_preserved_sha256": "6de5e4134c28d78ee409fd010fceac8fa3646593673bf76de69669c4054c003d",
+  "v3_patch_matches_all_previews": true,
+  "v2_to_v3_patch_sha256": "cb4ef57fb0e5a3bd986f5d98f71241b88b8253e441a745224c080f04a2c7c5bb",
+  "method": "strict in-memory unified-diff application with exact hunk counts/context and immutable Git blob comparison; no product execution or index use"
+}

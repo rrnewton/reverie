@@ -1,0 +1,23 @@
+--- native-full-v1/plan.json
++++ native-full-v1/v2/plan.json
+@@ -540,14 +540,14 @@
+   "execution": [
+     "/usr/bin/python3",
+     "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/launch.py"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/native-full-v1/v2/launch.py"
+   ],
+   "limits_and_sequence": [
+-    "One cargo clippy invocation; no tests or guests executed by Clippy. Existing native37 must first pass, then all3 native stages must have complete empty accounting and fresh inactive unit readbacks.",
+-    "Same16GiB/zero swap observer, two Cargo jobs, offline and unchanged locked dependencies. Fatal stderr16MiB, observer per-stdio64MiB, reader16MiB; no memory/CPU/wall relaxation.",
+-    "Source and installed compiler/Cargo/Clippy entrypoints are bound. Actual native executable is rehashed before and after Clippy; target directory identity is not evidence of correctness.",
+-    "Output root is a fresh dedicated clippy child of the assigned cargo-v3 observer root. No overlapping source/target writes with the native stages are permitted.",
+-    "Bind both installed toolchain Clippy executables and Cargo-home rustup shims. Explicit RUSTUP_TOOLCHAIN matches the existing pinned toolchain in case Cargo selects a shim; no ambient toolchain override can select different Clippy bytes."
++    "One run of the retained Rust test ELF over all 427 normally registered native-library tests. Existing fixture compilation, actual VM controls and child helpers remain included; no new Rust build or relisting. No filters, ignored override, selection change or retry.",
++    "The earlier 37 selected passes and Clippy success stay bound to their original records. All three earlier native stages and Clippy require complete empty accounting and fresh inactive-unit readbacks before this dispatch.",
++    "Unchanged native limits: 30 aggregate CPU seconds, 60 wall seconds, 16 GiB memory and zero swap. Fatal wrapper stderr is 1 MiB; each caller stdio read is bounded at 1 MiB. The unchanged observer separately caps each retained stdio file at 64 MiB. These are attempt limits, not a guarantee of completion.",
++    "The actual native ELF, retained 427-name listing, complete source manifest, Cargo.lock, supervisor and tool entrypoints remain byte-bound. The existing C ABI tests invoke their normal cc compilation under the same service limits; no Rust compiler or Clippy invocation is part of this run.",
++    "The unexecuted run root stays native-full-v1/run-1, with the proposed dedicated measurement-fdinfo-native-20260917/native-full-v1/native observer child. The v2 preparation changes descriptions and launcher-package identity only; payload argv, environment, working directory and output destinations are unchanged. Native VM and child controls do not establish Hermit canonical guest parity."
+   ],
+   "observer": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/observer.py",
+   "observer_sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",

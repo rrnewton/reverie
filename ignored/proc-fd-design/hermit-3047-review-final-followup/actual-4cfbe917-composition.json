@@ -1,0 +1,43 @@
+{
+  "head": "4cfbe917fa1131d928a69aea14e28089c9de1d87",
+  "base": "158a89f6217b25db9540237f9c1e256cdbaf785c",
+  "tree": "4e14ef84972b97efa0d0c52bec22d29850e658e0",
+  "expected_binding_sha256": "c285664cee75c8b9a11ef0bd2e8c7346e97f3e3ef305eef43a4b9d26e8124b45",
+  "whole_entries": 1726,
+  "all_entries_equal_independent_expected_union": true,
+  "owned21_entries_preserved": true,
+  "incoming_validate_exact": {
+    "mode": "100755",
+    "type": "blob",
+    "oid": "3d57645d10d989d48e6b1c1384c0e4a2c7d571c1"
+  },
+  "authored_commits": [
+    {
+      "old": "1d695a78051b84febaec32ee358a1d45296f2405",
+      "new": "b40aeef7d9582117fde68b2270ddb2b45424cd84",
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789614631 -0700",
+      "full_message_sha256": "7e96d0a92c3c09eb6faa8bba29e81241885d07327d1d6910d876998a44276851",
+      "full_patch_sha256": "a1617ef73e5724d11d9e6404ada84a5a441674cd0d456060c99222a44bfd4d57",
+      "author_full_message_patch_preserved": true,
+      "empty": false
+    },
+    {
+      "old": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
+      "new": "4cfbe917fa1131d928a69aea14e28089c9de1d87",
+      "author": "author Ryan Newton <rrnewton@gmail.com> 1789625771 -0700",
+      "full_message_sha256": "79a6de97906b1929317b67fd70b0d54987631c6eebec08ef6d63548b3d27fd6e",
+      "full_patch_sha256": "1a9b0762b7ebec6b9e58ac28dfafc663e406d60385fe346138fa7f744ecbc997",
+      "author_full_message_patch_preserved": true,
+      "empty": false
+    }
+  ],
+  "cumulative_patch_sha256": "96502f9880df67b8423b1ed111c65f1f08feb0eede6c30657db25f281f92083a",
+  "full_tracked_working_bytes_and_modes_equal": true,
+  "working_blob_count": 1724,
+  "working_bytes": 105744370,
+  "final_head": "4cfbe917fa1131d928a69aea14e28089c9de1d87",
+  "tracked_status": "",
+  "runtime_evidence_remains_aa7": true,
+  "official13_closure_unchanged": true,
+  "tests_builds_guests_executed": false
+}

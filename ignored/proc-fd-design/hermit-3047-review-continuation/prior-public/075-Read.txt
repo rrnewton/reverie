@@ -1,0 +1,61 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01GWLdJGh2cXdiHyZNRJiELB",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/evidence/hermit-integration/mount-01-config-readback.json"
+  }
+}
+
+Successful public tool result (exact text below):
+1	{
+2	  "name": "mount-01-config",
+3	  "argv": [
+4	    "systemctl",
+5	    "--user",
+6	    "show",
+7	    "hermit-box-run-2232785-1789626000389880168.scope",
+8	    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+9	  ],
+10	  "exit_code": 0,
+11	  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+12	  "stderr": "",
+13	  "inactive_empty": true,
+14	  "command_exit": 0,
+15	  "cpu_seconds": 92.263617,
+16	  "wall_seconds": 47.87259216886014,
+17	  "guard": null,
+18	  "source_unchanged": true,
+19	  "commit_correct": true,
+20	  "receipt_sha256": "06e1f6b26c0b07599f85dc6dceb35540e7efd596d202e26425680f3cb82dcec4",
+21	  "full_source_snapshots_equal": true,
+22	  "actual_methods": [
+23	    {
+24	      "method": "tests::kvm_mountinfo_config_captures_validated_ambient_namespace",
+25	      "status": "ok"
+26	    },
+27	    {
+28	      "method": "tests::kvm_mountinfo_config_preserves_captured_provenance",
+29	      "status": "ok"
+30	    },
+31	    {
+32	      "method": "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+33	      "status": "ok"
+34	    },
+35	    {
+36	      "method": "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+37	      "status": "ok"
+38	    }
+39	  ],
+40	  "expected_method_names_equal": true,
+41	  "test_summary": [
+42	    {
+43	      "passed": 4,
+44	      "failed": 0,
+45	      "ignored": 0,
+46	      "measured": 0,
+47	      "filtered": 338
+48	    }
+49	  ]
+50	}
+51	

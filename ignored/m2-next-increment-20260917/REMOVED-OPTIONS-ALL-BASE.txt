@@ -1,0 +1,122 @@
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/code-elegance/SKILL.md:430:- **`--unsafe-strip-lines` and similar diagnostic-only normalizations**, used
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/determinism-regression-debugging/SKILL.md:77:`--unsafe-strip-lines` is only a non-parity localization aid. It erases the
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/hermit-debugging/SKILL.md:263:| `--unsafe-strip-lines` | **Non-parity diagnostic only.** Erases timestamps and syscall values; using it to make a failing parity diff pass is cheating. |
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/hermit-debugging/SKILL.md:265:| `--ignore-lines <substr>` | Drop lines containing a substring before comparing (repeatable). |
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/hermit-debugging/SKILL.md:266:| `--skip-commit` / `--skip-detlog` | Compare only DETLOG, or only COMMIT, to tell a *scheduling* divergence from a *syscall/data* divergence. |
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/hermit-debugging/SKILL.md:267:| `--include-detlogs syscall,syscallresult,other` | Narrow which DETLOG classes count. |
+8051335e87104f7cf832204f74920d38416393b2:.claude/skills/hermit-debugging/SKILL.md:337:- `detcore/src/logdiff.rs` — the log comparator: `strip_log_entry`
+8051335e87104f7cf832204f74920d38416393b2:demos/05-qemu-busybox.sh:137:  # -- `RunOpts::verification_strictness` returns `Canonical` only under
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:221:    /// In case --skip-detlog=false this parameter further filters which
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:224:    pub include_detlogs: Vec<DetLogFilter>,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:228:    fn is_skip(&self, filter: DetLogFilter) -> bool {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:237:        if is_detlog_syscall(entry) && self.is_skip(DetLogFilter::Syscall) {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:240:        if is_detlog_syscall_result(entry) && self.is_skip(DetLogFilter::SyscallResult) {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:246:            && self.is_skip(DetLogFilter::Other)
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:308:            (LogComparisonMode::Deterministic, LogNormalization::Exact) => "Deterministic",
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:309:            (LogComparisonMode::Deterministic, LogNormalization::Stripped) => "Stripped",
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:310:            (LogComparisonMode::Deterministic, LogNormalization::Canonical) => {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:331:pub enum DetLogFilter {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:340:impl FromStr for DetLogFilter {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:345:            "syscall" => Ok(DetLogFilter::Syscall),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:346:            "syscallresult" => Ok(DetLogFilter::SyscallResult),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:347:            "other" => Ok(DetLogFilter::Other),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:349:                "unknown value {} for DetLogFilter",
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:381:pub fn strip_log_entry(log: &str) -> String {
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:448:/// from [`strip_log_entry`]'s `<ADDR>` erasure in one decisive way: erasure maps
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:496:            .map(|message| strip_log_entry(message.text))
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:546:/// `--unsafe-strip-lines` transformation: scheduler turns, virtual time, syscall
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:1024:/// This is deliberately narrower than [`strip_log_entry`]. Syscall arguments,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:1734:            DetLogFilter::Syscall,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:1735:            DetLogFilter::SyscallResult,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:1736:            DetLogFilter::Other,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2113:        LogComparisonMode::Deterministic => ("DETLOG", &detlogs_a, &detlogs_b),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2278:    use crate::logdiff::DetLogFilter;
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2346:                DetLogFilter::Syscall,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2347:                DetLogFilter::SyscallResult,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2348:                DetLogFilter::Other,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2938:        let options = super::LogDiffOpts::try_parse_from(["log-diff", "--unsafe-strip-lines"])
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2942:        assert!(super::LogDiffOpts::try_parse_from(["log-diff", "--strip-lines"]).is_err());
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2949:        assert!(help.contains("--unsafe-strip-lines"));
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:2953:        assert!(!help.contains("--strip-lines"));
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3161:                comparison: super::LogComparisonMode::Deterministic,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3172:                    DetLogFilter::Syscall,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3173:                    DetLogFilter::SyscallResult,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3174:                    DetLogFilter::Other,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3419:                    comparison: super::LogComparisonMode::Deterministic,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3430:                    comparison: super::LogComparisonMode::Deterministic,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3626:                DetLogFilter::Syscall,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3627:                DetLogFilter::SyscallResult,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3628:                DetLogFilter::Other,
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:3668:            include_detlogs: vec![DetLogFilter::Syscall],
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4279:        assert_eq!(super::strip_log_entry("800.709_180s"), "<NANOSECONDS>");
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4280:        assert_eq!(super::strip_log_entry("98.91618ms"), "<NUM>");
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4281:        assert_eq!(super::strip_log_entry("98.91619ms"), "<NUM>");
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4282:        assert_eq!(super::strip_log_entry("x86_64"), "x86_64");
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4284:            super::strip_log_entry(
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4300:        let read = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_RDONLY""#);
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4301:        let write = super::strip_log_entry(r#"open path="/tmp/scratch" flags="O_WRONLY""#);
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4317:            super::strip_log_entry(r#"open path="/tmp/hermit-aaaa/f" flags="O_RDONLY""#),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4318:            super::strip_log_entry(r#"open path="/tmp/hermit-bbbb/f" flags="O_RDONLY""#),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4328:            super::strip_log_entry(r#"rename from="/tmp/a" to="/tmp/b" ok="1""#),
+8051335e87104f7cf832204f74920d38416393b2:detcore/src/logdiff.rs:4524:            super::LogComparisonMode::Deterministic,
+8051335e87104f7cf832204f74920d38416393b2:detcore/tests/testutils/src/lib.rs:795:                let str_a = detcore::logdiff::strip_log_entry(&x[ix]);
+8051335e87104f7cf832204f74920d38416393b2:detcore/tests/testutils/src/lib.rs:796:                let str_b = detcore::logdiff::strip_log_entry(&filtered[ix]);
+8051335e87104f7cf832204f74920d38416393b2:docs/ERROR_CATALOG.md:123:| `unknown value ... for DetLogFilter` | Configuration | A log-diff filter was not `syscall`, `syscallresult`, or `other`. | Use one of those values with `--include-detlogs`. |
+8051335e87104f7cf832204f74920d38416393b2:docs/USER_GUIDE.md:332:`Stripped` when `--unsafe-strip-lines` applies its lossy substitutions, or
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/analyze/phases.rs:290:                 --ignore-lines=CHAOSRAND {} {}",
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:597:        return Err("canonical INFO comparison conflicts with --unsafe-strip-lines");
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:600:        return Err("canonical INFO comparison does not permit --ignore-lines");
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:606:        return Err("canonical INFO JSON does not support --git-diff");
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:630:        logdiff::LogComparisonMode::Deterministic => "deterministic",
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:638:            logdiff::DetLogFilter::Syscall => "syscall".to_owned(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:639:            logdiff::DetLogFilter::SyscallResult => "syscall_result".to_owned(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/logdiff.rs:640:            logdiff::DetLogFilter::Other => "other".to_owned(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:1350:/// `verification_strictness` would have restored the original defect silently.
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:1366:            plain.verification_strictness(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:1382:                canonical.verification_strictness(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:2902:    fn verification_strictness(&self) -> LogCompareStrictness {
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:2920:            strictness: self.verification_strictness(),
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/run.rs:5004:        let strictness = self.verification_strictness();
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/verify.rs:266:    /// Concrete: were any `--ignore-lines` substring filters applied, dropping
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/verify.rs:374:            ComparedLogScope::Deterministic => LogComparisonMode::Deterministic,
+8051335e87104f7cf832204f74920d38416393b2:hermit-cli/src/bin/hermit/verify.rs:2049:            LogComparisonMode::Deterministic
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/chaos_replay.rs:96:            verify_detlog_syscalls: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/chaos_replay.rs:97:            verify_detlog_syscall_results: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/chaos_replay.rs:98:            verify_detlog_others: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/chaos_replay.rs:99:            verify_commits: false,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:50:            result.push("--skip-detlog".to_owned());
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:53:                result.push("--include-detlogs=other".to_owned());
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:56:                result.push("--include-detlogs=syscallresult".to_owned());
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:59:                result.push("--include-detlogs=syscall".to_owned());
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:64:            result.push("--skip-commit".to_owned())
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:70:            result.push(format!("--ignore-lines={}", ignore_lines));
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:246:        assert_eq!(args.into_iter().any(|x| x == "--ignore-lines=test"), true);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/common/verify.rs:264:            args.into_iter().any(|x| x.contains("--ignore-lines")),
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:122:            verify_detlog_syscalls: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:123:            verify_detlog_syscall_results: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:129:            verify_detlog_others: !self.split_branches && !self.chaos,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:130:            verify_commits: false,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:203:        assert!(options.verify_detlog_syscalls);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:204:        assert!(options.verify_detlog_syscall_results);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:205:        assert!(options.verify_detlog_others);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:212:        assert!(options.verify_detlog_syscalls);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:213:        assert!(options.verify_detlog_syscall_results);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/trace_replay.rs:214:        assert!(!options.verify_detlog_others);
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:27:    pub verify_detlog_syscalls: bool,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:28:    pub verify_detlog_syscall_results: bool,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:29:    pub verify_detlog_others: bool,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:31:    pub verify_commits: bool,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:38:    fn should_log_diff(&self) -> bool {
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:39:        self.verify_commits
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:40:            || self.verify_detlog_others
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:41:            || self.verify_detlog_syscalls
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:42:            || self.verify_detlog_syscall_results
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:53:            verify_detlog_syscalls: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:54:            verify_detlog_syscall_results: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:55:            verify_detlog_others: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case.rs:56:            verify_commits: true,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case/run_usecase.rs:38:    if options.should_log_diff() {
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case/run_usecase.rs:44:                skip_commits: !options.verify_commits,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case/run_usecase.rs:45:                skip_detlog_others: !options.verify_detlog_others,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case/run_usecase.rs:46:                skip_detlog_syscalls: !options.verify_detlog_syscalls,
+8051335e87104f7cf832204f74920d38416393b2:hermit-verify/src/use_case/run_usecase.rs:47:                skip_detlog_syscall_results: !options.verify_detlog_syscall_results,

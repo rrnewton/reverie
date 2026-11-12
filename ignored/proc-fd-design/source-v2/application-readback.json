@@ -1,0 +1,9 @@
+{
+  "applied_paths": [
+    "reverie-kvm/src/executor.rs"
+  ],
+  "all_six_bytes_and_modes_match": true,
+  "source_binding_sha256": "3d6c2c0711946558e71e58a8ff63801a7ce9526deb1ef1432129c093fdd15aea",
+  "original_source_v1_preserved": true,
+  "status": "applied; no compile or tests attempted"
+}

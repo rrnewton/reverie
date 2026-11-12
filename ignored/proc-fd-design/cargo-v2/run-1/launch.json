@@ -1,0 +1,27 @@
+{
+  "plan_sha256": "4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e",
+  "caller_sha256": "c08dc3d5dab9ff6ef03ac528cc2bb13e8ee85cfd3369296c124eaa40bcb2ae8a",
+  "environment": {
+    "HOME": "/home/newton",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "PATH": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-2026-07-29-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "TMPDIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/tmp",
+    "CARGO_TERM_COLOR": "never"
+  },
+  "source_binding_sha256": "3d6c2c0711946558e71e58a8ff63801a7ce9526deb1ef1432129c093fdd15aea",
+  "scope": "One native KVM library build/list/selected run; no Hermit or KVM guest."
+}

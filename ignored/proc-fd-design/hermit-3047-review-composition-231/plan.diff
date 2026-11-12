@@ -1,0 +1,46 @@
+--- prior/execution-plan.json
++++ composition/execution-plan.json
+@@ -67,27 +67,27 @@
+   "proposed_released_argv": [
+     "/usr/bin/python3",
+     "-B",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/launch-review.py",
+-    "--execute-reviewed-a88f9480"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/launch-review.py",
++    "--execute-reviewed-4392560a"
+   ],
+-  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/source/hermit",
+-  "hermit_base": "158a89f6217b25db9540237f9c1e256cdbaf785c",
+-  "hermit_head": "a88f948021a24c6a1ea808f868516c0691c8819a",
+-  "hermit_tree": "cf2185e73d2335ddd70162e336b27440df5bf3d8",
+-  "candidate_binding_sha256": "e82585b11cd13ffea137c78f6c81605c2064ec1020f497d905d08680be19135b",
++  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/source/hermit",
++  "hermit_base": "231228c010541561a81dcb1353ac200f5c791b1a",
++  "hermit_head": "4392560a4f6e06f136b5a74b0418294a6cdda28a",
++  "hermit_tree": "b06a3d19d4e15e31542aeef742d5f81679df2a99",
++  "candidate_binding_sha256": "dba36b7620d32fb99c7f575fbb47518cc7ec2eabc075f16c88891e9402be0030",
+   "outputs": [
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/launch.json",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/stdout.jsonl",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/stderr.log",
+-    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/exit.json"
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/launch.json",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/stdout.jsonl",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/stderr.log",
++    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/exit.json"
+   ],
+-  "source_scope": "Incoming scripts/validate.rs plus exact test-only F1 insertion; complete final authored patch and relevant unchanged source provided.",
++  "source_scope": "Exact three-commit source-preserving rebase onto main231: two regular count sites and LiteInst PID assertion/comment; full authored patch and whole union bound.",
+   "prior_literal_source_approval": {
+-    "head": "a9d3b1faa4502963e33bcb3e7e8a213a4e1a3bb0",
+-    "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-final-followup/prior-a9-REVIEW.md",
+-    "sha256": "f8d2cca4a3a8235bd759b9b4bf6f7526d70769ebf99533c71d02b288d4d6c08f"
++    "head": "a88f948021a24c6a1ea808f868516c0691c8819a",
++    "report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-composition-231/prior-a88-REVIEW.md",
++    "sha256": "ca36cfc5135f6d664195e456067936967e5a748449b4eee4e449b3c9d709ed07"
+   },
+-  "actual_evidence_cutoff": "aa7 native19/fmt/Clippy634/build and2descriptor+3complete-mode passes retained at aa7; official method/empty-stderr obligation pending; Reverie426/1 unchanged.",
++  "actual_evidence_cutoff": "aa7 measured native19/fmt/Clippy634/build and2descriptor+3complete-mode passes. Original24-method current run pending; actual1839 zero-node tool-root refusal retained. Reverie426/1 unchanged.",
+   "raw_private_transcript_not_input": true,
+   "no_rebuild_or_relist_or_retest": true
+ }

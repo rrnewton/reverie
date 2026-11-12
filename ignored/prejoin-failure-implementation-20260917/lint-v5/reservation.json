@@ -1,0 +1,28 @@
+{
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v5/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v5/plan.json",
+    "bytes": 19066,
+    "mode": 420,
+    "sha256": "26caab0b13459621fe9161efdb6045f6f86c42963b109669af7f34759e8fc051"
+  },
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v5/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/lint-v5/launch.py",
+    "bytes": 4710,
+    "mode": 420,
+    "sha256": "dca4b925bc62913f434d5ddced7dc92a590c27c4183e01ec2625a70b5fed941a"
+  },
+  "source": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v13-preparation/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/source-v13-preparation/binding.json",
+    "bytes": 3111,
+    "mode": 420,
+    "sha256": "b7a4d941ee8d6010d7dcaa2a5b725c06fa8d1787b8562c802fea27aec94da566"
+  },
+  "outputs": {
+    "format": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v5/format",
+    "clippy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-prejoin-native-20260917/reverie-lint-v5/clippy"
+  },
+  "preflight": "All inputs and full live source match. No execution."
+}

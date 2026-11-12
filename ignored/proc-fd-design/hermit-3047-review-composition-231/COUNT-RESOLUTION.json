@@ -1,0 +1,8 @@
+{
+  "staged_tree": "60e6192662cad81a25d444b5136e77a1769f2e4d",
+  "all_1726_index_entries_equal_second_expected_tree": true,
+  "only_manual_resolution": "ci/manifest-plan/src/validation_dag_static.rs",
+  "resolved_file_sha256": "9d2b17a74d35ae68445a0ef57b2dacbec66334f2f9777633d9ca88d07357353d",
+  "regular_counts": 507,
+  "hermit_counts": 634
+}

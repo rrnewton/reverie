@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-15",
+  "test": "leader_exit::raw_exit_drains_nested_worker_direct",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "66139215c97d4c89dbca5d52b22c484e7ec097e335a7f665a2c12f2583d8b4ea",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "c832afe5cd44657452d2058bcffce7f09bab9f9f5c26f0d5ad5f614630cb5503",
+  "cpu_nsec": 453511000,
+  "wall_seconds": 1.443484787
+}

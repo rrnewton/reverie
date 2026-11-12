@@ -1,0 +1,46 @@
+{
+  "caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/launch.py",
+    "bytes": 15108,
+    "mode": 420,
+    "sha256": "a1e6426ee8cb19251d4d45103065e9f09838ed0960e2bce0378e2592c29c5c22"
+  },
+  "plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/plan.json",
+    "bytes": 25768,
+    "mode": 420,
+    "sha256": "a13af803508b0175c78755499b366801312da4cf8fbd584b7162c2b11bc89ec5"
+  },
+  "source_binding": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/source-v3/binding.json",
+    "bytes": 3084,
+    "mode": 420,
+    "sha256": "03ea75db314414d96e7c8b3471ed09c3fb6afa11ed98eef5bdfdcc1655dd4496"
+  },
+  "native_caller": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/launch.py",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/launch.py",
+    "bytes": 17260,
+    "mode": 420,
+    "sha256": "bfe6ee22f917a430a37a787c069eca21a35a735cefd3a84d5524c6911026cd4a"
+  },
+  "native_plan": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/plan.json",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/plan.json",
+    "bytes": 37258,
+    "mode": 420,
+    "sha256": "8bd40f80e45b437eca831376fb1e0326935c8cc8735dcff00ae96c48f56c9cad"
+  },
+  "status": "prepared only, no Clippy execution",
+  "dependencies": "source-v3 application, native37 exact pass with terminal empty services, then root execution release",
+  "caller_delta": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/native-v3-caller-to-clippy.diff",
+    "resolved_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v3/clippy/native-v3-caller-to-clippy.diff",
+    "bytes": 17703,
+    "mode": 420,
+    "sha256": "67c052f64593c9683078e38346107cf0ac89cd0cae1abf2ccbe7faeeeb21ed7e"
+  }
+}

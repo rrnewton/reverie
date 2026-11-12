@@ -1,0 +1,2191 @@
+{
+  "discovery": "Static Config/source/libperl inspection only; no Perl or loader execution",
+  "module_roots": [
+    "/usr/local/lib64/perl5/5.32",
+    "/usr/local/share/perl5/5.32",
+    "/usr/lib64/perl5/vendor_perl",
+    "/usr/share/perl5/vendor_perl",
+    "/usr/lib64/perl5",
+    "/usr/share/perl5"
+  ],
+  "module_candidates": [
+    {
+      "module": "Fcntl.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Fcntl.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Fcntl.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Fcntl.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Fcntl.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Fcntl.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/Fcntl.pm",
+          "sha256": "02cce578326ffb0393234fd16f4d4d2ce62deec827a6e62454df27e5a2d3d22a"
+        },
+        {
+          "path": "/usr/lib64/perl5/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Fcntl.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Fcntl.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "POSIX.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/POSIX.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/POSIX.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/POSIX.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/POSIX.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/POSIX.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/POSIX.pm",
+          "sha256": "c3ac3494b7f7e61396e4d500c93032dc00631a6d0cba6b36ab35af564740d83c"
+        },
+        {
+          "path": "/usr/lib64/perl5/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/POSIX.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/POSIX.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "strict.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/strict.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/strict.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/strict.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/strict.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/strict.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/strict.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/strict.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/strict.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/strict.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/strict.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/strict.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/strict.pm",
+          "sha256": "89a96f0a1a1ed78e0e9c525434b5779b2e2baa8f976dfa2f78771282fa08d88d"
+        },
+        {
+          "path": "/usr/share/perl5/strict.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "warnings.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/warnings.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/warnings.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/warnings.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/warnings.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/warnings.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/warnings.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/warnings.pm",
+          "sha256": "749cb1f346323d833651e8b5632e1454864583598a89e880e16868b6fc715538"
+        },
+        {
+          "path": "/usr/share/perl5/warnings.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "XSLoader.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/XSLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/XSLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/XSLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/XSLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/XSLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/XSLoader.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/XSLoader.pm",
+          "sha256": "c08f40d29fea04a0c820dd190e93ad8f3dc1954b2072ffc81a1b477c851f8936"
+        },
+        {
+          "path": "/usr/share/perl5/XSLoader.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Exporter.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Exporter.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Exporter.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Exporter.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Exporter.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/vendor_perl/Exporter.pm",
+          "sha256": "f089e9898900df4d0f4901d8c1a2e5ae6fed990ecdf724f7ea5654791ef891f3"
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Exporter.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Exporter.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Exporter.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Exporter/Heavy.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Exporter/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Exporter/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Exporter/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Exporter/Heavy.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/vendor_perl/Exporter/Heavy.pm",
+          "sha256": "3f85172a45788d079fd08451fb47f71bf0648c94a7eebc198661d83d1f9b59b8"
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Exporter/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Exporter/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Exporter/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Carp.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Carp.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Carp.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Carp.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Carp.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/vendor_perl/Carp.pm",
+          "sha256": "89ce58db6934387bcbab17a4972b75c0d0153335291cd8a762f8341af0bef5ae"
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Carp.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Carp.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Carp.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Carp/Heavy.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Carp/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Carp/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Carp/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Carp/Heavy.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/vendor_perl/Carp/Heavy.pm",
+          "sha256": "867846437cfd54b3603a4a9ca3583fec18ce624ca1df05ff55f1ec4815fa2157"
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Carp/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Carp/Heavy.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Carp/Heavy.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "DynaLoader.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/DynaLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/DynaLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/DynaLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/DynaLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/DynaLoader.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/DynaLoader.pm",
+          "sha256": "1550ad56adae4a0d4e83c128037965912a79082846c4e2314b5dc18f9b3a6b17"
+        },
+        {
+          "path": "/usr/lib64/perl5/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/DynaLoader.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/DynaLoader.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Config.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Config.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Config.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Config.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Config.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Config.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Config.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Config.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Config.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Config.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/Config.pm",
+          "sha256": "bb17f324896f3cbf08053b44b2cf5cd94b62468eed5ee6e1afdee04ad3103d62"
+        },
+        {
+          "path": "/usr/lib64/perl5/Config.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Config.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Config.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Config_heavy.pl",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Config_heavy.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Config_heavy.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Config_heavy.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Config_heavy.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Config_heavy.pl",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/Config_heavy.pl",
+          "sha256": "2c225b2a184ea5d1d6182cbd3b42ed384c7ff8c7098dbafbc8e3555bda64e807"
+        },
+        {
+          "path": "/usr/share/perl5/Config_heavy.pl",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Config_git.pl",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Config_git.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Config_git.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Config_git.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Config_git.pl",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Config_git.pl",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/Config_git.pl",
+          "sha256": "09c5e2ee35ee18d9043d95273f1cd37bc82e80567fd1372a1eb134c809c39504"
+        },
+        {
+          "path": "/usr/share/perl5/Config_git.pl",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Tie/Hash.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Tie/Hash.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Tie/Hash.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Tie/Hash.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Tie/Hash.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Tie/Hash.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Tie/Hash.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/Tie/Hash.pm",
+          "sha256": "12e565ea59a4a3a332d8fefa40a654f9482014c145f165bef3d065a59daee55a"
+        },
+        {
+          "path": "/usr/share/perl5/Tie/Hash.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "warnings/register.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/warnings/register.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/warnings/register.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/warnings/register.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/warnings/register.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/warnings/register.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/warnings/register.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/warnings/register.pm",
+          "sha256": "ce25ec34358642703ff05b546b2ac42b4f2081ab7610d8373dd94c6b78040cf4"
+        },
+        {
+          "path": "/usr/share/perl5/warnings/register.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "overloading.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overloading.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overloading.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overloading.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overloading.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overloading.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/overloading.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/overloading.pm",
+          "sha256": "5bba56c0acdcc449ca3b73500862a5750c907d97d652978038dbc7809c4fcd07"
+        },
+        {
+          "path": "/usr/share/perl5/overloading.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "overload.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overload.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overload.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overload.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overload.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overload.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overload.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overload.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overload.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overload.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overload.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/overload.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/overload.pm",
+          "sha256": "36d4c0844259013579e3e41d1a3cb7002bcf135ea5f5bb9aa036287f7ed67ccd"
+        },
+        {
+          "path": "/usr/share/perl5/overload.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "overload/numbers.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overload/numbers.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overload/numbers.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overload/numbers.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overload/numbers.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overload/numbers.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/overload/numbers.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/share/perl5/overload/numbers.pm",
+          "sha256": "482f02bdf621f7e7656311666a4f1caa6b329d2ec3a197b3672ad92855794f1e"
+        },
+        {
+          "path": "/usr/share/perl5/overload/numbers.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Scalar/Util.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Scalar/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Scalar/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Scalar/Util.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/vendor_perl/Scalar/Util.pm",
+          "sha256": "751bb2d578cc63afa22c1a4221303a7bca1b742f9d9678bd5cb1793e31e9193d"
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Scalar/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Scalar/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Scalar/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/Scalar/Util.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "List/Util.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/List/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/List/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/List/Util.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/vendor_perl/List/Util.pm",
+          "sha256": "3c7b3eeda835c998e21751cb32e5b13e3a6c2797636ea23d3ece4bc1b06910e8"
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/List/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/List/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/List/Util.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/List/Util.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "mro.pm",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/mro.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/mro.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/mro.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/mro.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/mro.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/mro.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/mro.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/mro.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/mro.pm",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/mro.pm",
+          "sha256": "4a12e17a9e8e41d3edef2e79d158d0e4ef4a3d8e346bbf2e24ebbc851e03891d"
+        },
+        {
+          "path": "/usr/lib64/perl5/mro.pmc",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/mro.pm",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/mro.pmc",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "module": "Fcntl",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/Fcntl/Fcntl.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/Fcntl/Fcntl.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/Fcntl/Fcntl.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/Fcntl/Fcntl.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/Fcntl/Fcntl.so",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/auto/Fcntl/Fcntl.so",
+          "sha256": "a121d0b14ca84020aceb03a8ac8acd8ca2506e6284d23ae2ef4a9d45328d7c6f"
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/Fcntl/Fcntl.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/Fcntl/Fcntl.bs",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "POSIX",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/POSIX/POSIX.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/POSIX/POSIX.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/POSIX/POSIX.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/POSIX/POSIX.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/POSIX/POSIX.so",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/auto/POSIX/POSIX.so",
+          "sha256": "e2d6fc1a2c3dbceb290d6045983999c9c2ff39e0c81f3847b2e2cc5376c22d8c"
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/POSIX/POSIX.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/POSIX/POSIX.bs",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "mro",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/mro/mro.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/mro/mro.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/mro/mro.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/mro/mro.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/mro/mro.so",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/auto/mro/mro.so",
+          "sha256": "e8373b7a94e756ad8bca9c817c9ac88d575d8894b655bc2723f515aa5c7dcf87"
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/mro/mro.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/mro/mro.bs",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "List/Util",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/List/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/List/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/List/Util/Util.so",
+          "exists": true,
+          "lexists": true,
+          "resolved_path": "/usr/lib64/perl5/vendor_perl/auto/List/Util/Util.so",
+          "sha256": "826bb1ef27abb892bd9aa7f95cfb59dc6cd18c4126d419bfe6d4b8c992c1faa2"
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/List/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/List/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/List/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/List/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    },
+    {
+      "module": "Scalar/Util",
+      "candidates": [
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/lib64/perl5/5.32/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/local/share/perl5/5.32/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/vendor_perl/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/vendor_perl/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/lib64/perl5/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/Scalar/Util/Util.so",
+          "exists": false,
+          "lexists": false
+        },
+        {
+          "path": "/usr/share/perl5/auto/Scalar/Util/Util.bs",
+          "exists": false,
+          "lexists": false
+        }
+      ]
+    }
+  ],
+  "sitecustomize": [
+    {
+      "path": "/usr/local/lib64/perl5/5.32/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    },
+    {
+      "path": "/usr/local/share/perl5/5.32/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    },
+    {
+      "path": "/usr/lib64/perl5/vendor_perl/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    },
+    {
+      "path": "/usr/share/perl5/vendor_perl/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    },
+    {
+      "path": "/usr/lib64/perl5/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    },
+    {
+      "path": "/usr/share/perl5/sitecustomize.pl",
+      "exists": false,
+      "lexists": false
+    }
+  ],
+  "source_references": [
+    {
+      "path": "/usr/lib64/perl5/Fcntl.pm",
+      "source_references": [
+        {
+          "line": 58,
+          "text": "use strict;"
+        },
+        {
+          "line": 61,
+          "text": "require Exporter;"
+        },
+        {
+          "line": 62,
+          "text": "require XSLoader;"
+        },
+        {
+          "line": 66,
+          "text": "XSLoader::load();"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/POSIX.pm",
+      "source_references": [
+        {
+          "line": 2,
+          "text": "use strict;"
+        },
+        {
+          "line": 3,
+          "text": "use warnings;"
+        },
+        {
+          "line": 9,
+          "text": "require XSLoader;"
+        },
+        {
+          "line": 11,
+          "text": "use Fcntl qw(FD_CLOEXEC F_DUPFD F_GETFD F_GETFL F_GETLK F_RDLCK F_SETFD"
+        },
+        {
+          "line": 21,
+          "text": "sub croak { require Carp;  goto &Carp::croak }"
+        },
+        {
+          "line": 24,
+          "text": "XSLoader::load();"
+        },
+        {
+          "line": 78,
+          "text": "    rand        => \\'non-portable, use Perl\\'s rand instead',"
+        },
+        {
+          "line": 102,
+          "text": "    tmpnam      => 'use File::Temp',"
+        },
+        {
+          "line": 163,
+          "text": "    strerror  => 'errno => BEGIN { local $!; require locale; locale->import} my $e = $_[0] + 0; local $!; $! = $e; \"$!\"',"
+        },
+        {
+          "line": 202,
+          "text": "  return \"$how instead\" if $how =~ /^use /;"
+        },
+        {
+          "line": 204,
+          "text": "  return \"C-specific: use $how instead\";"
+        },
+        {
+          "line": 484,
+          "text": "require Exporter;"
+        },
+        {
+          "line": 505,
+          "text": "require Tie::Hash;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/strict.pm",
+      "source_references": [
+        {
+          "line": 11,
+          "text": "    die sprintf \"Incorrect use of pragma '%s' at %s line %d.\\n\", __PACKAGE__, +(caller)[1,2]"
+        },
+        {
+          "line": 54,
+          "text": "        require Carp;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/warnings.pm",
+      "source_references": [
+        {
+          "line": 14,
+          "text": "die sprintf \"Incorrect use of pragma '%s' at %s line %d.\\n\", __PACKAGE__, +(caller)[1,2]"
+        },
+        {
+          "line": 276,
+          "text": "    require Carp; # this initializes %CarpInternal"
+        },
+        {
+          "line": 479,
+          "text": "    require Carp;"
+        },
+        {
+          "line": 513,
+          "text": "    require Carp;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/XSLoader.pm",
+      "source_references": [
+        {
+          "line": 31,
+          "text": "    my $boots = \"$module\\::bootstrap\";"
+        },
+        {
+          "line": 94,
+          "text": "        require Carp;"
+        },
+        {
+          "line": 100,
+          "text": "        require Carp;"
+        },
+        {
+          "line": 115,
+          "text": "    require DynaLoader;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/vendor_perl/Exporter.pm",
+      "source_references": [
+        {
+          "line": 3,
+          "text": "require 5.006;"
+        },
+        {
+          "line": 16,
+          "text": "  require Exporter::Heavy;"
+        },
+        {
+          "line": 64,
+          "text": "\tsub {require Carp; &Carp::carp} if not $SIG{__WARN__};"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/vendor_perl/Exporter/Heavy.pm",
+      "source_references": [
+        {
+          "line": 3,
+          "text": "use strict;"
+        },
+        {
+          "line": 7,
+          "text": "require Exporter;  our $VERSION = $Exporter::VERSION;"
+        },
+        {
+          "line": 50,
+          "text": "\t    require Carp;"
+        },
+        {
+          "line": 59,
+          "text": "\trequire Carp;"
+        },
+        {
+          "line": 158,
+          "text": "\t    require Carp;"
+        },
+        {
+          "line": 183,
+          "text": "                require Carp;"
+        },
+        {
+          "line": 188,
+          "text": "\t\trequire Carp;"
+        },
+        {
+          "line": 209,
+          "text": "\t    do { require Carp; Carp::croak(\"Can't export symbol: $type$sym\") };"
+        },
+        {
+          "line": 234,
+          "text": "\trequire Carp;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/vendor_perl/Carp.pm",
+      "source_references": [
+        {
+          "line": 3,
+          "text": "{ use 5.006; }"
+        },
+        {
+          "line": 4,
+          "text": "use strict;"
+        },
+        {
+          "line": 5,
+          "text": "use warnings;"
+        },
+        {
+          "line": 170,
+          "text": "    if (eval { require \"overloading.pm\" }) {"
+        },
+        {
+          "line": 179,
+          "text": "            ? do { require \"overload.pm\"; _fetch_sub overload => 'mycan' }"
+        },
+        {
+          "line": 224,
+          "text": "require Exporter;"
+        },
+        {
+          "line": 510,
+          "text": "            return \"require $eval\";"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/vendor_perl/Carp/Heavy.pm",
+      "source_references": [
+        {
+          "line": 3,
+          "text": "use Carp ();"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/DynaLoader.pm",
+      "source_references": [
+        {
+          "line": 22,
+          "text": "use Config;"
+        },
+        {
+          "line": 95,
+          "text": "sub croak   { require Carp; Carp::croak(@_)   }"
+        },
+        {
+          "line": 102,
+          "text": "    bootstrap(@_);"
+        },
+        {
+          "line": 105,
+          "text": "sub bootstrap {"
+        },
+        {
+          "line": 112,
+          "text": "\trequire Carp;"
+        },
+        {
+          "line": 113,
+          "text": "\tCarp::confess(\"Usage: DynaLoader::bootstrap(module)\");"
+        },
+        {
+          "line": 138,
+          "text": "    print STDERR \"DynaLoader::bootstrap for $module \","
+        },
+        {
+          "line": 160,
+          "text": "\tunless $file;\t# wording similar to error from 'require'"
+        },
+        {
+          "line": 204,
+          "text": "    my $xs = dl_install_xsub(\"${module}::bootstrap\", $boot_symbol_ref, $file);"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/Config.pm",
+      "source_references": [
+        {
+          "line": 9,
+          "text": "use strict;"
+        },
+        {
+          "line": 10,
+          "text": "use warnings;"
+        },
+        {
+          "line": 80,
+          "text": "    require 'Config_heavy.pl';"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/Config_heavy.pl",
+      "source_references": [
+        {
+          "line": 5,
+          "text": "use strict;"
+        },
+        {
+          "line": 6,
+          "text": "use warnings;"
+        },
+        {
+          "line": 1459,
+          "text": "\trequire 'Config_git.pl';"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/Config_git.pl",
+      "source_references": []
+    },
+    {
+      "path": "/usr/share/perl5/Tie/Hash.pm",
+      "source_references": [
+        {
+          "line": 190,
+          "text": "use Carp;"
+        },
+        {
+          "line": 191,
+          "text": "use warnings::register;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/warnings/register.pm",
+      "source_references": [
+        {
+          "line": 4,
+          "text": "require warnings;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/overloading.pm",
+      "source_references": [
+        {
+          "line": 2,
+          "text": "use warnings;"
+        },
+        {
+          "line": 8,
+          "text": "require 5.010001;"
+        },
+        {
+          "line": 11,
+          "text": "    require overload::numbers;"
+        },
+        {
+          "line": 15,
+          "text": "\t: do { require Carp; Carp::croak(\"'$_' is not a valid overload\") }"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/overload.pm",
+      "source_references": [
+        {
+          "line": 101,
+          "text": "    require Scalar::Util;"
+        },
+        {
+          "line": 123,
+          "text": "  require mro;"
+        },
+        {
+          "line": 142,
+          "text": "use warnings::register;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/share/perl5/overload/numbers.pm",
+      "source_references": []
+    },
+    {
+      "path": "/usr/lib64/perl5/vendor_perl/Scalar/Util.pm",
+      "source_references": [
+        {
+          "line": 9,
+          "text": "use strict;"
+        },
+        {
+          "line": 10,
+          "text": "use warnings;"
+        },
+        {
+          "line": 11,
+          "text": "require Exporter;"
+        },
+        {
+          "line": 23,
+          "text": "require List::Util; # List::Util loads the XS"
+        },
+        {
+          "line": 40,
+          "text": "    require Carp;"
+        },
+        {
+          "line": 45,
+          "text": "    require Carp;"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/vendor_perl/List/Util.pm",
+      "source_references": [
+        {
+          "line": 9,
+          "text": "use strict;"
+        },
+        {
+          "line": 10,
+          "text": "use warnings;"
+        },
+        {
+          "line": 11,
+          "text": "require Exporter;"
+        },
+        {
+          "line": 23,
+          "text": "require XSLoader;"
+        },
+        {
+          "line": 24,
+          "text": "XSLoader::load('List::Util', $XS_VERSION);"
+        }
+      ]
+    },
+    {
+      "path": "/usr/lib64/perl5/mro.pm",
+      "source_references": [
+        {
+          "line": 10,
+          "text": "use strict;"
+        },
+        {
+          "line": 11,
+          "text": "use warnings;"
+        },
+        {
+          "line": 17,
+          "text": "require XSLoader;"
+        },
+        {
+          "line": 18,
+          "text": "XSLoader::load('mro');"
+        }
+      ]
+    }
+  ],
+  "static_libperl_strings": [
+    "  -e program        one line of program (several -e's allowed, omit programfile)\n  -E program        like -e, but enables all optional features\n  -f                don't do $sitelib/sitecustomize.pl at startup\n  -F/pattern/       split() pattern for -a switch (//'s are optional)\n  -i[extension]     edit <> files in place (makes backup if extension supplied)\n  -Idirectory       specify @INC/#include directory (several -I's allowed)\n",
+    "/usr/lib64/perl5",
+    "/usr/lib64/perl5/vendor_perl",
+    "/usr/local/lib64/perl5/5.32",
+    "/usr/local/share/perl5/5.32",
+    "/usr/share/perl5",
+    "/usr/share/perl5/vendor_perl",
+    "BEGIN { do {local $!; -f q%c%s/sitecustomize.pl%c} && do q%c%s/sitecustomize.pl%c }"
+  ],
+  "scope": "Direct Fcntl/POSIX dependencies and their source-visible conditional loader/error dependencies; not an observed runtime-open set"
+}

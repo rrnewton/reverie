@@ -1,0 +1,187 @@
+{
+  "classification": "historical executed recipe retained verbatim; no new launch authorized or performed",
+  "source": {
+    "repo": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916",
+    "commit": "e8e5ed8ee5647c06d30f5453ee3251073dc849ed",
+    "path": "tests/e2e/determinism-stress/fork_tree.c",
+    "blob": "a95beaaa0ebe2696627a9697196001c6907e0a15",
+    "bytes": 3917,
+    "sha256": "04cd48f271f152353ca330c0cb703b5e7cc2012397c0c6649db05f9ff176b6c2"
+  },
+  "current_source": {
+    "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+    "revision": "5bc8dfd9a2c024426aaefe504f250a71394bbb09",
+    "tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+    "path": "tests/e2e/determinism-stress/fork_tree.c",
+    "copy": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/sigchld-current-source-preparation-20260917/fixture-mapping/sources/hermit/tests/e2e/determinism-stress/fork_tree.c",
+    "mode": "100644",
+    "blob": "a95beaaa0ebe2696627a9697196001c6907e0a15",
+    "bytes": 3917,
+    "sha256": "04cd48f271f152353ca330c0cb703b5e7cc2012397c0c6649db05f9ff176b6c2",
+    "copy_readback_equal": true
+  },
+  "current_source_equal_historical": true,
+  "fixture": {
+    "processes": 13,
+    "root_processes": 1,
+    "children": 4,
+    "grandchildren_per_child": 2,
+    "identity_syscall_rounds_per_process": 25,
+    "identity_syscalls_per_round": [
+      "getpid",
+      "getppid",
+      "gettid",
+      "getuid"
+    ],
+    "identity_syscalls_per_process": 100,
+    "identity_syscalls_total": 1300,
+    "child_statuses": [
+      20,
+      21,
+      22,
+      23
+    ],
+    "grandchild_statuses": [
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47
+    ],
+    "expected_stdout_derived_from_source": "fork-tree processes=13 syscalls-per-process=100 child-exits=20,21,22,23 grandchild-exits=40,41,42,43,44,45,46,47\n",
+    "expected_stdout_bytes": 113,
+    "expected_stdout_sha256": "8ddf8b17d77780a3d7a236df0e42893354e51a485e840d08fc7906ef2207637f",
+    "installs_signal_handler": false
+  },
+  "retained_launch": {
+    "binary": "/usr/bin/python3",
+    "binary_sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+    "arguments": [
+      "-B",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/before_exec.py",
+      "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/before-exec.json",
+      "f88d124eac945a79e1f5390de18eccf84d7cd0ab8041a168f6aaf5fbbd93cd50"
+    ],
+    "payload": {
+      "binary": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/final-e2e-current/bundles/b116625c6a6c36e2716ebb13a6213d43ce7ea2f5e48e9bc35347ec84ba2a824f/hermit",
+      "binary_sha256": "77b75f844625ebb022bf3ec691967a1acf4dfb3f84aa9fbe8c0d91fcc13c460a",
+      "arguments": [
+        "--log",
+        "info",
+        "run",
+        "--base-env=minimal",
+        "--backend",
+        "kvm",
+        "--strict",
+        "--verify-strict",
+        "--verify",
+        "--verify-json",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/verify.json",
+        "--keep-logs",
+        "--verify-log-dir",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/logs",
+        "--mount=type=tmpfs,target=/test",
+        "--workdir",
+        "/test",
+        "--env",
+        "LC_ALL=C",
+        "--env",
+        "TZ=UTC",
+        "--env",
+        "HOME=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/home",
+        "--env",
+        "XDG_CONFIG_HOME=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/xdg-config",
+        "--env",
+        "E2E_TMPDIR=/test",
+        "--env",
+        "E2E_FIXTURE_DIR=/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/fixtures",
+        "--env",
+        "HERMIT_E2E_SCHEDULED_JOBS=1",
+        "--",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/common/determinism-stress-c--fork-tree/fixtures/program"
+      ]
+    },
+    "before_exec_spec_sha256": "f88d124eac945a79e1f5390de18eccf84d7cd0ab8041a168f6aaf5fbbd93cd50",
+    "cpu_allowance_usec": 22000000,
+    "wall_seconds": 57,
+    "log_bytes": 67108864,
+    "safehermit_log_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/safehermit",
+    "wrapper_sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760",
+    "observer_sources": {
+      "observer.py": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6",
+      "unit_reference.py": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0",
+      "before_exec.py": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd",
+      "source-inputs.json": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/host-cwd",
+    "epoch": 1789609869.6922746,
+    "monotonic_ns": 1768798450504383,
+    "pid": 3452566,
+    "wrapper_identity": {
+      "pid": 3452566,
+      "start_ticks": 176879845,
+      "parent_pid": 3451626,
+      "state": "R",
+      "cgroup": "/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p1210520-i1360322665.scope"
+    }
+  },
+  "retained_wrapper_argv": [
+    "/home/newton/work/dev-hermit/bin/safehermit",
+    "--sh-deadline",
+    "57",
+    "--sh-max-log-bytes",
+    "67108864",
+    "--sh-report",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/safehermit.report",
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/before_exec.py",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-ledger-parent-20260916/ignored/kvm-two-id-pilot-20260916/observer-relocated/pilot-after-final-publication/capture/determinism-stress-c--fork-tree/kvm/before-exec.json",
+    "f88d124eac945a79e1f5390de18eccf84d7cd0ab8041a168f6aaf5fbbd93cd50"
+  ],
+  "retained_bounds": {
+    "bound.wall": "APPLIED:57s",
+    "bound.cgroup": "APPLIED:MemoryMax=16G MemorySwapMax=0",
+    "bound.disk": "APPLIED:8G for log_dir only; guest paths and explicit log files elsewhere are outside this bound",
+    "bound.bytes": "APPLIED:67108864 (LETHAL: the run is cgroup-killed at the cap)",
+    "bound.logfilter": "NOT_APPLIED:by owner ruling -- the emitter is left loud so a stuck run stays visible; the low byte cap is the mechanism that fires"
+  },
+  "retained_strict_comparison": {
+    "strictness": "canonical",
+    "display_name": "BitwiseInfoV1",
+    "compare_logs": true,
+    "compare_io_buffers": true,
+    "log_scope": "info",
+    "record_envelope": "all_records_v1",
+    "virtualize_time": true,
+    "strip_lines": false,
+    "canonicalize_addresses": true,
+    "full_trace": true,
+    "exact_remainder": true,
+    "stripped_prefixes": [
+      "real-wall-clock-prefix/v1"
+    ],
+    "canonicalizations": [
+      "host-address-to-first-appearance-ordinal/v1"
+    ],
+    "ignore_lines": false,
+    "skip_commit": false,
+    "skip_detlog": false
+  },
+  "retained_kvm_verdict": {
+    "verified": false,
+    "bitwise_parity": false,
+    "verdict": "diverged",
+    "compared_log_messages": {
+      "left": 2911,
+      "right": 2909
+    },
+    "guest_exit_code": 0,
+    "guest_signal": null,
+    "first_divergent_record": 1160
+  },
+  "new_runtime": false
+}

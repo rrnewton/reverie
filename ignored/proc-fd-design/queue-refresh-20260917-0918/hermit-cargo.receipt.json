@@ -1,0 +1,15 @@
+{
+  "argv": [
+    "with-proxy",
+    "gh",
+    "api",
+    "repos/rrnewton/hermit/contents/Cargo.toml?ref=31289f45984e4f9de29e25a4463d0936976e8b5d"
+  ],
+  "started_utc": "2026-09-17T09:48:54.896212+00:00",
+  "ended_utc": "2026-09-17T09:48:55.212993+00:00",
+  "exit_code": 0,
+  "wall_seconds": 0.3168019219301641,
+  "stdout_sha256": "6df3f9c374219e8451febc2a3eb71979d59e1ed6f2469ad7fc6f33b1e63cc333",
+  "stdout_bytes": 3854,
+  "stderr_bytes": 0
+}

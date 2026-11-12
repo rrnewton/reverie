@@ -1,0 +1,12 @@
+diff --git a/hermit-cli/tests/cli.rs b/hermit-cli/tests/cli.rs
+index 23461da54..297c41ff7 100644
+--- a/hermit-cli/tests/cli.rs
++++ b/hermit-cli/tests/cli.rs
+@@ -3474,6 +3474,7 @@ fn run_kvm_preserves_closed_standard_input() {
+         let output = hermit_command(&args)
+             .arg(guest)
+             .arg(mode)
++            .current_dir(native_dir.path())
+             .stdin(Stdio::null())
+             .output()
+             .expect("failed to run stdio-inode identity fixture");

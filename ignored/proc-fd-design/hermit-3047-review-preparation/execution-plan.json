@@ -1,0 +1,87 @@
+{
+  "state": "prepared_only_not_released_or_executed",
+  "default_launcher_refuses_without_execution_argument": true,
+  "proposed_released_argv": [
+    "/usr/bin/python3",
+    "-B",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/launch-review.py",
+    "--execute-reviewed-aa7ea482"
+  ],
+  "argument_is_not_authorization": "Root must review the exact prompt/caller/input binding and release the command before use.",
+  "review_command": [
+    "timeout",
+    "--signal=TERM",
+    "--kill-after=10s",
+    "900s",
+    "with-proxy",
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "dontAsk",
+    "--permission-prompts",
+    "none",
+    "--tools",
+    "Read,Grep,Glob",
+    "--allowedTools",
+    "Read,Grep,Glob",
+    "--strict-mcp-config"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit",
+  "wall_seconds": 900,
+  "kill_after_seconds": 10,
+  "per_output_file_bytes": 67108864,
+  "outputs": [
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/launch.json",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/stdout.jsonl",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/stderr.log",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/exit.json"
+  ],
+  "no_test_or_guest_execution": true,
+  "no_source_or_ref_or_pr_operations": true,
+  "hermit_base": "35af18f34a3238117eecac8b439ac20e13316715",
+  "hermit_head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "hermit_tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "candidate_binding_sha256": "f89f0f2777d51cf69681b32f0737b0119a163330f40ae523932dc23b6cfa48d1",
+  "snapshot_manifest_sha256": "06a6e97e5ade1e74ac56c4c3120a829027ba1ea068102d6d43fcafb0d68fd96f",
+  "tools_current_metadata": [
+    {
+      "entrypoint": "/usr/bin/python3",
+      "resolved_path": "/usr/bin/python3.9",
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "timeout",
+      "resolved_path": "/usr/bin/timeout",
+      "path": "/usr/bin/timeout",
+      "bytes": 36848,
+      "sha256": "8eb5abb15bad3a1d608c68272412f0d55c9100c64078ae083b4f8b0e746d781c",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "with-proxy",
+      "resolved_path": "/usr/bin/with-proxy",
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d",
+      "mode": "0o755"
+    },
+    {
+      "entrypoint": "claude",
+      "resolved_path": "/usr/local/bin/claude_code/os/claude",
+      "path": "/usr/local/bin/claude_code/os/claude",
+      "bytes": 669,
+      "sha256": "36f36c0fe279c7077e3e48c8813344d1db59741766923bec9ec2308fa3d278d9",
+      "mode": "0o755"
+    }
+  ],
+  "read_tools_only": true,
+  "actual_evidence_cutoff": "Four aa7 mount config methods and DAG --check completed; later tests/runtime pending. The complete Reverie library is 426 pass/1 fail.",
+  "normal_disjoint_future_main": "b03fd6c16a438060f0013d58948643d8f3d81ab5 is preserved context, not this source target."
+}

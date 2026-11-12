@@ -1,0 +1,893 @@
+{
+  "head": "aa7ea4827b8328345e715d76518d7f2205e41110",
+  "tree": "40d69bea9282cbcbf161a2736bcb39108a1d53db",
+  "pin": "596b9adee8473dc0a7e62dce18580eead3d0c5c9",
+  "reviewed_manifest_sha256": "631e2a457b88da862e1eeec2d9bdef85ad927da3aacea5234a35462f5f07c0f0",
+  "commands": [
+    {
+      "name": "mount-19-dag-check",
+      "command": [
+        "cargo",
+        "run",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-manifest-plan",
+        "--bin",
+        "generate-validation-dag",
+        "--",
+        "--check"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "cc7a84cdb03f07b932c27e9359af2b2bcd38f4c34b8c9d09c359aeebb50eb097",
+      "readback_sha256": "0393f8ef8812bd72d0cfabc7b5edde77904690ec3ed6a8d9725194c2c2bea39f",
+      "exit_code": 0,
+      "cpu_seconds": 3.056024,
+      "wall_seconds": 3.208491169847548,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-01-config",
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--lib",
+        "tests::kvm_mountinfo_config_",
+        "--",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "06e1f6b26c0b07599f85dc6dceb35540e7efd596d202e26425680f3cb82dcec4",
+      "readback_sha256": "7c93b94af916dcd5d04ca271923cd5efc154ce4dd24a1f8483346c71925b9109",
+      "exit_code": 0,
+      "cpu_seconds": 92.263617,
+      "wall_seconds": 47.87259216886014,
+      "actual_methods": [
+        {
+          "method": "tests::kvm_mountinfo_config_captures_validated_ambient_namespace",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_preserves_captured_provenance",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+          "status": "ok"
+        },
+        {
+          "method": "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 338
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-02-parser",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "detcore-model",
+        "--lib",
+        "procfs::tests::",
+        "--",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "f43b1f54ce9463d8b94f169448b2064e3d6f709a1f0f6b03f71f28990271913c",
+      "readback_sha256": "e74966ccdf7b7597374eb35b9aaeb5b740e1a4ac0b0b6026af50c2c5b06242c6",
+      "exit_code": 0,
+      "cpu_seconds": 5.306212,
+      "wall_seconds": 3.901821245905012,
+      "actual_methods": [
+        {
+          "method": "procfs::tests::mount_id_subset_requires_unique_members_in_captured_order",
+          "status": "ok"
+        },
+        {
+          "method": "procfs::tests::fdinfo_mount_id_is_strict_and_unique",
+          "status": "ok"
+        },
+        {
+          "method": "procfs::tests::mountinfo_parser_accepts_empty_and_refuses_malformed_or_duplicate_rows",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 74
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-03-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "a7668f55747396e7fc1f7007c28ab8f2f2ef31d9112ea1dd82c57cb58e7322d9",
+      "readback_sha256": "aa6377828e2fb22907632adacc2c65cbf7c65462c0a293c0d64d57866f49ec2d",
+      "exit_code": 0,
+      "cpu_seconds": 55.464066,
+      "wall_seconds": 44.739180757896975,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_preserve_raw_equivalence_and_distinctness",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-04-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "2491974003b1b10e04404a14179b1669571c24e791051c4435133dd30397c4e7",
+      "readback_sha256": "56b5935d755f1dd6e5e8951dac2183d9ea875256efb5ca398ba053179520626d",
+      "exit_code": 0,
+      "cpu_seconds": 0.181787,
+      "wall_seconds": 0.5644387400243431,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_seed_from_low_level_snapshot_and_refuse_drift",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-05-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "5e513d2f95a677f5cc88a34db4f7a28d74354ac851067386074824a61e3558f4",
+      "readback_sha256": "7025a97115c9af6f80f611f8dd03d7765a07dca570ffbfb9d4e3ad8f4d47538f",
+      "exit_code": 0,
+      "cpu_seconds": 0.166887,
+      "wall_seconds": 0.5321808049920946,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::mountinfo_reads_seed_once_and_refuse_later_table_changes",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-06-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "48d0180822882bc45f663c589a6f67157ef488cd2eb5b9449b117dcec6ed9afd",
+      "readback_sha256": "82aea1cbe5cb3c4e9e5fe897140448a6b6c7c1a585d465887b5567ac3aa881a6",
+      "exit_code": 0,
+      "cpu_seconds": 0.193554,
+      "wall_seconds": 0.6021135069895536,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::configured_mountinfo_order_accepts_only_ordered_known_subsets",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-07-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "d84b8f3bfd44e82872d15766badb81281787be5859885e8b6443b43cbac2d479",
+      "readback_sha256": "b94acef28d3ebea4916292cb894951d0e2432d48b995bd620e2df1502c754afa",
+      "exit_code": 0,
+      "cpu_seconds": 0.16679,
+      "wall_seconds": 0.6016453239135444,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::configured_mountinfo_order_refuses_new_namespace_ids",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-08-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "4bd5c9eb679c9c6add9c96c65649350f91a6c37f1e39ae9d0fdc413ca52faa14",
+      "readback_sha256": "5c69a5807464a3e35067138a3274d10e9fa71913a22b249f3c907f6fe35b4916",
+      "exit_code": 0,
+      "cpu_seconds": 0.163433,
+      "wall_seconds": 0.5450833020731807,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::fdinfo_mount_ids_refuse_malformed_configured_provenance",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-09-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "11e7e526eeaace0be91593b1b9d24a2648dc2122b2633e9a96ee232689db42d1",
+      "readback_sha256": "a966c4b097048216cf7bcafed345d861d081ea061cb48cd5d880002afe36459f",
+      "exit_code": 0,
+      "cpu_seconds": 0.165396,
+      "wall_seconds": 0.6045664311386645,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::raw_zero_is_one_mount_identity_without_descriptor_type_partitioning",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-10-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "409166e28ded2407f34e868584bc3dd1a6b0777f60d0fdac9c6fa0f956c09d17",
+      "readback_sha256": "20700b5aa41db68a27d128f1f9ef8283e7ce61b3da1cdec6175c891d111e419c",
+      "exit_code": 0,
+      "cpu_seconds": 0.170914,
+      "wall_seconds": 0.5457510051783174,
+      "actual_methods": [
+        {
+          "method": "tool_global::tests::recorded_unlisted_mount_order_rebuilds_the_same_mapping",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-11-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "4644cba81f426088b7d3a778267ad547be9b402fb49a69256e69e99e3264b2af",
+      "readback_sha256": "3fcea7a56e2f94b0b1eb88af451268e6207ca3caecc3b672b855332bf21f7645",
+      "exit_code": 0,
+      "cpu_seconds": 0.170211,
+      "wall_seconds": 0.563005066011101,
+      "actual_methods": [
+        {
+          "method": "procfs::tests::mountinfo_snapshot_accepts_only_known_ordered_subsets_and_matching_device_policy",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-12-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_hides_backing_identity_only",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "64b016e108ab0fb351b203f6f5cf82dc3b2e24b10523f3928ff1f2fa294a6ea0",
+      "readback_sha256": "4b9d3b2cdebc5dda71ad7389dc7939b8ce1924520ec2a60c6108216a1f13f05c",
+      "exit_code": 0,
+      "cpu_seconds": 0.168518,
+      "wall_seconds": 0.5921188769862056,
+      "actual_methods": [
+        {
+          "method": "procfs::tests::fdinfo_hides_backing_identity_only",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-13-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "bf916ce85298811b93a48eacdbf8f2b9beeb19310ceadc099b25738c22a9d54b",
+      "readback_sha256": "471da1f575fd9430395b53b8c225f0820a64cdfb014ad293ab7e5a1b60347c20",
+      "exit_code": 0,
+      "cpu_seconds": 0.172811,
+      "wall_seconds": 0.5709730619564652,
+      "actual_methods": [
+        {
+          "method": "procfs::tests::fdinfo_mount_ids_match_distinct_mountinfo_rows_and_repeat",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-14-identity",
+      "command": [
+        "cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit-detcore",
+        "--lib",
+        "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+        "--",
+        "--exact",
+        "--test-threads=2"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "d44c12cd1bf5075fc3fd1e812064538d959759dea6872a98f9a7b712bb3007f3",
+      "readback_sha256": "b3dcb3840fda62ccba980925d2b3b15d75a8bea68565989d945c7ab6599f3e32",
+      "exit_code": 0,
+      "cpu_seconds": 0.206568,
+      "wall_seconds": 0.6067275460809469,
+      "actual_methods": [
+        {
+          "method": "procfs::tests::fdinfo_mount_id_parser_refuses_missing_duplicate_or_malformed_ids",
+          "status": "ok"
+        }
+      ],
+      "test_summary": [
+        {
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "measured": 0,
+          "filtered": 678
+        }
+      ],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-15-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "9c5b1cf51f9286165d7f61e0603127df38ba8c70fa7fcccc3d2b2371406e19c8",
+      "readback_sha256": "d50e863a2da28a67fbfbebdf854bc0daddceac229b970b001ecbb17492cb9cbe",
+      "exit_code": 0,
+      "cpu_seconds": 2.698178,
+      "wall_seconds": 3.1529134809970856,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-16-clippy",
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--offline",
+        "--workspace",
+        "--all-targets",
+        "--features",
+        "third-party-backends",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "receipt_sha256": "9a361b5a5ae23d989641cb5304cb37b7172c4839d36ab9f4f3ff7f5aecac95a9",
+      "readback_sha256": "f510f224004fafed87e22fc48eef059c4c8d04ff2a8ba2a89031f42635514425",
+      "exit_code": 0,
+      "cpu_seconds": 69.550818,
+      "wall_seconds": 38.314669540151954,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-17-hermit-inventory",
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "nextest",
+        "list",
+        "--locked",
+        "--offline",
+        "--message-format",
+        "json",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--lib",
+        "--bins"
+      ],
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "receipt_sha256": "b0ca67844918d4628f2656e8dd211b0d6435169ce06feb2c8df496eedf03637a",
+      "readback_sha256": "1f063d72eb6b49b2e22db1c2da90a7452935fe7d47ed561f415df1d5ae3289b4",
+      "exit_code": 0,
+      "cpu_seconds": 72.962212,
+      "wall_seconds": 30.797555858036503,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-20-build-hermit",
+      "command": [
+        "./ci/run-with-reverie-dbt-budget.sh",
+        "cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-p",
+        "hermit",
+        "--features",
+        "third-party-backends",
+        "--bin",
+        "hermit"
+      ],
+      "limits": {
+        "cpu_seconds": 7200,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 1220,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 1200
+      },
+      "receipt_sha256": "5b7afb550e52abcac630fce5b61bd028aef2617059638a2c65470bb7ee05b36e",
+      "readback_sha256": "0aa8264a4f8fc895b66680bb1ada8129f342df6677f491e3f98bf2a2ffc94952",
+      "exit_code": 0,
+      "cpu_seconds": 17.298229,
+      "wall_seconds": 7.266808952903375,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    },
+    {
+      "name": "mount-21-publish",
+      "command": [
+        "./ci/publish-hermit-e2e-artifact.sh",
+        "target/debug/hermit",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/e2e-artifact/bundles",
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/mount-integration-596b9ade/e2e-artifact/hermit.path"
+      ],
+      "limits": {
+        "cpu_seconds": 600,
+        "jobs": 2,
+        "memory": "16Gi",
+        "outer_wall_seconds": 920,
+        "output_bytes": 16777216,
+        "swap_bytes": 0,
+        "wall_seconds": 900
+      },
+      "receipt_sha256": "cec0b9eee5126586e7f0cdeef90719fc31da512aac1201ea3d228640e8524870",
+      "readback_sha256": "6b25fbb97198f108d686a226db0f131d1f67fcdb70003152a6e37a478b59cf88",
+      "exit_code": 0,
+      "cpu_seconds": 1.74624,
+      "wall_seconds": 2.0920660712290555,
+      "actual_methods": [],
+      "test_summary": [],
+      "source_unchanged": true,
+      "scope_inactive_empty": true
+    }
+  ],
+  "actual_methods_passed": 19,
+  "actual_methods_failed": 0,
+  "actual_methods_ignored": 0,
+  "expected_selected_methods_missing": 0,
+  "inventory_count": 634,
+  "inventory_comparison_sha256": "31a9aee7beb5f438bf76dfcdd363979102e6519aacb2d0938e0b974279e4cc1b",
+  "published_binding_sha256": "1436ed9b4b5d6f6247bcdf7b5ef348d9b01e28306afba8957a90984d7a92f972",
+  "total_command_cpu_seconds": 322.272465,
+  "total_command_wall_seconds": 187.67470291117206,
+  "guest_executions": 0,
+  "prior_failures": "First pin calibration decision and first below-upstream commit refusal remain separately retained. Old descriptor KVM EACCES, followed-stat failure and original official pinned-image/loader obligation remain unqualified by this native sequence.",
+  "summary_preparation_correction": "An unexecuted report assembly assumed the earlier generator scope readback included command_exit and raised KeyError before writing its report; this report authenticates actual command status from every original command receipt and compares complete source snapshots directly. No command was repeated or result changed."
+}

@@ -1,0 +1,43 @@
+{
+  "artifacts": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/../../ignored/frozen-cleanup/au-make-validate/INPUT.json",
+      "bytes": 233,
+      "sha256": "27c64c62590577a6cdb09678b861ba4650da0f2e7a8b92accce4142bc6df6582"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/../../ignored/frozen-cleanup/au-make-validate/RESULT.json",
+      "bytes": 407,
+      "sha256": "99d1c20a4a883e87e3ae53473f07d304b549fa0b34312f655de9f37b85408516"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/../../ignored/frozen-cleanup/au-make-validate/exit-code.txt",
+      "bytes": 2,
+      "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/../../ignored/frozen-cleanup/au-make-validate/output.txt",
+      "bytes": 13534,
+      "sha256": "4914e2ebb3cb3c893e24a7fd4835860ee5f52236e0d13028935a2dd31903b131"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-frozen-cleanup-20260917/hermit/agent-utils/../../ignored/frozen-cleanup/au-make-validate/time.txt",
+      "bytes": 808,
+      "sha256": "695db43c4ef2a562a7c075033802bf0caca801954c1e2ecf274baaa317b1f204"
+    }
+  ],
+  "source_readback": [
+    {
+      "path": "py/wrkslots/cli.py",
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "same": true
+    },
+    {
+      "path": "py/wrkslots/tests/test_lifecycle.py",
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "same": true
+    }
+  ],
+  "commit": "1145835fc804f47ae48b29b89009e6937184175a",
+  "status": ""
+}

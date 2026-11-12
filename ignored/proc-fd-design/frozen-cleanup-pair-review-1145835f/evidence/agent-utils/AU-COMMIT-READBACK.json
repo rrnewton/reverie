@@ -1,0 +1,52 @@
+{
+  "commit": "1145835fc804f47ae48b29b89009e6937184175a",
+  "tree": "e470a86697cbb9590c23d45ee5fab9ade12aab01",
+  "parent": "8720799f78f8ef56d796723dbc473a9171a4f4eb",
+  "branch": "codex/kvm-frozen-cleanup-agent-utils-20260917",
+  "message": "wrkslots: retain incomplete frozen validations without blocking entry\n\n[hermit2, degraded-unresolved, gpt-6-astra, devbig014, role=impl]\n\nKeep an authenticated current incomplete frozen validation on disk while\nallowing unrelated validation entry. This disposition retains the checkout,\nno-result and evidence; it grants no removal or result authority.\n\nRequire the exact typed terminal record and sidecar, pristine root and\ninitialized submodules, and stable Git and evidence observations around a\nfresh process census. Bind the original target and origin throughout those\nobservations. A stable advanced source and its investigation files remain\nallowed. Direct recovery still requires its existing removal proof.\n\nAdd positive preservation checks and controls for malformed evidence, live\nprocesses, dirty or replaced repositories, hidden submodule content and\nchanges between observations. Corrected focused checks: 43 passed; strict\nmypy: 13 files passed. The four initial-observation controls failed before\nthe target and origin binding correction; that failure is retained.\n",
+  "files": [
+    {
+      "path": "py/wrkslots/cli.py",
+      "bytes": 1054601,
+      "sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6",
+      "committed_sha256": "384963f661eb758e9cb9bd167ada6f2b393aca6f2d49467566c1b0003f88dcd6"
+    },
+    {
+      "path": "py/wrkslots/tests/test_lifecycle.py",
+      "bytes": 807373,
+      "sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601",
+      "committed_sha256": "0e7d4c1c70dd11f9df48e6dc04df69fa7638aee199b56c86f958d518737c9601"
+    }
+  ],
+  "changed_files": [
+    "py/wrkslots/cli.py",
+    "py/wrkslots/tests/test_lifecycle.py"
+  ],
+  "patch_sha256": "c7b39cad7b7813514a5d78f74307be5c9814a3586430dfe8f9acc7696bf60940",
+  "normal_commit_exit": 0,
+  "normal_commit_hooks": "core.hooksPath unset; resolved hooks directory contains sample hooks only; no hook bypass used",
+  "tests": {
+    "corrected_focused": {
+      "passed": 43,
+      "deselected": 754,
+      "seconds": 84.77,
+      "exit_code": 0,
+      "directory": "au-initial-binding-corrected"
+    },
+    "strict_mypy": {
+      "files": 13,
+      "exit_code": 0,
+      "directory": "au-mypy-corrected"
+    },
+    "before_fix_controls": {
+      "failed": 4,
+      "deselected": 793,
+      "seconds": 9.7,
+      "exit_code": 1,
+      "directory": "au-initial-binding-before-fix"
+    }
+  },
+  "make_validate": "pending; required before public push",
+  "public_push": "held for root review",
+  "actual_retained_checkout": "untouched"
+}

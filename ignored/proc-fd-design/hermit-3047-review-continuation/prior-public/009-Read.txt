@@ -1,0 +1,99 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01U8gavBpb9zsjHiwoWtVuwG",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.patch",
+    "offset": 1299
+  }
+}
+
+Successful public tool result (exact text below):
+1299	+    char cwd[3072], absolute_a[4096];
+1300	+    CHECK(getcwd(cwd, sizeof(cwd)) != NULL);
+1301	+    int path_size = snprintf(absolute_a, sizeof(absolute_a), "%s/%s", cwd, path_a);
+1302	+    CHECK(path_size > 0 && (size_t)path_size < sizeof(absolute_a));
+1303	+    struct stat absolute_stat;
+1304	+    CHECK(syscall(SYS_newfstatat, saved[1], absolute_a, &absolute_stat,
+1305	+                  AT_EMPTY_PATH) == 0);
+1306	+    CHECK(same_object(absolute_stat, identity_a));
+1307	+    struct statx absolute_statx;
+1308	+    CHECK(syscall(SYS_statx, saved[1], absolute_a, AT_EMPTY_PATH,
+1309	+                  STATX_BASIC_STATS, &absolute_statx) == 0);
+1310	+    check_statx_identity(absolute_statx, identity_a);
+1311	+
+1312	+    for (int low = 0; low < 3; ++low) {
+1313	+        CHECK(close(low) == 0);
+1314	+        CHECK(open(path_a, O_RDWR) == low);
+1315	+        struct stat opened_a = stat_object(low), path_stat;
+1316	+        CHECK(same_object(opened_a, identity_a));
+1317	+        CHECK(syscall(SYS_newfstatat, AT_FDCWD, path_a, &path_stat, 0) == 0);
+1318	+        CHECK(same_object(opened_a, path_stat));
+1319	+        int alias = dup(low);
+1320	+        CHECK(alias >= 3);
+1321	+        CHECK(same_object(opened_a, stat_object(alias)));
+1322	+        check_fdinfo(low, opened_a);
+1323	+        check_fdinfo(alias, opened_a);
+1324	+
+1325	+        CHECK(close(low) == 0);
+1326	+        CHECK(open(path_b, O_RDWR) == low);
+1327	+        struct stat opened_b = stat_object(low);
+1328	+        CHECK(same_object(opened_b, identity_b));
+1329	+        CHECK(!same_object(opened_a, opened_b));
+1330	+        CHECK(same_object(opened_a, stat_object(alias)));
+1331	+        check_fdinfo(low, opened_b);
+1332	+        CHECK(close(alias) == 0);
+1333	+        CHECK(dup2(saved[low], low) == low);
+1334	+        CHECK(same_object(initial[low], stat_fd(low)));
+1335	+    }
+1336	+
+1337	+    for (int low = 0; low < 3; ++low) {
+1338	+        CHECK(close(low) == 0);
+1339	+        int pipe_fds[2];
+1340	+        CHECK(pipe(pipe_fds) == 0 && pipe_fds[0] == low);
+1341	+        struct stat pipe_identity = stat_object(pipe_fds[0]);
+1342	+        int pipe_alias = dup(pipe_fds[0]);
+1343	+        CHECK(pipe_alias >= 3);
+1344	+        CHECK(same_object(pipe_identity, stat_object(pipe_alias)));
+1345	+        check_fdinfo(pipe_fds[0], pipe_identity);
+1346	+        check_fdinfo(pipe_alias, pipe_identity);
+1347	+        check_pipe_link(pipe_fds[0], pipe_identity);
+1348	+        check_pipe_link(pipe_alias, pipe_identity);
+1349	+        CHECK(close(pipe_alias) == 0);
+1350	+        CHECK(close(pipe_fds[0]) == 0);
+1351	+        CHECK(close(pipe_fds[1]) == 0);
+1352	+        CHECK(dup2(saved[low], low) == low);
+1353	+        CHECK(same_object(initial[low], stat_fd(low)));
+1354	+    }
+1355	+
+1356	+    CHECK(close(file_a) == 0 && close(file_b) == 0);
+1357	+    CHECK(unlink(path_a) == 0 && unlink(path_b) == 0);
+1358	+}
+1359	+
+1360	+int main(int argc, char **argv) {
+1361	+    CHECK(argc == 2);
+1362	+    OrdinaryStat stat_object = NULL;
+1363	+    if (strcmp(argv[1], "descriptor-reuse") == 0) {
+1364	+        stat_object = stat_ordinary_descriptor;
+1365	+    } else if (strcmp(argv[1], "complete-stat-routes") == 0) {
+1366	+        stat_object = stat_complete_routes;
+1367	+    }
+1368	+    CHECK(stat_object != NULL);
+1369	+    int saved[3];
+1370	+    struct stat initial[3];
+1371	+    for (int fd = 0; fd < 3; ++fd) {
+1372	+        initial[fd] = stat_fd(fd);
+1373	+        saved[fd] = fcntl(fd, F_DUPFD_CLOEXEC, 10);
+1374	+        CHECK(saved[fd] >= 10);
+1375	+    }
+1376	+    report_fd = saved[2];
+1377	+    check_stat_errors(saved[1]);
+1378	+    check_reuse(saved, initial, stat_object);
+1379	+    for (int fd = 0; fd < 3; ++fd) {
+1380	+        CHECK(close(saved[fd]) == 0);
+1381	+    }
+1382	+    report_fd = STDERR_FILENO;
+1383	+    CHECK(printf("stdio-inode-%s-ok\n", argv[1]) > 0);
+1384	+    return 0;
+1385	+}
+1386	

@@ -1,0 +1,19 @@
+{
+  "accepted": true,
+  "scope": "Append-only correction to original pthread stderr-check attribution; no result/source/assertion change",
+  "records": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/FINAL-GUEST-REPORT.md",
+      "bytes": 6725,
+      "mode": 420,
+      "sha256": "442aea5a778725b10760713a0a71f48b0821a04c90e2842316b4129d699ce030"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/FINAL-GUEST-REPORT-ERRATUM.md",
+      "bytes": 946,
+      "mode": 420,
+      "sha256": "4507f371659a6d4608d6e8fb11d00f71b4378bb62175a00e3f628bcfc8a45234"
+    }
+  ],
+  "finding_disposition": "Resolved: original method checks successful status/exact stdout and separate verify status/banner; explicit canonical reports prove empty guest stderr. The original report is preserved."
+}

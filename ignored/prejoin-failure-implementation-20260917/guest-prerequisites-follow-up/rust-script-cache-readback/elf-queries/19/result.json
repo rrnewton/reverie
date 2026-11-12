@@ -1,0 +1,27 @@
+{
+  "argv": [
+    "/usr/bin/readelf",
+    "-W",
+    "-l",
+    "-d",
+    "/tmp/hermit-prejoin-commit-cache-20260917/rust-script/binaries/release/build/zmij-858beb93a7e433cc/build-script-build"
+  ],
+  "pid": 133649,
+  "exit_code": 0,
+  "wall_seconds": 0.008766641141846776,
+  "bounds": {
+    "cpu_seconds": 5,
+    "wall_seconds": 15,
+    "bytes_per_stream": 1048576
+  },
+  "stdout": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/stdout",
+    "bytes": 3628,
+    "sha256": "c62f5e12e8940c9ef33b9554af57a735b0fd2d52cad72c79b30050aeb2b3e829"
+  },
+  "stderr": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/elf-queries/19/stderr",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

@@ -1,0 +1,12 @@
+usage: wrkslots heartbeat [-h] --agent AGENT --owner-pid PID --expected-generation N slot
+
+Refresh the heartbeat only when the caller, agent, PID, and process start identity still match the recorded owner. Expiry is necessary for reclaim but never sufficient.
+
+positional arguments:
+  slot                     active slot name
+
+options:
+  -h, --help               show this help message and exit
+  --agent AGENT            recorded agent name
+  --owner-pid PID          recorded live owner PID
+  --expected-generation N  current slot generation

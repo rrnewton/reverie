@@ -1,0 +1,14 @@
+tree ba6b3c55c9faeb823698b99b4c25fbfc4f9f5c7a
+parent c2c2991bf42281936d7e86ce3f7da5a388eb332d
+author Ryan Newton <rrnewton@gmail.com> 1789595793 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789599082 -0700
+predecessor 4ec52db39fbdf305bff356eaf643d7e3bea4dae5
+predecessor-op rebase
+
+herdr-run: align packaged commands and documentation inventories
+
+[gpt-6-astra] Declare the foreign-worker dispatcher through a public package entrypoint and keep the native goal diagnostic callable as an internal module CLI. Account for the new Python companions and guides in package/dispatcher inventories.
+
+Update the lifecycle partition inventory for the owner regression already added upstream, preserving disjointness and completeness checks.
+
+Validated 42 CLI, goal, dispatcher, and package tests, strict typing, embedded guides, and isolated wheel/source-distribution installation and command smoke checks.

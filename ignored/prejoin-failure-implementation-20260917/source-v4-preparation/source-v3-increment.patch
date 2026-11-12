@@ -1,0 +1,1122 @@
+--- source-v3/reverie-kvm/src/error.rs
++++ source-v4/reverie-kvm/src/error.rs
+@@ -10,8 +10,7 @@
+ 
+ /// Errors produced by the KVM backend prototype.
+ #[derive(Debug, Error)]
+-pub enum Error {
+-    /// A peer or the Tool scheduler has made this run terminal. This internal
++pub enum Error {    /// A peer or the Tool scheduler has made this run terminal. This internal
+     /// outcome is never a successful guest status or a syscall errno.
+     #[error("KVM execution stopped after a fatal run failure")]
+     RunAborted,
+--- source-v3/reverie-kvm/src/executor.rs
++++ source-v4/reverie-kvm/src/executor.rs
+@@ -14144,12 +14144,10 @@
+         fdinfo_table: std::sync::Weak::new(),
+         proc_mounts: Arc::new(crate::proc_mounts::ProcMountSnapshot::capture().unwrap()),
+         fd_object_inodes: std::collections::BTreeMap::new(),
+-        file_identity_table: Arc::new(std::sync::Mutex::new(
+-            crate::elf::GuestFileIdentityTable {
+-                next_inode: 0x2100_0000,
+-                objects: std::collections::BTreeMap::new(),
+-            },
+-        )),
++        file_identity_table: Arc::new(std::sync::Mutex::new(crate::elf::GuestFileIdentityTable {
++            next_inode: 0x2100_0000,
++            objects: std::collections::BTreeMap::new(),
++        })),
+     }
+ }
+ 
+--- source-v3/reverie-kvm/src/failure.rs
++++ source-v4/reverie-kvm/src/failure.rs
+@@ -120,6 +120,10 @@
+ impl FailureContext {
+     pub(crate) fn new(run: Arc<RunFailure>, pid: Pid, tid: Pid) -> Self {
+         Self { run, pid, tid }
++    }
++
++    pub(crate) fn for_process(&self, pid: Pid) -> Self {
++        Self::new(self.run.clone(), pid, pid)
+     }
+ 
+     pub(crate) fn for_thread(&self, tid: Pid) -> Self {
+@@ -315,7 +319,13 @@
+         async fn receive_rpc(&self, _: Pid, _: ()) {}
+         fn report_backend_failure(&self, event: BackendFailure) {
+             if event.phase == "first worker" {
+-                self.selected.lock().unwrap().take().unwrap().send(()).unwrap();
++                self.selected
++                    .lock()
++                    .unwrap()
++                    .take()
++                    .unwrap()
++                    .send(())
++                    .unwrap();
+                 self.release.lock().unwrap().take().unwrap().recv().unwrap();
+             }
+             self.events.lock().unwrap().push(event);
+@@ -333,9 +343,14 @@
+         let first = FailureContext::new(failure.clone(), Pid::from_raw(11), Pid::from_raw(12));
+         let second = FailureContext::new(failure.clone(), Pid::from_raw(21), Pid::from_raw(22));
+         let first_worker = std::thread::spawn(move || {
+-            first.publish("first worker", Error::GuestClock("first typed cause".to_owned()))
++            first.publish(
++                "first worker",
++                Error::GuestClock("first typed cause".to_owned()),
++            )
+         });
+-        let reached = selected_receiver.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
++        let reached = selected_receiver
++            .recv_timeout(std::time::Duration::from_secs(2))
++            .is_ok();
+         let (attempted, attempted_receiver) = std::sync::mpsc::channel();
+         let (finished, finished_receiver) = std::sync::mpsc::channel();
+         let second_worker = std::thread::spawn(move || {
+@@ -347,7 +362,9 @@
+             finished.send(()).unwrap();
+             result
+         });
+-        let attempted = attempted_receiver.recv_timeout(std::time::Duration::from_secs(2)).is_ok();
++        let attempted = attempted_receiver
++            .recv_timeout(std::time::Duration::from_secs(2))
++            .is_ok();
+         let second_waited = finished_receiver
+             .recv_timeout(std::time::Duration::from_millis(100))
+             .is_err();
+@@ -360,20 +377,35 @@
+         assert!(reached && attempted && second_waited && no_event && unpublished);
+         let events = global.events.lock().unwrap();
+         assert_eq!(events.len(), 2);
+-        assert_eq!(events[0], BackendFailure {
+-            pid: Pid::from_raw(11),
+-            tid: Pid::from_raw(12),
+-            phase: "first worker",
+-        });
+-        assert_eq!(events[1], BackendFailure {
+-            pid: Pid::from_raw(21),
+-            tid: Pid::from_raw(22),
+-            phase: "second cleanup",
+-        });
+-        assert_eq!(failure.primary.lock().unwrap().as_ref().unwrap().1, events[0]);
+-        assert!(matches!(first_result.primary(), Error::GuestClock(message) if message == "first typed cause"));
+-        assert!(matches!(failure.primary().unwrap().primary(), Error::GuestClock(message) if message == "first typed cause"));
+-        assert!(matches!(second_result.primary(), Error::HostIo(error) if error.to_string() == "second typed cause"));
++        assert_eq!(
++            events[0],
++            BackendFailure {
++                pid: Pid::from_raw(11),
++                tid: Pid::from_raw(12),
++                phase: "first worker",
++            }
++        );
++        assert_eq!(
++            events[1],
++            BackendFailure {
++                pid: Pid::from_raw(21),
++                tid: Pid::from_raw(22),
++                phase: "second cleanup",
++            }
++        );
++        assert_eq!(
++            failure.primary.lock().unwrap().as_ref().unwrap().1,
++            events[0]
++        );
++        assert!(
++            matches!(first_result.primary(), Error::GuestClock(message) if message == "first typed cause")
++        );
++        assert!(
++            matches!(failure.primary().unwrap().primary(), Error::GuestClock(message) if message == "first typed cause")
++        );
++        assert!(
++            matches!(second_result.primary(), Error::HostIo(error) if error.to_string() == "second typed cause")
++        );
+         assert_eq!(futures::executor::block_on(failure.subscribe()), Ok(()));
+     }
+ 
+--- source-v3/reverie-kvm/src/runtime.rs
++++ source-v4/reverie-kvm/src/runtime.rs
+@@ -1066,8 +1066,7 @@
+     }
+ }
+ 
+-enum HandlerOutcome<T> {
+-    Returned(T),
++enum HandlerOutcome<T> {    Returned(T),
+     RunFailed,
+     ThreadCancelled,
+     TailInjected {
+@@ -1549,7 +1548,8 @@
+                 process_status = Err(report(
+                     "process exit status",
+                     Error::UnexpectedVcpuExit(
+-                        "KVM process has no final task exit status after joining workers".to_owned(),
++                        "KVM process has no final task exit status after joining workers"
++                            .to_owned(),
+                     ),
+                 ));
+             }
+@@ -1578,7 +1578,11 @@
+         .now_or_never()
+         .is_some();
+     let children = if pid == tid {
+-        if terminal || outcome.is_err() || owner.is_err() || workers.is_err() || process_status.is_err()
++        if terminal
++            || outcome.is_err()
++            || owner.is_err()
++            || workers.is_err()
++            || process_status.is_err()
+         {
+             executor.join_child_processes_after_failure()
+         } else {
+@@ -1588,10 +1592,16 @@
+         executor.transfer_child_processes_to_owner();
+         Ok(())
+     };
+-    let errors = [outcome.map(|_| ()), workers, process_status, owner, children]
+-        .into_iter()
+-        .filter_map(Result::err)
+-        .collect();
++    let errors = [
++        outcome.map(|_| ()),
++        workers,
++        process_status,
++        owner,
++        children,
++    ]
++    .into_iter()
++    .filter_map(Result::err)
++    .collect();
+     Error::combine(errors)?;
+     let (stdout, stderr) = executor.take_output();
+     Ok((status, stdout, stderr))
+--- source-v3/reverie-kvm/src/runtime/failure_tests.rs
++++ source-v4/reverie-kvm/src/runtime/failure_tests.rs
+@@ -36,12 +36,17 @@
+         if kind != 0 {
+             if let Some(failure) = self.late_failure.lock().unwrap().take() {
+                 let _: Result<()> = crate::vm::finish_host_worker_outcome(
+-                    Some(&failure), Pid::from_raw(9),
+-                    Err(Error::GuestClock("late independent worker".to_owned())), |_| {},
++                    Some(&failure),
++                    Pid::from_raw(9),
++                    Err(Error::GuestClock("late independent worker".to_owned())),
++                    |_| {},
+                 );
+             }
+-            assert!(!self.failure_required.load(Ordering::Acquire) || self.failures.load(Ordering::Acquire) > 0,
+-                "consuming hook ran before fatal publication");
++            assert!(
++                !self.failure_required.load(Ordering::Acquire)
++                    || self.failures.load(Ordering::Acquire) > 0,
++                "consuming hook ran before fatal publication"
++            );
+             self.events
+                 .lock()
+                 .unwrap()
+@@ -402,10 +407,18 @@
+ struct NativeRpcCall;
+ impl native_test_support::NativeToolCallback<RpcTool> for NativeRpcCall {
+     fn run<'a, G: Guest<RpcTool>>(
+-        &'a self, tool: &'a RpcTool, guest: &'a mut G,
++        &'a self,
++        tool: &'a RpcTool,
++        guest: &'a mut G,
+     ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
+         Box::pin(async move {
+-            tool.handle_syscall_event(guest, SyscallRequest::new(libc::SYS_getpid as u64, [0; 6]).into_syscall().unwrap()).await
++            tool.handle_syscall_event(
++                guest,
++                SyscallRequest::new(libc::SYS_getpid as u64, [0; 6])
++                    .into_syscall()
++                    .unwrap(),
++            )
++            .await
+         })
+     }
+ }
+@@ -413,7 +426,9 @@
+ struct NativeStatusCall;
+ impl native_test_support::NativeToolCallback<RpcTool> for NativeStatusCall {
+     fn run<'a, G: Guest<RpcTool>>(
+-        &'a self, _: &'a RpcTool, _: &'a mut G,
++        &'a self,
++        _: &'a RpcTool,
++        _: &'a mut G,
+     ) -> futures::future::BoxFuture<'a, std::result::Result<i64, reverie::Error>> {
+         Box::pin(async { Ok(73) })
+     }
+@@ -427,37 +442,55 @@
+ 
+ impl NativeControlCleanup {
+     fn rescue(&mut self) {
+-        if let Some(response) = self.response.take() { let _ = response.send(99); }
+-        if let Some(release) = self.release.take() { let _ = release.send(()); }
++        if let Some(response) = self.response.take() {
++            let _ = response.send(99);
++        }
++        if let Some(release) = self.release.take() {
++            let _ = release.send(());
++        }
+     }
+ }
+ 
+ impl Drop for NativeControlCleanup {
+     fn drop(&mut self) {
+         self.rescue();
+-        if let Some(owner) = self.owner.take() { let _ = owner.join(); }
++        if let Some(owner) = self.owner.take() {
++            let _ = owner.join();
++        }
+     }
+ }
+ 
+ #[test]
+ fn host_owned_returned_error_releases_root_rpc_and_owned_join_with_worker_identity() {
+-    use native_test_support::{NativeCallbackOutcome, NativeToolOwner};
++    use native_test_support::NativeCallbackOutcome;
++    use native_test_support::NativeToolOwner;
+     let global = Arc::new(RpcGlobal::default());
+     let (response, receiver) = oneshot::channel();
+     *global.response.lock().unwrap() = Some(receiver);
+     global.failure_required.store(true, Ordering::Release);
+     let (release, release_receiver) = std::sync::mpsc::channel();
+     let (completed, result_receiver) = std::sync::mpsc::channel();
+-    let mut cleanup = NativeControlCleanup { response: Some(response), release: Some(release), owner: None };
++    let mut cleanup = NativeControlCleanup {
++        response: Some(response),
++        release: Some(release),
++        owner: None,
++    };
+     let worker_global = global.clone();
+     cleanup.owner = Some(std::thread::spawn(move || {
+-        let mut owner = NativeToolOwner::new(Pid::from_raw(1), Arc::new(RpcTool), 1, worker_global, false).unwrap();
++        let mut owner =
++            NativeToolOwner::new(Pid::from_raw(1), Arc::new(RpcTool), 1, worker_global, false)
++                .unwrap();
+         owner.spawn_host_worker(Pid::from_raw(3), move || {
+-            release_receiver.recv_timeout(Duration::from_secs(2)).expect("controller did not release the host producer");
++            release_receiver
++                .recv_timeout(Duration::from_secs(2))
++                .expect("controller did not release the host producer");
+             Err(Error::GuestClock("host returned cause".to_owned()))
+         });
+         let outcome = futures::executor::block_on(owner.run_callback(&NativeRpcCall)).unwrap();
+-        assert!(matches!(outcome, NativeCallbackOutcome::RunFailed), "a rescue response is not terminal cancellation");
++        assert!(
++            matches!(outcome, NativeCallbackOutcome::RunFailed),
++            "a rescue response is not terminal cancellation"
++        );
+         let result = futures::executor::block_on(owner.finish(Err(Error::RunAborted)));
+         completed.send(result).unwrap();
+     }));
+@@ -466,58 +499,113 @@
+     cleanup.release.take().unwrap().send(()).unwrap();
+     let result = result_receiver.recv_timeout(Duration::from_secs(2));
+     let completed = result.is_ok();
+-    if !completed { cleanup.rescue(); }
++    if !completed {
++        cleanup.rescue();
++    }
+     cleanup.owner.take().unwrap().join().unwrap();
+-    assert!(completed, "host error did not release the actual root driver and owned join");
++    assert!(
++        completed,
++        "host error did not release the actual root driver and owned join"
++    );
+     let error = result.unwrap().unwrap_err();
+-    assert!(matches!(error.primary(), Error::GuestClock(message) if message == "host returned cause"));
+-    assert_eq!(*global.failure_events.lock().unwrap(), vec![reverie::BackendFailure {
+-        pid: Pid::from_raw(1), tid: Pid::from_raw(3), phase: "host-owned worker",
+-    }]);
+-    assert_eq!(*global.events.lock().unwrap(), vec![(1, 1, 255), (2, 1, 255)]);
++    assert!(
++        matches!(error.primary(), Error::GuestClock(message) if message == "host returned cause")
++    );
++    assert_eq!(
++        *global.failure_events.lock().unwrap(),
++        vec![reverie::BackendFailure {
++            pid: Pid::from_raw(1),
++            tid: Pid::from_raw(3),
++            phase: "host-owned worker",
++        }]
++    );
++    assert_eq!(
++        *global.events.lock().unwrap(),
++        vec![(1, 1, 255), (2, 1, 255)]
++    );
+ }
+ 
+ #[derive(Clone, Copy)]
+-enum PostWorkerCase { MissingStatus, MissingStatusPending, CachedError, LateFailure, Normal }
++enum PostWorkerCase {
++    MissingStatus,
++    MissingStatusPending,
++    CachedError,
++    LateFailure,
++    Normal,
++}
+ 
+ fn post_worker_control(case: PostWorkerCase) {
+-    use native_test_support::{NativeChildCommand, NativeToolOwner};
+-    let started = matches!(case, PostWorkerCase::MissingStatus | PostWorkerCase::CachedError);
++    use native_test_support::NativeChildCommand;
++    use native_test_support::NativeToolOwner;
++    let started = matches!(
++        case,
++        PostWorkerCase::MissingStatus | PostWorkerCase::CachedError
++    );
+     let global = Arc::new(RpcGlobal::default());
+     let (response, receiver) = oneshot::channel();
+     *global.response.lock().unwrap() = Some(receiver);
+-    global.failure_required.store(!matches!(case, PostWorkerCase::Normal), Ordering::Release);
++    global
++        .failure_required
++        .store(!matches!(case, PostWorkerCase::Normal), Ordering::Release);
+     let (release, release_receiver) = std::sync::mpsc::channel();
+     let (ready, ready_receiver) = std::sync::mpsc::channel();
+     let (completed, result_receiver) = std::sync::mpsc::channel();
+-    let mut cleanup = NativeControlCleanup { response: Some(response), release: Some(release), owner: None };
++    let mut cleanup = NativeControlCleanup {
++        response: Some(response),
++        release: Some(release),
++        owner: None,
++    };
+     let worker_global = global.clone();
+     cleanup.owner = Some(std::thread::spawn(move || {
+-        let mut owner = NativeToolOwner::new(Pid::from_raw(1), Arc::new(RpcTool), 1, worker_global.clone(), false).unwrap();
+-        let preparation = matches!(case, PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending)
+-            .then(|| owner.prepare_task(Pid::from_raw(2)).unwrap());
++        let mut owner = NativeToolOwner::new(
++            Pid::from_raw(1),
++            Arc::new(RpcTool),
++            1,
++            worker_global.clone(),
++            false,
++        )
++        .unwrap();
++        let preparation = matches!(
++            case,
++            PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending
++        )
++        .then(|| owner.prepare_task(Pid::from_raw(2)).unwrap());
+         if matches!(case, PostWorkerCase::CachedError) {
+-            owner.unreported_worker_for_test(Pid::from_raw(2), Error::GuestClock("cached worker cause".to_owned()));
++            owner.unreported_worker_for_test(
++                Pid::from_raw(2),
++                Error::GuestClock("cached worker cause".to_owned()),
++            );
+         }
+         if matches!(case, PostWorkerCase::LateFailure) {
+             *worker_global.late_failure.lock().unwrap() = Some(owner.failure_context_for_test());
+         }
+-        let child = owner.fork_child(Pid::from_raw(3), Arc::new(RpcTool), 3).unwrap();
++        let child = owner
++            .fork_child(Pid::from_raw(3), Arc::new(RpcTool), 3)
++            .unwrap();
+         let (gate, commands) = if started {
+             owner.spawn_child(child, NativeRpcCall).unwrap()
+         } else {
+             owner.spawn_child(child, NativeStatusCall).unwrap()
+         };
+-        if started { assert!(gate.start().unwrap()); }
++        if started {
++            assert!(gate.start().unwrap());
++        }
+         ready.send((gate, commands)).unwrap();
+-        release_receiver.recv_timeout(Duration::from_secs(2)).expect("controller did not release owner completion");
++        release_receiver
++            .recv_timeout(Duration::from_secs(2))
++            .expect("controller did not release owner completion");
+         let result = futures::executor::block_on(owner.finish(Ok(ExitStatus::Exited(37))));
+         drop(preparation);
+         completed.send(result).unwrap();
+     }));
+-    let (gate, commands) = ready_receiver.recv_timeout(Duration::from_secs(2)).expect("owner did not construct descendant");
++    let (gate, commands) = ready_receiver
++        .recv_timeout(Duration::from_secs(2))
++        .expect("owner did not construct descendant");
+     if started {
+-        assert_eq!(commands.recv_timeout(Duration::from_secs(2)).unwrap(), NativeChildCommand::Start);
++        assert_eq!(
++            commands.recv_timeout(Duration::from_secs(2)).unwrap(),
++            NativeChildCommand::Start
++        );
+         wait_until(|| global.pending.load(Ordering::Acquire));
+     } else {
+         assert!(gate.is_pending());
+@@ -526,32 +614,65 @@
+     cleanup.release.take().unwrap().send(()).unwrap();
+     let result = result_receiver.recv_timeout(Duration::from_secs(2));
+     let completed = result.is_ok();
+-    if !completed { cleanup.rescue(); }
++    if !completed {
++        cleanup.rescue();
++    }
+     cleanup.owner.take().unwrap().join().unwrap();
+-    assert!(completed, "post-worker failure joined a descendant before supplying its terminal wake");
++    assert!(
++        completed,
++        "post-worker failure joined a descendant before supplying its terminal wake"
++    );
+     let result = result.unwrap();
+     match case {
+         PostWorkerCase::MissingStatus | PostWorkerCase::MissingStatusPending => {
+-            assert!(matches!(result.unwrap_err().primary(), Error::UnexpectedVcpuExit(message) if message == "KVM process has no final task exit status after joining workers"));
+-            assert_eq!(global.failure_events.lock().unwrap()[0].phase, "process exit status");
++            assert!(
++                matches!(result.unwrap_err().primary(), Error::UnexpectedVcpuExit(message) if message == "KVM process has no final task exit status after joining workers")
++            );
++            assert_eq!(
++                global.failure_events.lock().unwrap()[0].phase,
++                "process exit status"
++            );
+             if !started {
+-                assert_eq!(commands.recv_timeout(Duration::from_secs(2)).unwrap(), NativeChildCommand::Cancel);
++                assert_eq!(
++                    commands.recv_timeout(Duration::from_secs(2)).unwrap(),
++                    NativeChildCommand::Cancel
++                );
+             }
+         }
+         PostWorkerCase::CachedError => {
+-            assert!(matches!(result.unwrap_err().primary(), Error::GuestClock(message) if message == "cached worker cause"));
+-            assert_eq!(global.failure_events.lock().unwrap().len(), 1, "cached cause was published twice");
+-            assert_eq!(global.failure_events.lock().unwrap()[0].phase, "worker teardown");
++            assert!(
++                matches!(result.unwrap_err().primary(), Error::GuestClock(message) if message == "cached worker cause")
++            );
++            assert_eq!(
++                global.failure_events.lock().unwrap().len(),
++                1,
++                "cached cause was published twice"
++            );
++            assert_eq!(
++                global.failure_events.lock().unwrap()[0].phase,
++                "worker teardown"
++            );
+         }
+         PostWorkerCase::LateFailure => {
+-            assert_eq!(commands.recv_timeout(Duration::from_secs(2)).unwrap(), NativeChildCommand::Cancel);
+-            assert!(matches!(result.unwrap_err().primary(), Error::GuestClock(message) if message == "late independent worker"));
++            assert_eq!(
++                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
++                NativeChildCommand::Cancel
++            );
++            assert!(
++                matches!(result.unwrap_err().primary(), Error::GuestClock(message) if message == "late independent worker")
++            );
+         }
+         PostWorkerCase::Normal => {
+-            assert_eq!(commands.recv_timeout(Duration::from_secs(2)).unwrap(), NativeChildCommand::Start);
++            assert_eq!(
++                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
++                NativeChildCommand::Start
++            );
+             assert_eq!(result.unwrap().0, ExitStatus::Exited(37));
+             assert_eq!(global.failures.load(Ordering::Acquire), 0);
+-            assert_eq!(*global.events.lock().unwrap(), vec![(1, 1, 37), (2, 1, 37), (1, 3, 73), (2, 3, 73)]);
++            assert_eq!(
++                *global.events.lock().unwrap(),
++                vec![(1, 1, 37), (2, 1, 37), (1, 3, 73), (2, 3, 73)]
++            );
+         }
+     }
+ }
+--- source-v3/reverie-kvm/src/vm.rs
++++ source-v4/reverie-kvm/src/vm.rs
+@@ -1520,7 +1520,10 @@
+         // Forked children inherit the parent's thread ownership so execution and
+         // `is_backend_owned_syscall`'s futex classification stay consistent.
+         child.thread_ownership = self.thread_ownership;
+-        child.tool_failure = self.tool_failure.clone();
++        child.tool_failure = self
++            .tool_failure
++            .as_ref()
++            .map(|failure| failure.for_process(Pid::from_raw(child_pid)));
+         child.exit_collector = self.exit_collector.clone();
+         write_tid_best_effort(&mut child.memory, child_tid, child_pid);
+         let (fs_base, gs_base) = child_executor.segment_bases();
+@@ -2018,13 +2021,6 @@
+                 let child_tool = Arc::new(T::new(child_pid, &context.config));
+                 let child_thread_state = child_tool
+                     .init_thread_state(child_pid, Some((context.tid, context.thread_state)));
+-                if let Some(failure) = &child.backend.tool_failure {
+-                    child.backend.tool_failure = Some(crate::failure::FailureContext::new(
+-                        failure.run.clone(),
+-                        child_pid,
+-                        child_pid,
+-                    ));
+-                }
+                 let config = context.config;
+                 let subscriptions = context.subscriptions;
+                 let pending_child_starts = context.pending_child_starts;
+@@ -4863,6 +4859,113 @@
+     }
+ 
+     #[derive(Default)]
++    struct ForkFailureIdentityLog {
++        events: Mutex<Vec<reverie::BackendFailure>>,
++    }
++
++    #[reverie::global_tool]
++    impl GlobalTool for ForkFailureIdentityLog {
++        type Request = ();
++        type Response = ();
++        type Config = ();
++
++        async fn receive_rpc(&self, _from: Pid, (): ()) {}
++
++        fn report_backend_failure(&self, event: reverie::BackendFailure) {
++            self.events.lock().unwrap().push(event);
++        }
++    }
++
++    // This control requires KVM construction and snapshot/register ioctls. It
++    // calls the actual shared fork boundary with parking disabled and never
++    // executes a guest instruction. Keep it separate from no-VM selectors.
++    #[test]
++    fn nested_host_fork_failure_uses_descendant_process_and_worker_identity() {
++        let mut parent =
++            KvmBackend::new(16 * 1024 * 1024).expect("nested fork identity control requires KVM");
++        parent
++            .install_static_elf(&minimal_test_elf(&[0xf4]), "/bin/fork-failure-identity")
++            .unwrap();
++        let executor = ElfExecutor::new(parent.static_elf.take().unwrap(), false);
++        let registers = parent.vcpu.get_regs().unwrap();
++        stage_process_syscall_return(
++            &mut parent.memory,
++            &parent.vcpu,
++            parent.syscall_frame_address,
++            registers,
++        )
++        .unwrap();
++        assert_eq!(parent.thread_ownership, ThreadOwnership::Host);
++
++        let ordinary = parent
++            .prepare_forked_process(
++                &executor, 9, None, None, None, None, false, false, false, None,
++            )
++            .unwrap();
++        assert!(ordinary.backend.tool_failure.is_none());
++        drop(ordinary);
++
++        let global = Arc::new(ForkFailureIdentityLog::default());
++        let failure = crate::failure::RunFailure::new(&global);
++        parent.tool_failure = Some(crate::failure::FailureContext::new(
++            failure.clone(),
++            Pid::from_raw(1),
++            Pid::from_raw(1),
++        ));
++        let mut child = parent
++            .prepare_forked_process(
++                &executor, 2, None, None, None, None, false, false, false, None,
++            )
++            .unwrap();
++        let descendant = child
++            .backend
++            .prepare_forked_process(
++                &child.executor,
++                3,
++                None,
++                None,
++                None,
++                None,
++                false,
++                false,
++                false,
++                None,
++            )
++            .unwrap();
++        assert_eq!(child.backend.thread_ownership, ThreadOwnership::Host);
++        assert_eq!(descendant.backend.thread_ownership, ThreadOwnership::Host);
++        let context = descendant.backend.tool_failure.as_ref().unwrap().clone();
++        assert!(Arc::ptr_eq(&context.run, &failure));
++        let expected = reverie::BackendFailure {
++            pid: Pid::from_raw(3),
++            tid: Pid::from_raw(4),
++            phase: "host-owned worker",
++        };
++        let retirement_log = global.clone();
++        let returned = std::thread::spawn(move || {
++            let result: Result<()> = finish_host_worker_outcome(
++                Some(&context),
++                Pid::from_raw(4),
++                Err(Error::GuestClock("nested host worker".to_owned())),
++                |failed| {
++                    assert!(failed);
++                    assert_eq!(*retirement_log.events.lock().unwrap(), vec![expected]);
++                },
++            );
++            result
++        })
++        .join()
++        .unwrap()
++        .unwrap_err();
++        let primary = failure.published_primary().expect("worker did not publish");
++        assert!(
++            matches!(primary.as_ref(), Error::GuestClock(message) if message == "nested host worker")
++        );
++        assert!(returned.retains_primary(&primary));
++        assert_eq!(*global.events.lock().unwrap(), vec![expected]);
++    }
++
++    #[derive(Default)]
+     struct FatalProcessMemoryLog {
+         memory: Mutex<Option<GuestMemory>>,
+         observations: Mutex<Vec<(i32, Vec<u8>)>>,
+--- source-v3/reverie-kvm/src/runtime/native_test_support.rs
++++ source-v4/reverie-kvm/src/runtime/native_test_support.rs
+@@ -45,7 +45,9 @@
+ impl NativeChildGate {
+     /// Resolve the gate normally, using the production one-shot Start operation.
+     pub fn start(&self) -> Result<bool> {
+-        self.0.start().map_err(|_| Error::UnexpectedVcpuExit("native child lost its start gate".to_owned()))
++        self.0
++            .start()
++            .map_err(|_| Error::UnexpectedVcpuExit("native child lost its start gate".to_owned()))
+     }
+ 
+     /// Whether neither Start nor Cancel has committed.
+@@ -54,8 +56,13 @@
+     }
+ }
+ 
+-struct NoInstructions;
++struct NoInstructions {
++    parent_pid: Option<Pid>,
++}
+ impl<T: Tool> GuestSyscallExecutor<T> for NoInstructions {
++    fn parent_pid(&self) -> Option<Pid> {
++        self.parent_pid
++    }
+     fn read_clock(&self) -> Result<u64> {
+         panic!("native Tool control must disable guest clock operations")
+     }
+@@ -101,32 +108,53 @@
+         let failure = FailureContext::new(RunFailure::new(&global), pid, pid);
+         let cwd = match std::env::current_dir() {
+             Ok(cwd) => cwd,
+-            Err(error) => return Err(consume_failed_preparation(
+-                tool, thread, pid, global.as_ref(), &config, &failure, Error::HostIo(error),
+-            )),
++            Err(error) => {
++                return Err(consume_failed_preparation(
++                    tool,
++                    thread,
++                    pid,
++                    global.as_ref(),
++                    &config,
++                    &failure,
++                    Error::HostIo(error),
++                ));
++            }
+         };
+         let mut state = crate::executor::native_loaded_state(&cwd);
+         state.pid = pid.as_raw();
+         state.tid = pid.as_raw();
+         state.pgid = pid.as_raw();
+         state.task_lifecycle = Arc::new(Mutex::new(crate::elf::TaskLifecycleTable::with_root(
+-            pid.as_raw(), pid.as_raw(), pid.as_raw(), true,
++            pid.as_raw(),
++            pid.as_raw(),
++            pid.as_raw(),
++            true,
+         )));
+         Ok(Self {
+-            executor: Some(ElfExecutor::new(state, false)), tool: Some(tool), thread: Some(thread), identity: (pid, pid),
+-            global, config, failure, workers: Arc::new(GuestThreadGroup::default()),
++            executor: Some(ElfExecutor::new(state, false)),
++            tool: Some(tool),
++            thread: Some(thread),
++            identity: (pid, pid),
++            global,
++            config,
++            failure,
++            workers: Arc::new(GuestThreadGroup::default()),
+             starts: Arc::new(Mutex::new(Vec::new())),
+         })
+     }
+ 
+     /// Borrow the actual owned thread state when constructing a child's state.
+     pub fn thread_state(&self) -> &T::ThreadState {
+-        self.thread.as_ref().expect("native thread already consumed")
++        self.thread
++            .as_ref()
++            .expect("native thread already consumed")
+     }
+ 
+     /// Update the owned parent state before the Tool constructs a clone child.
+     pub fn thread_state_mut(&mut self) -> &mut T::ThreadState {
+-        self.thread.as_mut().expect("native thread already consumed")
++        self.thread
++            .as_mut()
++            .expect("native thread already consumed")
+     }
+ 
+     /// Borrow the actual process Tool used by this owner.
+@@ -136,16 +164,32 @@
+ 
+     /// Create a real fork lifecycle sharing this run's failure subscription.
+     pub fn fork_child(&self, pid: Pid, tool: Arc<T>, thread: T::ThreadState) -> Result<Self> {
+-        let failure = FailureContext::new(self.failure.run.clone(), pid, pid);
+-        let executor = match self.executor.as_ref().unwrap().fork_child(pid.as_raw(), false, false) {
++        let failure = self.failure.for_process(pid);
++        let executor = match self
++            .executor
++            .as_ref()
++            .unwrap()
++            .fork_child(pid.as_raw(), false, false)
++        {
+             Ok(executor) => executor,
+-            Err(error) => return Err(consume_failed_preparation(
+-                tool, thread, pid, self.global.as_ref(), &self.config, &failure, error,
+-            )),
++            Err(error) => {
++                return Err(consume_failed_preparation(
++                    tool,
++                    thread,
++                    pid,
++                    self.global.as_ref(),
++                    &self.config,
++                    &failure,
++                    error,
++                ));
++            }
+         };
+         Ok(Self {
+             executor: Some(executor),
+-            tool: Some(tool), thread: Some(thread), identity: (pid, pid), global: self.global.clone(),
++            tool: Some(tool),
++            thread: Some(thread),
++            identity: (pid, pid),
++            global: self.global.clone(),
+             config: self.config.clone(),
+             failure,
+             workers: Arc::new(GuestThreadGroup::default()),
+@@ -155,76 +199,116 @@
+ 
+     /// Keep an actual task preparation live to exercise missing final status.
+     pub fn prepare_task(&self, tid: Pid) -> Result<NativeTaskPreparation> {
+-        Ok(NativeTaskPreparation { _executor: self.executor.as_ref().unwrap().thread_child(tid.as_raw())? })
++        Ok(NativeTaskPreparation {
++            _executor: self.executor.as_ref().unwrap().thread_child(tid.as_raw())?,
++        })
+     }
+ 
+     /// Poll an actual KvmGuest callback through the production failure-aware driver.
+-    pub async fn run_callback<C: NativeToolCallback<T>>(&mut self, callback: &C) -> Result<NativeCallbackOutcome> {
++    pub async fn run_callback<C: NativeToolCallback<T>>(
++        &mut self,
++        callback: &C,
++    ) -> Result<NativeCallbackOutcome> {
+         let signal = Arc::new(Mutex::new(None));
+         let memory = GuestMemory::new(0, STACK_CAPACITY)?;
+         let subscriptions = Subscription::none();
+-        let mut executor = NoInstructions;
++        let mut executor = NoInstructions {
++            parent_pid: self.executor.as_ref().unwrap().parent_pid(),
++        };
+         let mut guest = KvmGuest::new(
+-            self.identity.0, self.identity.1, self.tool.as_ref().unwrap().clone(), memory, &[],
++            self.identity.0,
++            self.identity.1,
++            self.tool.as_ref().unwrap().clone(),
++            memory,
++            &[],
+             // No instruction executes; operations requiring real registers are outside this seam.
+-            unsafe { std::mem::zeroed() }, self.thread.as_mut().unwrap(), &mut executor,
+-            self.global.as_ref(), Some(self.global.clone()), &self.config, &subscriptions,
+-            signal.clone(), self.starts.clone(), crate::bootstrap::TOOL_STACK_TOP,
++            unsafe { std::mem::zeroed() },
++            self.thread.as_mut().unwrap(),
++            &mut executor,
++            self.global.as_ref(),
++            Some(self.global.clone()),
++            &self.config,
++            &subscriptions,
++            signal.clone(),
++            self.starts.clone(),
++            crate::bootstrap::TOOL_STACK_TOP,
+             Arc::new(AtomicBool::new(false)),
+         );
+         match drive_handler(
+-            callback.run(self.tool.as_ref().unwrap().as_ref(), &mut guest), signal, self.starts.clone(),
++            callback.run(self.tool.as_ref().unwrap().as_ref(), &mut guest),
++            signal,
++            self.starts.clone(),
+             wait_for_failure(self.global.as_ref(), Some(self.failure.run.subscribe())),
+-        ).await {
++        )
++        .await
++        {
+             HandlerOutcome::Returned(result) => Ok(NativeCallbackOutcome::Returned(result)),
+             HandlerOutcome::RunFailed => Ok(NativeCallbackOutcome::RunFailed),
+             HandlerOutcome::RuntimeError(error) => Err(error),
+-            _ => Err(Error::UnexpectedVcpuExit("native callback requested guest execution or signal delivery".to_owned())),
++            _ => Err(Error::UnexpectedVcpuExit(
++                "native callback requested guest execution or signal delivery".to_owned(),
++            )),
+         }
+     }
+ 
+     /// Attach an OS fork child at the same gate and owned join used in production.
+     /// The Cancel arm never invokes the supplied child callback.
+     pub fn spawn_child<C: NativeToolCallback<T> + 'static>(
+-        &mut self, child: Self, callback: C,
+-    ) -> Result<(NativeChildGate, std::sync::mpsc::Receiver<NativeChildCommand>)> {
++        &mut self,
++        child: Self,
++        callback: C,
++    ) -> Result<(
++        NativeChildGate,
++        std::sync::mpsc::Receiver<NativeChildCommand>,
++    )> {
+         let pid = child.identity.0.as_raw();
+         let (sender, receiver) = std::sync::mpsc::channel();
+         let gate = ChildStartGate::new(sender);
+         let completion = Arc::new(Mutex::new(None));
+         let child_completion = completion.clone();
+         let (observed, observations) = std::sync::mpsc::channel();
+-        let handle = crate::failure::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
+-            let outcome = match receiver.recv() {
+-                Ok(ChildStartCommand::Cancel) => {
+-                    let _ = observed.send(NativeChildCommand::Cancel);
+-                    if let Some(primary) = child.failure.run.published_primary() {
+-                        child.retire(Err(Error::SharedFailure(primary)))
+-                    } else {
+-                        Ok(ToolProcessExit { exit: child.executor.as_mut().unwrap().cancel_current_thread(), cancelled: true })
++        let handle =
++            crate::failure::spawn_owned(std::thread::Builder::new(), child, move |mut child| {
++                let outcome = match receiver.recv() {
++                    Ok(ChildStartCommand::Cancel) => {
++                        let _ = observed.send(NativeChildCommand::Cancel);
++                        if let Some(primary) = child.failure.run.published_primary() {
++                            child.retire(Err(Error::SharedFailure(primary)))
++                        } else {
++                            Ok(ToolProcessExit {
++                                exit: child.executor.as_mut().unwrap().cancel_current_thread(),
++                                cancelled: true,
++                            })
++                        }
+                     }
++                    Ok(ChildStartCommand::Start) => {
++                        let _ = observed.send(NativeChildCommand::Start);
++                        let result =
++                            match futures::executor::block_on(child.run_callback(&callback)) {
++                                Ok(NativeCallbackOutcome::Returned(result)) => result
++                                    .map(|code| ExitStatus::Exited(code as i32))
++                                    .map_err(Error::Reverie),
++                                Ok(NativeCallbackOutcome::RunFailed) => Err(Error::RunAborted),
++                                Err(error) => Err(error),
++                            };
++                        child.retire(result)
++                    }
++                    Err(_) => child.retire(Err(Error::UnexpectedVcpuExit(
++                        "native child lost parent".to_owned(),
++                    ))),
++                };
++                let exit_policy = child.executor.as_ref().unwrap().child_exit_policy();
++                let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
++                if let Ok((status, _, _)) = &result {
++                    // No output is captured by this native fixture.
++                    *child_completion.lock().unwrap() =
++                        Some(crate::executor::ChildCompletion::from_waitability(
++                            *status,
++                            !exit_policy.load(Ordering::SeqCst),
++                        ));
+                 }
+-                Ok(ChildStartCommand::Start) => {
+-                    let _ = observed.send(NativeChildCommand::Start);
+-                    let result = match futures::executor::block_on(child.run_callback(&callback)) {
+-                        Ok(NativeCallbackOutcome::Returned(result)) => result.map(|code| ExitStatus::Exited(code as i32)).map_err(Error::Reverie),
+-                        Ok(NativeCallbackOutcome::RunFailed) => Err(Error::RunAborted),
+-                        Err(error) => Err(error),
+-                    };
+-                    child.retire(result)
+-                }
+-                Err(_) => child.retire(Err(Error::UnexpectedVcpuExit("native child lost parent".to_owned()))),
+-            };
+-            let exit_policy = child.executor.as_ref().unwrap().child_exit_policy();
+-            let result = futures::executor::block_on(child.finish_retired(outcome, Ok(())));
+-            if let Ok((status, _, _)) = &result {
+-                // No output is captured by this native fixture.
+-                *child_completion.lock().unwrap() = Some(crate::executor::ChildCompletion::from_waitability(
+-                    *status, !exit_policy.load(Ordering::SeqCst),
+-                ));
+-            }
+-            result.map(|_| ())
+-        });
++                result.map(|_| ())
++            });
+         let handle = match handle {
+             Ok(handle) => handle,
+             Err((error, mut child)) => {
+@@ -235,26 +319,40 @@
+                 };
+             }
+         };
+-        self.executor.as_mut().unwrap().register_child_process_with_gate(pid, gate.clone(), completion, handle);
+-        self.starts.lock().unwrap().push(PendingChildStart::fork_process(pid, gate.clone()));
++        self.executor
++            .as_mut()
++            .unwrap()
++            .register_child_process_with_gate(pid, gate.clone(), completion, handle);
++        self.starts
++            .lock()
++            .unwrap()
++            .push(PendingChildStart::fork_process(pid, gate.clone()));
+         Ok((NativeChildGate(gate), observations))
+     }
+ 
+     /// Attach a host worker whose returned result crosses the actual publication-before-retirement boundary.
+-    pub fn spawn_host_worker(&mut self, tid: Pid, work: impl FnOnce() -> Result<()> + Send + 'static) {
++    pub fn spawn_host_worker(
++        &mut self,
++        tid: Pid,
++        work: impl FnOnce() -> Result<()> + Send + 'static,
++    ) {
+         let failure = self.failure.clone();
+         let group = self.workers.clone();
+         let handle = std::thread::spawn(move || {
+             crate::vm::finish_host_worker_outcome(Some(&failure), tid, work(), |failed| {
+-                if failed { group.record_worker_failure(tid.as_raw()); }
+-            }).map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
++                if failed {
++                    group.record_worker_failure(tid.as_raw());
++                }
++            })
++            .map(|()| (ExitStatus::Exited(0), Vec::new(), Vec::new()))
+         });
+         self.workers.add_worker_handle(tid.as_raw(), handle);
+     }
+ 
+     #[cfg(test)]
+     pub(super) fn unreported_worker_for_test(&mut self, tid: Pid, error: Error) {
+-        self.workers.add_worker_handle(tid.as_raw(), std::thread::spawn(move || Err(error)));
++        self.workers
++            .add_worker_handle(tid.as_raw(), std::thread::spawn(move || Err(error)));
+     }
+ 
+     #[cfg(test)]
+@@ -264,7 +362,12 @@
+ 
+     fn retire(&mut self, result: Result<ExitStatus>) -> Result<ToolProcessExit> {
+         match result {
+-            Ok(status) => Ok(self.executor.as_mut().unwrap().retire_current_thread(status, false).into()),
++            Ok(status) => Ok(self
++                .executor
++                .as_mut()
++                .unwrap()
++                .retire_current_thread(status, false)
++                .into()),
+             Err(error) => {
+                 let error = self.failure.publish("execution", error);
+                 self.executor.as_mut().unwrap().retire_failed_thread();
+@@ -274,33 +377,62 @@
+     }
+ 
+     /// Retire the native task, join its owned host workers, then call the shared production finisher.
+-    pub async fn finish(mut self, result: Result<ExitStatus>) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
++    pub async fn finish(
++        mut self,
++        result: Result<ExitStatus>,
++    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         let outcome = self.retire(result);
+         self.workers.join_workers();
+         let workers = self.workers.teardown_result();
+         self.finish_retired(outcome, workers).await
+     }
+ 
+-    async fn finish_retired(mut self, outcome: Result<ToolProcessExit>, workers: Result<()>) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
++    async fn finish_retired(
++        mut self,
++        outcome: Result<ToolProcessExit>,
++        workers: Result<()>,
++    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+         let mut executor = self.executor.take().unwrap();
+         let tool = self.tool.take().unwrap();
+         let thread = self.thread.take().unwrap();
+         finish_tool_process_after_workers(
+-            &mut executor, tool, self.identity, self.global.as_ref(), &self.config,
+-            thread, outcome, workers, Some(&self.failure),
+-        ).await
++            &mut executor,
++            tool,
++            self.identity,
++            self.global.as_ref(),
++            &self.config,
++            thread,
++            outcome,
++            workers,
++            Some(&self.failure),
++        )
++        .await
+     }
+ }
+ 
+ #[allow(clippy::too_many_arguments)]
+ fn consume_failed_preparation<T: Tool>(
+-    tool: Arc<T>, thread: T::ThreadState, pid: Pid, global: &T::GlobalState,
+-    config: &<T::GlobalState as GlobalTool>::Config, failure: &FailureContext, error: Error,
++    tool: Arc<T>,
++    thread: T::ThreadState,
++    pid: Pid,
++    global: &T::GlobalState,
++    config: &<T::GlobalState as GlobalTool>::Config,
++    failure: &FailureContext,
++    error: Error,
+ ) -> Error {
+     let error = failure.publish("native owner preparation", error);
+     let cleanup = futures::executor::block_on(notify_tool_exit(
+-        tool, pid, pid, global, config, thread,
+-        ToolExit { status: ExitStatus::Exited(255), process_exited: true }, Some(failure),
++        tool,
++        pid,
++        pid,
++        global,
++        config,
++        thread,
++        ToolExit {
++            status: ExitStatus::Exited(255),
++            process_exited: true,
++        },
++        Some(failure),
+     ));
+     error.with_cleanup(cleanup.err().into_iter().collect())
+ }
+@@ -314,9 +446,12 @@
+         };
+         // A failed test precondition must not detach a live gated/RPC child.
+         // This rescue is fatal and cannot supply the requested success result.
+-        let error = self.failure.publish("native control abandoned owner", Error::UnexpectedVcpuExit(
+-            "native control abandoned an unconsumed Tool owner".to_owned(),
+-        ));
++        let error = self.failure.publish(
++            "native control abandoned owner",
++            Error::UnexpectedVcpuExit(
++                "native control abandoned an unconsumed Tool owner".to_owned(),
++            ),
++        );
+         executor.retire_failed_thread();
+         for start in self.starts.lock().unwrap().drain(..) {
+             start.cancel();
+@@ -324,8 +459,15 @@
+         self.workers.join_workers();
+         let workers = self.workers.teardown_result();
+         let _ = futures::executor::block_on(finish_tool_process_after_workers(
+-            &mut executor, tool, self.identity, self.global.as_ref(), &self.config,
+-            thread, Err(error), workers, Some(&self.failure),
++            &mut executor,
++            tool,
++            self.identity,
++            self.global.as_ref(),
++            &self.config,
++            thread,
++            Err(error),
++            workers,
++            Some(&self.failure),
+         ));
+     }
+ }

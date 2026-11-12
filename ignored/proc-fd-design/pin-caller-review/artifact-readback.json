@@ -1,0 +1,37 @@
+{
+  "all_v2_manifest_files_match": 17,
+  "all_original_files_unchanged": 19,
+  "controllers_differ_only_phase": true,
+  "syntax_only": true,
+  "all_three_execution_bindings_disabled": true,
+  "exact_all_pin_paths_and_counts": {
+    "Cargo.lock": 34,
+    "ci/configure-build-jobs.sh": 2,
+    "ci/run-with-reverie-dbt-budget.sh": 1,
+    "detcore-dbt/Cargo.toml": 2,
+    "detcore-model/Cargo.toml": 1,
+    "detcore-sabre/Cargo.toml": 5,
+    "detcore/Cargo.toml": 2,
+    "detcore/tests/testutils/Cargo.toml": 2,
+    "hermit-cli/Cargo.toml": 6,
+    "hermit-install/Cargo.toml": 1,
+    "liteinst-runtime-build/Cargo.lock": 18,
+    "liteinst-runtime-build/runtime/Cargo.toml": 1
+  },
+  "all_five_maintained_commands_match": true,
+  "stage01_exact_allowed_paths": [
+    "Cargo.lock",
+    "detcore-dbt/Cargo.toml",
+    "detcore-model/Cargo.toml",
+    "detcore-sabre/Cargo.toml",
+    "detcore/Cargo.toml",
+    "detcore/tests/testutils/Cargo.toml",
+    "hermit-cli/Cargo.toml",
+    "hermit-install/Cargo.toml",
+    "liteinst-runtime-build/Cargo.lock",
+    "liteinst-runtime-build/runtime/Cargo.toml",
+    "ci/configure-build-jobs.sh"
+  ],
+  "stage02_requires_exact_complete_post_carry_snapshot": true,
+  "review_execution": "Read-only source/artifact validation; no caller, updater, build, test, fetch or guest executed."
+}

@@ -1,0 +1,27 @@
+--- a/reverie-kvm/src/runtime/native_test_support.rs
++++ b/reverie-kvm/src/runtime/native_test_support.rs
+@@ -152,6 +152,7 @@
+     }
+ 
+     /// Borrow the actual owned thread state when constructing a child's state.
++    #[cfg(feature = "native-test-support")]
+     pub fn thread_state(&self) -> &T::ThreadState {
+         self.thread
+             .as_ref()
+@@ -159,15 +160,11 @@
+     }
+ 
+     /// Update the owned parent state before the Tool constructs a clone child.
++    #[cfg(feature = "native-test-support")]
+     pub fn thread_state_mut(&mut self) -> &mut T::ThreadState {
+         self.thread
+             .as_mut()
+             .expect("native thread already consumed")
+-    }
+-
+-    /// Borrow the actual process Tool used by this owner.
+-    pub fn tool(&self) -> &Arc<T> {
+-        self.tool.as_ref().expect("native Tool already consumed")
+     }
+ 
+     /// Create a real fork lifecycle sharing this run's failure subscription.

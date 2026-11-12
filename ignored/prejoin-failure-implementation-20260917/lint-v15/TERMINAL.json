@@ -1,0 +1,60 @@
+[
+  {
+    "stage": "format",
+    "readbacks": [
+      {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T182731Z-875424.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      },
+      {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T182731Z-875424.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      }
+    ]
+  },
+  {
+    "stage": "clippy",
+    "readbacks": [
+      {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T182735Z-883100.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      },
+      {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T182735Z-883100.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\n",
+        "stderr": ""
+      }
+    ]
+  }
+]

@@ -1,0 +1,37 @@
+{
+  "base": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+  "complete_patch_sha256": "1f31b460d84dedefe9b0efabe81bb09501712fdc61da7999e90b9fd1a9db2c91",
+  "exact_three_file_in_memory_patch_application": true,
+  "source_checks": [
+    {
+      "path": "hermit-cli/src/lib.rs",
+      "base_mode": "100644",
+      "preview_mode": "100644",
+      "all_prior_source_test_names_retained": true,
+      "added_source_test_names": [
+        "backend_host_signal_refusal_contract_is_normalized"
+      ]
+    },
+    {
+      "path": "hermit-cli/src/error.rs",
+      "base_mode": "100644",
+      "preview_mode": "100644",
+      "all_prior_source_test_names_retained": true,
+      "added_source_test_names": [
+        "kvm_signal_refusal_is_classified_through_typed_and_transparent_wrappers"
+      ]
+    },
+    {
+      "path": "hermit-cli/src/kvm_failure_tests.rs",
+      "base_mode": "100644",
+      "preview_mode": "100644",
+      "all_prior_source_test_names_retained": true,
+      "added_source_test_names": [
+        "kvm_signal_completion_retains_refusal_backend_and_independent_cleanup",
+        "kvm_successful_backend_with_failed_scheduler_retains_real_join_error"
+      ]
+    }
+  ],
+  "no_removed_assertion_lines": true,
+  "verification_scope": "Source/patch/file-mode readback only. No Rust compiler, formatter, tests, runtime, guest, signal or network operation."
+}

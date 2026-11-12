@@ -1,0 +1,31 @@
+{
+  "old": "696f0476aa46cf29e31b947a89379d80b4542ce3",
+  "main": "114b309413612fafc2657c74e83811c71aac7b19",
+  "rescue": "refs/rescue/kvm-prejoin-implementation-20260917",
+  "path_blobs": {
+    "reverie-kvm/src/elf.rs": [
+      "7959e7780cec9d3b41a6cf13088e474e3b03c1bf",
+      "7959e7780cec9d3b41a6cf13088e474e3b03c1bf"
+    ],
+    "reverie-kvm/src/executor.rs": [
+      "44ee9f7c26dd71075291aad4446051eeee6eba02",
+      "44ee9f7c26dd71075291aad4446051eeee6eba02"
+    ],
+    "reverie-kvm/src/fdinfo.rs": [
+      "2518463e81b35fb2c27ef823edc3d103ec3bba01",
+      "2518463e81b35fb2c27ef823edc3d103ec3bba01"
+    ],
+    "reverie-kvm/src/lib.rs": [
+      "b0645d69507e33ca76880691ccb5c5f9c8d9d190",
+      "b0645d69507e33ca76880691ccb5c5f9c8d9d190"
+    ],
+    "reverie-kvm/src/memory.rs": [
+      "ce39403ae27b32ff5c0952868759951a10acbb40",
+      "ce39403ae27b32ff5c0952868759951a10acbb40"
+    ],
+    "reverie-kvm/src/proc_mounts.rs": [
+      "413c53832e52d380814741306e7a2ba528d78424",
+      "413c53832e52d380814741306e7a2ba528d78424"
+    ]
+  }
+}

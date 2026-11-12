@@ -1,0 +1,362 @@
+{
+  "outcome": "compile/list passed; native35 passed1 failed; no retry",
+  "caller_exit": 1,
+  "source_base": "24cd5bb518b027eddb62a226805210d74d31c3d8",
+  "source_binding_sha256": "3d6c2c0711946558e71e58a8ff63801a7ce9526deb1ef1432129c093fdd15aea",
+  "stages": [
+    {
+      "stage": "compile",
+      "exit": 0,
+      "aggregate_cpu_seconds": 16.327283,
+      "wall_seconds": 11.590730082,
+      "observer_error": null,
+      "stop_reason": null,
+      "accounting_complete": true,
+      "terminal_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 16327283000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T045013Z-4056213.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 4056487,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1779543065572,
+          "CPUUsageNSec": 16327283000
+        }
+      },
+      "fresh_service_readback": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T045013Z-4056213.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "list",
+      "exit": 0,
+      "aggregate_cpu_seconds": 0.201525,
+      "wall_seconds": 0.829528188,
+      "observer_error": null,
+      "stop_reason": null,
+      "accounting_complete": true,
+      "terminal_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 201525000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 0,
+        "properties": {
+          "Id": "safehermit-20260917T045026Z-4071344.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 4071941,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 0,
+          "ExecMainStartTimestampMonotonic": 1779555357478,
+          "CPUUsageNSec": 201525000
+        }
+      },
+      "fresh_service_readback": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T045026Z-4071344.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    },
+    {
+      "stage": "native",
+      "exit": 101,
+      "aggregate_cpu_seconds": 0.227789,
+      "wall_seconds": 0.891097215,
+      "observer_error": null,
+      "stop_reason": null,
+      "accounting_complete": true,
+      "terminal_accounting": {
+        "source": "systemd CPUUsageNSec after service exit",
+        "cpu_usage_nsec": 227789000,
+        "cgroup_empty": true,
+        "exec_main_code": 1,
+        "exec_main_status": 101,
+        "properties": {
+          "Id": "safehermit-20260917T045027Z-4074486.service",
+          "LoadState": "loaded",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "ControlGroup": "",
+          "MainPID": 0,
+          "ExecMainPID": 4074675,
+          "ExecMainCode": 1,
+          "ExecMainStatus": 101,
+          "ExecMainStartTimestampMonotonic": 1779556904394,
+          "CPUUsageNSec": 227789000
+        }
+      },
+      "fresh_service_readback": {
+        "argv": [
+          "/usr/bin/systemctl",
+          "--user",
+          "show",
+          "safehermit-20260917T045027Z-4074486.service",
+          "--property=LoadState,ActiveState,SubState,MainPID,ControlGroup"
+        ],
+        "exit": 0,
+        "properties": {
+          "LoadState": "not-found",
+          "ActiveState": "inactive",
+          "SubState": "dead",
+          "MainPID": "0",
+          "ControlGroup": ""
+        },
+        "stderr": ""
+      }
+    }
+  ],
+  "compiler_error_count": 0,
+  "compiler_warning_count": 0,
+  "compiled_executable": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+    "sha256": "40767b9ec0aac5ce2b13b7cae24e9b5e23367566194f683b96460a49324fd2be",
+    "bytes": 106835472,
+    "mode": 493,
+    "cargo_artifact": {
+      "reason": "compiler-artifact",
+      "package_id": "path+file:///home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm#0.2.0",
+      "manifest_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/Cargo.toml",
+      "target": {
+        "kind": [
+          "lib"
+        ],
+        "crate_types": [
+          "lib"
+        ],
+        "name": "reverie_kvm",
+        "src_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/reverie-kvm/src/lib.rs",
+        "edition": "2024",
+        "doc": true,
+        "doctest": true,
+        "test": true
+      },
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 2,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      },
+      "features": [],
+      "filenames": [
+        "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e"
+      ],
+      "executable": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/target/proc-fd-native-v1/debug/deps/reverie_kvm-dc68039652d66c1e",
+      "fresh": false
+    }
+  },
+  "listed_total": 427,
+  "selected_count": 36,
+  "observed_test_names_and_status": {
+    "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat": "ok",
+    "executor::tests::captured_output_fstat_is_synthetic_and_stable": "ok",
+    "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink": "ok",
+    "executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit": "ok",
+    "executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers": "ok",
+    "executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable": "ok",
+    "executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec": "ok",
+    "executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions": "ok",
+    "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime": "ok",
+    "executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags": "ok",
+    "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state": "ok",
+    "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts": "ok",
+    "executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields": "ok",
+    "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor": "ok",
+    "executor::tests::guest_fd_paths_reopen_mapped_descriptors": "ok",
+    "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags": "ok",
+    "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned": "FAILED",
+    "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement": "ok",
+    "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results": "ok",
+    "executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher": "ok",
+    "executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation": "ok",
+    "executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files": "ok",
+    "executor::tests::synthetic_proc_files_serve_deterministic_content": "ok",
+    "executor::tests::synthetic_proc_metadata_is_synthetic_and_stable": "ok",
+    "executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths": "ok",
+    "executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable": "ok",
+    "executor::tests::synthetic_proc_self_reflects_guest_identity": "ok",
+    "executor::tests::virtual_identity_and_random_files_are_read_only": "ok",
+    "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy": "ok",
+    "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts": "ok",
+    "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset": "ok",
+    "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone": "ok",
+    "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable": "ok",
+    "memory::tests::tracked_user_access_faults_and_returns_partial_copies": "ok",
+    "proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success": "ok",
+    "proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input": "ok"
+  },
+  "passed_test_names": [
+    "executor::tests::anonymous_proc_fd_links_match_direct_owned_object_stat",
+    "executor::tests::captured_output_fstat_is_synthetic_and_stable",
+    "executor::tests::captured_output_stat_and_link_routes_preserve_the_capture_sink",
+    "executor::tests::fdinfo_dispatch_binds_path_selected_task_generation_after_leader_exit",
+    "executor::tests::fdinfo_dispatch_keeps_guest_path_identity_and_refuses_backing_file_transfers",
+    "executor::tests::fdinfo_dispatch_keeps_private_carriers_and_supervisor_procfs_unavailable",
+    "executor::tests::fdinfo_dispatch_observes_current_owned_offset_flags_and_descriptor_cloexec",
+    "executor::tests::fdinfo_dispatch_pread_and_guest_faults_preserve_linux_sequence_positions",
+    "executor::tests::fdinfo_dispatch_preserves_original_fork_target_and_exec_lifetime",
+    "executor::tests::fdinfo_dispatch_preserves_supported_open_status_flags",
+    "executor::tests::fdinfo_dispatch_retains_partial_records_and_shared_dup_seek_state",
+    "executor::tests::fdinfo_dispatch_tracks_ordinary_replacements_at_all_standard_slots_and_pipe_mounts",
+    "executor::tests::fdinfo_record_capacity_and_flags_validation_preserve_other_raw_fields",
+    "executor::tests::guest_fd_metadata_is_stable_and_isolated_from_supervisor",
+    "executor::tests::guest_fd_paths_reopen_mapped_descriptors",
+    "executor::tests::guest_fd_reopen_uses_fresh_description_and_native_flags",
+    "executor::tests::ordinary_proc_fd_stat_routes_preserve_objects_across_aliases_and_replacement",
+    "executor::tests::proc_fd_statx_preserves_native_masks_and_error_results",
+    "executor::tests::synthetic_proc_directory_fd_rejects_every_relative_mutation_dispatcher",
+    "executor::tests::synthetic_proc_directory_fd_rejects_relative_mutation",
+    "executor::tests::synthetic_proc_directory_resolves_relative_allowlisted_files",
+    "executor::tests::synthetic_proc_files_serve_deterministic_content",
+    "executor::tests::synthetic_proc_metadata_is_synthetic_and_stable",
+    "executor::tests::synthetic_proc_rejects_writes_and_ignores_unlisted_paths",
+    "executor::tests::synthetic_proc_self_mountinfo_is_served_and_stable",
+    "executor::tests::synthetic_proc_self_reflects_guest_identity",
+    "executor::tests::virtual_identity_and_random_files_are_read_only",
+    "memory::tests::counted_copyout_reports_exact_writable_prefix_without_weakening_scalar_copy",
+    "memory::tests::prctl_copyout_keeps_privileged_write_and_scalar_contracts",
+    "memory::tests::prctl_copyout_permissions_follow_remap_unmap_and_reset",
+    "memory::tests::prctl_copyout_permissions_survive_snapshot_fallback_and_shared_clone",
+    "memory::tests::tracked_read_only_pages_reject_backend_copyout_but_remain_readable",
+    "memory::tests::tracked_user_access_faults_and_returns_partial_copies",
+    "proc_mounts::tests::mount_snapshot_propagates_read_error_without_partial_success",
+    "proc_mounts::tests::mount_snapshot_retains_exact_bytes_and_refuses_empty_or_oversized_input"
+  ],
+  "failed_test_names": [
+    "executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned"
+  ],
+  "native_stderr": "\nthread 'executor::tests::guest_proc_fd_links_and_readlinkat_are_guest_owned' (4074879) panicked at reverie-kvm/src/executor.rs:23558:9:\nassertion `left == right` failed\n  left: Some(553648131)\n right: Some(1480778888)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+  "all30_input_hashes_paths_modes_match": true,
+  "verified_surrounding_source_files": 2550,
+  "source_v2_unchanged": true,
+  "source_v1_files_preserved": true,
+  "all_terminal_services_independently_inactive_empty": true,
+  "files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/result.json",
+      "bytes": 34393,
+      "mode": 384,
+      "sha256": "a3a092b03d7d0debdefd7109e49060b6f9c69f3ff6b9f32b188db1463ea93ec1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/stdout",
+      "bytes": 125547,
+      "mode": 384,
+      "sha256": "6a22a60dbbbaa123f69ea9c411fde460b9efa07c2355a74946beb185f257511b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/compile/stderr",
+      "bytes": 195,
+      "mode": 384,
+      "sha256": "02ba16a34ea350b4df39ecfb2e8063a33fd2076ba72ab6e7460b5aae8a2eb7b5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/result.json",
+      "bytes": 32203,
+      "mode": 384,
+      "sha256": "cef743affa6763a4982a3d1366f883dac86e43763f1913840b00bf88ea8238e7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/stdout",
+      "bytes": 33144,
+      "mode": 384,
+      "sha256": "c3701d9d4d47aa24086845f36d26f2bc4be48447983ae730200a36d4a75e4b24"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/list/stderr",
+      "bytes": 0,
+      "mode": 384,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/result.json",
+      "bytes": 42186,
+      "mode": 384,
+      "sha256": "521e3d5e413449b3a8938ba7fa6af62c788e228b16699738ea5fb21c26d0d2bb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/stdout",
+      "bytes": 3459,
+      "mode": 384,
+      "sha256": "ce3ff973031b6f52af67a0829b2ea1a7544408d97d2b26c5a2e7571d5faa1caa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parity-recovery-20260916/ignored/recovery/main-increment-independent-review/closed-standard-input-20260917/measurement-observer/measurement-fdinfo-native-20260917/cargo-v2/native/stderr",
+      "bytes": 297,
+      "mode": 384,
+      "sha256": "9e1537837daff83d76fc23f30f2b85e1b58387accec8cea3992ba2f3bd1e9527"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/summary.json",
+      "bytes": 1769,
+      "mode": 420,
+      "sha256": "203b0ad9d647f6b919812d5dbe33df0155d7919ac471d1ec168277133b533296"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/run-1/compiled-executable.json",
+      "bytes": 1451,
+      "mode": 420,
+      "sha256": "c0f1b55cd504fa130f7578b9b2995db08b5f7e23f33e6e27d4c62a8e80862b3d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/Cargo.lock",
+      "bytes": 67056,
+      "mode": 420,
+      "sha256": "d432b018c022722ac6a8d121a652402dd6089f0eb92e5ab6bdbc489992e00469"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/launch.py",
+      "bytes": 16337,
+      "mode": 420,
+      "sha256": "c08dc3d5dab9ff6ef03ac528cc2bb13e8ee85cfd3369296c124eaa40bcb2ae8a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/cargo-v2/plan.json",
+      "bytes": 31457,
+      "mode": 420,
+      "sha256": "4b8f799d674f2af53f86d319669cf65912a1d6bcc1168bf19def99c11db6e97e"
+    }
+  ],
+  "scope": "Native executor/memory/mount controls only; no Hermit/KVM guest or parity result."
+}

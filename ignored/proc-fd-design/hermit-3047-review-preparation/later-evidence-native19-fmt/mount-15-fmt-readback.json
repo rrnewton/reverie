@@ -1,0 +1,23 @@
+{
+  "name": "mount-15-fmt",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2512555-1789626234647818423.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 2.698178,
+  "wall_seconds": 3.1529134809970856,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "9c5b1cf51f9286165d7f61e0603127df38ba8c70fa7fcccc3d2b2371406e19c8",
+  "full_source_snapshots_equal": true,
+  "expected_method_names_equal": true
+}

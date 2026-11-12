@@ -1,0 +1,73 @@
+tree 76e4fb00a377f628ea34206aeed8bb747118ef73
+parent 2781b1054efc3a9c561dbed35584a6fca1ed8676
+author Ryan Newton <rrnewton@gmail.com> 1789566971 -0700
+committer Ryan Newton <rrnewton@gmail.com> 1789566971 -0700
+
+wrkslots: stop a shared cgroup vouching for slots it never owned
+
+[opus 5]
+
+A cgroup is a container, not an identity. Three places refused to reclaim a
+slot when any live process shared the recorded owner's cgroup, and two coarse
+sandbox scopes outlive the agents that ran in them, so one surviving process
+stood in for dozens of unrelated slots.
+
+MEASURED on one host, 252 registered slots against 3,619 live processes: the
+comparison blocked 135 slots. Four had a live process in the recorded cgroup
+that actually touched the checkout -- and all four are caught independently by
+the direct-use test, which reads cwd, root, exe and open descriptors. The other
+131 were vouched for by a process that touched nothing in them. One live
+process supplied the refusal for 50 slots, another for 47, and the machine's
+init scope for 17 more.
+
+THE NARROWING IS THE ONE ALREADY ACCEPTED IN THIS FILE, not a new idea. Commit
+1de97af4 introduced "omit the recorded cgroup comparison once the exact
+generation is proven dead" for disposable checkouts. Its reasoning -- unrelated
+live processes in a coarse shared cgroup must not strand a checkout
+indefinitely -- holds identically for ordinary slots; only the blast radius
+differed. The rule now lives in one predicate, `_owner_cgroup_is_evidence`,
+used at all three comparison sites and at the census refusal that demands
+owner-cgroup evidence be complete, which would otherwise refuse for the absence
+of a comparison it no longer makes.
+
+AN ASSERTION WAS DELIBERATELY REVERSED, and it is rewritten rather than
+deleted: test_agent_remove_still_refuses_dead_owner_cgroup_with_live_process
+existed to prove the 1de97af4 rule had NOT leaked into ordinary slots. It is
+now test_agent_remove_ignores_a_dead_owner_cgroup_with_a_live_process, and its
+docstring records what it used to assert and why the measurement overturned it.
+
+A SECOND ASSERTION WAS NARROWED FOR THE SAME REASON, and the validator found it
+rather than I did: test_incomplete_owner_cgroup_census_refuses_owner_check
+pinned the census refusing when owner-cgroup evidence is incomplete. Once the
+comparison is not made for a proven-dead owner, that refusal fires for the
+absence of evidence nothing is going to read. It is now
+test_incomplete_owner_cgroup_census_refuses_only_when_it_will_compare, and its
+live-owner half is the control that makes it a narrowing and not a deletion.
+Nothing else is weakened: the direct-use test, the handoff and hold guards, the
+registered-liveness authority, and the requirement that the owner generation be
+proven dead all still run, and this predicate is only reached after that last
+one is already satisfied. Residual risk, stated rather than dismissed: an
+orphaned child of the dead owner working through absolute paths while holding
+no descriptor would no longer be seen here, and would have to evade the
+direct-use test to go unnoticed.
+
+SEPARATELY, a write-time guard: the machine's init can no longer be recorded as
+an owner, coordinator or actor. 17 of those 252 rows recorded it, and the
+read-time checks cannot help -- liveness compares the recorded generation
+against the live one, and for init that answers "alive" until reboot, so the
+slot is unreclaimable and indistinguishable from a real owner.
+
+THE GUARD ASKS WHAT THE PROCESS IS, NOT WHAT IT IS NUMBERED, and that was
+measured the hard way: a first version refused PID 1 and 2 outright and broke
+the process-and-git stress suite, which runs its harness under a PID namespace
+where the runner legitimately IS PID 1. Host init is PID 1 in "/init.scope";
+inside that namespace PID 1 reports the caller's own session scope. Only the
+former is refused, and where the signature does not hold this degrades to
+accepting the identity rather than to a false refusal.
+
+Test Plan: make validate, run bare and redirected. New unit coverage is
+mutation-checked rather than merely run: removing the narrowing fails
+test_a_dead_owner_cgroup_is_not_evidence while the live-owner control keeps
+passing, and removing the init guard fails its two refusal tests while the
+ordinary-PID control keeps passing. The rewritten lifecycle test was run
+end-to-end and removes the slot.

@@ -1,0 +1,48 @@
+--- execution-v6/launch.py
++++ execution-v7/launch.py
+@@ -9,7 +9,7 @@
+ import subprocess
+ 
+ HERE = Path(__file__).resolve().parent
+-PLAN_SHA256 = '88d3c517941d7bf46187e71532dc23589d53e0cdb95a966f92dffb49fec185fa'
++PLAN_SHA256 = '55924d1ecbdf4b8609eeca796829243cb1409dded5388d6aa96b97b97d235d91'
+ 
+ 
+ def main():
+@@ -22,7 +22,7 @@
+     require, digest, read_bounded = (functions[name] for name in ['require', 'digest', 'read_bounded'])
+     write_new, check_executable = (functions[name] for name in ['write_new', 'check_executable'])
+     require(plan['execution'] == ['/usr/bin/python3', '-B', str(HERE / 'launch.py')], 'wrong caller')
+-    require(len(plan['selected_tests']['lib']) == 4 and
++    require(set(plan['selected_tests']) == {'static-elf'} and
+             len(plan['selected_tests']['static-elf']) == 22, 'changed qualification population')
+     selected = []
+     for step in plan['stages']:
+@@ -40,14 +40,25 @@
+         require(step['environment_overrides'] == {'TMPDIR': str(Path(plan['tmpdir']) / step['name'])},
+                 'unexpected per-test environment')
+         selected.append(step['test'])
+-    require(len(selected) == 26 and len(set(selected)) == 26 and
+-            set(selected) == set(plan['selected_tests']['lib'] + plan['selected_tests']['static-elf']),
++    require(len(selected) == 22 and len(set(selected)) == 22 and
++            selected == plan['selected_tests']['static-elf'],
+             'missing or duplicated test stage')
+     for kind, entry in plan['inventories'].items():
+         names = json.loads(read_bounded(entry['path'], 1024**2))['names']
+         require(len(names) == entry['count'] and len(names) == len(set(names)), 'inventory changed')
+         require(all(names.count(name) == 1 for name in plan['selected_tests'][kind]),
+                 'selected test absent from actual inventory')
++    # The unchanged complete library already covers the selected VM methods.
++    full = plan['completed_full_library']
++    prior = json.loads(read_bounded(full['summary'], 1024**2))
++    outcomes = json.loads(read_bounded(full['outcomes'], 1024**2))
++    full_names = json.loads(read_bounded(full['inventory'], 1024**2))['names']
++    require(prior['status'] == 'passed' and prior['registered_count'] == full['count'] == 454
++            and prior['outcome_counts'] == {'ok': 454, 'failed': 0, 'ignored': 0},
++            'complete library prerequisite did not pass')
++    require(len(full['already_covered_selected_vm']) == 4 and
++            all(name in full_names for name in full['already_covered_selected_vm']),
++            'earlier focused VM population missing from full execution')
+     root = Path(plan['run_root'])
+     for path in [root, Path(plan['observer_root'])]:
+         require(not path.exists() and not path.is_symlink(), 'retain prior attempt: ' + str(path))

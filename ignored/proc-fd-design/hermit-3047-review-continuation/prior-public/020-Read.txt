@@ -1,0 +1,232 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01E9u5GcpP6ivmoV87gype7n",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/source/hermit/detcore/src/syscalls/namespace.rs",
+    "offset": 120,
+    "limit": 220
+  }
+}
+
+Successful public tool result (exact text below):
+120	        .then(|| value.parse().ok())?
+121	}
+122	
+123	fn decimal_fd(component: &OsStr) -> Option<i32> {
+124	    let value = component.to_str()?;
+125	    (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+126	        .then(|| value.parse().ok())?
+127	}
+128	
+129	/// Returns the optional numeric proc subject and the descriptor number.
+130	fn proc_fd_target(path: &Path) -> Option<(Option<u32>, i32)> {
+131	    let parts = normalized_absolute_parts(path)?;
+132	    match parts.as_slice() {
+133	        [dev, fd_dir, fd] if *dev == "dev" && *fd_dir == "fd" => Some((None, decimal_fd(fd)?)),
+134	        [proc, subject, fd_dir, fd] if *proc == "proc" && *fd_dir == "fd" => {
+135	            let subject = match subject.to_str()? {
+136	                "self" | "thread-self" => None,
+137	                _ => Some(decimal_u32(subject)?),
+138	            };
+139	            Some((subject, decimal_fd(fd)?))
+140	        }
+141	        _ => None,
+142	    }
+143	}
+144	
+145	// TODO-HUMAN-REVIEW(PR-1079): Review numeric virtual-self proc-fd path rewriting.
+146	fn host_self_proc_fd_alias(path: &Path, current_pid: i64) -> Option<PathBuf> {
+147	    let (Some(subject), fd) = proc_fd_target(path)? else {
+148	        return None;
+149	    };
+150	    (i64::from(subject) == current_pid).then(|| PathBuf::from(format!("/proc/self/fd/{fd}")))
+151	}
+152	
+153	#[derive(Debug, Eq, PartialEq)]
+154	struct AnonymousProcFdIdentity {
+155	    kind: &'static str,
+156	    raw_inode: RawInode,
+157	}
+158	
+159	// Long enough for `socket:[` + every decimal u64 inode + `]`.
+160	const ANONYMOUS_PROC_FD_TARGET_CAPACITY: usize = 32;
+161	
+162	fn needs_anonymous_proc_fd_scratch(buffer_present: bool, buffer_len: usize) -> bool {
+163	    buffer_present && buffer_len != 0 && buffer_len < ANONYMOUS_PROC_FD_TARGET_CAPACITY
+164	}
+165	
+166	/// Recognize only a complete kernel pipe/socket symlink target.
+167	fn anonymous_proc_fd_identity(target: &[u8]) -> Option<AnonymousProcFdIdentity> {
+168	    for (kind, prefix) in [
+169	        ("pipe", b"pipe:[".as_slice()),
+170	        ("socket", b"socket:[".as_slice()),
+171	    ] {
+172	        let Some(digits) = target
+173	            .strip_prefix(prefix)
+174	            .and_then(|rest| rest.strip_suffix(b"]"))
+175	        else {
+176	            continue;
+177	        };
+178	        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+179	            continue;
+180	        }
+181	        let raw_inode = std::str::from_utf8(digits).ok()?.parse().ok()?;
+182	        return Some(AnonymousProcFdIdentity { kind, raw_inode });
+183	    }
+184	    None
+185	}
+186	
+187	/// Match a raw identity against cached current-process inherited-stdio identities.
+188	/// Callers exclude ordinary replacement objects before filling this array.
+189	///
+190	/// Iterating in fd order deliberately matches the last-insert-wins behavior of
+191	/// the maps sanitizer's `stdio_by_raw_inode` table when stdio descriptors alias.
+192	fn deterministic_stdio_inode_for_raw(
+193	    raw_inode: RawInode,
+194	    stdio_raw_inodes: &[Option<RawInode>; 3],
+195	) -> Option<DetInode> {
+196	    let mut matched = None;
+197	    for (fd, cached) in stdio_raw_inodes.iter().enumerate() {
+198	        if *cached == Some(raw_inode) {
+199	            matched = deterministic_stdio_inode(fd as i32);
+200	        }
+201	    }
+202	    matched
+203	}
+204	
+205	fn canonical_anonymous_proc_fd_target(
+206	    identity: &AnonymousProcFdIdentity,
+207	    inode: DetInode,
+208	    buffer_len: usize,
+209	) -> Vec<u8> {
+210	    let mut target = format!("{}:[{}]", identity.kind, inode.as_raw()).into_bytes();
+211	    target.truncate(buffer_len);
+212	    target
+213	}
+214	
+215	impl<T: RecordOrReplay> Detcore<T> {
+216	    async fn canonicalize_other_proc_fd_target<G>(
+217	        &self,
+218	        guest: &mut G,
+219	        raw_target: &[u8],
+220	        buffer: Option<AddrMut<'_, libc::c_char>>,
+221	        buffer_len: usize,
+222	    ) -> Result<Option<i64>, Error>
+223	    where
+224	        G: Guest<Self>,
+225	    {
+226	        let Some(identity) = anonymous_proc_fd_identity(raw_target) else {
+227	            return Ok(None);
+228	        };
+229	        let mut stdio_raw_inodes = [None; 3];
+230	        for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+231	            stdio_raw_inodes[fd as usize] = guest
+232	                .thread_state()
+233	                .with_detfd(fd, |detfd| {
+234	                    deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+235	                    detfd.stat().map(|stat| stat.inode)
+236	                })
+237	                .ok()
+238	                .flatten();
+239	        }
+240	        let inode = match deterministic_stdio_inode_for_raw(identity.raw_inode, &stdio_raw_inodes) {
+241	            Some(inode) => inode,
+242	            None => determinize_inode(guest, identity.raw_inode).await.0,
+243	        };
+244	        let target = canonical_anonymous_proc_fd_target(&identity, inode, buffer_len);
+245	        let buffer = buffer.ok_or(Errno::EFAULT)?;
+246	        guest.memory().write_exact(buffer.cast(), &target)?;
+247	        Ok(Some(target.len() as i64))
+248	    }
+249	
+250	    /// Canonicalize a pipe/socket link belonging to another virtual process.
+251	    /// The target descriptor is not in the caller's table, so its raw readlink
+252	    /// bytes are the only safe identity evidence available here.
+253	    async fn canonicalize_other_proc_fd_readlink<G>(
+254	        &self,
+255	        guest: &mut G,
+256	        buffer: Option<AddrMut<'_, libc::c_char>>,
+257	        buffer_len: usize,
+258	        result: i64,
+259	    ) -> Result<i64, Error>
+260	    where
+261	        G: Guest<Self>,
+262	    {
+263	        let buffer = buffer.expect("a successful readlink requires a non-null buffer");
+264	        let observed_len = usize::try_from(result)
+265	            .expect("a positive readlink result must fit usize")
+266	            .min(buffer_len);
+267	        let mut observed = vec![0; observed_len];
+268	        guest.memory().read_exact(buffer.cast(), &mut observed)?;
+269	        Ok(self
+270	            .canonicalize_other_proc_fd_target(guest, &observed, Some(buffer), buffer_len)
+271	            .await?
+272	            .unwrap_or(result))
+273	    }
+274	
+275	    async fn canonicalize_namespace_readlink_result<G>(
+276	        &self,
+277	        guest: &mut G,
+278	        path: PathBuf,
+279	        buffer: Option<AddrMut<'_, libc::c_char>>,
+280	        buffer_len: usize,
+281	        result: i64,
+282	    ) -> Result<i64, Error>
+283	    where
+284	        G: Guest<Self>,
+285	    {
+286	        if result <= 0 {
+287	            return Ok(result);
+288	        }
+289	
+290	        let target = if let Some(target) = canonical_namespace_target(&path) {
+291	            target.to_vec()
+292	        } else if let Some((subject, fd)) = proc_fd_target(&path) {
+293	            if let Some(subject) = subject {
+294	                let current_pid = guest.inject(syscalls::Getpid::new()).await?;
+295	                if current_pid != i64::from(subject) {
+296	                    return self
+297	                        .canonicalize_other_proc_fd_readlink(guest, buffer, buffer_len, result)
+298	                        .await;
+299	                }
+300	            }
+301	
+302	            let stat = self.inject_fstat(guest, fd).await?;
+303	            let kind = match stat.st_mode & libc::S_IFMT {
+304	                libc::S_IFIFO => "pipe",
+305	                libc::S_IFSOCK => "socket",
+306	                _ => return Ok(result),
+307	            };
+308	            let inode_override = guest
+309	                .thread_state()
+310	                .with_detfd(fd, |detfd| {
+311	                    deterministic_stdio_inode_for_resource(fd, detfd.resource())
+312	                })
+313	                .ok()
+314	                .flatten();
+315	            let inode = match inode_override {
+316	                Some(inode) => inode,
+317	                None => determinize_inode(guest, stat.st_ino).await.0,
+318	            };
+319	            format!("{kind}:[{inode}]").into_bytes()
+320	        } else {
+321	            return Ok(result);
+322	        };
+323	
+324	        let written = target.len().min(buffer_len);
+325	        let buffer = buffer.expect("a successful readlink requires a non-null buffer");
+326	        guest
+327	            .memory()
+328	            .write_exact(buffer.cast(), &target[..written])?;
+329	        Ok(written as i64)
+330	    }
+331	    async fn write_other_proc_fd_target<G>(
+332	        &self,
+333	        guest: &mut G,
+334	        raw_target: &[u8],
+335	        buffer: Option<AddrMut<'_, libc::c_char>>,
+336	        buffer_len: usize,
+337	    ) -> Result<i64, Error>
+338	    where
+339	        G: Guest<Self>,

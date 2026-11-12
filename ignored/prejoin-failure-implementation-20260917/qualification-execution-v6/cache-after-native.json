@@ -1,0 +1,16 @@
+{
+  "time": "2026-09-17T17:31:56.718516+00:00",
+  "matches": [],
+  "excluded_ancestors": [
+    1,
+    88128,
+    1191445,
+    1209701,
+    1210520,
+    2283921,
+    2284032,
+    2284061
+  ],
+  "native_result_sha256": "a471d543bd6e4e0b76fc90907d322edcbf0a60cdc9287925a82a55a0376ca426",
+  "all_inputs_and_artifacts_match": true
+}

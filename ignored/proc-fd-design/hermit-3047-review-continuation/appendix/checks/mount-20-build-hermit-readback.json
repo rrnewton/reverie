@@ -1,0 +1,23 @@
+{
+  "name": "mount-20-build-hermit",
+  "argv": [
+    "systemctl",
+    "--user",
+    "show",
+    "hermit-box-run-2779281-1789626494826526742.scope",
+    "--property=LoadState,ActiveState,SubState,ControlGroup,Result"
+  ],
+  "exit_code": 0,
+  "stdout": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nResult=success\nControlGroup=\n",
+  "stderr": "",
+  "inactive_empty": true,
+  "command_exit": 0,
+  "cpu_seconds": 17.298229,
+  "wall_seconds": 7.266808952903375,
+  "guard": null,
+  "source_unchanged": true,
+  "commit_correct": true,
+  "receipt_sha256": "5b7afb550e52abcac630fce5b61bd028aef2617059638a2c65470bb7ee05b36e",
+  "full_source_snapshots_equal": true,
+  "expected_method_names_equal": true
+}

@@ -1,0 +1,19 @@
+{
+  "status": "passed",
+  "selected": [
+    "vm::tests::nested_host_fork_failure_uses_descendant_process_and_worker_identity",
+    "vm::tests::real_fork_and_thread_wrappers_restore_both_capture_modes",
+    "vm::tests::page_fault_action_restores_complete_stopped_context"
+  ],
+  "counts": [
+    "3",
+    "0",
+    "0",
+    "0",
+    "440"
+  ],
+  "stdout_sha256": "1cc0c92a88a46a33b49a7695fbc0bac748bc3b18bf0afd1a6d144f316a37a2b6",
+  "cpu_nsec": 288700000,
+  "wall_seconds": 1.894176096,
+  "scope": "Three selected initialized-VM controls, including real vCPU execution in the two existing transport tests. No Hermit invocation, real-program guest, or parity claim."
+}

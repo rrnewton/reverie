@@ -1,0 +1,11 @@
+{
+  "argv": [
+    "with-proxy",
+    "/home/newton/work/dev-hermit/ci-hub/ci-hub",
+    "active-work",
+    "--json"
+  ],
+  "exit_code": 1,
+  "started_at": "2026-09-17T07:36:56.864218+00:00",
+  "wall_seconds": 0.7664808188565075
+}

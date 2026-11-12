@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "with-proxy",
+    "git",
+    "fetch",
+    "--no-tags",
+    "origin",
+    "refs/heads/main"
+  ],
+  "cwd": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917",
+  "started_at_utc": "2026-09-17T05:45:09.520225+00:00",
+  "finished_at_utc": "2026-09-17T05:45:09.909663+00:00",
+  "elapsed_wall_seconds": 0.3894619510974735,
+  "returncode": 0,
+  "stdout_bytes": 0,
+  "stderr_bytes": 89,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "b97d028343025584e122916c446463b227ba3f8a4765234aea5664e02614bf30"
+}

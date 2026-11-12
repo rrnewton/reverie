@@ -1,0 +1,1 @@
+Now let me examine the frozen source. Starting with the descriptor/resource machinery.

@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "git",
+    "update-ref",
+    "refs/rescue/kvm-prejoin-v22-before-forward-20260917",
+    "9dfffd7ef114c10ede7e092107a36a6da2fb3df0",
+    "0000000000000000000000000000000000000000"
+  ],
+  "exit": 0
+}

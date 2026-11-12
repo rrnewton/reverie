@@ -1,0 +1,144 @@
+{
+  "ci/compat-envelope/pressure-test.rs": [
+    [
+      "5751",
+      "        && comparison.ignore_lines == Some(false)"
+    ]
+  ],
+  "ci/compat-envelope/scorecard.rs": [
+    [
+      "10008",
+      "                        strip_lines: Some(false),"
+    ],
+    [
+      "10017",
+      "                        skip_commit: Some(false),"
+    ],
+    [
+      "10018",
+      "                        skip_detlog: Some(false),"
+    ],
+    [
+      "10803",
+      "                    strip_lines: Some(false),"
+    ],
+    [
+      "10812",
+      "                    skip_commit: Some(false),"
+    ],
+    [
+      "10813",
+      "                    skip_detlog: Some(false),"
+    ],
+    [
+      "11032",
+      "                    unsafe_strip_lines: false,"
+    ],
+    [
+      "11036",
+      "                    skip_commit: false,"
+    ],
+    [
+      "11037",
+      "                    skip_detlog: false,"
+    ]
+  ],
+  "ci/manifest-plan/src/backend_parity.rs": [
+    [
+      "201",
+      "                strip_lines: Some(false),"
+    ],
+    [
+      "208",
+      "                skip_commit: Some(false),"
+    ],
+    [
+      "209",
+      "                skip_detlog: Some(false),"
+    ],
+    [
+      "275",
+      "                    unsafe_strip_lines: false,"
+    ],
+    [
+      "279",
+      "                    skip_commit: false,"
+    ],
+    [
+      "280",
+      "                    skip_detlog: false,"
+    ]
+  ],
+  "ci/manifest-plan/src/ledger.rs": [
+    [
+      "436",
+      "    pub strip_lines: bool,"
+    ],
+    [
+      "443",
+      "    pub skip_commit: bool,"
+    ],
+    [
+      "444",
+      "    pub skip_detlog: bool,"
+    ],
+    [
+      "506",
+      "            && !self.ignore_lines"
+    ],
+    [
+      "634",
+      "    strip_lines: bool,"
+    ],
+    [
+      "641",
+      "    skip_commit: bool,"
+    ],
+    [
+      "642",
+      "    skip_detlog: bool,"
+    ],
+    [
+      "662",
+      "            strip_lines: value.strip_lines,"
+    ],
+    [
+      "668",
+      "            ignore_lines: value.ignore_lines,"
+    ],
+    [
+      "669",
+      "            skip_commit: value.skip_commit,"
+    ],
+    [
+      "670",
+      "            skip_detlog: value.skip_detlog,"
+    ]
+  ],
+  "ci/manifest-plan/src/runner.rs": [
+    [
+      "8202",
+      "                strip_lines: Some(false),"
+    ],
+    [
+      "8209",
+      "                skip_commit: Some(false),"
+    ],
+    [
+      "8210",
+      "                skip_detlog: Some(false),"
+    ],
+    [
+      "8302",
+      "                unsafe_strip_lines: false,"
+    ],
+    [
+      "8306",
+      "                skip_commit: false,"
+    ],
+    [
+      "8307",
+      "                skip_detlog: false,"
+    ]
+  ]
+}

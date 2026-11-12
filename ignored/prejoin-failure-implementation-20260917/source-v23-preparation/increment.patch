@@ -1,0 +1,3964 @@
+diff --git a/experimental/reverie-sabre/src/internal.rs b/experimental/reverie-sabre/src/internal.rs
+index 5dedf97e..68c13150 100644
+--- a/experimental/reverie-sabre/src/internal.rs
++++ b/experimental/reverie-sabre/src/internal.rs
+@@ -64,6 +64,10 @@ pub fn sbr_init<T: ToolGlobal>(
+     client_path: *const libc::c_char,
+ ) {
+     unsafe {
++        // Register the tool's declared detours before stats, paths or signal
++        // setup can call an intercepted libc function.
++        register_detours::<T>(fn_icept_reg);
++
+         stats::init_guest_stats();
+         *vdso_callback = Some(callbacks::handle_vdso::<T>);
+         *syscall_handler = Some(callbacks::handle_syscall::<T>);
+@@ -80,9 +84,6 @@ pub fn sbr_init<T: ToolGlobal>(
+ 
+         *argc -= 1;
+         *argv = (*argv).wrapping_add(1);
+-
+-        // Setting up function detours
+-        register_detours::<T>(fn_icept_reg);
+     }
+ }
+ 
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/client-static.S b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client-static.S
+new file mode 100644
+index 00000000..c0e8dcfb
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client-static.S
+@@ -0,0 +1,40 @@
++.text
++.globl _start
++.type _start,@function
++_start:
++  lea buffer(%rip), %rdi
++  mov $4, %esi
++  mov $0x1357, %edx
++  call late_probe
++  cmp $137, %rax
++  jne fail
++  cmpb $0xea, buffer(%rip)
++  jne fail
++  mov $1, %eax
++  mov $1, %edi
++  lea ok(%rip), %rsi
++  mov $10, %edx
++  syscall
++  mov $60, %eax
++  xor %edi, %edi
++  syscall
++fail:
++  mov $60, %eax
++  mov $91, %edi
++  syscall
++.size _start,.-_start
++.globl late_probe
++.type late_probe,@function
++late_probe:
++  .rept 32
++  nop
++  .endr
++  movb $0x6a, (%rdi)
++  mov $37, %eax
++  ret
++.size late_probe,.-late_probe
++.section .rodata
++ok: .ascii "STATIC_OK\n"
++.data
++buffer: .byte 0,1,2,3
++.section .note.GNU-stack,"",@progbits
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c
+new file mode 100644
+index 00000000..e9f3bbd5
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/client.c
+@@ -0,0 +1,15 @@
++#include <assert.h>
++#include <errno.h>
++#include <stddef.h>
++#include <sys/types.h>
++#include <unistd.h>
++extern ssize_t late_probe(unsigned char *, size_t, unsigned);
++int main(void) {
++  unsigned char b[4] = {0, 1, 2, 3};
++  errno = 0;
++  assert(late_probe(b, 4, 0x1357) == 137);
++  assert(b[0] == 0xea && b[1] == 1 && b[2] == 2 && b[3] == 3);
++  assert(errno == EDOM);
++  assert(write(1, "CLIENT_OK\n", 10) == 10);
++  return 0;
++}
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c
+new file mode 100644
+index 00000000..b3ab5994
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/library.c
+@@ -0,0 +1,22 @@
++#define _GNU_SOURCE
++#include <errno.h>
++#include <stddef.h>
++#include <sys/types.h>
++__attribute__((noinline, patchable_function_entry(32, 0)))
++ssize_t late_probe(unsigned char *buf, size_t len, unsigned flags) {
++  if (len != 4 || flags != 0x1357) { errno = EINVAL; return -1; }
++  buf[0] = 0x6a;
++  errno = EDOM;
++  return 37;
++}
++__attribute__((noinline, patchable_function_entry(32, 0)))
++ssize_t late_probe_two(unsigned char *buf, size_t len, unsigned flags) {
++  return late_probe(buf, len, flags);
++}
++__attribute__((noinline)) long late_raw_getpid(void) {
++  long result;
++  __asm__ volatile("syscall" : "=a"(result) : "a"(39) : "rcx", "r11", "memory");
++  return result;
++}
++
++extern __typeof(late_probe) late_probe_alias __attribute__((alias("late_probe")));
+diff --git a/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c b/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c
+new file mode 100644
+index 00000000..44ba6839
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/fixtures/late_function_registration/plugin.c
+@@ -0,0 +1,170 @@
++#define _GNU_SOURCE
++#include "sbr_api_defs.h"
++#include "real_syscall.h"
++#include <asm/prctl.h>
++#include <assert.h>
++#include <elf.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <link.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/auxv.h>
++#include <sys/mman.h>
++#include <sys/types.h>
++#include <unistd.h>
++extern bool calling_from_plugin(void);
++extern ssize_t late_probe(unsigned char *, size_t, unsigned);
++extern long late_raw_getpid(void);
++extern ssize_t late_probe_two(unsigned char *, size_t, unsigned);
++typedef ssize_t (*operation)(unsigned char *, size_t, unsigned);
++static operation original, original_two;
++static unsigned calls, calls_two;
++static unsigned long expected_fs;
++static __thread unsigned tls_marker __attribute__((tls_model("initial-exec")));
++static unsigned char *expected_buffer;
++static bool is_static;
++static unsigned long fs(void) {
++  unsigned long address = 0;
++  assert(real_syscall(SYS_arch_prctl, ARCH_GET_FS, (long)&address, 0, 0, 0, 0) == 0);
++  return address;
++}
++static void check_tls(void) {
++  assert(fs() == expected_fs);
++  assert(tls_marker == 0x12345678);
++}
++static ssize_t stub(unsigned char *buf, size_t len, unsigned flags) {
++  check_tls();
++  assert(calls == 1 && original != NULL);
++  assert(len == 4 && flags == 0x1357);
++  if (expected_buffer != NULL) assert(buf == expected_buffer);
++  ssize_t result = original(buf, len, flags);
++  assert(result == 37 && buf[0] == 0x6a);
++  if (!is_static) assert(errno == EDOM);
++  buf[0] ^= 0x80;
++  return result + 100;
++}
++static ssize_t stub_two(unsigned char *buf, size_t len, unsigned flags) {
++  check_tls();
++  assert(calls_two == 1 && original_two != NULL);
++  return original_two(buf, len, flags);
++}
++static void_void_fn capture(void_void_fn real) {
++  check_tls();
++  assert(calling_from_plugin() == !is_static);
++  assert(calls++ == 0);
++  original = (operation)real;
++  return (void_void_fn)stub;
++}
++static void_void_fn capture_two(void_void_fn real) {
++  check_tls();
++  assert(calling_from_plugin() == !is_static);
++  assert(calls_two++ == 0);
++  original_two = (operation)real;
++  return (void_void_fn)stub_two;
++}
++static int protections(const void *address) {
++  static char buffer[65536];
++  long fd = real_syscall(SYS_openat, AT_FDCWD, (long)"/proc/self/maps", 0, 0, 0, 0);
++  assert(fd >= 0);
++  size_t used = 0;
++  for (;;) {
++    assert(used < sizeof(buffer)-1);
++    long n = real_syscall(SYS_read, fd, (long)(buffer+used),
++                          sizeof(buffer)-1-used, 0, 0, 0);
++    assert(n >= 0);
++    if (n == 0) break;
++    used += n;
++  }
++  assert(used > 0);
++  assert(real_syscall(SYS_close, fd, 0, 0, 0, 0, 0) == 0);
++  buffer[used] = 0;
++  for (char *line = buffer; line != NULL && *line; ) {
++    unsigned long lo, hi; char mode[5] = {0};
++    assert(sscanf(line, "%lx-%lx %4s", &lo, &hi, mode) == 3);
++    if ((uintptr_t)address >= lo && (uintptr_t)address < hi)
++      return (mode[0]=='r'?PROT_READ:0)|(mode[1]=='w'?PROT_WRITE:0)|(mode[2]=='x'?PROT_EXEC:0);
++    line = strchr(line, '\n'); if (line != NULL) ++line;
++  }
++  assert(!"mapping not found"); return -1;
++}
++static long passthrough(long nr, long a, long b, long c, long d, long e, long f, void *sp) {
++  (void)sp; return real_syscall(nr, a, b, c, d, e, f);
++}
++#ifdef __NX_INTERCEPT_RDTSC
++static long rdtsc(void) { unsigned a,d; __asm__ volatile("rdtsc":"=a"(a),"=d"(d)); return ((long)d<<32)|a; }
++#endif
++static void post_load(bool value) {
++  assert(value == is_static);
++  check_tls();
++  assert(is_static ? calls == 0 : calls == 1);
++}
++void sbr_init(int *argc, char ***argv, sbr_icept_reg_fn reg,
++              sbr_icept_vdso_callback_fn *vdso, sbr_sc_handler_fn *syscall_handler,
++#ifdef __NX_INTERCEPT_RDTSC
++              sbr_rdtsc_handler_fn *rdtsc_handler,
++#endif
++              sbr_post_load_fn *post, char *loader, char *client) {
++  (void)loader; (void)client;
++  assert(*argc == 2);
++  const char *mode = (*argv)[1];
++  is_static = strncmp(mode,"static",6) == 0;
++  expected_fs = fs(); tls_marker = 0x12345678;
++  *vdso = NULL; *syscall_handler = passthrough; *post = post_load;
++#ifdef __NX_INTERCEPT_RDTSC
++  *rdtsc_handler = rdtsc;
++#endif
++  sbr_fn_icept_struct one = {is_static ? "client-static" : "liblate", "late_probe", capture};
++  if (is_static) {
++    reg(&one); check_tls(); assert(calls == 0);
++    if (strcmp(mode,"static-alias")==0) {
++      sbr_fn_icept_struct alias={"client", "late_probe", capture};
++      reg(&alias); check_tls(); assert(calls == 0);
++    }
++  } else {
++    unsigned char code[32], vdso_bytes[65536];
++    memcpy(code, (void *)late_raw_getpid, sizeof(code));
++    ElfW(Ehdr) *ehdr = (void *)getauxval(AT_SYSINFO_EHDR);
++    assert(ehdr != NULL && ehdr->e_phnum < 32);
++    ElfW(Phdr) *ph = (void *)((char *)ehdr + ehdr->e_phoff); size_t extent = 0;
++    for (unsigned i=0; i<ehdr->e_phnum; ++i) if(ph[i].p_type==PT_LOAD && ph[i].p_vaddr+ph[i].p_memsz>extent) extent=ph[i].p_vaddr+ph[i].p_memsz;
++    assert(extent > 0 && extent <= sizeof(vdso_bytes)); memcpy(vdso_bytes, ehdr, extent);
++    int before = protections((void *)late_probe);
++    assert(before == (PROT_READ|PROT_EXEC));
++    reg(&one);
++    check_tls();
++    assert(calls == 1 && "late registration did not install callback");
++    assert(protections((void *)late_probe) == before);
++    assert(memcmp(code, (void *)late_raw_getpid, sizeof(code)) == 0);
++    assert(memcmp(vdso_bytes, ehdr, extent) == 0);
++    unsigned char buf[4] = {0,1,2,3}; expected_buffer = buf;
++    errno = 0; assert(original(buf,4,0x1357)==37 && errno==EDOM);
++    assert(buf[0]==0x6a && buf[1]==1 && buf[2]==2 && buf[3]==3);
++    errno = 0; assert(late_probe(buf,4,0x1357)==137 && errno==EDOM);
++    assert(buf[0]==0xea && buf[1]==1 && buf[2]==2 && buf[3]==3);
++    operation saved = original;
++    reg(&one); check_tls(); assert(calls==1 && original==saved);
++    sbr_fn_icept_struct two={"liblate_probe","late_probe_two",capture_two};
++    reg(&two); check_tls(); assert(calls_two==1 && calls==1 && original==saved);
++    errno=0; assert(late_probe_two(buf,4,0x1357)==137 && errno==EDOM);
++    sbr_fn_icept_struct absent={"lib_unrelated_absent","no_function",capture_two};
++    reg(&absent); check_tls(); assert(calls_two==1 && calls==1);
++    assert(protections((void *)late_probe)==before);
++    if(strcmp(mode,"conflict")==0) { one.icept_callback=capture_two; reg(&one); assert(!"conflict accepted"); }
++    if(strcmp(mode,"capacity")==0) {
++      for(unsigned i=0;i<64;i++) { char name[32]; snprintf(name,sizeof(name),"absent_%u",i); absent.fn_name=name; reg(&absent); }
++      assert(!"capacity accepted");
++    }
++    if(strncmp(mode,"alias-",6)==0) {
++      sbr_fn_icept_struct alias={"liblate_probe", "late_probe", capture};
++      if(strcmp(mode,"alias-elf")==0) alias.fn_name="late_probe_alias";
++      if(strcmp(mode,"alias-conflict")==0) alias.icept_callback=capture_two;
++      reg(&alias);
++      assert(!"resolved-target alias accepted");
++    }
++    expected_buffer=NULL;
++  }
++  (*argc)-=2; (*argv)+=2;
++}
+diff --git a/experimental/reverie-sabre/tests/late_function_registration.rs b/experimental/reverie-sabre/tests/late_function_registration.rs
+new file mode 100644
+index 00000000..b71e47d8
+--- /dev/null
++++ b/experimental/reverie-sabre/tests/late_function_registration.rs
+@@ -0,0 +1,231 @@
++#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
++
++use std::path::Path;
++use std::process::Command;
++use std::process::Output;
++
++fn checked(command: &mut Command) -> Output {
++    let output = command.output().unwrap();
++    assert!(output.status.success(), "{command:?}: {output:?}");
++    output
++}
++
++#[test]
++fn late_detours_preserve_tls_original_calls_and_reject_aliases() {
++    let source = reverie_sabre::bundled_sabre_source_dir();
++    let loader = reverie_sabre::bundled_sabre_path();
++    let fixtures =
++        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/late_function_registration");
++    let out = std::env::temp_dir().join(format!("reverie-late-detours-{}", std::process::id()));
++    std::fs::create_dir(&out).unwrap();
++    eprintln!("late detour fixture retained at {}", out.display());
++    let compiler = cc::Build::new()
++        .cargo_metadata(false)
++        .opt_level(1)
++        .host("x86_64-unknown-linux-gnu")
++        .target("x86_64-unknown-linux-gnu")
++        .get_compiler();
++    let search = format!("-L{}", out.display());
++    let runpath = format!("-Wl,-rpath,{}", out.display());
++    checked(
++        compiler
++            .to_command()
++            .args(["-fPIC", "-shared"])
++            .arg(fixtures.join("library.c"))
++            .args(["-Wl,-soname,liblate_probe.so", "-o"])
++            .arg(out.join("liblate_probe.so"))
++            .arg("-UNDEBUG"),
++    );
++    checked(
++        compiler
++            .to_command()
++            .arg(fixtures.join("client.c"))
++            .args([&search, &runpath, "-llate_probe", "-o"])
++            .arg(out.join("client"))
++            .arg("-UNDEBUG"),
++    );
++    checked(
++        compiler
++            .to_command()
++            .args(["-nostdlib", "-static-pie", "-Wl,-E,--no-dynamic-linker"])
++            .arg(fixtures.join("client-static.S"))
++            .arg("-o")
++            .arg(out.join("client-static"))
++            .arg("-UNDEBUG"),
++    );
++    let headers = checked(
++        Command::new("readelf")
++            .args(["-lW"])
++            .arg(out.join("client-static")),
++    );
++    assert!(!String::from_utf8_lossy(&headers.stdout).contains("INTERP"));
++    let symbols = checked(
++        Command::new("readelf")
++            .args(["--dyn-syms", "-W"])
++            .arg(out.join("client-static")),
++    );
++    assert!(
++        String::from_utf8_lossy(&symbols.stdout)
++            .lines()
++            .any(|line| line.contains("FUNC") && line.ends_with(" late_probe"))
++    );
++    checked(
++        compiler
++            .to_command()
++            .args(["-fPIC", "-shared", "-D__NX_INTERCEPT_RDTSC", "-I"])
++            .arg(source.join("includes/plugins"))
++            .arg(fixtures.join("plugin.c"))
++            .arg(source.join("plugin_api/recursion_protector.c"))
++            .arg(loader.parent().unwrap().join("plugin_api/libplugin_api.a"))
++            // The static-loader namespace exports data objects with the same names
++            // as the plugin's recursion functions. Bind its own functions locally.
++            .args([&search, &runpath, "-Wl,-z,now", "-llate_probe", "-o"])
++            .arg(out.join("plugin.so"))
++            .args(["-UNDEBUG", "-Wl,-Bsymbolic-functions"]),
++    );
++    for (mode, code, text) in [
++        ("dynamic", 0, "CLIENT_OK\n"),
++        ("static", 0, "STATIC_OK\n"),
++        ("conflict", 1, "conflicting function intercept registration"),
++        ("capacity", 1, "function intercept table is full"),
++        ("alias-prefix", 127, "overlapping function intercept target"),
++        ("alias-elf", 127, "overlapping function intercept target"),
++        (
++            "alias-conflict",
++            127,
++            "overlapping function intercept target",
++        ),
++        ("static-alias", 127, "overlapping function intercept target"),
++    ] {
++        let client = if mode.starts_with("static") {
++            "client-static"
++        } else {
++            "client"
++        };
++        let output = Command::new("timeout")
++            .args(["--kill-after=2s", "20s"])
++            .arg(loader)
++            .arg(out.join("plugin.so"))
++            .arg(mode)
++            .arg("--")
++            .arg(out.join(client))
++            .output()
++            .unwrap();
++        eprintln!("late detour {mode}: {output:?}");
++        assert_eq!(output.status.code(), Some(code), "{mode}: {output:?}");
++        if code == 0 {
++            assert_eq!(output.stdout, text.as_bytes(), "{mode}: {output:?}");
++        } else {
++            assert!(
++                String::from_utf8_lossy(&output.stderr).contains(text),
++                "{mode}: {output:?}"
++            );
++        }
++    }
++}
++
++struct RegistrationOrderTool;
++impl reverie_sabre::Tool for RegistrationOrderTool {
++    type Client = ();
++    fn new(_: ()) -> Self {
++        panic!("registration constructed the tool")
++    }
++    fn detours() -> &'static [reverie_sabre::ffi::fn_icept] {
++        static DETOURS: [reverie_sabre::ffi::fn_icept; 1] = [reverie_sabre::ffi::fn_icept {
++            lib_name: c"libunused".as_ptr(),
++            fn_name: c"unused".as_ptr(),
++            icept_callback: unchanged_callback,
++        }];
++        &DETOURS
++    }
++}
++impl reverie_sabre::ToolGlobal for RegistrationOrderTool {
++    type Target = Self;
++    fn global() -> &'static Self {
++        panic!("registration accessed the global tool")
++    }
++}
++extern "C" fn unchanged_callback(
++    f: reverie_sabre::ffi::void_void_fn,
++) -> reverie_sabre::ffi::void_void_fn {
++    f
++}
++static REGISTRATIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
++extern "C" fn observe_registration(descriptor: *const reverie_sabre::ffi::fn_icept) {
++    assert!(!descriptor.is_null());
++    assert!(
++        !unsafe { libc::getenv(c"REVERIE_SABRE_BACKEND_STATS_FD".as_ptr()) }.is_null(),
++        "registration ran after stats environment consumption"
++    );
++    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
++    assert_eq!(
++        unsafe { libc::sigaction(libc::SIGUSR1, std::ptr::null(), &mut action) },
++        0
++    );
++    assert_eq!(action.sa_sigaction, libc::SIG_IGN);
++    REGISTRATIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++}
++
++#[test]
++fn declared_detours_register_before_actual_stats_initialization() {
++    use reverie::BackendStatsSource;
++    use reverie_sabre::stats::BACKEND_STATS_ENV;
++    use reverie_sabre::stats::SabreSlowPath;
++    use reverie_sabre::stats::SabreStats;
++    const CHILD: &str = "REVERIE_TEST_REGISTRATION_ORDER_CHILD";
++    if std::env::var_os(CHILD).is_none() {
++        let stats = SabreStats::create(reverie::BackendStatsRequest::ENABLED)
++            .unwrap()
++            .unwrap();
++        let output = Command::new("timeout")
++            .args(["--kill-after=2s", "20s"])
++            .arg(std::env::current_exe().unwrap())
++            .args([
++                "--exact",
++                "declared_detours_register_before_actual_stats_initialization",
++                "--nocapture",
++            ])
++            .env(CHILD, "1")
++            .env(BACKEND_STATS_ENV, stats.raw_fd().to_string())
++            .output()
++            .unwrap();
++        assert!(output.status.success(), "{output:?}");
++        assert_eq!(
++            stats
++                .backend_stats()
++                .slow_paths
++                .count(&SabreSlowPath::PtraceSyscallEntry),
++            1
++        );
++        return;
++    }
++    unsafe {
++        libc::signal(libc::SIGUSR1, libc::SIG_IGN);
++    }
++    let mut argc = 1;
++    let mut arguments = [c"plugin".as_ptr().cast_mut(), std::ptr::null_mut()];
++    let mut argv = arguments.as_mut_ptr();
++    let (mut vdso, mut syscall, mut rdtsc, mut post_load) = (None, None, None, None);
++    reverie_sabre::internal::sbr_init::<RegistrationOrderTool>(
++        &mut argc,
++        &mut argv,
++        observe_registration,
++        &mut vdso,
++        &mut syscall,
++        &mut rdtsc,
++        &mut post_load,
++        c"/native/sabre".as_ptr(),
++        c"/native/client".as_ptr(),
++    );
++    assert_eq!(REGISTRATIONS.load(std::sync::atomic::Ordering::SeqCst), 1);
++    assert!(unsafe { libc::getenv(c"REVERIE_SABRE_BACKEND_STATS_FD".as_ptr()) }.is_null());
++    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
++    assert_eq!(
++        unsafe { libc::sigaction(libc::SIGUSR1, std::ptr::null(), &mut action) },
++        0
++    );
++    assert_ne!(action.sa_sigaction, libc::SIG_IGN);
++    assert!(vdso.is_some() && syscall.is_some() && rdtsc.is_some() && post_load.is_some());
++    assert_eq!(argc, 0);
++    reverie_sabre::stats::increment_guest_slow_path(SabreSlowPath::PtraceSyscallEntry);
++}
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/riscv64/rewriter.c b/experimental/reverie-sabre/vendor/sabre/arch/riscv64/rewriter.c
+index f62bca9a..c0bae98b 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/riscv64/rewriter.c
++++ b/experimental/reverie-sabre/vendor/sabre/arch/riscv64/rewriter.c
+@@ -7,6 +7,7 @@
+ 
+ #include "loader/rewriter.h"
+ #include "loader/global_vars.h"
++#include "loader/ld_sc_handler.h"
+ 
+ #include "handle_rdtsc.h"
+ #include "handle_syscall.h"
+@@ -692,6 +693,7 @@ void api_detour_func(struct library *lib __unused, char *start __unused,
+                      char *end __unused,
+                      sbr_icept_callback_fn callback __unused,
+                      bool copy_first_stack_arg __unused,
+-                     char **extra_space __unused, int *extra_len __unused) {
++                     char **extra_space __unused, int *extra_len __unused,
++                     const struct intercept_tls_context *tls __unused) {
+   _nx_fatal_printf("api_detour_func is not implemented yet for RISC-V\n");
+ }
+diff --git a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/rewriter.c b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/rewriter.c
+index b5931206..157a140e 100644
+--- a/experimental/reverie-sabre/vendor/sabre/arch/x86_64/rewriter.c
++++ b/experimental/reverie-sabre/vendor/sabre/arch/x86_64/rewriter.c
+@@ -13,6 +13,7 @@
+ #include "loader/rewriter.h"
+ #include "loader/backend_stats.h"
+ #include "loader/global_vars.h"
++#include "loader/ld_sc_handler.h"
+ 
+ #include "handle_rdtsc.h"
+ #include "handle_syscall.h"
+@@ -827,7 +828,8 @@ void detour_func(struct library *lib, char *start, char *end, int syscall_no,
+ 
+ void api_detour_func(struct library *lib, char *start, char *end,
+                      sbr_icept_callback_fn callback, bool copy_first_stack_arg,
+-                     char **extra_space, int *extra_len) {
++                     char **extra_space, int *extra_len,
++                     const struct intercept_tls_context *tls) {
+   void *trampoline_addr = NULL;
+   struct rb_root *branch_targets;
+   struct s_code code[JUMP_SIZE] = {{0}};
+@@ -898,7 +900,11 @@ void api_detour_func(struct library *lib, char *start, char *end,
+ 
+   // Patch up the various computed values
+   trampoline_addr = dest + DETOUR_ASM_SIZE;
++  if (tls != NULL)
++    load_intercept_tls(tls->caller);
+   void *handler = callback(trampoline_addr);
++  if (tls != NULL)
++    load_intercept_tls(tls->loader);
+   assert(handler);
+ 
+   int post = DETOUR_ASM_SIZE + postamble;
+diff --git a/experimental/reverie-sabre/vendor/sabre/includes/arch/rewriter_api.h b/experimental/reverie-sabre/vendor/sabre/includes/arch/rewriter_api.h
+index 806c8467..e67a20d4 100644
+--- a/experimental/reverie-sabre/vendor/sabre/includes/arch/rewriter_api.h
++++ b/experimental/reverie-sabre/vendor/sabre/includes/arch/rewriter_api.h
+@@ -12,13 +12,16 @@
+ #include "plugins/sbr_api_defs.h"
+ #include <stdbool.h>
+ 
++struct intercept_tls_context;
++
+ extern const size_t JUMP_SIZE;
+ 
+ void patch_syscalls_in_range(struct library *lib, char *start, char *stop,
+                              char **extra_space, int *extra_len, bool loader);
+ void api_detour_func(struct library *lib, char *start, char *end,
+                      sbr_icept_callback_fn callback, bool copy_first_stack_arg,
+-                     char **extra_space, int *extra_len);
++                     char **extra_space, int *extra_len,
++                     const struct intercept_tls_context *tls);
+ void detour_func(struct library *lib, char *start, char *end, int syscall_no,
+                  char **extra_space, int *extra_len);
+ 
+diff --git a/experimental/reverie-sabre/vendor/sabre/includes/loader/ld_sc_handler.h b/experimental/reverie-sabre/vendor/sabre/includes/loader/ld_sc_handler.h
+index 91f0569f..24889c46 100644
+--- a/experimental/reverie-sabre/vendor/sabre/includes/loader/ld_sc_handler.h
++++ b/experimental/reverie-sabre/vendor/sabre/includes/loader/ld_sc_handler.h
+@@ -8,6 +8,20 @@
+ #ifndef LD_SC_HANDLER_H
+ #define LD_SC_HANDLER_H
+ 
++#include <stdbool.h>
++
++// Stack-only context for initial dynamic-image function-registration catch-up.
++// No callback or thread-specific TLS address is retained in the registry.
++struct intercept_tls_context {
++  unsigned long caller;
++  unsigned long loader;
++};
++
++#ifdef __x86_64__
++bool enter_intercept_loader_tls(struct intercept_tls_context *context);
++void load_intercept_tls(unsigned long address);
++#endif
++
+ void load_client_tls();
+ void load_sabre_tls();
+ 
+diff --git a/experimental/reverie-sabre/vendor/sabre/includes/loader/rewriter.h b/experimental/reverie-sabre/vendor/sabre/includes/loader/rewriter.h
+index 3fd88b2b..deabef7f 100644
+--- a/experimental/reverie-sabre/vendor/sabre/includes/loader/rewriter.h
++++ b/experimental/reverie-sabre/vendor/sabre/includes/loader/rewriter.h
+@@ -56,5 +56,9 @@ int which_lib_name_interesting(const char *interesting_libs[],
+                                const char *pathname);
+ void memorymaps_rewrite_all(const char *libs[], const char *bin, bool loader);
+ void memorymaps_rewrite_lib(const char *libname);
++struct intercept_tls_context;
++/* Caller owns loader TLS; callback TLS is restored only during its callback. */
++void memorymaps_patch_intercept(int index,
++                                const struct intercept_tls_context *tls);
+ 
+ #endif /* LIBRARY_H_ */
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+index a0f22a06..4b247856 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/ld_sc_handler.c
+@@ -198,6 +198,41 @@ static int intercept_sbr(struct mem_chunk mmaps[]) {
+ static unsigned long loader_tls_addr;
+ static unsigned long client_tls_addr;
+ 
++static __attribute__((noreturn)) void
++intercept_tls_fatal(const char *message, size_t length) {
++  // Failure may leave either TLS domain active. Do not use loader libc here.
++  real_syscall(SYS_write, STDERR_FILENO, (long)message, length, 0, 0, 0);
++  real_syscall(SYS_exit_group, 127, 0, 0, 0, 0, 0);
++  __builtin_unreachable();
++}
++
++void load_intercept_tls(unsigned long address) {
++  // Use the raw syscall: crossing TLS domains must not consult libc errno.
++  if (real_syscall(SYS_arch_prctl, ARCH_SET_FS, address, 0, 0, 0, 0) != 0)
++    intercept_tls_fatal("Failed to switch function-intercept TLS\n",
++                        sizeof("Failed to switch function-intercept TLS\n") - 1);
++}
++
++bool enter_intercept_loader_tls(struct intercept_tls_context *context) {
++  if (loader_tls_addr == 0)
++    return false; // Static initialization retains the original later full pass.
++  if (client_tls_addr == 0)
++    intercept_tls_fatal("Missing client TLS for function intercept\n",
++                        sizeof("Missing client TLS for function intercept\n") - 1);
++  if (real_syscall(SYS_arch_prctl, ARCH_GET_FS, (long)&context->caller,
++                   0, 0, 0, 0) != 0)
++    intercept_tls_fatal("Failed to read function-intercept TLS\n",
++                        sizeof("Failed to read function-intercept TLS\n") - 1);
++  // The existing loader/client pair belongs to initial serial setup; do not
++  // apply it to an unrelated thread's registration callback.
++  if (context->caller != client_tls_addr)
++    intercept_tls_fatal("Function-intercept registration outside initial client TLS\n",
++                        sizeof("Function-intercept registration outside initial client TLS\n") - 1);
++  context->loader = loader_tls_addr;
++  load_intercept_tls(context->loader);
++  return true;
++}
++
+ void load_sabre_tls() {
+   assert(client_tls_addr != 0 && loader_tls_addr != 0);
+   if (syscall(SYS_arch_prctl, ARCH_SET_FS, loader_tls_addr) == -1)
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/loader.c b/experimental/reverie-sabre/vendor/sabre/loader/loader.c
+index f8fb0334..eb15b50a 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/loader.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/loader.c
+@@ -39,6 +39,7 @@
+ #include "maps.h"
+ #include "plugins/sbr_api_defs.h"
+ #include "premain.h"
++#include "rewriter.h"
+ #ifdef __NX_INTERCEPT_RDTSC
+ #include "arch/handle_rdtsc.h"
+ #endif
+@@ -90,16 +91,47 @@ reexec_static_client_with_plugin(int argc, char **argv) {
+ 
+ static void register_function_intercept(const sbr_fn_icept_struct *r_struct,
+                                         bool copy_first_stack_arg) {
++  const struct intercept_tls_context *tls = NULL;
++#ifdef __x86_64__
++  struct intercept_tls_context context;
++  if (calling_from_plugin != NULL && enter_intercept_loader_tls(&context))
++    tls = &context;
++#endif
+   assert(strlen(r_struct->lib_name) < MAX_ICEPT_STRLEN);
+   assert(strlen(r_struct->fn_name) < MAX_ICEPT_STRLEN);
+ 
++  for (int i = 0; i < registered_icept_cnt; ++i) {
++    if (!strcmp(intercept_records[i].lib_name, r_struct->lib_name) &&
++        !strcmp(intercept_records[i].fn_name, r_struct->fn_name)) {
++      if (intercept_records[i].callback != r_struct->icept_callback ||
++          intercept_records[i].copy_first_stack_arg != copy_first_stack_arg)
++        errx(EXIT_FAILURE, "conflicting function intercept registration");
++      goto done; // Never detour an already registered entry a second time.
++    }
++  }
++  if (registered_icept_cnt == MAX_ICEPT_RECORDS)
++    errx(EXIT_FAILURE, "function intercept table is full");
++
+   strcpy(intercept_records[registered_icept_cnt].lib_name, r_struct->lib_name);
+   strcpy(intercept_records[registered_icept_cnt].fn_name, r_struct->fn_name);
+   intercept_records[registered_icept_cnt].callback = r_struct->icept_callback;
+   intercept_records[registered_icept_cnt].copy_first_stack_arg =
+       copy_first_stack_arg;
+ 
+-  ++registered_icept_cnt;
++  int registered = registered_icept_cnt++;
++  if (tls != NULL) {
++    // Dynamic plugin registration follows dependency mapping. Static clients
++    // retain their original full rewrite after plugin initialization.
++    // Apply only this new function entry; syscall/vDSO rewrites are not
++    // idempotent and must not be repeated on those existing mappings.
++    memorymaps_patch_intercept(registered, tls);
++  }
++done:
++  ;
++#ifdef __x86_64__
++  if (tls != NULL)
++    load_intercept_tls(tls->caller);
++#endif
+ }
+ 
+ void register_function_intercepts(const sbr_fn_icept_struct *r_struct) {
+diff --git a/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c b/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
+index 4f34dab3..76bda8da 100644
+--- a/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
++++ b/experimental/reverie-sabre/vendor/sabre/loader/rewriter.c
+@@ -16,6 +16,7 @@
+ #include "debuginfo.h"
+ #include "elf_loading.h"
+ #include "global_vars.h"
++#include "ld_sc_handler.h"
+ #include "macros.h"
+ #include "maps.h"
+ #include "stringutil.h"
+@@ -509,28 +510,6 @@ static bool lib_name_match(const char *bare, const char *pathname) {
+   return false;
+ }
+ 
+-// Returns a short version of the library (e.g. full path to libc.so.6 would
+-// result in string "libc"
+-static const char *lib_get_stripped_name(const char *pathname) {
+-  const char *rtn_str = NULL;
+-  for (int i = 0; i < registered_icept_cnt; ++i) {
+-    if (lib_name_match(intercept_records[i].lib_name, pathname)) {
+-      rtn_str = intercept_records[i].lib_name;
+-      goto rtn;
+-    }
+-  }
+-
+-  for (const char **lib = known_syscall_libs; *lib != NULL; lib++) {
+-    if (lib_name_match(*lib, pathname)) {
+-      rtn_str = *lib;
+-      goto rtn;
+-    }
+-  }
+-
+-rtn:
+-  return rtn_str;
+-}
+-
+ // Returns true if library defined by pathname has functions that we want to
+ // intercept
+ static bool lib_is_icepted(const char *pathname) {
+@@ -613,17 +592,53 @@ static GElf_Sym find_ld_symbol(const char *ld_path, const char *fn_name) {
+   assert(false && "We couldn't find one specific ld symbol");
+ }
+ 
+-static void patch_funcs(struct library *lib) {
++static bool find_intercept_target(struct library *lib, int record,
++                                  GElf_Sym *target) {
++  struct symbol *sym =
++      symbol_find(lib->symbol_hash, intercept_records[record].fn_name);
++  if (sym != NULL && sym->sym.st_value != 0) {
++    *target = sym->sym;
++    return true;
++  }
++  if (sym == NULL && !strcmp(intercept_records[record].lib_name, "ld")) {
++    *target = find_ld_symbol(lib->pathname, intercept_records[record].fn_name);
++    return true;
++  }
++  return false;
++}
++
++static void reject_overlapping_intercepts(struct library *lib) {
++  // Different declared names can resolve to one entry in this object. Reject
++  // that ambiguity before rewriting detour entry bytes or invoking a callback.
++  // Resolve from this object's original symbols each time; a persistent address
++  // set would incorrectly suppress a new mapping that reused an old address.
++  for (int i = 0; i < registered_icept_cnt; ++i) {
++    GElf_Sym target;
++    if (!lib_name_match(intercept_records[i].lib_name, lib->pathname) ||
++        !find_intercept_target(lib, i, &target))
++      continue;
++    for (int j = 0; j < i; ++j) {
++      GElf_Sym earlier;
++      if (lib_name_match(intercept_records[j].lib_name, lib->pathname) &&
++          find_intercept_target(lib, j, &earlier) &&
++          earlier.st_value == target.st_value)
++        _nx_fatal_printf("overlapping function intercept target\n");
++    }
++  }
++}
++
++static void patch_funcs(struct library *lib, int first, int end,
++                        const struct intercept_tls_context *tls) {
+   if (!lib->valid)
+     return;
+ 
++  reject_overlapping_intercepts(lib);
++
+   int extra_len = 0;
+   char *extra_space = NULL;
+ 
+-  const char *short_libname = lib_get_stripped_name(lib->pathname);
+-
+-  for (int i = 0; i < registered_icept_cnt; ++i) {
+-    if (!strcmp(short_libname, intercept_records[i].lib_name)) {
++  for (int i = first; i < end; ++i) {
++    if (lib_name_match(intercept_records[i].lib_name, lib->pathname)) {
+       _nx_debug_printf("patching intercepts: %s\n", lib->pathname);
+       struct section *scn = section_find(lib->section_hash, ".text");
+       _nx_debug_printf(".text section %p\n", scn);
+@@ -641,27 +656,15 @@ static void patch_funcs(struct library *lib) {
+       }
+       _nx_debug_printf("mprotect done\n");
+ 
+-      struct symbol *sym =
+-          symbol_find(lib->symbol_hash, intercept_records[i].fn_name);
+-      if (sym != NULL && (void *)sym->sym.st_value != NULL) {
+-        _nx_debug_printf("patching at address %lx\n",
+-                         (long)lib->asr_offset + sym->sym.st_value);
+-        api_detour_func(lib, lib->asr_offset + sym->sym.st_value,
+-                        lib->asr_offset + sym->sym.st_value + sym->sym.st_size,
+-                        intercept_records[i].callback,
+-                        intercept_records[i].copy_first_stack_arg, &extra_space,
+-                        &extra_len);
+-      } else if (sym == NULL && !strcmp(short_libname, "ld")) {
+-        GElf_Sym gsym =
+-            find_ld_symbol(lib->pathname, intercept_records[i].fn_name);
+-
++      GElf_Sym target;
++      if (find_intercept_target(lib, i, &target)) {
+         _nx_debug_printf("patching at address %lx\n",
+-                         (long)lib->asr_offset + gsym.st_value);
+-        api_detour_func(lib, lib->asr_offset + gsym.st_value,
+-                        lib->asr_offset + gsym.st_value + gsym.st_size,
++                         (long)lib->asr_offset + target.st_value);
++        api_detour_func(lib, lib->asr_offset + target.st_value,
++                        lib->asr_offset + target.st_value + target.st_size,
+                         intercept_records[i].callback,
+                         intercept_records[i].copy_first_stack_arg, &extra_space,
+-                        &extra_len);
++                        &extra_len, tls);
+       }
+     }
+   }
+@@ -816,6 +819,28 @@ int which_lib_name_interesting(const char *interesting_libs[],
+   return -1;
+ }
+ 
++void memorymaps_patch_intercept(int index,
++                                const struct intercept_tls_context *tls) {
++  assert(index >= 0 && index < registered_icept_cnt && tls != NULL);
++  struct maps *maps = maps_read(NULL);
++  if (maps == NULL)
++    _nx_fatal_printf("could not inspect mappings for function intercept\n");
++
++  struct library *lib;
++  for_each_library(lib, maps) {
++    if (!lib_name_match(intercept_records[index].lib_name, lib->pathname))
++      continue;
++    // Only the new record is applied. Loader allocations and protection work
++    // use loader TLS; api_detour_func temporarily restores the callback's TLS.
++    if (parse_elf(lib, lib->pathname)) {
++      library_make_writable(lib, true);
++      patch_funcs(lib, index, index + 1, tls);
++      library_make_writable(lib, false);
++    }
++  }
++  maps_release(maps);
++}
++
+ void memorymaps_rewrite_lib(const char *libname) {
+   struct maps *maps = maps_read(libname);
+   if (maps == NULL)
+@@ -831,7 +856,7 @@ void memorymaps_rewrite_lib(const char *libname) {
+       library_make_writable(l, true);
+       patch_syscalls(l, false);
+       if (lib_is_icepted(l->pathname))
+-        patch_funcs(l);
++        patch_funcs(l, 0, registered_icept_cnt, NULL);
+       library_make_writable(l, false);
+     }
+     guard++;
+@@ -881,7 +906,7 @@ void memorymaps_rewrite_all(const char *libs[], const char *bin, bool loader) {
+       library_make_writable(l, true);
+       patch_syscalls(l, is_bin ? false : loader);
+       if (lib_is_icepted(l->pathname))
+-        patch_funcs(l);
++        patch_funcs(l, 0, registered_icept_cnt, NULL);
+       library_make_writable(l, false);
+     }
+   }
+diff --git a/reverie-liteinst/src/bin/rpc_tool_guest.rs b/reverie-liteinst/src/bin/rpc_tool_guest.rs
+index 75bb0a65..1497e691 100644
+--- a/reverie-liteinst/src/bin/rpc_tool_guest.rs
++++ b/reverie-liteinst/src/bin/rpc_tool_guest.rs
+@@ -33,6 +33,9 @@ mod syscall_fallback_guest;
+ #[path = "rpc_tool_guest/memory_access.rs"]
+ mod memory_access_guest;
+ 
++#[path = "rpc_tool_guest/owned_frame.rs"]
++mod owned_frame_guest;
++
+ const CALLS: u64 = 32;
+ const TOOL_CPUID_EAX: u32 = 0x1111_1111;
+ const TOOL_CPUID_EBX: u32 = 0x2222_2222;
+@@ -1321,6 +1324,7 @@ fn main() {
+         Some("syscall-installed-fork") => syscall_fallback_guest::run_fork(Path::new(&path), true),
+         Some("syscall-fallback-pkey") => syscall_fallback_guest::run_pkey(Path::new(&path)),
+         Some("memory-access") => memory_access_guest::run(Path::new(&path)),
++        Some("owned-frame") => owned_frame_guest::run(Path::new(&path)),
+         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
+         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
+         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
+diff --git a/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.S b/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.S
+new file mode 100644
+index 00000000..f44a5cc5
+--- /dev/null
++++ b/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.S
+@@ -0,0 +1,270 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ * Licensed under the BSD-style license in the repository root LICENSE.
++ *
++ * Native observation/seeding bridge retained from the bounded continuation
++ * experiment. The syscall crosses a cache line so production must use fallback.
++ * No guest-stack read occurs after its rights/protection are changed.
++ */
++.globl owned_frame_enter_guest
++.type owned_frame_enter_guest,@function
++owned_frame_enter_guest:
++    mov %rsp,0(%rdi)
++    mov %rbx,8(%rdi)
++    mov %rbp,16(%rdi)
++    mov %r12,24(%rdi)
++    mov %r13,32(%rdi)
++    mov %r14,40(%rdi)
++    mov %r15,48(%rdi)
++    mov %rdi,%r15
++    fninit
++    fld1
++    fldpi
++    fldl2e
++    fldcw 376(%r15)
++    ldmxcsr 368(%r15)
++    movdqu 448(%r15),%xmm0
++    movdqu 448(%r15),%xmm1
++    movdqu 448(%r15),%xmm2
++    movdqu 448(%r15),%xmm3
++    movdqu 448(%r15),%xmm4
++    movdqu 448(%r15),%xmm5
++    movdqu 448(%r15),%xmm6
++    movdqu 448(%r15),%xmm7
++    movdqu 448(%r15),%xmm8
++    movdqu 448(%r15),%xmm9
++    movdqu 448(%r15),%xmm10
++    movdqu 448(%r15),%xmm11
++    movdqu 448(%r15),%xmm12
++    movdqu 448(%r15),%xmm13
++    movdqu 448(%r15),%xmm14
++    movdqu 448(%r15),%xmm15
++    cmpq $0,152(%r15)
++    je .Lseed_done
++    vmovdqu 448(%r15),%ymm0
++    vmovdqu 448(%r15),%ymm1
++    vmovdqu 448(%r15),%ymm2
++    vmovdqu 448(%r15),%ymm3
++    vmovdqu 448(%r15),%ymm4
++    vmovdqu 448(%r15),%ymm5
++    vmovdqu 448(%r15),%ymm6
++    vmovdqu 448(%r15),%ymm7
++    vmovdqu 448(%r15),%ymm8
++    vmovdqu 448(%r15),%ymm9
++    vmovdqu 448(%r15),%ymm10
++    vmovdqu 448(%r15),%ymm11
++    vmovdqu 448(%r15),%ymm12
++    vmovdqu 448(%r15),%ymm13
++    vmovdqu 448(%r15),%ymm14
++    vmovdqu 448(%r15),%ymm15
++    cmpq $0,160(%r15)
++    je .Lseed_done
++    vmovdqu64 448(%r15),%zmm0
++    vmovdqu64 448(%r15),%zmm1
++    vmovdqu64 448(%r15),%zmm2
++    vmovdqu64 448(%r15),%zmm3
++    vmovdqu64 448(%r15),%zmm4
++    vmovdqu64 448(%r15),%zmm5
++    vmovdqu64 448(%r15),%zmm6
++    vmovdqu64 448(%r15),%zmm7
++    vmovdqu64 448(%r15),%zmm8
++    vmovdqu64 448(%r15),%zmm9
++    vmovdqu64 448(%r15),%zmm10
++    vmovdqu64 448(%r15),%zmm11
++    vmovdqu64 448(%r15),%zmm12
++    vmovdqu64 448(%r15),%zmm13
++    vmovdqu64 448(%r15),%zmm14
++    vmovdqu64 448(%r15),%zmm15
++    vmovdqu64 448(%r15),%zmm16
++    vmovdqu64 448(%r15),%zmm17
++    vmovdqu64 448(%r15),%zmm18
++    vmovdqu64 448(%r15),%zmm19
++    vmovdqu64 448(%r15),%zmm20
++    vmovdqu64 448(%r15),%zmm21
++    vmovdqu64 448(%r15),%zmm22
++    vmovdqu64 448(%r15),%zmm23
++    vmovdqu64 448(%r15),%zmm24
++    vmovdqu64 448(%r15),%zmm25
++    vmovdqu64 448(%r15),%zmm26
++    vmovdqu64 448(%r15),%zmm27
++    vmovdqu64 448(%r15),%zmm28
++    vmovdqu64 448(%r15),%zmm29
++    vmovdqu64 448(%r15),%zmm30
++    vmovdqu64 448(%r15),%zmm31
++    movabs $0x123456789abcdef0,%rax
++    kmovq %rax,%k0
++    kmovq %rax,%k1
++    kmovq %rax,%k2
++    kmovq %rax,%k3
++    kmovq %rax,%k4
++    kmovq %rax,%k5
++    kmovq %rax,%k6
++    kmovq %rax,%k7
++.Lseed_done:
++    /* Seed arithmetic flags and DF; IF remains user-enabled, TF/RF excluded. */
++    pushq $0xed7
++    popfq
++    mov 120(%r15),%rsp
++    mov 136(%r15),%eax
++    mov $0,%ecx
++    mov $0,%edx
++    wrpkru
++    lfence
++    /* r15 is on the accessible observation key, even with key zero denied. */
++    mov 64(%r15),%rax
++    mov 72(%r15),%rdi
++    mov 80(%r15),%rsi
++    mov 88(%r15),%rdx
++    mov 96(%r15),%r10
++    mov 104(%r15),%r8
++    mov 112(%r15),%r9
++    movabs $0x1212121212121212,%r12
++    movabs $0x1313131313131313,%r13
++    movabs $0x1414141414141414,%r14
++    movabs $0xb0b0b0b0b0b0b0b0,%rbp
++    movabs $0xb1b1b1b1b1b1b1b1,%rbx
++    movabs $0xcccccccccccccccc,%rcx
++    movabs $0x1111111111111111,%r11
++.balign 64, 0x90
++.fill 63, 1, 0x90
++.globl owned_frame_guest_syscall
++owned_frame_guest_syscall:
++    syscall
++.globl owned_frame_guest_resume
++owned_frame_guest_resume:
++    mov %r8,192(%r15)
++    mov %r9,200(%r15)
++    mov %r10,208(%r15)
++    mov %r11,216(%r15)
++    mov %r12,224(%r15)
++    mov %r13,232(%r15)
++    mov %r14,240(%r15)
++    mov %r15,248(%r15)
++    mov %rdi,256(%r15)
++    mov %rsi,264(%r15)
++    mov %rbp,272(%r15)
++    mov %rbx,280(%r15)
++    mov %rdx,288(%r15)
++    mov %rax,296(%r15)
++    mov %rcx,304(%r15)
++    mov %rsp,312(%r15)
++    lea owned_frame_guest_resume(%rip),%rax
++    mov %rax,320(%r15)
++    /* The original RSP has been observed; it is never dereferenced. */
++    mov 128(%r15),%rsp
++    pushfq
++    pop %rax
++    mov %rax,328(%r15)
++    cld
++    xor %eax,%eax
++    mov %ss,%ax
++    shl $16,%rax
++    mov %fs,%ax
++    shl $16,%rax
++    mov %gs,%ax
++    shl $16,%rax
++    mov %cs,%ax
++    mov %rax,336(%r15)
++    xor %ecx,%ecx
++    rdpkru
++    mov %rax,344(%r15)
++    mov 56(%r15),%rax
++    mov %rax,%rdx
++    shr $32,%rdx
++    xsave64 512(%r15)
++    movq $1,352(%r15)
++    /* Measurement is complete. Both native and mediated controls now leave
++     * guest observation and restore harness rights before touching its stack. */
++    mov 144(%r15),%eax
++    xor %ecx,%ecx
++    xor %edx,%edx
++    wrpkru
++    lfence
++    fninit
++    movl $0x1f80,368(%r15)
++    ldmxcsr 368(%r15)
++    mov 0(%r15),%rsp
++    mov 8(%r15),%rbx
++    mov 16(%r15),%rbp
++    mov 24(%r15),%r12
++    mov 32(%r15),%r13
++    mov 40(%r15),%r14
++    mov 48(%r15),%r15
++    ret
++.size owned_frame_enter_guest,.-owned_frame_enter_guest
++
++.globl owned_frame_clobber_guest_fp
++.type owned_frame_clobber_guest_fp,@function
++owned_frame_clobber_guest_fp:
++    /* Ordinary owned stack; deliberately clobber MXCSR as well as vectors. */
++    sub $8,%rsp
++    movl $0x1f80,(%rsp)
++    ldmxcsr (%rsp)
++    add $8,%rsp
++    fninit
++    pxor %xmm0,%xmm0
++    pxor %xmm1,%xmm1
++    pxor %xmm2,%xmm2
++    pxor %xmm3,%xmm3
++    pxor %xmm4,%xmm4
++    pxor %xmm5,%xmm5
++    pxor %xmm6,%xmm6
++    pxor %xmm7,%xmm7
++    pxor %xmm8,%xmm8
++    pxor %xmm9,%xmm9
++    pxor %xmm10,%xmm10
++    pxor %xmm11,%xmm11
++    pxor %xmm12,%xmm12
++    pxor %xmm13,%xmm13
++    pxor %xmm14,%xmm14
++    pxor %xmm15,%xmm15
++    test %edi,%edi
++    jz .Lclobber_done
++    vzeroall
++    test %esi,%esi
++    jz .Lclobber_done
++    vpxord %zmm0,%zmm0,%zmm0
++    vpxord %zmm1,%zmm1,%zmm1
++    vpxord %zmm2,%zmm2,%zmm2
++    vpxord %zmm3,%zmm3,%zmm3
++    vpxord %zmm4,%zmm4,%zmm4
++    vpxord %zmm5,%zmm5,%zmm5
++    vpxord %zmm6,%zmm6,%zmm6
++    vpxord %zmm7,%zmm7,%zmm7
++    vpxord %zmm8,%zmm8,%zmm8
++    vpxord %zmm9,%zmm9,%zmm9
++    vpxord %zmm10,%zmm10,%zmm10
++    vpxord %zmm11,%zmm11,%zmm11
++    vpxord %zmm12,%zmm12,%zmm12
++    vpxord %zmm13,%zmm13,%zmm13
++    vpxord %zmm14,%zmm14,%zmm14
++    vpxord %zmm15,%zmm15,%zmm15
++    vpxord %zmm16,%zmm16,%zmm16
++    vpxord %zmm17,%zmm17,%zmm17
++    vpxord %zmm18,%zmm18,%zmm18
++    vpxord %zmm19,%zmm19,%zmm19
++    vpxord %zmm20,%zmm20,%zmm20
++    vpxord %zmm21,%zmm21,%zmm21
++    vpxord %zmm22,%zmm22,%zmm22
++    vpxord %zmm23,%zmm23,%zmm23
++    vpxord %zmm24,%zmm24,%zmm24
++    vpxord %zmm25,%zmm25,%zmm25
++    vpxord %zmm26,%zmm26,%zmm26
++    vpxord %zmm27,%zmm27,%zmm27
++    vpxord %zmm28,%zmm28,%zmm28
++    vpxord %zmm29,%zmm29,%zmm29
++    vpxord %zmm30,%zmm30,%zmm30
++    vpxord %zmm31,%zmm31,%zmm31
++    kxorq %k0,%k0,%k0
++    kxorq %k1,%k1,%k1
++    kxorq %k2,%k2,%k2
++    kxorq %k3,%k3,%k3
++    kxorq %k4,%k4,%k4
++    kxorq %k5,%k5,%k5
++    kxorq %k6,%k6,%k6
++    kxorq %k7,%k7,%k7
++.Lclobber_done:
++    ret
++.size owned_frame_clobber_guest_fp,.-owned_frame_clobber_guest_fp
++.section .note.GNU-stack,"",@progbits
+diff --git a/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.rs b/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.rs
+new file mode 100644
+index 00000000..d284c872
+--- /dev/null
++++ b/reverie-liteinst/src/bin/rpc_tool_guest/owned_frame.rs
+@@ -0,0 +1,476 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ * Licensed under the BSD-style license in the repository root LICENSE.
++ */
++
++use core::sync::atomic::AtomicU64;
++use core::sync::atomic::AtomicUsize;
++use core::sync::atomic::Ordering;
++use std::path::Path;
++
++use reverie::Error;
++use reverie::Guest;
++use reverie::Subscription;
++use reverie::Tool;
++use reverie::syscalls::Syscall;
++use reverie::syscalls::SyscallInfo;
++use reverie::syscalls::Sysno;
++use reverie_preload::trap::raw_syscall6;
++
++const STACK_BYTES: usize = 1024 * 1024;
++const XSTATE_OFFSET: usize = 512;
++static GUEST_STACK: AtomicUsize = AtomicUsize::new(0);
++static GUEST_STACK_END: AtomicUsize = AtomicUsize::new(0);
++static AVX: AtomicUsize = AtomicUsize::new(0);
++static AVX512: AtomicUsize = AtomicUsize::new(0);
++static CALLBACKS: AtomicU64 = AtomicU64::new(0);
++
++#[repr(C)]
++struct State {
++    fields: [u64; 56],
++    seed: [u8; 64],
++}
++
++#[derive(Default)]
++struct FrameTool;
++
++#[reverie::tool]
++impl Tool for FrameTool {
++    type GlobalState = super::CounterGlobal;
++    type ThreadState = ();
++
++    fn subscriptions(_: &()) -> Subscription {
++        [Sysno::getpid].into_iter().collect()
++    }
++
++    async fn handle_syscall_event<G: Guest<Self>>(
++        &self,
++        guest: &mut G,
++        syscall: Syscall,
++    ) -> Result<i64, Error> {
++        assert_eq!(syscall.number(), Sysno::getpid);
++        // Async locals can reside in the allocated future. Observe the live
++        // hardware stack pointer, rather than mistaking future storage for it.
++        let address: usize;
++        unsafe {
++            core::arch::asm!("mov {}, rsp", out(reg) address, options(nostack, nomem, preserves_flags))
++        };
++        assert!(unsafe { reverie_liteinst_on_owned_fallback_stack(address) });
++        assert!(
++            !(GUEST_STACK.load(Ordering::Relaxed)..GUEST_STACK_END.load(Ordering::Relaxed))
++                .contains(&address)
++        );
++        let registers = guest.regs().await;
++        assert_eq!(
++            registers.rip,
++            core::ptr::addr_of!(owned_frame_guest_syscall) as u64
++        );
++        assert_eq!(
++            registers.rsp,
++            GUEST_STACK_END.load(Ordering::Relaxed) as u64 - 256
++        );
++        let mut control = 0u16;
++        let mut mxcsr = 0u32;
++        unsafe {
++            core::arch::asm!("fnstcw [{control}]", "stmxcsr [{mxcsr}]", control = in(reg) &mut control, mxcsr = in(reg) &mut mxcsr, options(nostack, preserves_flags));
++        }
++        assert_eq!(control, 0x037f);
++        assert_eq!(mxcsr, 0x1f80);
++        assert_eq!(read_pkru(), 0);
++        let _ = guest.send_rpc(1).await;
++        CALLBACKS.fetch_add(1, Ordering::Relaxed);
++        let result = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
++        unsafe {
++            owned_frame_clobber_guest_fp(
++                AVX.load(Ordering::Relaxed) as i32,
++                AVX512.load(Ordering::Relaxed) as i32,
++            )
++        };
++        Ok(result)
++    }
++}
++
++#[derive(Clone, Debug)]
++struct Observation {
++    registers: [u64; 19],
++    pkru: u32,
++    xstate: Vec<u8>,
++}
++
++fn read_pkru() -> u32 {
++    let value;
++    unsafe {
++        core::arch::asm!("rdpkru", in("ecx") 0u32, out("eax") value, out("edx") _, options(nostack, preserves_flags))
++    };
++    value
++}
++
++fn map(bytes: usize) -> *mut u8 {
++    let value = unsafe {
++        raw_syscall6(
++            libc::SYS_mmap,
++            [
++                0,
++                bytes as u64,
++                (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
++                u64::MAX,
++                0,
++            ],
++        )
++    };
++    assert!(value > 0, "mmap: {value}");
++    value as *mut u8
++}
++
++fn protect(address: *mut u8, bytes: usize, protection: i32) {
++    assert_eq!(
++        unsafe {
++            raw_syscall6(
++                libc::SYS_mprotect,
++                [address as u64, bytes as u64, protection as u64, 0, 0, 0],
++            )
++        },
++        0
++    );
++}
++
++fn unregister_rseq() -> Option<usize> {
++    let offset = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_offset".as_ptr()) };
++    let size = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"__rseq_size".as_ptr()) };
++    assert!(!offset.is_null() && !size.is_null());
++    let size = unsafe { *size.cast::<u32>() };
++    if size == 0 {
++        return None;
++    }
++    assert!(size <= 32, "unsupported rseq layout {size}");
++    let mut fs = 0usize;
++    assert_eq!(
++        unsafe {
++            raw_syscall6(
++                libc::SYS_arch_prctl,
++                [0x1003, (&raw mut fs) as u64, 0, 0, 0, 0],
++            )
++        },
++        0
++    );
++    let area = fs
++        .checked_add_signed(unsafe { *offset.cast::<isize>() })
++        .unwrap();
++    assert_eq!(
++        unsafe { raw_syscall6(libc::SYS_rseq, [area as u64, 32, 1, 0x5305_3053, 0, 0]) },
++        0
++    );
++    Some(area)
++}
++
++fn observe(
++    pointer: *mut u8,
++    bytes: usize,
++    number: i64,
++    args: [u64; 6],
++    pkru: u32,
++    mediated: bool,
++    partial_hole: Option<(usize, usize)>,
++) -> Observation {
++    let state = unsafe { &mut *pointer.cast::<State>() };
++    state.fields[8] = number as u64;
++    state.fields[9..15].copy_from_slice(&args);
++    state.fields[17] = u64::from(pkru);
++    state.fields[43] = u64::MAX;
++    state.fields[44] = 0;
++    state.fields[46] = 0x3f80;
++    state.fields[47] = 0x077f;
++    let image = unsafe { pointer.add(XSTATE_OFFSET) };
++    unsafe { image.write_bytes(0, bytes) };
++    let before = core::array::from_fn::<_, 3, _>(|i| unsafe {
++        reverie_liteinst_owned_fallback_observation(i as u32)
++    });
++    if let Some((address, length)) = partial_hole {
++        // Keep this fixture-owned page reserved through runtime initialization.
++        // Expose the hole only across the operation; no allocation precedes it.
++        assert_eq!(
++            unsafe {
++                raw_syscall6(
++                    libc::SYS_munmap,
++                    [address as u64, length as u64, 0, 0, 0, 0],
++                )
++            },
++            0
++        );
++    }
++    unsafe { owned_frame_enter_guest(pointer.cast()) };
++    if let Some((address, length)) = partial_hole {
++        // Assembly already captured actual return registers/PKRU/XSAVE before
++        // restoring harness access. Reserve the hole before result allocation;
++        // NOREPLACE refuses to overwrite any unexpected mapping.
++        assert_eq!(
++            unsafe {
++                raw_syscall6(
++                    libc::SYS_mmap,
++                    [
++                        address as u64,
++                        length as u64,
++                        libc::PROT_NONE as u64,
++                        (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE)
++                            as u64,
++                        u64::MAX,
++                        0,
++                    ],
++                )
++            },
++            address as i64
++        );
++    }
++    let state = unsafe { &*pointer.cast::<State>() };
++    let after = core::array::from_fn::<_, 3, _>(|i| unsafe {
++        reverie_liteinst_owned_fallback_observation(i as u32)
++    });
++    assert_eq!(state.fields[44], 1, "guest continuation was not reached");
++    for i in 0..3 {
++        assert_eq!(after[i] - before[i], u64::from(mediated), "observation {i}");
++    }
++    let registers = state.fields[24..43].try_into().unwrap();
++    Observation {
++        registers,
++        pkru: state.fields[43] as u32,
++        xstate: unsafe { core::slice::from_raw_parts(image, bytes) }.to_vec(),
++    }
++}
++
++pub(super) fn run(path: &Path) {
++    if core::arch::x86_64::__cpuid_count(7, 0).ecx & (1 << 4) == 0 {
++        println!("owned frame: OSPKE unavailable");
++        std::process::exit(77);
++    }
++    let rseq = unregister_rseq();
++    let original_harness_pkru = read_pkru();
++    unsafe {
++        core::arch::asm!("wrpkru", "lfence", in("eax") 0u32, in("ecx") 0u32, in("edx") 0u32, options(nostack, preserves_flags))
++    };
++    let mask = unsafe { core::arch::x86_64::_xgetbv(0) };
++    let bytes = core::arch::x86_64::__cpuid_count(0xd, 0).ebx as usize;
++    assert!(bytes >= 576);
++    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
++    let observation_bytes = (XSTATE_OFFSET + bytes).div_ceil(page) * page + STACK_BYTES;
++    let observation = map(observation_bytes);
++    let guest_stack = map(STACK_BYTES);
++    let partial = map(page * 2);
++    let key = unsafe { raw_syscall6(libc::SYS_pkey_alloc, [0; 6]) };
++    assert!(key > 0);
++    assert_eq!(
++        unsafe {
++            raw_syscall6(
++                libc::SYS_pkey_mprotect,
++                [
++                    observation as u64,
++                    observation_bytes as u64,
++                    (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                    key as u64,
++                    0,
++                    0,
++                ],
++            )
++        },
++        0
++    );
++    let alt_stack = reverie_liteinst::alt_stack_from_env_value(
++        std::env::var_os(reverie_liteinst::ALT_STACK_ENV).as_deref(),
++    )
++    .unwrap();
++    if !alt_stack {
++        // Genuine first delivery needs a usable stack. The existing no-alt
++        // control keeps this stack on the accessible observation key.
++        assert_eq!(
++            unsafe {
++                raw_syscall6(
++                    libc::SYS_pkey_mprotect,
++                    [
++                        guest_stack as u64,
++                        STACK_BYTES as u64,
++                        (libc::PROT_READ | libc::PROT_WRITE) as u64,
++                        key as u64,
++                        0,
++                        0,
++                    ],
++                )
++            },
++            0
++        );
++    }
++    let guest_sp = guest_stack as u64 + STACK_BYTES as u64 - 256;
++    let state = unsafe { &mut *observation.cast::<State>() };
++    state.fields.fill(0);
++    state.seed = core::array::from_fn(|i| (i as u8).wrapping_mul(7).wrapping_add(0x31));
++    state.fields[7] = mask;
++    state.fields[15] = guest_sp;
++    state.fields[16] = observation as u64 + observation_bytes as u64 - 256;
++    state.fields[18] = u64::from(read_pkru());
++    assert_eq!(
++        state.fields[18], 0,
++        "fixture requires explicit open harness rights"
++    );
++    state.fields[19] = u64::from(mask & 6 == 6);
++    state.fields[20] = u64::from(mask & 0xe0 == 0xe0);
++    AVX.store(state.fields[19] as usize, Ordering::Relaxed);
++    AVX512.store(state.fields[20] as usize, Ordering::Relaxed);
++    GUEST_STACK.store(guest_stack as usize, Ordering::Relaxed);
++    GUEST_STACK_END.store(guest_stack as usize + STACK_BYTES, Ordering::Relaxed);
++    let site = core::ptr::addr_of!(owned_frame_guest_syscall) as usize;
++    assert_eq!(site % 64, 63);
++    let site_bytes = unsafe { core::slice::from_raw_parts(site as *const u8, 2) }.to_vec();
++    assert_eq!(site_bytes, [0x0f, 0x05]);
++    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
++    let cases = [
++        ("getpid-open", libc::SYS_getpid, [0; 6], 0),
++        ("getpid-denied", libc::SYS_getpid, [0; 6], 3),
++        (
++            "stack-prot-none",
++            libc::SYS_mprotect,
++            [
++                guest_stack as u64,
++                STACK_BYTES as u64,
++                libc::PROT_NONE as u64,
++                0,
++                0,
++                0,
++            ],
++            0,
++        ),
++        (
++            "partial-exec-error",
++            libc::SYS_mprotect,
++            [
++                partial as u64,
++                (page * 2) as u64,
++                libc::PROT_EXEC as u64,
++                0,
++                0,
++                0,
++            ],
++            0,
++        ),
++    ];
++    let mut native = Vec::new();
++    for mediated in [false, true] {
++        if mediated {
++            unsafe { reverie_liteinst::install_tool::<FrameTool>(path) }.unwrap();
++        }
++        for (index, (name, number, args, pkru)) in cases.iter().copied().enumerate() {
++            let observed = observe(
++                observation,
++                bytes,
++                number,
++                args,
++                pkru,
++                mediated,
++                (index == 3).then_some((partial as usize + page, page)),
++            );
++            assert_eq!(observed.registers[15], guest_sp);
++            assert_eq!(observed.registers[7], observation as u64);
++            assert_eq!(
++                observed.registers[16],
++                core::ptr::addr_of!(owned_frame_guest_resume) as u64
++            );
++            assert_eq!(
++                observed.registers[13] as i64,
++                if number == libc::SYS_getpid {
++                    pid
++                } else if index == 3 {
++                    -i64::from(libc::ENOMEM)
++                } else {
++                    0
++                }
++            );
++            if index == 3 {
++                assert_ne!(
++                    observed.pkru, 0,
++                    "negative mprotect must retain its actual permission effect"
++                );
++            } else {
++                assert_eq!(observed.pkru, pkru);
++            }
++            let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
++            let address = if index == 3 {
++                partial as usize
++            } else {
++                guest_stack as usize
++            };
++            let permissions = maps
++                .lines()
++                .find_map(|line| {
++                    let mut parts = line.split_whitespace();
++                    let (start, end) = parts.next()?.split_once('-')?;
++                    let start = usize::from_str_radix(start, 16).ok()?;
++                    let end = usize::from_str_radix(end, 16).ok()?;
++                    (start <= address && address < end).then(|| parts.next().unwrap())
++                })
++                .unwrap();
++            if index == 2 {
++                assert_eq!(permissions, "---p");
++            }
++            if index == 3 {
++                assert_eq!(permissions, "--xp");
++            }
++            println!(
++                "owned frame observation: mode={} case={name} pid={pid} original-rsp={guest_sp:#x} state={:#x} mapping={permissions} pkru={} registers={:x?} xstate={:02x?}",
++                if mediated { "Tool" } else { "native" },
++                observation as usize,
++                observed.pkru,
++                observed.registers,
++                observed.xstate
++            );
++            if mediated {
++                let expected: &Observation = &native[index];
++                assert_eq!(observed.registers, expected.registers, "{name} registers");
++                assert_eq!(observed.pkru, expected.pkru, "{name} PKRU");
++                assert_eq!(observed.xstate, expected.xstate, "{name} complete XSTATE");
++            } else {
++                native.push(observed);
++            }
++            if index == 2 {
++                protect(guest_stack, STACK_BYTES, libc::PROT_READ | libc::PROT_WRITE);
++            }
++            if index == 3 {
++                protect(partial, page, libc::PROT_READ | libc::PROT_WRITE);
++            }
++        }
++    }
++    assert_eq!(CALLBACKS.load(Ordering::Relaxed), 2);
++    assert_eq!(
++        unsafe { core::slice::from_raw_parts(site as *const u8, 2) },
++        site_bytes
++    );
++    assert_eq!(
++        reverie_liteinst::reverie_liteinst_site_hook_count(site as u64),
++        0
++    );
++    assert_eq!(
++        reverie_liteinst::reverie_liteinst_site_trap_count(site as u64),
++        4
++    );
++    println!(
++        "owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes={bytes} callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4"
++    );
++    if let Some(area) = rseq {
++        assert_eq!(
++            unsafe { raw_syscall6(libc::SYS_rseq, [area as u64, 32, 0, 0x5305_3053, 0, 0]) },
++            0
++        );
++    }
++    unsafe {
++        core::arch::asm!("wrpkru", "lfence", in("eax") original_harness_pkru, in("ecx") 0u32, in("edx") 0u32, options(nostack, preserves_flags))
++    };
++}
++
++unsafe extern "C" {
++    fn owned_frame_enter_guest(state: *mut State);
++    fn owned_frame_clobber_guest_fp(avx: i32, avx512: i32);
++    static owned_frame_guest_syscall: u8;
++    static owned_frame_guest_resume: u8;
++    fn reverie_liteinst_on_owned_fallback_stack(address: usize) -> bool;
++    fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64;
++}
++
++core::arch::global_asm!(include_str!("owned_frame.S"), options(att_syntax));
+diff --git a/reverie-liteinst/src/bin/rpc_tool_guest/syscall_fallback.rs b/reverie-liteinst/src/bin/rpc_tool_guest/syscall_fallback.rs
+index 05974fe0..bc46c5ed 100644
+--- a/reverie-liteinst/src/bin/rpc_tool_guest/syscall_fallback.rs
++++ b/reverie-liteinst/src/bin/rpc_tool_guest/syscall_fallback.rs
+@@ -311,6 +311,22 @@ pub(super) fn run_fork(path: &Path, installed: bool) {
+     assert_eq!(traps, u64::from(!installed || child != 0));
+     assert_eq!(fallback, u64::from(!installed));
+     assert_eq!(syscall, u64::from(!installed));
++    // The child's original entry and callback physically happened before
++    // fork in the parent. It receives only its own completion signal.
++    if !installed {
++        unsafe extern "C" {
++            fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64;
++        }
++        assert_eq!(
++            unsafe { reverie_liteinst_owned_fallback_observation(0) },
++            u64::from(child != 0)
++        );
++        assert_eq!(
++            unsafe { reverie_liteinst_owned_fallback_observation(1) },
++            u64::from(child != 0)
++        );
++        assert_eq!(unsafe { reverie_liteinst_owned_fallback_observation(2) }, 1);
++    }
+     let label = if installed { "installed" } else { "fallback" };
+     if !installed {
+         assert_eq!(
+diff --git a/reverie-liteinst/src/lib.rs b/reverie-liteinst/src/lib.rs
+index 43aa87dd..146d103f 100644
+--- a/reverie-liteinst/src/lib.rs
++++ b/reverie-liteinst/src/lib.rs
+@@ -213,6 +213,66 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
+     }
+ }
+ 
++/// Version of the explicit host-runtime configuration layout.
++pub const HOST_RUNTIME_CONFIG_VERSION: u64 = 1;
++
++/// Configuration for controller-owned host-runtime initialization.
++///
++/// This selects the existing ptrace host runtime, not an in-process Tool. The
++/// initializer does not inspect or mutate guest environment selectors.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++#[repr(C)]
++pub struct HostRuntimeConfig {
++    /// Must equal [`HOST_RUNTIME_CONFIG_VERSION`].
++    pub version: u64,
++    /// Calibrated WordPatch++ delay in TSC ticks; zero disables concurrent
++    /// cross-cache-line publication, just as an absent environment setting does.
++    /// Concurrent publication would require a delay above this machine's
++    /// measured staleness bound. The ptrace helper retains caller-verified
++    /// quiescent publication; this configuration does not authorize concurrency.
++    pub straddler_staleness_ticks: u64,
++}
++
++impl Default for HostRuntimeConfig {
++    fn default() -> Self {
++        Self {
++            version: HOST_RUNTIME_CONFIG_VERSION,
++            straddler_staleness_ticks: 0,
++        }
++    }
++}
++
++/// Initializes the host runtime from explicit controller configuration.
++///
++/// Returns zero after the existing Begin/Ready handshake and instrumentation
++/// preparation, or a negative errno on failure. Null or unsupported-version
++/// configuration is rejected before initialization starts. A repeated or
++/// reentrant valid host attempt returns `-EALREADY`, including after a preparation
++/// failure: partially published runtime state cannot be rolled back here.
++/// The existing constructor continues to select behavior from the environment.
++///
++/// # Safety
++///
++/// A non-null `config` must point to a readable, aligned [`HostRuntimeConfig`]
++/// for this call. The runtime must already be loaded and its TLS usable. The
++/// caller must keep other application threads stopped or absent, have no other
++/// runtime mode installed, and service the exact existing host handshake traps.
++/// This neither loads the runtime nor transfers an in-process Tool or scheduler.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn reverie_liteinst_initialize_host(
++    config: *const HostRuntimeConfig,
++) -> libc::c_int {
++    if config.is_null() {
++        return -libc::EINVAL;
++    }
++    // SAFETY: required by the caller contract above; copy before initialization.
++    let config = unsafe { *config };
++    match runtime::initialize_host_runtime_explicit(config) {
++        Ok(()) => 0,
++        Err(error) => -error.raw_os_error().unwrap_or(libc::EIO),
++    }
++}
++
+ // TODO-HUMAN-REVIEW(PR-127): Review public per-site instrumentation counters.
+ /// Returns the number of SIGSYS deliveries observed at one syscall instruction.
+ #[unsafe(no_mangle)]
+diff --git a/reverie-liteinst/src/runtime.rs b/reverie-liteinst/src/runtime.rs
+index 66007177..38f25056 100644
+--- a/reverie-liteinst/src/runtime.rs
++++ b/reverie-liteinst/src/runtime.rs
+@@ -303,6 +303,10 @@ fn tool_callback_active() -> bool {
+     TOOL_CALLBACK_ACTIVE.with(|active| active.load(Ordering::Relaxed))
+ }
+ 
++// Host initialization cannot be retried after Begin: preparation can publish
++// process-global OnceLocks before returning an error. This does not claim the
++// other runtime installers or their reversible preflight work.
++static HOST_INITIALIZATION_STARTED: AtomicBool = AtomicBool::new(false);
+ static ARENAS: OnceLock<Vec<RuntimeArena>> = OnceLock::new();
+ static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
+ static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
+@@ -574,15 +578,14 @@ pub(crate) struct SyscallEvent {
+ impl SyscallEvent {
+     /// Forward only this guest operation. Runtime-private syscall buffers must
+     /// retain caller access and continue to use the ordinary raw gate.
+-    unsafe fn forward(&self) -> i64 {
+-        unsafe {
+-            match self.guest_pkru {
+-                Some(pkru) => {
+-                    reverie_preload::trap::raw_syscall6_with_pkru(self.number, self.args, pkru)
+-                }
+-                None => raw_syscall6(self.number, self.args),
+-            }
+-        }
++    pub(crate) unsafe fn forward(&mut self) -> i64 {
++        let result = unsafe {
++            reverie_preload::trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru)
++        };
++        // Permission effects survive negative errno and later Tool result
++        // transformation. Private injection never calls this operation.
++        self.guest_pkru = result.pkru;
++        result.result
+     }
+ }
+ 
+@@ -934,11 +937,36 @@ fn host_handshake_frame() -> HostHandshakeFrame {
+ }
+ 
+ fn initialize_host_runtime() -> io::Result<()> {
++    initialize_host_runtime_with(prepare_instrumentation)
++}
++
++pub(crate) fn initialize_host_runtime_explicit(config: crate::HostRuntimeConfig) -> io::Result<()> {
++    if config.version != crate::HOST_RUNTIME_CONFIG_VERSION {
++        return Err(io::Error::from_raw_os_error(libc::EINVAL));
++    }
++    let staleness = liteinst2::patcher::StalenessBudget::new(config.straddler_staleness_ticks);
++    initialize_host_runtime_with(|| {
++        crate::straddler::initialize(staleness)?;
++        prepare_instrumentation_state()
++    })
++}
++
++fn initialize_host_runtime_with(prepare: impl FnOnce() -> io::Result<()>) -> io::Result<()> {
++    if reverie_preload::trap::has_dispatcher()
++        || crate::straddler::is_initialized()
++        || SITES.get().is_some()
++        || ARENAS.get().is_some()
++    {
++        return Err(io::Error::from_raw_os_error(libc::EALREADY));
++    }
++    HOST_INITIALIZATION_STARTED
++        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
++        .map_err(|_| io::Error::from_raw_os_error(libc::EALREADY))?;
+     let frame = host_handshake_frame();
+     // SAFETY: the launcher validates this exact DSO/RIP/frame before suppressing
+     // the trap. The function returns normally after ptrace resumes the tracee.
+     unsafe { reverie_liteinst_host_begin(&frame) };
+-    prepare_instrumentation()?;
++    prepare()?;
+     // SAFETY: identical handshake contract; all helper state is now published.
+     unsafe { reverie_liteinst_host_ready(&frame) };
+     Ok(())
+@@ -1168,6 +1196,10 @@ fn discover_arena_aliases(
+ 
+ fn prepare_instrumentation() -> io::Result<()> {
+     crate::straddler::initialize_from_environment()?;
++    prepare_instrumentation_state()
++}
++
++fn prepare_instrumentation_state() -> io::Result<()> {
+     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
+     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+     let page_size = u64::try_from(page_size)
+@@ -2621,17 +2653,18 @@ unsafe fn installed_syscall_hook_for(context: *mut HookContext, number: Option<i
+     {
+         site.hook_count.fetch_add(1, Ordering::Relaxed);
+     }
+-    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook) };
++    unsafe { dispatch_syscall_context(context, number, SyscallDispatch::InstalledHook, None) };
+ }
+ 
+-pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext) {
+-    unsafe { dispatch_syscall_context(context, None, SyscallDispatch::Fallback) };
++pub(crate) unsafe fn dispatch_fallback_context(context: *mut HookContext, pkru: &mut Option<u32>) {
++    unsafe { dispatch_syscall_context(context, None, SyscallDispatch::Fallback, Some(pkru)) };
+ }
+ 
+ unsafe fn dispatch_syscall_context(
+     context: *mut HookContext,
+     number: Option<i64>,
+     dispatch: SyscallDispatch,
++    guest_pkru: Option<&mut Option<u32>>,
+ ) {
+     if context.is_null() {
+         unsafe {
+@@ -2658,9 +2691,9 @@ unsafe fn dispatch_syscall_context(
+         result: UNSET_RESULT,
+         context: context_pointer,
+         dispatch,
+-        // Installed hooks and deferred Tool injection need their own entry
+-        // provenance. Do not borrow permissions from a prior signal event.
+-        guest_pkru: None,
++        // Fallback supplies its owned genuine entry. Installed hooks still
++        // need independent provenance; never borrow a stale signal's rights.
++        guest_pkru: guest_pkru.as_ref().and_then(|value| **value),
+     };
+     // AUTONOMOUS-BOT-IMPLEMENTED
+     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
+@@ -2669,6 +2702,9 @@ unsafe fn dispatch_syscall_context(
+         context.rax = event.result as u64;
+         context.rcx = context.instruction_pointer.saturating_add(2);
+         context.r11 = context.rflags;
++        if let Some(output) = guest_pkru {
++            *output = event.guest_pkru;
++        }
+         if leave_rcb_handler().is_err() {
+             unsafe { exit_now(122) };
+         }
+@@ -2685,6 +2721,9 @@ unsafe fn dispatch_syscall_context(
+     context.rax = event.result as u64;
+     context.rcx = context.instruction_pointer.saturating_add(2);
+     context.r11 = context.rflags;
++    if let Some(output) = guest_pkru {
++        *output = event.guest_pkru;
++    }
+     if leave_rcb_handler().is_err() {
+         unsafe { exit_now(122) };
+     }
+@@ -2780,6 +2819,41 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address:
+ 
+ impl SyscallDispatcher for LiteinstDispatcher {
+     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
++        self.dispatch_with_frame(event, None);
++    }
++
++    fn dispatch_private_signal(
++        &self,
++        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
++    ) -> bool {
++        self.stats
++            .record_path(crate::LiteinstDispatchPath::InGuestPhysicalSigsys);
++        match crate::syscall_fallback::complete(frame) {
++            Ok(true) => {
++                self.stats
++                    .record_path(crate::LiteinstDispatchPath::FallbackCompletionSigsys);
++                true
++            }
++            Ok(false) => false,
++            Err(_) => unsafe { exit_now(126) },
++        }
++    }
++
++    fn dispatch_signal(
++        &self,
++        event: &mut PreloadSyscallEvent,
++        frame: &mut reverie_preload::trap::frame::SignalFrame<'_>,
++    ) {
++        self.dispatch_with_frame(event, Some(frame));
++    }
++}
++
++impl LiteinstDispatcher {
++    fn dispatch_with_frame(
++        &self,
++        event: &mut PreloadSyscallEvent,
++        frame: Option<&mut reverie_preload::trap::frame::SignalFrame<'_>>,
++    ) {
+         if tool_callback_active() {
+             crate::syscall_fallback::enable_nested_runtime_access();
+             self.stats
+@@ -2794,7 +2868,10 @@ impl SyscallDispatcher for LiteinstDispatcher {
+                 guest_pkru: event.guest_pkru(),
+             };
+             forward_nested_tool_syscall(&mut nested);
+-            event.set_result(nested.result);
++            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
++                result: nested.result,
++                pkru: nested.guest_pkru,
++            });
+             return;
+         }
+         self.stats
+@@ -2820,7 +2897,10 @@ impl SyscallDispatcher for LiteinstDispatcher {
+             unsafe {
+                 process_syscall(&mut trapped);
+             }
+-            event.set_result(trapped.result);
++            event.set_native_result(reverie_preload::trap::NativeSyscallResult {
++                result: trapped.result,
++                pkru: trapped.guest_pkru,
++            });
+             return;
+         }
+ 
+@@ -2869,11 +2949,17 @@ impl SyscallDispatcher for LiteinstDispatcher {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+         record_fallback_dispatch(event.number());
+         if mode == TOOL_REVERIE
+-            && let Some(entry) = crate::syscall_fallback::prepare(instruction_pointer)
++            && let Some(frame) = frame
+         {
+-            (self.record_fallback_stats)(self.stats, instruction_pointer);
+-            event.defer_to(entry);
+-            return;
++            match crate::syscall_fallback::prepare_signal(instruction_pointer, frame) {
++                Ok(Some(entry)) => {
++                    (self.record_fallback_stats)(self.stats, instruction_pointer);
++                    event.defer_to(entry);
++                    return;
++                }
++                Ok(None) => {}
++                Err(_) => unsafe { exit_now(126) },
++            }
+         }
+         self.refuse_fallback(event);
+     }
+diff --git a/reverie-liteinst/src/stats.rs b/reverie-liteinst/src/stats.rs
+index 0ac74296..c4a2b586 100644
+--- a/reverie-liteinst/src/stats.rs
++++ b/reverie-liteinst/src/stats.rs
+@@ -227,6 +227,8 @@ struct GuestStatsCollector {
+     coordinator: PathBuf,
+     in_guest_sigsys: AtomicU64,
+     in_guest_nested_sigsys: AtomicU64,
++    in_guest_physical_sigsys: AtomicU64,
++    fallback_completion_sigsys: AtomicU64,
+     cacheline_straddler_fallback: AtomicU64,
+     unpatchable_or_other_fallback: AtomicU64,
+     fallback_refusal: AtomicU64,
+@@ -237,6 +239,8 @@ impl GuestStatsCollector {
+         match path {
+             LiteinstDispatchPath::InGuestSigsys => &self.in_guest_sigsys,
+             LiteinstDispatchPath::InGuestNestedSigsys => &self.in_guest_nested_sigsys,
++            LiteinstDispatchPath::InGuestPhysicalSigsys => &self.in_guest_physical_sigsys,
++            LiteinstDispatchPath::FallbackCompletionSigsys => &self.fallback_completion_sigsys,
+             LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
+             LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
+             LiteinstDispatchPath::FallbackRefusal => &self.fallback_refusal,
+@@ -250,6 +254,14 @@ impl GuestStatsCollector {
+ 
+     fn snapshot(&self, direct_hooks: u64) -> CounterSnapshot<LiteinstDispatchPath> {
+         CounterSnapshot::new([
++            (
++                LiteinstDispatchPath::InGuestPhysicalSigsys,
++                self.in_guest_physical_sigsys.load(Ordering::Relaxed),
++            ),
++            (
++                LiteinstDispatchPath::FallbackCompletionSigsys,
++                self.fallback_completion_sigsys.load(Ordering::Relaxed),
++            ),
+             (
+                 LiteinstDispatchPath::InGuestSigsys,
+                 self.in_guest_sigsys.load(Ordering::Relaxed),
+@@ -277,6 +289,8 @@ impl GuestStatsCollector {
+     fn reset(&self) {
+         self.in_guest_sigsys.store(0, Ordering::Relaxed);
+         self.in_guest_nested_sigsys.store(0, Ordering::Relaxed);
++        self.in_guest_physical_sigsys.store(0, Ordering::Relaxed);
++        self.fallback_completion_sigsys.store(0, Ordering::Relaxed);
+         self.cacheline_straddler_fallback
+             .store(0, Ordering::Relaxed);
+         self.unpatchable_or_other_fallback
+@@ -376,6 +390,8 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
+             coordinator: coordinator.to_path_buf(),
+             in_guest_sigsys: AtomicU64::new(0),
+             in_guest_nested_sigsys: AtomicU64::new(0),
++            in_guest_physical_sigsys: AtomicU64::new(0),
++            fallback_completion_sigsys: AtomicU64::new(0),
+             cacheline_straddler_fallback: AtomicU64::new(0),
+             unpatchable_or_other_fallback: AtomicU64::new(0),
+             fallback_refusal: AtomicU64::new(0),
+diff --git a/reverie-liteinst/src/straddler.rs b/reverie-liteinst/src/straddler.rs
+index b483231a..c2c86af6 100644
+--- a/reverie-liteinst/src/straddler.rs
++++ b/reverie-liteinst/src/straddler.rs
+@@ -55,11 +55,19 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
+     let staleness = straddler_staleness_from_env_value(
+         std::env::var_os(STRADDLER_STALENESS_TICKS_ENV).as_deref(),
+     )?;
++    initialize(staleness)
++}
++
++pub(crate) fn initialize(staleness: Option<StalenessBudget>) -> io::Result<()> {
+     CALIBRATED_STALENESS
+         .set(staleness)
+         .map_err(|_| io::Error::other("LiteInst straddler policy initialized twice"))
+ }
+ 
++pub(crate) fn is_initialized() -> bool {
++    CALIBRATED_STALENESS.get().is_some()
++}
++
+ pub(crate) fn budget_for_patch(
+     address: usize,
+     cache_line: CacheLineSize,
+diff --git a/reverie-liteinst/src/syscall_fallback.rs b/reverie-liteinst/src/syscall_fallback.rs
+index d03d5888..9b1b65e4 100644
+--- a/reverie-liteinst/src/syscall_fallback.rs
++++ b/reverie-liteinst/src/syscall_fallback.rs
+@@ -7,6 +7,9 @@ use std::io;
+ use std::sync::OnceLock;
+ 
+ use liteinst2::trampoline::HookContext;
++use reverie_preload::trap::frame::FrameError;
++use reverie_preload::trap::frame::SavedState;
++use reverie_preload::trap::frame::SignalFrame;
+ use reverie_preload::trap::raw_syscall6;
+ 
+ static SAVE_BYTES: AtomicU32 = AtomicU32::new(512);
+@@ -23,6 +26,7 @@ const _: () = {
+ 
+ thread_local! {
+     static READY: Cell<bool> = const { Cell::new(false) };
++    static OWNER: Cell<*mut Continuation> = const { Cell::new(core::ptr::null_mut()) };
+     static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
+ }
+ 
+@@ -73,6 +77,98 @@ fn pkru_offset(offset: u32, size: u32, bytes: u32) -> Result<u32, &'static str>
+     Ok(offset)
+ }
+ 
++const CALLBACK_STACK_BYTES: usize = 8 * 1024 * 1024;
++const COMPLETION_COOKIE: u64 = 0x4c49_4641_4c4c_424b;
++
++#[derive(Clone, Copy, Eq, PartialEq)]
++enum Phase {
++    Idle,
++    Captured,
++    Running,
++    ReadyToReturn,
++}
++
++struct CallbackStack {
++    mapping: *mut libc::c_void,
++    bytes: usize,
++    top: usize,
++}
++
++impl CallbackStack {
++    fn new() -> io::Result<Self> {
++        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
++        if page <= 0 {
++            return Err(io::Error::other("invalid page size"));
++        }
++        let page = page as usize;
++        let bytes = CALLBACK_STACK_BYTES
++            .checked_add(
++                page.checked_mul(2)
++                    .ok_or_else(|| io::Error::other("stack size overflow"))?,
++            )
++            .ok_or_else(|| io::Error::other("stack size overflow"))?;
++        let mapping = unsafe {
++            libc::mmap(
++                core::ptr::null_mut(),
++                bytes,
++                libc::PROT_NONE,
++                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_STACK,
++                -1,
++                0,
++            )
++        };
++        if mapping == libc::MAP_FAILED {
++            return Err(io::Error::last_os_error());
++        }
++        // mmap supplied a range of `bytes`; compute the usable end without
++        // unchecked pointer-sized arithmetic before publishing any owner.
++        let top = (mapping as usize).checked_add(bytes - page);
++        let stack = Self {
++            mapping,
++            bytes,
++            top: top.unwrap_or(0),
++        };
++        if top.is_none() {
++            return Err(io::Error::other("stack address overflow"));
++        }
++        if unsafe {
++            libc::mprotect(
++                mapping.cast::<u8>().add(page).cast(),
++                CALLBACK_STACK_BYTES,
++                libc::PROT_READ | libc::PROT_WRITE,
++            )
++        } != 0
++        {
++            return Err(io::Error::last_os_error());
++        }
++        Ok(stack)
++    }
++}
++
++impl Drop for CallbackStack {
++    fn drop(&mut self) {
++        // Only unpublished preparation owns a destructor. Published owners
++        // are retained through process teardown, never freed on this stack.
++        unsafe { libc::munmap(self.mapping, self.bytes) };
++    }
++}
++
++struct Continuation {
++    stack: CallbackStack,
++    saved: SavedState,
++    context: HookContext,
++    owner_tid: i64,
++    generation: u64,
++    phase: Phase,
++    entries: u64,
++    callbacks: u64,
++    completions: u64,
++}
++
++fn current_tid() -> i64 {
++    unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) }
++}
++
+ pub(crate) fn initialize() -> io::Result<()> {
+     SAVE_CONFIG
+         .get_or_init(configure_save)
+@@ -81,203 +177,301 @@ pub(crate) fn initialize() -> io::Result<()> {
+     if PENDING.get().is_some() {
+         return Err(io::Error::other("a syscall continuation is still active"));
+     }
++    if OWNER.get().is_null() {
++        let saved = SavedState::new()?;
++        let stack = CallbackStack::new()?;
++        let owner = Box::new(Continuation {
++            stack,
++            saved,
++            // HookContext is exclusively integer fields; zero is a valid
++            // preparation value, overwritten by the actual first signal.
++            context: unsafe { core::mem::zeroed() },
++            owner_tid: current_tid(),
++            generation: 0,
++            phase: Phase::Idle,
++            entries: 0,
++            callbacks: 0,
++            completions: 0,
++        });
++        OWNER.set(Box::into_raw(owner));
++    }
+     READY.set(true);
+     Ok(())
+ }
+ 
+-/// Retain only the original instruction address until ordinary dispatch ends.
+-/// Reentry before then refuses without overwriting the active continuation.
+-/// Afterwards the saved RCX owns the resume address; return reads no TLS state.
++/// Reserve the existing single activation without overwriting a pending one.
++/// Kept separate from frame capture so its reentry contract remains testable.
+ pub(crate) fn prepare(instruction: u64) -> Option<u64> {
+     PENDING.with(|pending| {
+         if !READY.get() || pending.get().is_some() {
+             return None;
+         }
+         pending.set(Some(Pending { instruction }));
+-        Some(if PKRU_OFFSET.load(Ordering::Relaxed) != 0 {
+-            fallback_entry_pkru as *const () as u64
+-        } else {
+-            fallback_entry as *const () as u64
+-        })
++        Some(fallback_entry as *const () as u64)
+     })
+ }
+ 
+-/// Linux gives a signal handler default PKRU, which can deny the nondefault
+-/// key holding the fallback's callback stack. A nested Tool syscall must regain
+-/// runtime access before the trusted gate reads its arguments. The kernel's
+-/// saved interrupted PKRU is untouched and sigreturn restores it afterwards.
+-pub(crate) fn enable_nested_runtime_access() {
+-    if PKRU_OFFSET.load(Ordering::Relaxed) != 0 && PENDING.get().is_some() {
++pub(crate) fn prepare_signal(
++    instruction: u64,
++    frame: &mut SignalFrame<'_>,
++) -> Result<Option<u64>, FrameError> {
++    let Some(entry) = prepare(instruction) else {
++        return Ok(None);
++    };
++    let pointer = OWNER.get();
++    if pointer.is_null() {
++        return Err(FrameError);
++    }
++    let owner = unsafe { &mut *pointer };
++    if owner.phase != Phase::Idle || owner.owner_tid != current_tid() {
++        return Err(FrameError);
++    }
++    owner.generation = owner.generation.checked_add(1).ok_or(FrameError)?;
++    frame.capture(&mut owner.saved)?;
++    let resume = instruction.checked_add(2).ok_or(FrameError)?;
++    if frame.register(libc::REG_RIP as usize) as u64 != resume {
++        return Err(FrameError);
++    }
++    owner.context = context_from_image(&owner.saved, instruction);
++    owner.phase = Phase::Captured;
++    frame.set_register(libc::REG_RSP as usize, (owner.stack.top & !15) as i64);
++    frame.set_register(libc::REG_RDI as usize, pointer as i64);
++    frame.set_register(
++        libc::REG_EFL as usize,
++        frame.register(libc::REG_EFL as usize) & !(1 << 10),
++    );
++    frame.set_pkru(owner.saved.pkru().map(|_| 0))?;
++    owner.entries += 1;
++    Ok(Some(entry))
++}
++
++fn context_from_image(saved: &SavedState, instruction: u64) -> HookContext {
++    let r = &saved.registers;
++    HookContext {
++        instruction_pointer: instruction,
++        stack_pointer: r[libc::REG_RSP as usize] as u64,
++        rax: r[libc::REG_RAX as usize] as u64,
++        rbx: r[libc::REG_RBX as usize] as u64,
++        rcx: r[libc::REG_RCX as usize] as u64,
++        rdx: r[libc::REG_RDX as usize] as u64,
++        rsi: r[libc::REG_RSI as usize] as u64,
++        rdi: r[libc::REG_RDI as usize] as u64,
++        rbp: r[libc::REG_RBP as usize] as u64,
++        r8: r[libc::REG_R8 as usize] as u64,
++        r9: r[libc::REG_R9 as usize] as u64,
++        r10: r[libc::REG_R10 as usize] as u64,
++        r11: r[libc::REG_R11 as usize] as u64,
++        r12: r[libc::REG_R12 as usize] as u64,
++        r13: r[libc::REG_R13 as usize] as u64,
++        r14: r[libc::REG_R14 as usize] as u64,
++        r15: r[libc::REG_R15 as usize] as u64,
++        rflags: r[libc::REG_EFL as usize] as u64,
++    }
++}
++
++fn commit_context(owner: &mut Continuation) -> Result<(), FrameError> {
++    let c = &owner.context;
++    let r = &mut owner.saved.registers;
++    for (index, value) in [
++        (libc::REG_R8, c.r8),
++        (libc::REG_R9, c.r9),
++        (libc::REG_R10, c.r10),
++        (libc::REG_R11, c.r11),
++        (libc::REG_R12, c.r12),
++        (libc::REG_R13, c.r13),
++        (libc::REG_R14, c.r14),
++        (libc::REG_R15, c.r15),
++        (libc::REG_RDI, c.rdi),
++        (libc::REG_RSI, c.rsi),
++        (libc::REG_RBP, c.rbp),
++        (libc::REG_RBX, c.rbx),
++        (libc::REG_RDX, c.rdx),
++        (libc::REG_RAX, c.rax),
++        (libc::REG_RCX, c.rcx),
++        (libc::REG_RSP, c.stack_pointer),
++        (libc::REG_EFL, c.rflags),
++    ] {
++        r[index as usize] = value as i64;
++    }
++    r[libc::REG_RIP as usize] = c.instruction_pointer.checked_add(2).ok_or(FrameError)? as i64;
++    Ok(())
++}
++
++/// The current handler prefix has already opened runtime permissions before
++/// any memory access. Nested operations retain their own interrupted image.
++pub(crate) fn enable_nested_runtime_access() {}
++
++/// A raw fork copies the active image and ordinary stack. Rebind only after
++/// the real child result, in ordinary context, before child callbacks/return.
++pub(crate) fn rebind_fork_child() {
++    let pointer = OWNER.get();
++    if !pointer.is_null() {
+         unsafe {
+-            core::arch::asm!(
+-                "wrpkru",
+-                "lfence",
+-                in("eax") 0u32,
+-                in("ecx") 0u32,
+-                in("edx") 0u32,
+-                options(nostack, preserves_flags),
+-            );
++            (*pointer).owner_tid = current_tid();
++            // The entry/callback happened in the parent. The child inherits
++            // its active image but physically receives only its completion.
++            (*pointer).entries = 0;
++            (*pointer).callbacks = 0;
++            (*pointer).completions = 0;
+         }
+     }
+ }
+ 
+-unsafe extern "C" fn dispatch(context: *mut HookContext) {
+-    PENDING.with(|pending| {
+-        let Some(continuation) = pending.get() else {
+-            unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
+-            std::process::abort();
+-        };
+-        if context.is_null() {
+-            unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
+-            std::process::abort();
+-        }
+-        let errno = unsafe { libc::__errno_location() };
+-        let saved_errno = unsafe { *errno };
+-        unsafe {
+-            (*context).instruction_pointer = continuation.instruction;
+-            crate::runtime::dispatch_fallback_context(context);
+-            *errno = saved_errno;
++fn fatal() -> ! {
++    unsafe { raw_syscall6(libc::SYS_exit_group, [123, 0, 0, 0, 0, 0]) };
++    loop {
++        core::hint::spin_loop()
++    }
++}
++
++unsafe extern "C" fn dispatch(pointer: *mut Continuation) {
++    if pointer.is_null() || pointer != OWNER.get() || PENDING.get().is_none() {
++        fatal()
++    }
++    // No reference to the full owner is held across Tool dispatch: child fork
++    // completion and nested signals may access separate owner fields.
++    if unsafe { (*pointer).phase != Phase::Captured || (*pointer).owner_tid != current_tid() } {
++        fatal()
++    }
++    unsafe {
++        (*pointer).phase = Phase::Running;
++        (*pointer).callbacks += 1;
++    }
++    let errno = unsafe { libc::__errno_location() };
++    let saved_errno = unsafe { *errno };
++    let mut pkru = unsafe { (*pointer).saved.pkru() };
++    unsafe {
++        crate::runtime::dispatch_fallback_context(
++            core::ptr::addr_of_mut!((*pointer).context),
++            &mut pkru,
++        );
++        *errno = saved_errno;
++    }
++    let owner = unsafe { &mut *pointer };
++    if owner.owner_tid != current_tid()
++        || owner.saved.set_pkru(pkru).is_err()
++        || commit_context(owner).is_err()
++    {
++        fatal()
++    }
++    owner.phase = Phase::ReadyToReturn;
++}
++
++/// Completion is intercepted before ordinary syscall/site classification.
++/// A genuine frame may reuse the same alt-stack address as the consumed first
++/// frame; address inequality is not evidence of freshness.
++pub(crate) fn complete(frame: &mut SignalFrame<'_>) -> Result<bool, FrameError> {
++    let resume = core::ptr::addr_of!(fallback_completion_return) as usize as u64;
++    if frame.register(libc::REG_RIP as usize) as u64 != resume {
++        return Ok(false);
++    }
++    let pointer = OWNER.get();
++    if pointer.is_null() {
++        return Err(FrameError);
++    }
++    let owner = unsafe { &mut *pointer };
++    let instruction = core::ptr::addr_of!(fallback_completion_syscall) as usize;
++    if instruction.checked_add(2) != Some(resume as usize)
++        || unsafe { core::slice::from_raw_parts(instruction as *const u8, 2) } != [0x0f, 0x05]
++        || owner.phase != Phase::ReadyToReturn
++        || owner.owner_tid != current_tid()
++        || PENDING.get().is_none()
++        || frame.register(libc::REG_RAX as usize) != libc::SYS_getpid
++        || frame.register(libc::REG_RDI as usize) as u64 != COMPLETION_COOKIE
++        || frame.register(libc::REG_RSI as usize) as u64 != owner.generation
++        || frame.register(libc::REG_RDX as usize) as usize != pointer as usize
++    {
++        return Err(FrameError);
++    }
++    frame.restore(&owner.saved)?;
++    owner.completions += 1;
++    owner.phase = Phase::Idle;
++    PENDING.set(None);
++    Ok(true)
++}
++
++/// Diagnostic observations for the current thread's owned continuation.
++/// Selectors 0/1/2 are actual fallback entry, reached ordinary callback, and
++/// prepared genuine completion frame. They are not a kernel-stop census.
++#[unsafe(no_mangle)]
++pub extern "C" fn reverie_liteinst_owned_fallback_observation(selector: u32) -> u64 {
++    let pointer = OWNER.get();
++    if pointer.is_null() {
++        return 0;
++    }
++    unsafe {
++        match selector {
++            0 => (*pointer).entries,
++            1 => (*pointer).callbacks,
++            2 => (*pointer).completions,
++            _ => 0,
+         }
+-        // The saved RCX now owns the return address. No TLS is read on return,
+-        // so a subsequent continuation cannot redirect this activation.
+-        pending.set(None);
+-    })
++    }
++}
++
++/// Check a fixture's actual callback local address against owned stack bounds.
++#[unsafe(no_mangle)]
++pub extern "C" fn reverie_liteinst_on_owned_fallback_stack(address: usize) -> bool {
++    let pointer = OWNER.get();
++    if pointer.is_null() {
++        return false;
++    }
++    unsafe {
++        let top = (*pointer).stack.top;
++        address >= top - CALLBACK_STACK_BYTES && address < top
++    }
++}
++
++unsafe extern "C" fn completion_generation() -> u64 {
++    let pointer = OWNER.get();
++    if pointer.is_null() || unsafe { (*pointer).phase != Phase::ReadyToReturn } {
++        fatal()
++    }
++    unsafe { (*pointer).generation }
+ }
+ 
+ unsafe extern "C" {
+     fn fallback_entry();
+-    fn fallback_entry_pkru();
++    static fallback_completion_syscall: u8;
++    static fallback_completion_return: u8;
+ }
+ 
+ global_asm!(
+     r#"
+     .text
+-    .macro save_registers
+-    lea rsp, [rsp - 128]
+-    pushfq
+-    push rax
+-    push rcx
+-    push rdx
+-    push rbx
+-    push rbp
+-    push rsi
+-    push rdi
+-    push r8
+-    push r9
+-    push r10
+-    push r11
+-    push r12
+-    push r13
+-    push r14
+-    push r15
+-    lea rax, [rsp + 256]
+-    push rax
+-    push 0
+-    mov r12, rsp
+-    .endm
+-
++    .p2align 4
+     .global fallback_entry
+     .hidden fallback_entry
+     .type fallback_entry,@function
+ fallback_entry:
+-    save_registers
+-    xor r14d, r14d
+-    jmp 1f
+-    .size fallback_entry, .-fallback_entry
+-
+-    .global fallback_entry_pkru
+-    .hidden fallback_entry_pkru
+-    .type fallback_entry_pkru,@function
+-fallback_entry_pkru:
+-    save_registers
+-    // All guest registers are saved on its accessible stack. Neither the
+-    // feature decision nor a memory read may precede this permissions change.
+-    xor ecx, ecx
+-    rdpkru
+-    mov r13d, eax
+-    xor eax, eax
+-    xor edx, edx
+-    wrpkru
+-    lfence
+-    mov r14d, 1
+-1:
+-    and rsp, -64
+-    mov r10d, dword ptr [rip + {save_bytes}]
+-    sub rsp, r10
+-    mov rax, qword ptr [rip + {save_mask}]
+-    test rax, rax
+-    jz 2f
+-    .irp offset,512,520,528,536,544,552,560,568
+-    mov qword ptr [rsp + \offset], 0
+-    .endr
+-    mov rdx, rax
+-    shr rdx, 32
+-    xsave64 [rsp]
+-    test r14d, r14d
+-    jz 3f
+-    // XSAVE observed the temporary runtime PKRU. Put the guest value and its
+-    // initial-state bit back without changing any other component or header.
+-    mov r10d, dword ptr [rip + {pkru_offset}]
+-    mov qword ptr [rsp + r10], r13
+-    and qword ptr [rsp + 512], -513
+-    test r13d, r13d
+-    jz 3f
+-    or qword ptr [rsp + 512], 512
+-    jmp 3f
+-2:
+-    fxsave64 [rsp]
+-3:
++    // First genuine sigreturn supplied an owned, aligned stack and open PKRU.
++    // The saved guest image retains DF and every FP component independently.
+     cld
+-    // Rust callbacks require the ordinary empty x87 stack and masked FP
+-    // exceptions even when the guest supplied a different FP environment.
+     fninit
+     ldmxcsr [rip + {callback_mxcsr}]
+-    mov rdi, r12
++    mov r12, rdi
+     call {dispatch}
+-    mov rax, qword ptr [rip + {save_mask}]
+-    test rax, rax
+-    jz 4f
+-    mov rdx, rax
+-    shr rdx, 32
+-    // Finish all runtime/global/TLS access before restoring guest PKRU.
+-    // Future runtime boundaries must also precede this restore. The suffix
+-    // uses only registers and the guest-accessible frame, even with key0 denied.
+-    xrstor64 [rsp]
+-    jmp 5f
+-4:
+-    fxrstor64 [rsp]
+-5:
+-    mov rsp, r12
+-    add rsp, 16
+-    pop r15
+-    pop r14
+-    pop r13
+-    pop r12
+-    add rsp, 8
+-    pop r10
+-    pop r9
+-    pop r8
+-    pop rdi
+-    pop rsi
+-    pop rbp
+-    pop rbx
+-    pop rdx
+-    pop rcx
+-    pop rax
+-    mov r11, [rsp - 88]
+-    popfq
+-    lea rsp, [rsp + 128]
+-    notrack jmp rcx
+-    .global fallback_entry_end
+-    .hidden fallback_entry_end
+-fallback_entry_end:
+-    .size fallback_entry_pkru, .-fallback_entry_pkru
+-    "#,
+-    save_bytes = sym SAVE_BYTES,
+-    save_mask = sym SAVE_MASK,
+-    pkru_offset = sym PKRU_OFFSET,
++    call {generation}
++    mov rsi, rax
++    mov rdx, r12
++    mov rdi, {cookie}
++    mov eax, {getpid}
++    .global fallback_completion_syscall
++    .hidden fallback_completion_syscall
++fallback_completion_syscall:
++    syscall
++    .global fallback_completion_return
++    .hidden fallback_completion_return
++fallback_completion_return:
++    // A correct completion resumes the saved guest, never this continuation.
++    ud2
++    .size fallback_entry, .-fallback_entry
++"#,
+     dispatch = sym dispatch,
++    generation = sym completion_generation,
+     callback_mxcsr = sym CALLBACK_MXCSR,
++    cookie = const COMPLETION_COOKIE,
++    getpid = const libc::SYS_getpid,
+ );
+ 
+ #[cfg(test)]
+diff --git a/reverie-liteinst/src/tool_host.rs b/reverie-liteinst/src/tool_host.rs
+index 89814069..eee1228f 100644
+--- a/reverie-liteinst/src/tool_host.rs
++++ b/reverie-liteinst/src/tool_host.rs
+@@ -282,7 +282,7 @@ where
+             let args = guest.event.args;
+             if is_plain_fork(number, args) {
+                 guest.prepare_fork_parent_state();
+-                let result = forward_plain_fork(number, args);
++                let result = forward_plain_fork(number, args, Some(&mut guest.event.guest_pkru));
+                 if result == 0 {
+                     let parent_state = guest.take_fork_parent_state();
+                     drop(guest);
+@@ -321,7 +321,9 @@ where
+                 event.result = -i64::from(error.into_raw());
+                 return;
+             }
+-            event.result = unsafe { raw_syscall6(number, args) };
++            // This is the original unsubscribed guest operation. Private
++            // inject/tail_inject below deliberately keep caller rights.
++            event.result = unsafe { event.forward() };
+             return;
+         }
+         let args = guest.event.args.map(|arg| arg as usize);
+@@ -469,6 +471,7 @@ fn finish_fork_child<T: Tool>(
+         child_tid,
+         child_pid,
+     } = context;
++    crate::syscall_fallback::rebind_fork_child();
+     runtime::emit_in_guest_stage(b"fork-child-thread-start-begin");
+     // This child inherited the parent's coordinator connection. Flag it before
+     // any child-side callback can issue an RPC (`handle_thread_start` below is
+@@ -704,16 +707,23 @@ fn clone3_is_plain_fork(address: u64, size: u64) -> bool {
+         && fields[8..].iter().all(|field| *field == 0)
+ }
+ 
+-fn forward_plain_fork(number: i64, args: [u64; 6]) -> i64 {
+-    let result = if number == libc::SYS_vfork {
++fn forward_plain_fork(number: i64, args: [u64; 6], guest_pkru: Option<&mut Option<u32>>) -> i64 {
++    let permissions = guest_pkru.as_ref().and_then(|value| **value);
++    let physical = if number == libc::SYS_vfork {
+         // A real vfork child would run the instrumentation callback on the
+         // parent's shared stack. Use a COW fork and preserve vfork's parent
+         // suspension until the child exits. Exec remains fail-closed, so exit
+         // is the only supported vfork completion boundary for now.
+-        unsafe { raw_syscall6(libc::SYS_fork, [0; 6]) }
++        unsafe {
++            reverie_preload::trap::raw_syscall6_with_result(libc::SYS_fork, [0; 6], permissions)
++        }
+     } else {
+-        unsafe { raw_syscall6(number, args) }
++        unsafe { reverie_preload::trap::raw_syscall6_with_result(number, args, permissions) }
+     };
++    if let Some(output) = guest_pkru {
++        *output = physical.pkru;
++    }
++    let result = physical.result;
+     if number == libc::SYS_vfork && result > 0 {
+         let mut info = core::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+         loop {
+@@ -882,7 +892,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
+             let parent_tid = self.tid;
+             let parent_pid = self.pid;
+             self.prepare_fork_parent_state();
+-            let result = forward_plain_fork(number, raw_args);
++            let result = forward_plain_fork(number, raw_args, None);
+             if result == 0 {
+                 let child_tid = raw_pid(libc::SYS_gettid);
+                 let child_pid = raw_pid(libc::SYS_getpid);
+@@ -950,7 +960,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
+             let parent_tid = self.tid;
+             let parent_pid = self.pid;
+             self.prepare_fork_parent_state();
+-            let result = forward_plain_fork(number, args);
++            let result = forward_plain_fork(number, args, None);
+             if result == 0 {
+                 self.tail.set_fork_child(
+                     parent_tid,
+diff --git a/reverie-liteinst/tests/fixtures/host_initializer.c b/reverie-liteinst/tests/fixtures/host_initializer.c
+new file mode 100644
+index 00000000..81cd6443
+--- /dev/null
++++ b/reverie-liteinst/tests/fixtures/host_initializer.c
+@@ -0,0 +1,151 @@
++#define _GNU_SOURCE
++#include <dlfcn.h>
++#include <errno.h>
++#include <linux/filter.h>
++#include <linux/seccomp.h>
++#include <signal.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/prctl.h>
++#include <sys/syscall.h>
++#include <ucontext.h>
++#include <unistd.h>
++
++struct host_config { uint64_t version, straddler_staleness_ticks; };
++struct host_frame {
++    uint64_t version, begin_rip, ready_rip, install_helper, helper_stack_top;
++    uint64_t helper_return, helper_return_rip, syscall_trap_rip;
++    uint64_t syscall_trap_return_rip, install_result;
++};
++struct install_result {
++    uint64_t version, site_start, site_len, relocated_tail;
++    uint64_t trampoline_start, trampoline_len;
++    uint64_t arena_writable_start, arena_writable_len;
++    uint64_t arena_executable_start, arena_executable_len;
++    uint64_t instruction_len, straddle_prefix, complete;
++};
++static int (*initialize)(const struct host_config *);
++static struct host_config config = {1, 0};
++static struct host_frame saved_frame;
++static volatile sig_atomic_t begins, readies, reentry_result;
++
++/* No injected guest executes this site. A real successful installation proves
++ * the initializer prepared both the site table and a usable trampoline arena. */
++extern char test_syscall_site[];
++__asm__(".text\n.p2align 6\n.global test_syscall_site\n"
++        "test_syscall_site:\n syscall\n nop\n nop\n nop\n nop\n nop\n nop\n ret\n");
++
++static void trap(int sig, siginfo_t *info, void *opaque) {
++    (void)info;
++    ucontext_t *context = opaque;
++    uint64_t marker = context->uc_mcontext.gregs[REG_RAX];
++    uint64_t rip = context->uc_mcontext.gregs[REG_RIP];
++    const struct host_frame *frame =
++        (const void *)(uintptr_t)context->uc_mcontext.gregs[REG_RDI];
++    if (sig != SIGTRAP || !frame || frame->version != 4) _exit(80);
++    if (marker == UINT64_C(0x7265766c69000001)) {
++        if (begins || readies || rip != frame->begin_rip) _exit(81);
++        saved_frame = *frame;
++        begins = 1;
++        /* The rejected reentry takes only the argument/atomic guard path. */
++        reentry_result = initialize(&config);
++        if (reentry_result != -EALREADY) _exit(82);
++    } else if (marker == UINT64_C(0x7265766c69000002)) {
++        if (begins != 1 || readies || rip != frame->ready_rip) _exit(83);
++        const uint64_t *saved = (const void *)&saved_frame;
++        const uint64_t *current = (const void *)frame;
++        for (size_t i = 0; i < sizeof(saved_frame) / sizeof(uint64_t); ++i)
++            if (saved[i] != current[i]) _exit(84);
++        readies = 1;
++    } else {
++        _exit(85);
++    }
++}
++
++static void require(int condition, const char *message) {
++    if (!condition) {
++        fprintf(stderr, "%s\n", message);
++        exit(1);
++    }
++}
++
++static void refuse_file_opens(void) {
++    struct sock_filter filter[] = {
++        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
++        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_open, 0, 1),
++        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
++        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat, 0, 1),
++        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
++        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_openat2, 0, 1),
++        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
++        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
++    };
++    struct sock_fprog program = {sizeof(filter) / sizeof(filter[0]), filter};
++    require(prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0, "no_new_privs");
++    require(prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) == 0, "seccomp");
++}
++
++int main(int argc, char **argv) {
++    require(argc == 2, "mode");
++    initialize = dlsym(RTLD_DEFAULT, "reverie_liteinst_initialize_host");
++    require(initialize != NULL, "missing explicit host initializer");
++    struct sigaction action = {.sa_sigaction = trap, .sa_flags = SA_SIGINFO};
++    require(sigemptyset(&action.sa_mask) == 0, "sigemptyset");
++    require(sigaction(SIGTRAP, &action, NULL) == 0, "sigaction");
++
++    if (!strcmp(argv[1], "builtin-active")) {
++        void (*legacy_initialize)(void) = dlsym(RTLD_DEFAULT, "reverie_liteinst_initialize");
++        require(legacy_initialize != NULL, "missing legacy initializer");
++        require(setenv("REVERIE_LITEINST_TOOL", "spoof-getpid", 1) == 0, "select built-in");
++        legacy_initialize();
++        require(syscall(SYS_getpid) == 424242, "shared built-in was not active");
++        require(initialize(&config) == -EALREADY, "host accepted published dispatcher");
++        require(begins == 0 && readies == 0, "host emitted a cross-mode handshake");
++        puts("published-dispatcher-refused");
++        return 0;
++    }
++
++    /* The default preload constructor was inert before main. None of these
++     * selectors may be read or changed by the explicit host initialization. */
++    require(setenv("REVERIE_LITEINST_HOST_RUNTIME", "not-selected", 1) == 0, "set host");
++    require(setenv("REVERIE_LITEINST_TOOL", "invalid-tool", 1) == 0, "set tool");
++    require(setenv("REVERIE_LITEINST_STRADDLER_STALENESS_TICKS", "invalid-ticks", 1) == 0,
++            "set straddler");
++    require(initialize(NULL) == -EINVAL, "null configuration accepted");
++    struct host_config bad = {2, 0};
++    require(initialize(&bad) == -EINVAL, "unknown configuration accepted");
++    require(begins == 0 && readies == 0, "invalid configuration consumed initialization");
++    config.straddler_staleness_ticks = !strcmp(argv[1], "configured") ? 17000 : 0;
++    int failure = !strcmp(argv[1], "preparation-failure");
++    if (failure) refuse_file_opens();
++    int result = initialize(&config);
++    require(begins == 1 && reentry_result == -EALREADY, "missing Begin or reentry guard");
++    if (failure) {
++        require(result == -EPERM && readies == 0, "preparation failure reported Ready");
++    } else {
++        require(result == 0 && readies == 1, "actual initialization did not finish");
++        int64_t (*install)(uint64_t) = (void *)(uintptr_t)saved_frame.install_helper;
++        int64_t tail = install((uintptr_t)test_syscall_site);
++        const struct install_result *installed = (void *)(uintptr_t)saved_frame.install_result;
++        require(tail > 0, "actual patch helper failed");
++        require(installed->version == 2 && installed->complete == 1 &&
++                installed->site_start == (uintptr_t)test_syscall_site &&
++                installed->instruction_len == 2 && installed->site_len == 8 &&
++                installed->relocated_tail == (uint64_t)tail &&
++                installed->arena_writable_start && installed->arena_executable_start &&
++                installed->arena_writable_len && installed->arena_executable_len,
++                "missing initialized site/arena result");
++        require((unsigned char)test_syscall_site[0] != 0x0f, "helper did not patch site");
++    }
++    require(initialize(&config) == -EALREADY, "host initialization ran twice");
++    require(begins == 1 && readies == !failure, "repeat changed handshake counts");
++    require(!strcmp(getenv("REVERIE_LITEINST_HOST_RUNTIME"), "not-selected"), "host env changed");
++    require(!strcmp(getenv("REVERIE_LITEINST_TOOL"), "invalid-tool"), "tool env changed");
++    require(!strcmp(getenv("REVERIE_LITEINST_STRADDLER_STALENESS_TICKS"), "invalid-ticks"),
++            "straddler env changed");
++    puts(failure ? "preparation-failure-retained" : "explicit-host-initialized");
++    return 0;
++}
+diff --git a/reverie-liteinst/tests/host_initializer.rs b/reverie-liteinst/tests/host_initializer.rs
+new file mode 100644
+index 00000000..a61aa705
+--- /dev/null
++++ b/reverie-liteinst/tests/host_initializer.rs
+@@ -0,0 +1,81 @@
++//! Exercise the explicit host entry on a real loaded runtime. The C fixture
++//! services only its own expected handshake traps; it does not qualify ptrace
++//! activation, target-loader injection, or any backend comparator.
++
++use std::path::PathBuf;
++use std::process::Command;
++use std::time::Duration;
++
++fn run(mode: &str, expected: &[u8]) {
++    let directory = tempfile::tempdir().unwrap();
++    let fixture = directory.path().join("host-initializer");
++    let source =
++        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/host_initializer.c");
++    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
++    let output = Command::new(compiler)
++        .args(["-std=gnu11", "-O0", "-fno-pie", "-no-pie"])
++        .arg(source)
++        .arg("-ldl")
++        .arg("-o")
++        .arg(&fixture)
++        .output()
++        .unwrap();
++    assert!(output.status.success(), "compiler: {output:?}");
++
++    let launcher = PathBuf::from(env!("CARGO_BIN_EXE_reverie-liteinst-strace"));
++    let target = launcher.parent().unwrap();
++    let preload = [
++        target.join("libreverie_liteinst.so"),
++        target.join("deps/libreverie_liteinst.so"),
++    ]
++    .into_iter()
++    .find(|path| path.is_file())
++    .expect("cargo did not build the LiteInst preload cdylib");
++    let stdout = std::fs::File::create(directory.path().join("stdout")).unwrap();
++    let stderr = std::fs::File::create(directory.path().join("stderr")).unwrap();
++    let mut command = Command::new(fixture);
++    command
++        .arg(mode)
++        .env("LD_PRELOAD", preload)
++        .env_remove("REVERIE_LITEINST_HOST_RUNTIME")
++        .env_remove("REVERIE_LITEINST_TOOL")
++        .env_remove("REVERIE_PRELOAD_TOOL")
++        .env_remove("REVERIE_LITEINST_STRADDLER_STALENESS_TICKS")
++        .stdout(stdout)
++        .stderr(stderr);
++    let mut child = command.spawn().unwrap();
++    let deadline = std::time::Instant::now() + Duration::from_secs(10);
++    let status = loop {
++        if let Some(status) = child.try_wait().unwrap() {
++            break status;
++        }
++        if std::time::Instant::now() >= deadline {
++            let _ = child.kill();
++            let _ = child.wait();
++            panic!("explicit host initializer timed out: {mode}");
++        }
++        std::thread::sleep(Duration::from_millis(10));
++    };
++    let stdout = std::fs::read(directory.path().join("stdout")).unwrap();
++    let stderr = std::fs::read(directory.path().join("stderr")).unwrap();
++    assert!(status.success(), "{mode}: {status:?}, stderr={stderr:?}");
++    assert!(stderr.is_empty(), "{mode}: unexpected stderr={stderr:?}");
++    assert_eq!(stdout, expected, "{mode}");
++}
++
++#[test]
++fn explicit_host_prepares_real_sites_with_disabled_and_explicit_policy() {
++    for mode in ["disabled", "configured"] {
++        run(mode, b"explicit-host-initialized\n");
++    }
++}
++
++#[test]
++fn explicit_host_retains_real_preparation_failure_without_a_second_handshake() {
++    run("preparation-failure", b"preparation-failure-retained\n");
++}
++
++#[test]
++fn explicit_host_rejects_an_active_shared_builtin_before_begin() {
++    run("builtin-active", b"published-dispatcher-refused\n");
++}
+diff --git a/reverie-liteinst/tests/rpc_tool.rs b/reverie-liteinst/tests/rpc_tool.rs
+index 69af19e6..96d988f1 100644
+--- a/reverie-liteinst/tests/rpc_tool.rs
++++ b/reverie-liteinst/tests/rpc_tool.rs
+@@ -10,6 +10,106 @@ use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
+ const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
+ const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
+ 
++#[test]
++fn fallback_uses_owned_frames_after_guest_stack_revocation() {
++    let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
++    for on_alt_stack in [true, false] {
++        let directory = tempfile::tempdir().unwrap();
++        let socket = directory.path().join("coordinator.sock");
++        let mut coordinator = Command::new(binary)
++            .arg("coordinator")
++            .arg(&socket)
++            .stdout(Stdio::null())
++            .stderr(Stdio::piped())
++            .spawn()
++            .unwrap();
++        let deadline = Instant::now() + Duration::from_secs(5);
++        while !socket.exists() && Instant::now() < deadline {
++            thread::sleep(Duration::from_millis(10));
++        }
++        let ready = socket.exists();
++        let mut command = Command::new(binary);
++        command
++            .arg("owned-frame")
++            .arg(&socket)
++            .env_remove(STRADDLER_STALENESS_TICKS_ENV);
++        reverie_liteinst::set_guest_alt_stack(&mut command, on_alt_stack);
++        let output = ready.then(|| owned_frame_output(command));
++        let _ = coordinator.kill();
++        let _ = coordinator.wait();
++        let output = output.expect("coordinator socket was not created");
++        assert!(output.stderr.is_empty(), "{output:?}");
++        if output.status.code() == Some(77) {
++            assert_eq!(output.stdout, b"owned frame: OSPKE unavailable\n");
++            eprintln!("owned frame PKRU controls unmeasured: OSPKE unavailable");
++            continue;
++        }
++        assert!(output.status.success(), "{output:?}");
++        let stdout = String::from_utf8(output.stdout).unwrap();
++        assert_eq!(
++            stdout
++                .lines()
++                .filter(|line| line.starts_with("owned frame observation: "))
++                .count(),
++            8
++        );
++        let bytes = stdout.lines().last().unwrap()
++            .strip_prefix("owned frame: rseq=unregistered native=4 Tool=4 registers=equal xstate-bytes=")
++            .and_then(|line| line.strip_suffix(" callback-stack=owned guest-stack-revoked=preserved negative-pkru=preserved hooks=0 traps=4"))
++            .expect("complete owned-frame observations").parse::<usize>().unwrap();
++        assert!(bytes >= 576);
++        println!("alt_stack={on_alt_stack}\n{stdout}");
++    }
++}
++
++fn owned_frame_output(mut command: Command) -> Output {
++    use std::io::Read;
++    use std::sync::Arc;
++    use std::sync::atomic::AtomicBool;
++    use std::sync::atomic::Ordering;
++    const LIMIT: u64 = 1024 * 1024;
++    command.stdout(Stdio::piped()).stderr(Stdio::piped());
++    let mut child = command.spawn().unwrap();
++    let exceeded = Arc::new(AtomicBool::new(false));
++    let read = |pipe: Box<dyn Read + Send>, exceeded: Arc<AtomicBool>| {
++        thread::spawn(move || {
++            let mut bytes = Vec::new();
++            pipe.take(LIMIT + 1).read_to_end(&mut bytes).unwrap();
++            if bytes.len() as u64 > LIMIT {
++                exceeded.store(true, Ordering::Relaxed);
++            }
++            bytes
++        })
++    };
++    // Drain full raw XSTATE observations while the child runs. Waiting for
++    // exit before reading would deadlock on a full pipe, not test the runtime.
++    let stdout = read(Box::new(child.stdout.take().unwrap()), exceeded.clone());
++    let stderr = read(Box::new(child.stderr.take().unwrap()), exceeded.clone());
++    let deadline = Instant::now() + Duration::from_secs(5);
++    let mut bounded = false;
++    let status = loop {
++        if let Some(status) = child.try_wait().unwrap() {
++            break status;
++        }
++        if Instant::now() >= deadline || exceeded.load(Ordering::Relaxed) {
++            bounded = true;
++            child.kill().unwrap();
++            break child.wait().unwrap();
++        }
++        thread::sleep(Duration::from_millis(10));
++    };
++    let output = Output {
++        status,
++        stdout: stdout.join().unwrap(),
++        stderr: stderr.join().unwrap(),
++    };
++    assert!(
++        !bounded && !exceeded.load(Ordering::Relaxed),
++        "owned-frame child exceeded five seconds/one MiB: {output:?}"
++    );
++    output
++}
++
+ #[test]
+ fn ordinary_tool_memory_and_scratch_work_with_protected_guest_state() {
+     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+diff --git a/reverie-preload/src/dispatch.rs b/reverie-preload/src/dispatch.rs
+index f1abce4f..3f21d142 100644
+--- a/reverie-preload/src/dispatch.rs
++++ b/reverie-preload/src/dispatch.rs
+@@ -125,6 +125,16 @@ impl SyscallEvent {
+         self.result = Some(result);
+     }
+ 
++    /// Commit a physical operation's result and observed permissions together,
++    /// including when its scalar result is a negative errno. A runtime-private
++    /// operation must not use this to replace the interrupted guest's rights.
++    pub fn set_native_result(&mut self, result: trap::NativeSyscallResult) {
++        self.result = Some(result.result);
++        if let Some(pkru) = result.pkru {
++            self.guest_pkru = Some(pkru);
++        }
++    }
++
+     /// Set the result to `-errno`.
+     pub fn fail(&mut self, errno: i32) {
+         self.result = Some(-i64::from(errno));
+@@ -152,14 +162,10 @@ impl SyscallEvent {
+     /// it does not re-trap.
+     pub fn forward(&mut self) -> i64 {
+         // AUTONOMOUS-BOT-IMPLEMENTED
+-        let result = unsafe {
+-            match self.guest_pkru {
+-                Some(pkru) => trap::raw_syscall6_with_pkru(self.number, self.args, pkru),
+-                None => trap::raw_syscall6(self.number, self.args),
+-            }
+-        };
+-        self.result = Some(result);
+-        result
++        let result =
++            unsafe { trap::raw_syscall6_with_result(self.number, self.args, self.guest_pkru) };
++        self.set_native_result(result);
++        result.result
+     }
+ 
+     pub(crate) fn resolved_result(&self) -> i64 {
+@@ -178,6 +184,20 @@ impl SyscallEvent {
+ pub trait SyscallDispatcher: Send + Sync {
+     /// Handle one trapped syscall, setting `event`'s result.
+     fn dispatch(&self, event: &mut SyscallEvent);
++
++    /// Recognize a backend-private completion before ordinary event creation.
++    /// Return true only after this genuine frame has been fully handled.
++    /// The borrow cannot outlive this signal handler. The same async-signal
++    /// safety requirements as `dispatch` apply.
++    fn dispatch_private_signal(&self, _frame: &mut trap::frame::SignalFrame<'_>) -> bool {
++        false
++    }
++
++    /// Dispatch a genuine signal event with explicitly scoped frame access.
++    /// Ordinary/direct dispatchers need no signal-frame implementation.
++    fn dispatch_signal(&self, event: &mut SyscallEvent, _frame: &mut trap::frame::SignalFrame<'_>) {
++        self.dispatch(event);
++    }
+ }
+ 
+ /// Whether `number` creates a new process/thread that must inherit the filter.
+diff --git a/reverie-preload/src/trap.rs b/reverie-preload/src/trap.rs
+index b85e1d87..9a1d4d0f 100644
+--- a/reverie-preload/src/trap.rs
++++ b/reverie-preload/src/trap.rs
+@@ -29,6 +29,7 @@ use crate::dispatch::SyscallDispatcher;
+ use crate::dispatch::SyscallEvent;
+ use crate::seccomp::TrustedGate;
+ use crate::signal;
++pub mod frame;
+ mod pkru;
+ const SYS_SECCOMP_CODE: libc::c_int = 1;
+ 
+@@ -283,6 +284,14 @@ pub fn set_dispatcher(dispatcher: Box<dyn SyscallDispatcher>) {
+     DISPATCHER.store(leaked, Ordering::Release);
+ }
+ 
++/// Whether a process-wide dispatcher has already been published.
++///
++/// Publication precedes seccomp installation and is not rolled back on an
++/// installation error. This reports that state, not successful activation.
++pub fn has_dispatcher() -> bool {
++    !DISPATCHER.load(Ordering::Acquire).is_null()
++}
++
+ fn dispatcher() -> Option<&'static (dyn SyscallDispatcher + 'static)> {
+     let ptr = DISPATCHER.load(Ordering::Acquire);
+     if ptr.is_null() {
+@@ -359,35 +368,48 @@ pub(crate) unsafe extern "C" fn sigsys_handler(
+     }
+     IN_HANDLER.set(true);
+ 
+-    let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
+-    let guest_pkru = match unsafe { pkru::from_signal_frame(context.uc_mcontext.fpregs) } {
++    let mut frame = match unsafe { frame::SignalFrame::from_raw(context, info) } {
++        Ok(frame) => frame,
++        Err(_) => unsafe { exit_now(126) },
++    };
++    if dispatcher().is_some_and(|dispatcher| dispatcher.dispatch_private_signal(&mut frame)) {
++        IN_HANDLER.set(false);
++        return;
++    }
++    let guest_pkru = match frame.pkru() {
+         Ok(value) => value,
+-        Err(()) => unsafe { exit_now(126) },
++        Err(_) => unsafe { exit_now(126) },
+     };
+-    let registers = &mut context.uc_mcontext.gregs;
+     let mut event = SyscallEvent::new(
+-        registers[libc::REG_RAX as usize],
++        frame.register(libc::REG_RAX as usize),
+         [
+-            registers[libc::REG_RDI as usize] as u64,
+-            registers[libc::REG_RSI as usize] as u64,
+-            registers[libc::REG_RDX as usize] as u64,
+-            registers[libc::REG_R10 as usize] as u64,
+-            registers[libc::REG_R8 as usize] as u64,
+-            registers[libc::REG_R9 as usize] as u64,
++            frame.register(libc::REG_RDI as usize) as u64,
++            frame.register(libc::REG_RSI as usize) as u64,
++            frame.register(libc::REG_RDX as usize) as u64,
++            frame.register(libc::REG_R10 as usize) as u64,
++            frame.register(libc::REG_R8 as usize) as u64,
++            frame.register(libc::REG_R9 as usize) as u64,
+         ],
+-        registers[libc::REG_RIP as usize] as u64,
++        frame.register(libc::REG_RIP as usize) as u64,
+     );
+     event.set_guest_pkru(guest_pkru);
+ 
+-    dispatch_event(&mut event);
++    if let Some(dispatcher) = dispatcher() {
++        dispatcher.dispatch_signal(&mut event, &mut frame);
++    } else {
++        event.fail(libc::ENOSYS);
++    }
+ 
+     // AUTONOMOUS-BOT-IMPLEMENTED
+     if let Some(resume_address) = event.resume_address() {
+         // Preserve the syscall-number register so the replacement callback
+         // observes the original entry state after sigreturn.
+-        registers[libc::REG_RIP as usize] = resume_address as i64;
++        frame.set_register(libc::REG_RIP as usize, resume_address as i64);
+     } else {
+-        registers[libc::REG_RAX as usize] = event.resolved_result();
++        frame.set_register(libc::REG_RAX as usize, event.resolved_result());
++        if frame.set_pkru(event.guest_pkru()).is_err() {
++            unsafe { exit_now(126) };
++        }
+     }
+     IN_HANDLER.set(false);
+ }
+@@ -443,6 +465,7 @@ unsafe extern "C" {
+ /// Installs process-global signal disposition; call once during init while
+ /// CPUID is available, before enabling instruction faulting.
+ pub unsafe fn install_handler(use_alt_stack: bool) -> io::Result<()> {
++    frame::initialize()?;
+     let ospke = pkru::initialize()?;
+     let handler = if ospke {
+         reverie_preload_sigsys_pkru
+diff --git a/reverie-preload/src/trap/frame.rs b/reverie-preload/src/trap/frame.rs
+new file mode 100644
+index 00000000..c79b26c9
+--- /dev/null
++++ b/reverie-preload/src/trap/frame.rs
+@@ -0,0 +1,641 @@
++/*
++ * Copyright (c) Meta Platforms, Inc. and affiliates.
++ * All rights reserved.
++ *
++ * This source code is licensed under the BSD-style license found in the
++ * LICENSE file in the root directory of this source tree.
++ */
++
++//! Scoped access to genuine Linux x86-64 signal frames.
++//!
++//! Linux supplies a 304-byte ucontext prefix, not libc's larger userspace
++//! ucontext_t. Never borrow that larger object together with its FP storage.
++
++use core::marker::PhantomData;
++use std::io;
++use std::sync::OnceLock;
++
++const CONTEXT_BYTES: usize = 304;
++const GREG_OFFSET: usize = 40;
++const FP_POINTER_OFFSET: usize = 224;
++const LEGACY_BYTES: usize = 512;
++const SW_OFFSET: usize = 464;
++const HEADER_OFFSET: usize = 512;
++const HEADER_END: usize = 576;
++const MAGIC1: u32 = 0x4650_5853;
++const MAGIC2: u32 = 0x4650_5845;
++const PKRU_BIT: u64 = 1 << 9;
++
++/// A malformed or incompatible architectural signal-frame image.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct FrameError;
++
++impl std::fmt::Display for FrameError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.write_str("invalid signal-frame state")
++    }
++}
++
++impl std::error::Error for FrameError {}
++
++#[derive(Clone, Copy, Default)]
++struct Component {
++    offset: usize,
++    size: usize,
++}
++
++struct Layout {
++    maximum: usize,
++    enabled: u64,
++    components: [Component; 64],
++    pkru: Option<usize>,
++}
++
++static LAYOUT: OnceLock<Layout> = OnceLock::new();
++
++/// Prepare all layout information in ordinary context, before CPUID faulting.
++pub fn initialize() -> io::Result<()> {
++    if LAYOUT.get().is_some() {
++        return Ok(());
++    }
++    let layout = detect()?;
++    let _ = LAYOUT.set(layout);
++    Ok(())
++}
++
++fn detect() -> io::Result<Layout> {
++    use core::arch::x86_64::__cpuid;
++    use core::arch::x86_64::__cpuid_count;
++    use core::arch::x86_64::_xgetbv;
++    let invalid = || io::Error::other("invalid signal XSAVE layout");
++    let mut layout = Layout {
++        maximum: LEGACY_BYTES,
++        enabled: 3,
++        components: [Component::default(); 64],
++        pkru: None,
++    };
++    let maximum_leaf = __cpuid(0).eax;
++    if __cpuid(1).ecx & ((1 << 26) | (1 << 27)) != ((1 << 26) | (1 << 27)) {
++        return Ok(layout);
++    }
++    if maximum_leaf < 0xd {
++        return Err(invalid());
++    }
++    let enabled = unsafe { _xgetbv(0) };
++    let area = __cpuid_count(0xd, 0);
++    let supported = u64::from(area.eax) | (u64::from(area.edx) << 32);
++    if enabled & 3 != 3 || enabled & !supported != 0 || area.ebx < HEADER_END as u32 {
++        return Err(invalid());
++    }
++    layout.maximum = area.ebx as usize;
++    layout.enabled = enabled;
++    for index in 2..64 {
++        if enabled & (1 << index) != 0 {
++            let leaf = __cpuid_count(0xd, index as u32);
++            let component = Component {
++                offset: leaf.ebx as usize,
++                size: leaf.eax as usize,
++            };
++            if leaf.ecx & 1 != 0
++                || component.size == 0
++                || component.offset < HEADER_END
++                || component
++                    .offset
++                    .checked_add(component.size)
++                    .is_none_or(|end| end > layout.maximum)
++            {
++                return Err(invalid());
++            }
++            layout.components[index] = component;
++        }
++    }
++    if maximum_leaf >= 7 && __cpuid_count(7, 0).ecx & (1 << 4) != 0 {
++        if enabled & PKRU_BIT == 0 || layout.components[9].size != 8 {
++            return Err(invalid());
++        }
++        layout.pkru = Some(layout.components[9].offset);
++    }
++    Ok(layout)
++}
++
++#[derive(Clone, Copy)]
++enum FpKind {
++    Absent,
++    Legacy,
++    Xsave {
++        bytes: usize,
++        features: u64,
++        present: u64,
++    },
++}
++
++#[repr(C, align(64))]
++#[derive(Clone)]
++struct Block([u8; 64]);
++
++/// An owned architectural image, allocated before signal handling begins.
++/// It contains no pointer or borrow into the original kernel signal frame.
++pub struct SavedState {
++    /// The nineteen architectural gregs through CSGSFS, excluding trap metadata.
++    pub registers: [i64; 19],
++    storage: Box<[Block]>,
++    kind: FpKind,
++    pkru: Option<u32>,
++    restorer: usize,
++}
++
++impl SavedState {
++    /// Allocate full CPU-described capacity in ordinary context.
++    pub fn new() -> io::Result<Self> {
++        initialize()?;
++        let layout = LAYOUT
++            .get()
++            .ok_or_else(|| io::Error::other("missing signal layout"))?;
++        let count = layout
++            .maximum
++            .checked_add(63)
++            .ok_or_else(|| io::Error::other("signal image overflow"))?
++            / 64;
++        let mut storage = Vec::new();
++        storage.try_reserve_exact(count).map_err(io::Error::other)?;
++        storage.resize(count, Block([0; 64]));
++        Ok(Self {
++            registers: [0; 19],
++            storage: storage.into_boxed_slice(),
++            kind: FpKind::Absent,
++            pkru: None,
++            restorer: 0,
++        })
++    }
++
++    /// Current guest permissions, distinct from the live runtime's permissions.
++    pub fn pkru(&self) -> Option<u32> {
++        self.pkru
++    }
++
++    /// Retain a typed physical guest effect, including one accompanying errno.
++    pub fn set_pkru(&mut self, value: Option<u32>) -> Result<(), FrameError> {
++        if self.pkru.is_some() != value.is_some() {
++            return Err(FrameError);
++        }
++        self.pkru = value;
++        Ok(())
++    }
++}
++
++/// Exclusive access to one genuine kernel frame, valid only during its handler.
++pub struct SignalFrame<'signal> {
++    context: *mut u8,
++    fp: *mut u8,
++    kind: FpKind,
++    layout: &'static Layout,
++    _borrow: PhantomData<&'signal mut ()>,
++}
++
++impl<'signal> SignalFrame<'signal> {
++    /// # Safety
++    /// The pointers must come directly from this invocation's kernel-created
++    /// x86-64 SA_SIGINFO frame. Runtime memory access must already be enabled.
++    /// No other references may alias the context prefix or its FP allocation.
++    pub(super) unsafe fn from_raw(
++        context: *mut libc::c_void,
++        info: *const libc::siginfo_t,
++    ) -> Result<Self, FrameError> {
++        let layout = LAYOUT.get().ok_or(FrameError)?;
++        let address = context as usize;
++        if address < 8
++            || address & 7 != 0
++            || address.checked_add(CONTEXT_BYTES) != Some(info as usize)
++        {
++            return Err(FrameError);
++        }
++        let context = context.cast::<u8>();
++        let fp = unsafe {
++            context
++                .add(FP_POINTER_OFFSET)
++                .cast::<*mut u8>()
++                .read_unaligned()
++        };
++        let kind = unsafe { decode_fp(fp, layout)? };
++        if !fp.is_null() {
++            let bytes = match kind {
++                FpKind::Absent => 0,
++                FpKind::Legacy => LEGACY_BYTES,
++                FpKind::Xsave { bytes, .. } => bytes.checked_add(4).ok_or(FrameError)?,
++            };
++            let end = (fp as usize).checked_add(bytes).ok_or(FrameError)?;
++            // The fixed rt_sigframe extends eight bytes before uc and 128
++            // bytes after the prefix. Keep architectural and FP views disjoint.
++            let frame_end = address.checked_add(CONTEXT_BYTES + 128).ok_or(FrameError)?;
++            if (fp as usize) < frame_end && end > address - 8 {
++                return Err(FrameError);
++            }
++        }
++        let frame = Self {
++            context,
++            fp,
++            kind,
++            layout,
++            _borrow: PhantomData,
++        };
++        // siginfo's x86-64 SIGSYS union follows its 16-byte fixed header.
++        let call = unsafe { info.cast::<u8>().add(16).cast::<u64>().read_unaligned() };
++        let number = unsafe { info.cast::<u8>().add(24).cast::<i32>().read_unaligned() };
++        let arch = unsafe { info.cast::<u8>().add(28).cast::<u32>().read_unaligned() };
++        if arch != 0xc000_003e
++            || call != frame.register(libc::REG_RIP as usize) as u64
++            || number != frame.register(libc::REG_RAX as usize) as i32
++        {
++            return Err(FrameError);
++        }
++        Ok(frame)
++    }
++
++    /// Read an architectural greg, without borrowing libc's oversized context.
++    pub fn register(&self, index: usize) -> i64 {
++        assert!(index < 19);
++        unsafe {
++            self.context
++                .add(GREG_OFFSET + index * 8)
++                .cast::<i64>()
++                .read_unaligned()
++        }
++    }
++
++    /// Write an architectural greg; Linux-owned trap/mask metadata is untouched.
++    pub fn set_register(&mut self, index: usize, value: i64) {
++        assert!(index < 19);
++        unsafe {
++            self.context
++                .add(GREG_OFFSET + index * 8)
++                .cast::<i64>()
++                .write_unaligned(value)
++        };
++    }
++
++    /// Interrupted rights from the actual frame, including init-state PKRU.
++    pub fn pkru(&self) -> Result<Option<u32>, FrameError> {
++        let Some(_) = self.layout.pkru else {
++            return Ok(None);
++        };
++        match self.kind {
++            // Preserve the existing OSPKE decoder's refusal: a null pointer
++            // supplies no authenticated interrupted PKRU value.
++            FpKind::Absent => Err(FrameError),
++            FpKind::Xsave { features, .. } if features & PKRU_BIT != 0 => unsafe {
++                super::pkru::from_signal_frame(self.fp.cast()).map_err(|()| FrameError)
++            },
++            _ => Err(FrameError),
++        }
++    }
++
++    /// Update permissions only in this frame, preserving its metadata/padding.
++    pub fn set_pkru(&mut self, value: Option<u32>) -> Result<(), FrameError> {
++        match (self.layout.pkru, value, self.kind) {
++            (None, None, _) => Ok(()),
++            (
++                Some(offset),
++                Some(value),
++                FpKind::Xsave {
++                    bytes,
++                    features,
++                    present,
++                },
++            ) if features & PKRU_BIT != 0 => {
++                unsafe {
++                    self.fp.add(offset).cast::<u32>().write_unaligned(value);
++                    self.fp
++                        .add(HEADER_OFFSET)
++                        .cast::<u64>()
++                        .write_unaligned(present | PKRU_BIT);
++                }
++                self.kind = FpKind::Xsave {
++                    bytes,
++                    features,
++                    present: present | PKRU_BIT,
++                };
++                Ok(())
++            }
++            _ => Err(FrameError),
++        }
++    }
++
++    /// Capture into preallocated owned storage. No frame pointer escapes.
++    pub fn capture(&self, saved: &mut SavedState) -> Result<(), FrameError> {
++        for (index, value) in saved.registers.iter_mut().enumerate() {
++            *value = self.register(index);
++        }
++        let bytes = match self.kind {
++            FpKind::Absent => 0,
++            FpKind::Legacy => LEGACY_BYTES,
++            FpKind::Xsave { bytes, .. } => bytes,
++        };
++        if bytes > saved.storage.len() * 64 {
++            return Err(FrameError);
++        }
++        if bytes != 0 {
++            unsafe {
++                core::ptr::copy_nonoverlapping(
++                    self.fp,
++                    saved.storage.as_mut_ptr().cast::<u8>(),
++                    bytes,
++                )
++            };
++        }
++        saved.kind = self.kind;
++        saved.pkru = self.pkru()?;
++        saved.restorer = unsafe { self.context.sub(8).cast::<usize>().read_unaligned() };
++        Ok(())
++    }
++
++    /// Install owned state into this fresh frame, retaining all Linux metadata.
++    pub fn restore(&mut self, saved: &SavedState) -> Result<(), FrameError> {
++        if unsafe { self.context.sub(8).cast::<usize>().read_unaligned() } != saved.restorer {
++            return Err(FrameError);
++        }
++        let source = saved.storage.as_ptr().cast::<u8>();
++        match (saved.kind, self.kind) {
++            (FpKind::Absent, FpKind::Absent) => {}
++            (FpKind::Absent, _) => {
++                // Architectural initial legacy payload; leave all fresh Linux
++                // software/reserved bytes alone. Extended init uses BV = 0.
++                unsafe {
++                    initialize_legacy_payload(self.fp);
++                    self.fp.cast::<u16>().write_unaligned(0x037f);
++                    self.fp.add(24).cast::<u32>().write_unaligned(0x1f80);
++                }
++                if let FpKind::Xsave {
++                    bytes, features, ..
++                } = self.kind
++                {
++                    unsafe { self.fp.add(HEADER_OFFSET).cast::<u64>().write_unaligned(0) };
++                    self.kind = FpKind::Xsave {
++                        bytes,
++                        features,
++                        present: 0,
++                    };
++                }
++            }
++            (FpKind::Legacy, FpKind::Legacy) => unsafe {
++                copy_legacy_payload(source, self.fp);
++            },
++            (
++                FpKind::Xsave { present, .. },
++                FpKind::Xsave {
++                    bytes, features, ..
++                },
++            ) if present & !features == 0 => {
++                unsafe { copy_legacy_payload(source, self.fp) };
++                for index in 2..64 {
++                    // PKRU's upper four bytes are padding, not guest state.
++                    // Its actual u32 is installed by set_pkru below.
++                    if index != 9 && present & (1 << index) != 0 {
++                        let component = self.layout.components[index];
++                        unsafe {
++                            core::ptr::copy_nonoverlapping(
++                                source.add(component.offset),
++                                self.fp.add(component.offset),
++                                component.size,
++                            )
++                        };
++                    }
++                }
++                unsafe {
++                    self.fp
++                        .add(HEADER_OFFSET)
++                        .cast::<u64>()
++                        .write_unaligned(present)
++                };
++                self.kind = FpKind::Xsave {
++                    bytes,
++                    features,
++                    present,
++                };
++            }
++            _ => return Err(FrameError),
++        }
++        self.set_pkru(saved.pkru)?;
++        for (index, value) in saved.registers.iter().copied().enumerate() {
++            self.set_register(index, value);
++        }
++        Ok(())
++    }
++}
++
++unsafe fn copy_legacy_payload(source: *const u8, destination: *mut u8) {
++    // FXSAVE byte 5, MXCSR_MASK, x87 slot padding and bytes 416..512 are
++    // reserved/capability/software data. Keep them from the fresh frame.
++    unsafe {
++        core::ptr::copy_nonoverlapping(source, destination, 5);
++        core::ptr::copy_nonoverlapping(source.add(6), destination.add(6), 22);
++        for register in 0..8 {
++            let offset = 32 + register * 16;
++            core::ptr::copy_nonoverlapping(source.add(offset), destination.add(offset), 10);
++        }
++        core::ptr::copy_nonoverlapping(source.add(160), destination.add(160), 256);
++    }
++}
++
++unsafe fn initialize_legacy_payload(destination: *mut u8) {
++    // Initial architectural state without stamping over fresh kernel padding.
++    unsafe {
++        core::ptr::write_bytes(destination, 0, 5);
++        core::ptr::write_bytes(destination.add(6), 0, 22);
++        for register in 0..8 {
++            core::ptr::write_bytes(destination.add(32 + register * 16), 0, 10);
++        }
++        core::ptr::write_bytes(destination.add(160), 0, 256);
++    }
++}
++
++unsafe fn decode_fp(fp: *const u8, layout: &Layout) -> Result<FpKind, FrameError> {
++    if fp.is_null() {
++        return Ok(FpKind::Absent);
++    }
++    if fp as usize & 15 != 0
++        || layout
++            .maximum
++            .checked_add(4)
++            .and_then(|bytes| (fp as usize).checked_add(bytes))
++            .is_none()
++    {
++        return Err(FrameError);
++    }
++    let read32 = |offset| unsafe { fp.add(offset).cast::<u32>().read_unaligned() };
++    let read64 = |offset| unsafe { fp.add(offset).cast::<u64>().read_unaligned() };
++    if read32(SW_OFFSET) != MAGIC1 {
++        return Ok(FpKind::Legacy);
++    }
++    let bytes = read32(SW_OFFSET + 16) as usize;
++    let features = read64(SW_OFFSET + 8);
++    if fp as usize & 63 != 0
++        || bytes < HEADER_END
++        || bytes > layout.maximum
++        || bytes.checked_add(4) != Some(read32(SW_OFFSET + 4) as usize)
++        || features & !layout.enabled != 0
++    {
++        return Err(FrameError);
++    }
++    for index in 2..64 {
++        if features & (1 << index) != 0 {
++            let component = layout.components[index];
++            if component.size == 0
++                || component
++                    .offset
++                    .checked_add(component.size)
++                    .is_none_or(|end| end > bytes)
++            {
++                return Err(FrameError);
++            }
++        }
++    }
++    let present = read64(HEADER_OFFSET);
++    if present & !features != 0
++        || read64(HEADER_OFFSET + 8) != 0
++        || (HEADER_OFFSET + 16..HEADER_END)
++            .step_by(8)
++            .any(|offset| read64(offset) != 0)
++        || read32(bytes) != MAGIC2
++    {
++        return Err(FrameError);
++    }
++    Ok(FpKind::Xsave {
++        bytes,
++        features,
++        present,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn architectural_legacy_byte(offset: usize) -> bool {
++        offset < 5
++            || (6..28).contains(&offset)
++            || (32..160).contains(&offset) && (offset - 32) % 16 < 10
++            || (160..416).contains(&offset)
++    }
++
++    #[test]
++    fn legacy_copy_preserves_every_reserved_and_capability_byte() {
++        let source = [0xa5; LEGACY_BYTES];
++        let mut fresh = [0x5a; LEGACY_BYTES];
++        unsafe { copy_legacy_payload(source.as_ptr(), fresh.as_mut_ptr()) };
++        for (offset, value) in fresh.into_iter().enumerate() {
++            assert_eq!(
++                value,
++                if architectural_legacy_byte(offset) {
++                    0xa5
++                } else {
++                    0x5a
++                },
++                "byte {offset}"
++            );
++        }
++    }
++
++    #[test]
++    fn restoring_pkru_does_not_copy_old_padding_or_linux_metadata() {
++        let mut components = [Component::default(); 64];
++        components[9] = Component {
++            offset: 600,
++            size: 8,
++        };
++        let layout = Box::leak(Box::new(Layout {
++            maximum: 640,
++            enabled: 0x203,
++            components,
++            pkru: Some(600),
++        }));
++        let saved = SavedState {
++            registers: core::array::from_fn(|index| index as i64 + 100),
++            storage: vec![Block([0xa5; 64]); 10].into_boxed_slice(),
++            kind: FpKind::Xsave {
++                bytes: 640,
++                features: 0x203,
++                present: 0x203,
++            },
++            pkru: Some(3),
++            restorer: 0,
++        };
++        let mut context = [0u64; 56];
++        let original_context = context;
++        let mut fp = vec![Block([0x5a; 64]); 11];
++        let pointer = fp.as_mut_ptr().cast::<u8>();
++        let mut frame = SignalFrame {
++            context: unsafe { context.as_mut_ptr().cast::<u8>().add(8) },
++            fp: pointer,
++            kind: FpKind::Xsave {
++                bytes: 640,
++                features: 0x203,
++                present: 3,
++            },
++            layout,
++            _borrow: PhantomData,
++        };
++        frame.restore(&saved).unwrap();
++        let bytes = unsafe { core::slice::from_raw_parts(pointer, 644) };
++        for (offset, value) in bytes.iter().copied().enumerate() {
++            let expected = if architectural_legacy_byte(offset) {
++                0xa5
++            } else if (512..520).contains(&offset) {
++                0x203u64.to_ne_bytes()[offset - 512]
++            } else if (600..604).contains(&offset) {
++                3u32.to_ne_bytes()[offset - 600]
++            } else {
++                0x5a
++            };
++            assert_eq!(value, expected, "FP byte {offset}");
++        }
++        for (index, value) in context.iter().copied().enumerate() {
++            assert_eq!(
++                value,
++                if (6..25).contains(&index) {
++                    saved.registers[index - 6] as u64
++                } else {
++                    original_context[index]
++                },
++                "context word {index}"
++            );
++        }
++    }
++
++    #[test]
++    fn null_fp_is_not_an_authenticated_pkru_value() {
++        let layout = Box::leak(Box::new(Layout {
++            maximum: 640,
++            enabled: 0x203,
++            components: [Component::default(); 64],
++            pkru: Some(600),
++        }));
++        let frame = SignalFrame {
++            context: core::ptr::null_mut(),
++            fp: core::ptr::null_mut(),
++            kind: FpKind::Absent,
++            layout,
++            _borrow: PhantomData,
++        };
++        assert_eq!(frame.pkru(), Err(FrameError));
++    }
++
++    #[test]
++    fn no_ospke_legacy_frame_has_no_permission_requirement() {
++        let layout = Box::leak(Box::new(Layout {
++            maximum: 512,
++            enabled: 3,
++            components: [Component::default(); 64],
++            pkru: None,
++        }));
++        let mut frame = SignalFrame {
++            context: core::ptr::null_mut(),
++            fp: core::ptr::null_mut(),
++            kind: FpKind::Absent,
++            layout,
++            _borrow: PhantomData,
++        };
++        assert_eq!(frame.pkru(), Ok(None));
++        assert_eq!(frame.set_pkru(None), Ok(()));
++        assert_eq!(frame.set_pkru(Some(0)), Err(FrameError));
++    }
++}
+diff --git a/reverie/src/backend_stats.rs b/reverie/src/backend_stats.rs
+index 5b7b2c2f..5e2e3ec3 100644
+--- a/reverie/src/backend_stats.rs
++++ b/reverie/src/backend_stats.rs
+@@ -137,6 +137,12 @@ liteinst_dispatch_paths! {
+     InGuestSigsys => "in_guest_sigsys",
+     /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
+     InGuestNestedSigsys => "in_guest_nested_sigsys",
++    /** A genuine kernel SIGSYS entered shared frame dispatch in this process.
++    Unlike guest-path attribution, this is not inherited/recreated at fork. */
++    InGuestPhysicalSigsys => "in_guest_physical_sigsys",
++    /** A genuine private fallback completion frame was handled successfully.
++    This counts handler completion, not an independently observed sigreturn. */
++    FallbackCompletionSigsys => "fallback_completion_sigsys",
+     /** A cache-line-straddling site serviced by fallback: retained ptrace
+     dispatch, or successful in-guest Tool dispatch. Refused in-guest attempts
+     are counted by `FallbackRefusal` instead. */

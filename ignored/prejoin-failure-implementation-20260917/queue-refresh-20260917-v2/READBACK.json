@@ -1,0 +1,513 @@
+{
+  "status": "Read-only queue packet authenticated; no source or runtime review verdict",
+  "checks": [
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/BASELINE-INPUTS.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/PREPARATION.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/QUEUE-DELTA.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/REPORT.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/00-hermit-open.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/01-reverie-open.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/02-REPORT.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/03-baseline-queue-report.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/04-baseline-donor-plan.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/05-REPORT.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/06-SKILL.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/baseline/07-SKILL.md",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3054.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3054.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3054.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3058.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3058.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3058.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3069.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3070.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3073.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-3077.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/hermit-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/read_operation.py",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-578.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-578.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-578.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v2/reverie-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/hermit-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/hermit-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/hermit-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/read_operation.py",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-578.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-578.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-578.stdout",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "retained bytes /home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/queue-refresh-20260917-v1/reverie-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "13 successful current GETs",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3054.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3054.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3054.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3054.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3058.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3058.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3058.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3058.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3069-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3069-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3069-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3069-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3069.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3069.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3069.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3069.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3070-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3070-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3070-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3070-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3070.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3070.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3070.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3070.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3073-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3073-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3073-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3073-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3073.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3073.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3073.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3073.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3077-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3077-files.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3077-files.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3077-files.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-3077.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-3077.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3077.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-3077.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success hermit-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET hermit-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream hermit-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success reverie-578.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET reverie-578.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream reverie-578.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream reverie-578.stderr",
+      "passed": true
+    },
+    {
+      "check": "actual success reverie-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "proxy and GET reverie-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "receipt stream reverie-open.stdout",
+      "passed": true
+    },
+    {
+      "check": "receipt stream reverie-open.stderr",
+      "passed": true
+    },
+    {
+      "check": "complete open list hermit",
+      "passed": true
+    },
+    {
+      "check": "complete open list reverie",
+      "passed": true
+    },
+    {
+      "check": "complete new file list 3077",
+      "passed": true
+    },
+    {
+      "check": "complete new file list 3073",
+      "passed": true
+    },
+    {
+      "check": "complete new file list 3070",
+      "passed": true
+    },
+    {
+      "check": "complete new file list 3069",
+      "passed": true
+    },
+    {
+      "check": "no known candidate metadata change",
+      "passed": true
+    },
+    {
+      "check": "preserve three aborted queries",
+      "passed": true
+    },
+    {
+      "check": "local abort retained reverie-578.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "local abort retained hermit-open.receipt.json",
+      "passed": true
+    },
+    {
+      "check": "local abort retained reverie-open.receipt.json",
+      "passed": true
+    }
+  ],
+  "check_count": 126,
+  "manifest_sha256": "94ed5764850c0c76c11860ce36cbfcb1cb16437833562a65680a180c52a3265c",
+  "report_sha256": "c77fb5c8300ec7681564ca858900f2e8255c7c387cbc14600c2ea9cc611c4b2b",
+  "delta_sha256": "2d8694545900c661ee2d8e1e216999d352c980ae1819ffab92fc2c09cd40a49c"
+}

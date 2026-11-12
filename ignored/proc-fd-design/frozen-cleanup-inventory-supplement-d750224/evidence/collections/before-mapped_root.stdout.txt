@@ -1,0 +1,4 @@
+wrkslots/tests/test_lifecycle.py::test_validation_exclusion_fixture_preserves_host_root_boundary
+wrkslots/tests/test_lifecycle.py::test_root_owned_executable_rejects_namespace_root_without_host_root
+
+2/654 tests collected (652 deselected) in 2.71s

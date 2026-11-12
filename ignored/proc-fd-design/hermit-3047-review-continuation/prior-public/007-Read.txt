@@ -1,0 +1,611 @@
+Prior public request:
+{
+  "id": "toolu_vrtx_01GU4VNvqVthkvmGNZjWWLxN",
+  "name": "Read",
+  "input": {
+    "file_path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/proc-fd-design/hermit-3047-review-preparation/complete-hermit.patch",
+    "limit": 600
+  }
+}
+
+Successful public tool result (exact text below):
+1	diff --git a/Cargo.lock b/Cargo.lock
+2	index cbaebf325..5b056ea69 100644
+3	--- a/Cargo.lock
+4	+++ b/Cargo.lock
+5	@@ -1371,7 +1371,7 @@ dependencies = [
+6	 [[package]]
+7	 name = "nostd-print"
+8	 version = "0.2.0"
+9	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+10	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+11	 dependencies = [
+12	  "syscalls",
+13	 ]
+14	@@ -1709,7 +1709,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+15	 [[package]]
+16	 name = "reverie-core"
+17	 version = "0.2.0"
+18	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+19	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+20	 dependencies = [
+21	  "addr2line",
+22	  "anyhow",
+23	@@ -1735,7 +1735,7 @@ dependencies = [
+24	 [[package]]
+25	 name = "reverie-dbt"
+26	 version = "0.2.0"
+27	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+28	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+29	 dependencies = [
+30	  "bincode 2.0.1",
+31	  "libc",
+32	@@ -1753,7 +1753,7 @@ dependencies = [
+33	 [[package]]
+34	 name = "reverie-kvm"
+35	 version = "0.2.0"
+36	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+37	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+38	 dependencies = [
+39	  "futures 0.3.33",
+40	  "goblin",
+41	@@ -1768,7 +1768,7 @@ dependencies = [
+42	 [[package]]
+43	 name = "reverie-liteinst"
+44	 version = "0.2.0"
+45	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+46	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+47	 dependencies = [
+48	  "bincode 2.0.1",
+49	  "libc",
+50	@@ -1786,7 +1786,7 @@ dependencies = [
+51	 [[package]]
+52	 name = "reverie-memory"
+53	 version = "0.2.0"
+54	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+55	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+56	 dependencies = [
+57	  "syscalls",
+58	 ]
+59	@@ -1794,7 +1794,7 @@ dependencies = [
+60	 [[package]]
+61	 name = "reverie-preload"
+62	 version = "0.2.0"
+63	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+64	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+65	 dependencies = [
+66	  "bincode 2.0.1",
+67	  "libc",
+68	@@ -1805,7 +1805,7 @@ dependencies = [
+69	 [[package]]
+70	 name = "reverie-process"
+71	 version = "0.2.0"
+72	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+73	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+74	 dependencies = [
+75	  "bincode 2.0.1",
+76	  "bitflags 2.13.1",
+77	@@ -1822,7 +1822,7 @@ dependencies = [
+78	 [[package]]
+79	 name = "reverie-ptrace"
+80	 version = "0.2.0"
+81	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+82	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+83	 dependencies = [
+84	  "anyhow",
+85	  "async-trait",
+86	@@ -1853,7 +1853,7 @@ dependencies = [
+87	 [[package]]
+88	 name = "reverie-rpc"
+89	 version = "0.2.0"
+90	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+91	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+92	 dependencies = [
+93	  "async-trait",
+94	  "bincode 1.3.3",
+95	@@ -1864,7 +1864,7 @@ dependencies = [
+96	 [[package]]
+97	 name = "reverie-rpc-macros"
+98	 version = "0.2.0"
+99	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+100	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+101	 dependencies = [
+102	  "darling",
+103	  "heck 0.3.3",
+104	@@ -1876,7 +1876,7 @@ dependencies = [
+105	 [[package]]
+106	 name = "reverie-rpc-transport"
+107	 version = "0.2.0"
+108	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+109	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+110	 dependencies = [
+111	  "async-trait",
+112	  "bincode 2.0.1",
+113	@@ -1890,7 +1890,7 @@ dependencies = [
+114	 [[package]]
+115	 name = "reverie-sabre"
+116	 version = "0.2.0"
+117	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+118	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+119	 dependencies = [
+120	  "atomic 0.5.3",
+121	  "cc",
+122	@@ -1915,7 +1915,7 @@ dependencies = [
+123	 [[package]]
+124	 name = "reverie-sabre-macros"
+125	 version = "0.2.0"
+126	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+127	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+128	 dependencies = [
+129	  "darling",
+130	  "heck 0.3.3",
+131	@@ -1927,7 +1927,7 @@ dependencies = [
+132	 [[package]]
+133	 name = "reverie-sabre-stats"
+134	 version = "0.2.0"
+135	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+136	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+137	 dependencies = [
+138	  "libc",
+139	  "reverie-core",
+140	@@ -1936,7 +1936,7 @@ dependencies = [
+141	 [[package]]
+142	 name = "reverie-syscalls"
+143	 version = "0.2.0"
+144	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+145	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+146	 dependencies = [
+147	  "bitflags 2.13.1",
+148	  "derive_more",
+149	@@ -2000,7 +2000,7 @@ checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+150	 [[package]]
+151	 name = "safeptrace"
+152	 version = "0.2.0"
+153	-source = "git+https://github.com/rrnewton/reverie.git?rev=b3049e54c644e28e2894402a36bb65664ab4508b#b3049e54c644e28e2894402a36bb65664ab4508b"
+154	+source = "git+https://github.com/rrnewton/reverie.git?rev=596b9adee8473dc0a7e62dce18580eead3d0c5c9#596b9adee8473dc0a7e62dce18580eead3d0c5c9"
+155	 dependencies = [
+156	  "bitflags 2.13.1",
+157	  "futures 0.3.33",
+158	diff --git a/ci/configure-build-jobs.sh b/ci/configure-build-jobs.sh
+159	index 24be535a6..ab5675491 100644
+160	--- a/ci/configure-build-jobs.sh
+161	+++ b/ci/configure-build-jobs.sh
+162	@@ -260,8 +260,16 @@ fi
+163	 # build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+164	 # Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+165	 # This source-identity carry supplies no new timing or Hermit guest evidence.
+166	-if [[ ${REVERIE_DBT_BUDGET_BOUND_PIN:-} != b3049e54c644e28e2894402a36bb65664ab4508b ]]; then
+167	-    echo "configure-build-jobs.sh: DECLINED (no_result, exit 75): DBT budget is not bound to Reverie b3049e54c644e28e2894402a36bb65664ab4508b (bound pin: ${REVERIE_DBT_BUDGET_BOUND_PIN:-<unset>})" >&2
+168	+# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+169	+# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+170	+# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+171	+# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+172	+# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+173	+# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+174	+# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+175	+# not a new timing sample or Hermit guest receipt.
+176	+if [[ ${REVERIE_DBT_BUDGET_BOUND_PIN:-} != 596b9adee8473dc0a7e62dce18580eead3d0c5c9 ]]; then
+177	+    echo "configure-build-jobs.sh: DECLINED (no_result, exit 75): DBT budget is not bound to Reverie 596b9adee8473dc0a7e62dce18580eead3d0c5c9 (bound pin: ${REVERIE_DBT_BUDGET_BOUND_PIN:-<unset>})" >&2
+178	     return 75
+179	 fi
+180	 
+181	diff --git a/ci/dag/validate.json b/ci/dag/validate.json
+182	index 5432cfc31..953b16e97 100644
+183	--- a/ci/dag/validate.json
+184	+++ b/ci/dag/validate.json
+185	@@ -7821,7 +7821,7 @@
+186	       "env": {
+187	         "HERMIT_E2E_EMPTY_WORKDIR": "/test",
+188	         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+189	-        "NEXTEST_EXPECTED_EXECUTED": "630",
+190	+        "NEXTEST_EXPECTED_EXECUTED": "634",
+191	         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends\",\"--lib\",\"--bins\"]"
+192	       },
+193	       "networkonly": false,
+194	@@ -61877,7 +61877,7 @@
+195	       ],
+196	       "env": {
+197	         "HERMIT_PREPARED_NEXTEST_REQUIRED": "1",
+198	-        "NEXTEST_EXPECTED_EXECUTED": "630",
+199	+        "NEXTEST_EXPECTED_EXECUTED": "634",
+200	         "NEXTEST_PREPARED_BUILD_SELECTION": "[\"-p\",\"hermit\",\"--features\",\"third-party-backends\",\"--lib\",\"--bins\"]"
+201	       },
+202	       "networkonly": false,
+203	diff --git a/ci/manifest-plan/src/validation_dag_static.rs b/ci/manifest-plan/src/validation_dag_static.rs
+204	index 6a0ab6337..862e17783 100644
+205	--- a/ci/manifest-plan/src/validation_dag_static.rs
+206	+++ b/ci/manifest-plan/src/validation_dag_static.rs
+207	@@ -203,7 +203,7 @@ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+208	     ("test.isolated_dbt_workdir", 2),
+209	     ("test.isolated_detcore_workdir", 1),
+210	     ("test.regular_crates", 505),
+211	-    ("test.hermit_unit", 630),
+212	+    ("test.hermit_unit", 634),
+213	     ("test.detcore_unit", 679),
+214	     ("test.detcore_misc", 27),
+215	     ("test.detcore_parallel", 5),
+216	@@ -232,7 +232,7 @@ pub(super) const NEXTEST_EXPECTED_COUNTS: &[(&str, u64)] = &[
+217	     ("test.detcore_parallel_on_host", 5),
+218	     ("test.detcore_unit_on_host", 679),
+219	     ("test.hermit_integration_on_host", 158),
+220	-    ("test.hermit_unit_on_host", 630),
+221	+    ("test.hermit_unit_on_host", 634),
+222	     ("test.ignored_syscall_regressions_on_host", 4),
+223	     ("test.liteinst_strict_on_host", 24),
+224	     ("test.regular_crates_on_host", 505),
+225	diff --git a/ci/run-with-reverie-dbt-budget.sh b/ci/run-with-reverie-dbt-budget.sh
+226	index 649e26417..23e5aa7b6 100755
+227	--- a/ci/run-with-reverie-dbt-budget.sh
+228	+++ b/ci/run-with-reverie-dbt-budget.sh
+229	@@ -220,7 +220,15 @@ fi
+230	 # build.rs, vendor tree, native key, and CMAKE/CMAKE_GENERATOR selection unchanged.
+231	 # Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+232	 # This source-identity carry supplies no new timing or Hermit guest evidence.
+233	-expected_pin=b3049e54c644e28e2894402a36bb65664ab4508b
+234	+# CARRY TO 596b9ade (2026-09-17): the complete b3049e54-to-landed
+235	+# comparison preserves reverie-dbt tree 6232257769144e8f63891a5efc8935abc3cd836b,
+236	+# build.rs blob 0ff8ae24b97464044735ba79ea74765ba4ac3ff0 and DynamoRIO vendor
+237	+# tree 42dd83f76cef3e730c39d2313c11fdc78d12ae35, including all build/config bytes.
+238	+# CMAKE remains the default cmake and CMAKE_GENERATOR remains unset.
+239	+# Keep the existing 1050 effective-job-second threshold and 16-job clamp.
+240	+# Source comparison 89b2eb0abe05008a21974668602c288452108270c85132ea48f87bb325d91ca2 is a carry decision,
+241	+# not a new timing sample or Hermit guest receipt.
+242	+expected_pin=596b9adee8473dc0a7e62dce18580eead3d0c5c9
+243	 
+244	 # TAKE THE PIN, NOT WHATEVER ELSE THE PRODUCER PRINTED.
+245	 #
+246	diff --git a/detcore-dbt/Cargo.toml b/detcore-dbt/Cargo.toml
+247	index c660087d5..fb6f34e7c 100644
+248	--- a/detcore-dbt/Cargo.toml
+249	+++ b/detcore-dbt/Cargo.toml
+250	@@ -15,7 +15,7 @@ detcore = { package = "hermit-detcore", version = "0.2.0", path = "../detcore" }
+251	 hermit-resources = { version = "0.2.0", path = "../hermit-resources" }
+252	 libc = "0.2.186"
+253	 rand = "0.10.2"
+254	-reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+255	-reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false }
+256	+reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+257	+reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9", default-features = false }
+258	 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+259	 tracing = "0.1.41"
+260	diff --git a/detcore-model/Cargo.toml b/detcore-model/Cargo.toml
+261	index 6eff0cc3e..b2db67753 100644
+262	--- a/detcore-model/Cargo.toml
+263	+++ b/detcore-model/Cargo.toml
+264	@@ -17,7 +17,7 @@ chrono = { version = "0.4.45", features = ["clock", "serde", "std"], default-fea
+265	 clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"] }
+266	 libc = "0.2.186"
+267	 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
+268	-reverie-syscalls = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+269	+reverie-syscalls = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+270	 serde = { version = "1.0.219", features = ["derive", "rc"] }
+271	 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+272	 shell-words = "1.1.1"
+273	diff --git a/detcore-sabre/Cargo.toml b/detcore-sabre/Cargo.toml
+274	index 71d278867..78e30996c 100644
+275	--- a/detcore-sabre/Cargo.toml
+276	+++ b/detcore-sabre/Cargo.toml
+277	@@ -13,9 +13,9 @@ crate-type = ["cdylib", "rlib"]
+278	 [dependencies]
+279	 detcore = { package = "hermit-detcore", version = "0.2.0", path = "../detcore" }
+280	 libc = "0.2.186"
+281	-reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+282	-reverie-memory = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+283	-reverie-rpc-transport = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+284	-reverie-sabre = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+285	-reverie-syscalls = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+286	+reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+287	+reverie-memory = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+288	+reverie-rpc-transport = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+289	+reverie-sabre = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+290	+reverie-syscalls = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+291	 syscalls = { version = "0.6.7", features = ["serde"] }
+292	diff --git a/detcore/Cargo.toml b/detcore/Cargo.toml
+293	index f9f3e5cec..b9fdf9ccc 100644
+294	--- a/detcore/Cargo.toml
+295	+++ b/detcore/Cargo.toml
+296	@@ -72,7 +72,7 @@ raw-cpuid = "10.7.0"
+297	 regex = "1.13.1"
+298	 # Abstract Reverie interface ONLY. Never add a concrete backend here (see the
+299	 # BACKEND-ABSTRACTION COMMANDMENT at the top of this file).
+300	-reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+301	+reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+302	 serde = { version = "1.0.219", features = ["derive", "rc"] }
+303	 serde_json = { version = "1.0.140", features = ["alloc", "float_roundtrip", "raw_value", "unbounded_depth"] }
+304	 sha2 = "0.10.6"
+305	@@ -85,6 +85,6 @@ detcore-testutils = { version = "0.2.0", path = "tests/testutils" }
+306	 # ALLOWED test-only backend: detcore's integration tests drive a real tracer to
+307	 # exercise the tool. This is a dev-dependency and never reaches the shipped
+308	 # `detcore` rlib. It is the ONLY backend crate permitted in this manifest.
+309	-reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+310	+reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+311	 test-allocator = { version = "0.2.0", path = "../common/test-allocator" }
+312	 test-case = "3.3.1"
+313	diff --git a/detcore/src/syscalls.rs b/detcore/src/syscalls.rs
+314	index 8a4b21602..5e553d383 100644
+315	--- a/detcore/src/syscalls.rs
+316	+++ b/detcore/src/syscalls.rs
+317	@@ -26,6 +26,8 @@ mod threads;
+318	 pub(crate) mod time;
+319	 
+320	 use crate::consts::DET_SPECIAL_INODE_OFFSET;
+321	+use crate::resources::Device;
+322	+use crate::resources::ResourceID;
+323	 use crate::types::DetInode;
+324	 use crate::types::RawFd;
+325	 
+326	@@ -39,6 +41,22 @@ fn deterministic_stdio_inode(fd: RawFd) -> Option<DetInode> {
+327	         ))
+328	 }
+329	 
+330	+/// Preserve the existing inherited-stdio slot identities, but do not assign one
+331	+/// to an ordinary file or pipe that has replaced that slot. Aliases above fd 2
+332	+/// retain their existing pooled identity; extending the fixed namespace to
+333	+/// aliases requires consistent path-stat behavior too.
+334	+pub(crate) fn deterministic_stdio_inode_for_resource(
+335	+    fd: RawFd,
+336	+    resource: Option<ResourceID>,
+337	+) -> Option<DetInode> {
+338	+    match resource {
+339	+        Some(ResourceID::Device(
+340	+            Device::ContainerStdin | Device::ContainerStdout | Device::ContainerStderr,
+341	+        )) => deterministic_stdio_inode(fd),
+342	+        _ => None,
+343	+    }
+344	+}
+345	+
+346	 #[cfg(test)]
+347	 mod tests {
+348	     use super::*;
+349	@@ -58,5 +76,32 @@ mod tests {
+350	             Some(DetInode::mint(1002))
+351	         );
+352	         assert_eq!(deterministic_stdio_inode(3), None);
+353	+
+354	+        for resource in [
+355	+            ResourceID::Device(Device::ContainerStdin),
+356	+            ResourceID::Device(Device::ContainerStdout),
+357	+            ResourceID::Device(Device::ContainerStderr),
+358	+        ] {
+359	+            for fd in 0..=2 {
+360	+                assert_eq!(
+361	+                    deterministic_stdio_inode_for_resource(fd, Some(resource.clone())),
+362	+                    Some(DetInode::mint(1000 + fd as u64))
+363	+                );
+364	+            }
+365	+            assert_eq!(
+366	+                deterministic_stdio_inode_for_resource(3, Some(resource)),
+367	+                None
+368	+            );
+369	+        }
+370	+        for fd in 0..=2 {
+371	+            assert_eq!(deterministic_stdio_inode_for_resource(fd, None), None);
+372	+            assert_eq!(
+373	+                deterministic_stdio_inode_for_resource(
+374	+                    fd,
+375	+                    Some(ResourceID::FileContents(DetInode::mint(1000))),
+376	+                ),
+377	+                None
+378	+            );
+379	+        }
+380	     }
+381	 }
+382	diff --git a/detcore/src/syscalls/files.rs b/detcore/src/syscalls/files.rs
+383	index c96b43fd5..1c18603c7 100644
+384	--- a/detcore/src/syscalls/files.rs
+385	+++ b/detcore/src/syscalls/files.rs
+386	@@ -44,7 +44,7 @@ use tracing::info;
+387	 use tracing::trace;
+388	 use tracing::warn;
+389	 
+390	-use super::deterministic_stdio_inode;
+391	+use super::deterministic_stdio_inode_for_resource;
+392	 use crate::config::SchedHeuristic;
+393	 use crate::dirents::*;
+394	 use crate::fd::*;
+395	@@ -1245,13 +1245,14 @@ impl<T: RecordOrReplay> Detcore<T> {
+396	             .thread_state()
+397	             .with_detfd(call.fd(), |detfd| detfd.procfs_target_fd())?;
+398	         let fdinfo_identity = if let Some(target_fd) = target_fd {
+399	-            let (cached_stat, logical_flags, open_file_id, fd_type) =
+400	+            let (cached_stat, logical_flags, open_file_id, fd_type, inode_override) =
+401	                 guest.thread_state().with_detfd(target_fd, |detfd| {
+402	                     (
+403	                         detfd.stat(),
+404	                         detfd.status_flags(),
+405	                         detfd.open_file_id(),
+406	                         detfd.ty(),
+407	+                        deterministic_stdio_inode_for_resource(target_fd, detfd.resource()),
+408	                     )
+409	                 })?;
+410	             let raw_inode = match cached_stat {
+411	@@ -1261,7 +1262,7 @@ impl<T: RecordOrReplay> Detcore<T> {
+412	                     stat.st_ino
+413	                 }
+414	             };
+415	-            let virtual_inode = match deterministic_stdio_inode(target_fd) {
+416	+            let virtual_inode = match inode_override {
+417	                 Some(inode) => inode,
+418	                 None => determinize_inode(guest, raw_inode).await.0,
+419	             };
+420	@@ -1370,10 +1371,13 @@ impl<T: RecordOrReplay> Detcore<T> {
+421	             for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+422	                 let cached = guest
+423	                     .thread_state()
+424	-                    .with_detfd(fd, |detfd| detfd.stat().map(|stat| stat.inode))
+425	+                    .with_detfd(fd, |detfd| {
+426	+                        let inode = deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+427	+                        detfd.stat().map(|stat| (stat.inode, inode))
+428	+                    })
+429	                     .ok()
+430	                     .flatten();
+431	-                if let (Some(raw), Some(det)) = (cached, deterministic_stdio_inode(fd)) {
+432	+                if let Some((raw, det)) = cached {
+433	                     stdio_by_raw_inode.insert(raw, det);
+434	                 }
+435	             }
+436	@@ -2662,7 +2666,13 @@ impl<T: RecordOrReplay> Detcore<T> {
+437	             guest.inject(Syscall::from(call)).await?;
+438	             let statptr = call.stat().ok_or(Errno::EFAULT)?;
+439	             let inode_override = match call {
+440	-                StatFamily::Fstat(call) => deterministic_stdio_inode(call.fd()),
+441	+                StatFamily::Fstat(call) => guest
+442	+                    .thread_state()
+443	+                    .with_detfd(call.fd(), |detfd| {
+444	+                        deterministic_stdio_inode_for_resource(call.fd(), detfd.resource())
+445	+                    })
+446	+                    .ok()
+447	+                    .flatten(),
+448	                 _ => None,
+449	             };
+450	             let mut memory = guest.memory();
+451	diff --git a/detcore/src/syscalls/namespace.rs b/detcore/src/syscalls/namespace.rs
+452	index 35f24bb08..b4a61cae4 100644
+453	--- a/detcore/src/syscalls/namespace.rs
+454	+++ b/detcore/src/syscalls/namespace.rs
+455	@@ -26,6 +26,7 @@ use reverie::syscalls::ReadAddr;
+456	 use reverie::syscalls::Syscall;
+457	 
+458	 use super::deterministic_stdio_inode;
+459	+use super::deterministic_stdio_inode_for_resource;
+460	 use crate::record_or_replay::RecordOrReplay;
+461	 use crate::tool_global::determinize_inode;
+462	 use crate::tool_local::Detcore;
+463	@@ -183,7 +184,8 @@ fn anonymous_proc_fd_identity(target: &[u8]) -> Option<AnonymousProcFdIdentity>
+464	     None
+465	 }
+466	 
+467	-/// Match a raw identity against cached current-process stdio identities.
+468	+/// Match a raw identity against cached current-process inherited-stdio identities.
+469	+/// Callers exclude ordinary replacement objects before filling this array.
+470	 ///
+471	 /// Iterating in fd order deliberately matches the last-insert-wins behavior of
+472	 /// the maps sanitizer's `stdio_by_raw_inode` table when stdio descriptors alias.
+473	@@ -228,7 +230,10 @@ impl<T: RecordOrReplay> Detcore<T> {
+474	         for fd in libc::STDIN_FILENO..=libc::STDERR_FILENO {
+475	             stdio_raw_inodes[fd as usize] = guest
+476	                 .thread_state()
+477	-                .with_detfd(fd, |detfd| detfd.stat().map(|stat| stat.inode))
+478	+                .with_detfd(fd, |detfd| {
+479	+                    deterministic_stdio_inode_for_resource(fd, detfd.resource())?;
+480	+                    detfd.stat().map(|stat| stat.inode)
+481	+                })
+482	                 .ok()
+483	                 .flatten();
+484	         }
+485	@@ -300,7 +305,14 @@ impl<T: RecordOrReplay> Detcore<T> {
+486	                 libc::S_IFSOCK => "socket",
+487	                 _ => return Ok(result),
+488	             };
+489	-            let inode = match deterministic_stdio_inode(fd) {
+490	+            let inode_override = guest
+491	+                .thread_state()
+492	+                .with_detfd(fd, |detfd| {
+493	+                    deterministic_stdio_inode_for_resource(fd, detfd.resource())
+494	+                })
+495	+                .ok()
+496	+                .flatten();
+497	+            let inode = match inode_override {
+498	                 Some(inode) => inode,
+499	                 None => determinize_inode(guest, stat.st_ino).await.0,
+500	             };
+501	diff --git a/detcore/src/tool_local.rs b/detcore/src/tool_local.rs
+502	index 2207d6533..de19b512e 100644
+503	--- a/detcore/src/tool_local.rs
+504	+++ b/detcore/src/tool_local.rs
+505	@@ -1084,6 +1084,70 @@ mod file_metadata_tests {
+506	                 .expect("discovered stdout should be tracked"),
+507	             Some(ResourceID::Device(Device::ContainerStdout))
+508	         );
+509	+
+510	+        // Observe real metadata transitions without closing the test process's
+511	+        // stdio. The narrow repair preserves slot identities for inherited
+512	+        // resources and leaves aliases above fd 2 in the ordinary inode pool.
+513	+        use crate::syscalls::deterministic_stdio_inode_for_resource;
+514	+
+515	+        let inherited_stat = metadata
+516	+            .with_detfd(libc::STDOUT_FILENO, |detfd| detfd.stat().unwrap())
+517	+            .unwrap();
+518	+        metadata.dup_fd(1, 7, OFlag::empty()).unwrap();
+519	+        assert_eq!(
+520	+            metadata.with_detfd(7, |detfd| detfd.resource()).unwrap(),
+521	+            Some(ResourceID::Device(Device::ContainerStdout))
+522	+        );
+523	+        assert_eq!(
+524	+            metadata
+525	+                .with_detfd(7, |detfd| {
+526	+                    deterministic_stdio_inode_for_resource(7, detfd.resource())
+527	+                })
+528	+                .unwrap(),
+529	+            None
+530	+        );
+531	+        for fd in 0..=2 {
+532	+            metadata.remove_fd(fd);
+533	+            let mut ordinary = inherited_stat;
+534	+            ordinary.inode = 123 + fd as u64;
+535	+            metadata
+536	+                .add_fd(owner, fd, OFlag::empty(), FdType::Regular, Some(ordinary))
+537	+                .unwrap();
+538	+            metadata.dup_fd(fd, 8, OFlag::empty()).unwrap();
+539	+            for ordinary_fd in [fd, 8] {
+540	+                assert_eq!(
+541	+                    metadata
+542	+                        .with_detfd(ordinary_fd, |detfd| {
+543	+                            deterministic_stdio_inode_for_resource(ordinary_fd, detfd.resource())
+544	+                        })
+545	+                        .unwrap(),
+546	+                    None
+547	+                );
+548	+            }
+549	+            assert_eq!(
+550	+                metadata
+551	+                    .with_detfd(fd, |detfd| detfd.open_file_id())
+552	+                    .unwrap(),
+553	+                metadata
+554	+                    .with_detfd(8, |detfd| detfd.open_file_id())
+555	+                    .unwrap()
+556	+            );
+557	+            metadata.dup_fd(7, fd, OFlag::empty()).unwrap();
+558	+            assert_eq!(
+559	+                metadata
+560	+                    .with_detfd(fd, |detfd| {
+561	+                        deterministic_stdio_inode_for_resource(fd, detfd.resource())
+562	+                    })
+563	+                    .unwrap(),
+564	+                Some(DetInode::mint(1000 + fd as u64)),
+565	+                "inherited streams retain the existing numeric-slot outcome"
+566	+            );
+567	+        }
+568	+        metadata.dup_fd(7, 9, OFlag::O_CLOEXEC).unwrap();
+569	+        let child = metadata.fork_for(DetTid::from_raw(10));
+570	+        let after_exec = child.for_exec(DetTid::from_raw(10));
+571	+        assert!(!after_exec.file_handles.contains_key(&9));
+572	+        assert!(after_exec.file_handles.contains_key(&7));
+573	     }
+574	 
+575	     #[test]
+576	diff --git a/detcore/tests/testutils/Cargo.toml b/detcore/tests/testutils/Cargo.toml
+577	index a73518c8b..97e8bf741 100644
+578	--- a/detcore/tests/testutils/Cargo.toml
+579	+++ b/detcore/tests/testutils/Cargo.toml
+580	@@ -13,8 +13,8 @@ publish = false
+581	 hermit-test-workdir = { version = "0.2.0", path = "../../../common/test-workdir" }
+582	 detcore = { package = "hermit-detcore", version = "0.2.0", path = "../.." }
+583	 pretty_assertions = { version = "1.4.1", features = ["alloc"], default-features = false }
+584	-reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+585	-reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+586	+reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+587	+reverie-ptrace = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "596b9adee8473dc0a7e62dce18580eead3d0c5c9" }
+588	 test-allocator = { version = "0.2.0", path = "../../../common/test-allocator" }
+589	 tokio = { version = "1.52.4", features = ["full", "test-util", "tracing"] }
+590	 tracing = { version = "0.1.41", features = ["attributes", "valuable"] }
+591	diff --git a/hermit-cli/Cargo.toml b/hermit-cli/Cargo.toml
+592	index d1ba185e3..2819eb5c5 100644
+593	--- a/hermit-cli/Cargo.toml
+594	+++ b/hermit-cli/Cargo.toml
+595	@@ -51,12 +51,12 @@ rand_pcg = { version = "0.10.2", features = ["serde"] }
+596	 regex = "1.13.1"
+597	 # Reverie is pinned to a specific commit for reproducibility. Keep this rev in
+598	 # sync across all crates and bump it via docs/updating-reverie.md.
+599	-reverie = { package = "reverie-core", version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b" }
+600	-reverie-dbt = { version = "0.2.0", git = "https://github.com/rrnewton/reverie.git", rev = "b3049e54c644e28e2894402a36bb65664ab4508b", default-features = false, optional = true }

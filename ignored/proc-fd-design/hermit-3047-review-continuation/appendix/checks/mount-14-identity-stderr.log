@@ -1,0 +1,2 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running unittests src/lib.rs (target/debug/build/hermit-detcore/b0915d524b50eaef/out/detcore-b0915d524b50eaef)

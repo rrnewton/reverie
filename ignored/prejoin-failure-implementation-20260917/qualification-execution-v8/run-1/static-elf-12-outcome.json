@@ -1,0 +1,19 @@
+{
+  "stage": "static-elf-12",
+  "test": "leader_exit::process_status_precedes_host_join_order",
+  "status": "passed",
+  "counts": [
+    [
+      "1",
+      "0",
+      "0",
+      "0",
+      "287"
+    ]
+  ],
+  "stdout_sha256": "738667a74932fe056244692c4fbb0ad4dd8b2159b62e236f9b3dbe16f08d12a7",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "admission_sha256": "6527b67d8fb7117c62a476321b37109c93179c17038dfb2debe85f094c578f6a",
+  "cpu_nsec": 383763000,
+  "wall_seconds": 1.361088767
+}

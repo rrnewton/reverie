@@ -1,0 +1,4052 @@
+{
+  "schema": 1,
+  "status": "final-bound",
+  "repository": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917",
+  "qualified_forward_reverie_sha": "7d863ab3f02639731713a01467b2548c41e3dbfb",
+  "forward_revision_evidence": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/reverie-cleanup-publication-12d4ce8c/LANDING-ROOT-READBACK.json",
+    "bytes": 950,
+    "mode": 420,
+    "sha256": "f0027454783a3676879eba730b7808a5c4f4c61d9975ba2768aeb03702af8c8d"
+  },
+  "source_manifest": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/tracked-source-manifest.json",
+    "bytes": 285094,
+    "mode": 420,
+    "sha256": "e263883c153cf2ed59c81a939dda4a48c560f34f0561fe93e2a968308535ab63"
+  },
+  "scm": {
+    "head": "14d63ed54b7284b7f8bc29d44c7610a809815621",
+    "tree": "d828fca5783a8183e1cff1d42937a2beb5d4f743",
+    "branch": "codex/kvm-prejoin-main-20260917",
+    "index": "ba78fe564f531cb4c179d357f5737882de9bad6850ff3c4e3edfe60f7a72ca63"
+  },
+  "recursive_submodule_inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/final-source-inputs-0.json",
+      "bytes": 6811751,
+      "mode": 420,
+      "sha256": "7aa646c9cbb8cc45c43ac09d833c660aa25760ced14ecd0baa6cafc3fd0ea018"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/final-source-inputs-1.json",
+      "bytes": 317674,
+      "mode": 420,
+      "sha256": "9d42f98f5937d52a32d4253796976de5db17f56b2d9d12e6890d0173ca90a81d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v10/generated-artifacts-after.json",
+      "bytes": 7067,
+      "mode": 420,
+      "sha256": "b6c6583057bbbf59cfcdf0d6f74d3c4e5f49cd6ccdad3e873bb11c137a5ae7bd"
+    }
+  ],
+  "caller_files": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare_phase.py",
+      "bytes": 10445,
+      "mode": 420,
+      "sha256": "61a1666fa0b121fcf5190c7947a7d7b1ca41db5fefc29304a4eedf77c65aa894"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/run_phase.py",
+      "bytes": 10389,
+      "mode": 420,
+      "sha256": "c94ff93c08bf8eb8d8ba5d327143bbec150a206575569c06618a6b5e4042a7a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/admit.py",
+      "bytes": 6968,
+      "mode": 420,
+      "sha256": "07a566b90006a71bb07f1d5541d2cbc3d189de577e81fde639e333d2327d3073"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/readback.py",
+      "bytes": 17782,
+      "mode": 420,
+      "sha256": "5e49b31aa9958637aa12facf8043f5fdf37dbdd2f89ac5fb32599dfe60c4821b"
+    }
+  ],
+  "observer": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/observer.py",
+    "bytes": 34363,
+    "mode": 420,
+    "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+  },
+  "target_cache": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917/target",
+    "owner_slot": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917",
+    "identity": [
+      48,
+      794852568,
+      212630
+    ]
+  },
+  "environment": {
+    "HOME": "/home/newton",
+    "PATH": "/home/newton/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+    "CARGO_HOME": "/home/newton/.cargo",
+    "RUSTUP_HOME": "/home/newton/.rustup",
+    "CARGO_TARGET_DIR": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917/target",
+    "CARGO_BUILD_JOBS": "2",
+    "THIRD_PARTY_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_NET_GIT_FETCH_WITH_CLI": "true",
+    "RUSTFLAGS": "",
+    "LC_ALL": "C",
+    "LANG": "C",
+    "TZ": "UTC",
+    "CARGO_TERM_COLOR": "never",
+    "TMPDIR": "/tmp/hermit-prejoin-integration-20260917-v7",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "USER": "newton",
+    "LOGNAME": "newton",
+    "XDG_RUNTIME_DIR": "/run/user/212630",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/212630/bus",
+    "RUSTC": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustc",
+    "RUSTDOC": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustdoc",
+    "XDG_CACHE_HOME": "/tmp/hermit-prejoin-commit-cache-20260917"
+  },
+  "inputs": [
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/prepare_phase.py",
+      "bytes": 10364,
+      "mode": 420,
+      "sha256": "783a86dd08973f1c0b47355ee0d0bd4cdf8969a3e7f898d70e4735f8829c08d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/run_phase.py",
+      "bytes": 10389,
+      "mode": 420,
+      "sha256": "c94ff93c08bf8eb8d8ba5d327143bbec150a206575569c06618a6b5e4042a7a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/admit.py",
+      "bytes": 6968,
+      "mode": 420,
+      "sha256": "07a566b90006a71bb07f1d5541d2cbc3d189de577e81fde639e333d2327d3073"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/readback.py",
+      "bytes": 13885,
+      "mode": 420,
+      "sha256": "59a196d1c1351ef15c5c284392aa595152974bf018d98292d14301c5e1f7251e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/bin/safehermit",
+      "bytes": 29416,
+      "mode": 493,
+      "sha256": "dae61b1819d424ea9928143d728fba6897f45cb619c8164ad87030922130f760"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/hermit-box-run",
+      "bytes": 42932,
+      "mode": 493,
+      "sha256": "6d924ce3e12c34cdf5d8ca446f0952a9137da786161cac1feef83867bda90639"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/scripts/bounded-run-space",
+      "bytes": 15385,
+      "mode": 493,
+      "sha256": "b17e28257163f7603c7b1462b0e0a9f06ffe5d3d449620488cd95ae0fb45c489"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/.skills/code-review/SKILL.md",
+      "bytes": 3617,
+      "mode": 420,
+      "sha256": "2cd879e25391da1fa13de6d20334a3f387f3171d05b40c075ba5f1f1c10c6b8f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/ignored/kvm-parity-20260914-codex/next-work/remeasurement-plan.md",
+      "bytes": 23892,
+      "mode": 420,
+      "sha256": "3a73d3873a87f0e4fd23137ba702a69da62c08f1812b14a37753fcbe2197c5f6"
+    },
+    {
+      "path": "/usr/bin/busctl",
+      "bytes": 106664,
+      "mode": 493,
+      "sha256": "9f0bba9343ed701884c7ff46767ffeffffe048de31fda4d8c23c2c6ea2211b6d"
+    },
+    {
+      "path": "/usr/bin/systemctl",
+      "bytes": 330440,
+      "mode": 493,
+      "sha256": "56f571f124b0564f8f971c878ffbc705a24f4c4db5876cf4dccdedade88f3155"
+    },
+    {
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/lib64/libsystemd.so.0.43.0",
+      "bytes": 1251104,
+      "mode": 493,
+      "sha256": "ce568412d003dd7e271896e57211d464bcb1a74e76fa4dad706ea418a5847d37"
+    },
+    {
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "mode": 493,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d"
+    },
+    {
+      "path": "/usr/bin/git",
+      "bytes": 4397400,
+      "mode": 493,
+      "sha256": "55c09f77ea636d99e0c163c1e406ce44dfb125dd70a01c6ed6b5bbecd5f4b240"
+    },
+    {
+      "path": "/usr/bin/bash",
+      "bytes": 1389072,
+      "mode": 493,
+      "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf"
+    },
+    {
+      "path": "/usr/bin/env",
+      "bytes": 45088,
+      "mode": 493,
+      "sha256": "1caef498bf8afe1633c37cbe6ec6e10908cfdf032505d85c0b14ce906bae489f"
+    },
+    {
+      "path": "/usr/bin/ps",
+      "bytes": 144480,
+      "mode": 493,
+      "sha256": "ddb593df8cc705814beb8362862559ef2055269473c6ddb15a4b6ccec52e245b"
+    },
+    {
+      "path": "/usr/bin/cmake",
+      "bytes": 9923008,
+      "mode": 493,
+      "sha256": "1595178000979d0b735d82d993ff8411835fba8f8fbe7e340bdfaf7ae6ab700d"
+    },
+    {
+      "path": "/usr/bin/gcc",
+      "bytes": 1093144,
+      "mode": 493,
+      "sha256": "546023eae5ff58287b1d987e059d38e2733dfe49eda827282d6942707c4c25d0"
+    },
+    {
+      "path": "/home/newton/.cargo/bin/rustup",
+      "bytes": 20838840,
+      "mode": 493,
+      "sha256": "4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-parent-reader-support-20260916/ignored/reverie-cleanup-publication-12d4ce8c/LANDING-ROOT-READBACK.json",
+      "bytes": 950,
+      "mode": 420,
+      "sha256": "f0027454783a3676879eba730b7808a5c4f4c61d9975ba2768aeb03702af8c8d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/recipe-proof.json",
+      "bytes": 2234,
+      "mode": 420,
+      "sha256": "989753f911a931c4b54074935563fab3070d05b2016b13c30dfce43269213476"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/launch.py",
+      "bytes": 7425,
+      "mode": 420,
+      "sha256": "1ea9df45d62f36e0ec0cfc647266ef7a340217e6fc3ff44905529b9625b64c5b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+      "bytes": 2080480,
+      "mode": 493,
+      "sha256": "a5edf3de61866c4d8e9de85c673ef62f570ae3746565312b70db9449b54f2bed"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "bytes": 5399648,
+      "mode": 493,
+      "sha256": "016e3712bb170692190f20ce3356646d6d2c59343b81516de66af7c5fd2e5e7c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "bytes": 1158872,
+      "mode": 493,
+      "sha256": "92708a2623b9186bd8d40e6f3ddac686b6fd541bd052584fb4343dfcfe92dcd8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "bytes": 15663328,
+      "mode": 493,
+      "sha256": "2cd2fc266f83e81a1fc9bd46528c5be8db6ec7d940f67872123feef4a993a427"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo-miri",
+      "bytes": 2468816,
+      "mode": 493,
+      "sha256": "7a06cf45352a6e3a46c631b243d69387f5c6c337aa35e87d467ac8d06cee4040"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/miri",
+      "bytes": 11214088,
+      "mode": 493,
+      "sha256": "33d13c70cf6309fcb10e4b1d3f2ffffb219838ba64e1ac199e0a1a15056ed556"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 36082008,
+      "mode": 493,
+      "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rust-gdb",
+      "bytes": 1413,
+      "mode": 493,
+      "sha256": "7054a508ece38b5bb81860e8ddbcd62021fab6432026789970ebbba8b84f6163"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rust-gdbgui",
+      "bytes": 2160,
+      "mode": 493,
+      "sha256": "bc60613775a098e59b49fa4584cea73631697fe1456c44284c337d6700340315"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rust-lldb",
+      "bytes": 1371,
+      "mode": 493,
+      "sha256": "f9c40edb1b5943ce8dc18d1d1e9fc62e49486a0229bf655affee52e968c19168"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 646120,
+      "mode": 493,
+      "sha256": "49f9fa06f3e2b93aba85273433fef67b984ddb4cacb4500de56e85f70ec2e339"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "bytes": 12561528,
+      "mode": 493,
+      "sha256": "b529e80dbe6f26e97ac07c6478ad54ac725b8ef906bf1e5d0b86314b784d4551"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/libLLVM-23-rust-1.100.0-nightly.so",
+      "bytes": 44,
+      "mode": 420,
+      "sha256": "70182933d0533141c72d841d839cefc914d057e9c70cf1d13560c9e2f4ef83af"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/libLLVM.so.23.1-rust-1.100.0-nightly",
+      "bytes": 208025424,
+      "mode": 420,
+      "sha256": "700781c6f68e02604b1263f1a1fe1c1da9659f3918f89eee8702e5d803bc6477"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/librustc_driver-71507feaec57108a.so",
+      "bytes": 162243760,
+      "mode": 420,
+      "sha256": "d66895d2a13a904c7112395da467d1267162a0f81894b3d78267f246f5425efc"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libLLVM-23-rust-1.100.0-nightly.so",
+      "bytes": 44,
+      "mode": 420,
+      "sha256": "70182933d0533141c72d841d839cefc914d057e9c70cf1d13560c9e2f4ef83af"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libLLVM.so.23.1-rust-1.100.0-nightly",
+      "bytes": 208025424,
+      "mode": 420,
+      "sha256": "700781c6f68e02604b1263f1a1fe1c1da9659f3918f89eee8702e5d803bc6477"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-8b6e0a958a4a77ef.rlib",
+      "bytes": 28850,
+      "mode": 420,
+      "sha256": "8675ce3b0247e6cae89fc63c2be7299ea26f6c676c0d4500b1ffffd8eedeaf01"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-8b6e0a958a4a77ef.rmeta",
+      "bytes": 482451,
+      "mode": 420,
+      "sha256": "5d274a81f0fa67584bd5930314dc3f5211f4df120f5bb79fe6d21fd76aed1116"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-e4f6da64e6727ec0.rlib",
+      "bytes": 10644,
+      "mode": 420,
+      "sha256": "70c0c980a9ee7840eb9c8f7035e484c78fc055ae12561d85d4a5fd19a1653110"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-e4f6da64e6727ec0.rmeta",
+      "bytes": 20723,
+      "mode": 420,
+      "sha256": "6d954ca9dd446f83799f82191acc678dd629826a7fa018925170c17444e42e69"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-5c1e44539b30c1bf.rlib",
+      "bytes": 957710,
+      "mode": 420,
+      "sha256": "c939684c1053b3ee3943d6ab90f4f1e90ae596fcf0fe4aabd69f9617026b91f8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-5c1e44539b30c1bf.rmeta",
+      "bytes": 8854152,
+      "mode": 420,
+      "sha256": "ed1f868a75f209beca7aaeb7bae398466ec76eb369047cb15e6198d982d99b23"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-a2d09016be1ed94a.rlib",
+      "bytes": 5338,
+      "mode": 420,
+      "sha256": "e91d7968aecac36abf9faf1db795f5d7a89785bfe352b6f9f879bcd4444f8e36"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-a2d09016be1ed94a.rmeta",
+      "bytes": 5544,
+      "mode": 420,
+      "sha256": "eb95f06bd6bb908b26515362a9928c56fc3e624ff4731d67ffc4c2c6748c32b5"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-bacf2d3f4e135be5.rlib",
+      "bytes": 4631492,
+      "mode": 420,
+      "sha256": "9a8168c6be408771af3ec9a554fae5117c34f5f9aa336ac688d6ce3cf0cea405"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-bacf2d3f4e135be5.rmeta",
+      "bytes": 2064313,
+      "mode": 420,
+      "sha256": "c4073daf7e58591cbc7624a1c459c038853b75240f65707d651a15f9d1f0e5d0"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-14b0ed2240a5ee9c.rlib",
+      "bytes": 3164968,
+      "mode": 420,
+      "sha256": "0aaebd706c1c0582003950b21c241ac5d7a5e7d8fdb03f2e7aecab03080802bd"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-14b0ed2240a5ee9c.rmeta",
+      "bytes": 68374733,
+      "mode": 420,
+      "sha256": "e76f87e3e862f128e08d09974bb665d5b7a13121a296320bcd2b4e866d670f1a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-4455d8af6a1d4c97.rlib",
+      "bytes": 751276,
+      "mode": 420,
+      "sha256": "0d347a6920c97146ca5f30c4c2180cbae75a6fa69c2b320409de023aaaffb186"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-4455d8af6a1d4c97.rmeta",
+      "bytes": 219992,
+      "mode": 420,
+      "sha256": "42338b594825f67bc76e3fd2dfa2aff0815cd5818258c12c4577ad23e8116425"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-1917dc39dd47a7b7.rlib",
+      "bytes": 1066348,
+      "mode": 420,
+      "sha256": "0449dd6f6fec9475826a9975fac2e1e692750d89c5a4b8e833a779d38c63f78a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-1917dc39dd47a7b7.rmeta",
+      "bytes": 5991494,
+      "mode": 420,
+      "sha256": "512316db65145f48f0dd74252d75fa6a04cdc13dd7f3d73643f3d5c500940178"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-ed429e85b8445ee4.rlib",
+      "bytes": 42464,
+      "mode": 420,
+      "sha256": "eb6c2720211dcc181d29f7259a061a82f4b3fa20f0546c6597d374f69d96f876"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-ed429e85b8445ee4.rmeta",
+      "bytes": 1732955,
+      "mode": 420,
+      "sha256": "4e1742651f9eb15433764ae2e554106e51328eb1977425a0a838805963f57c2b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-dfc2b6a0c33830f0.rlib",
+      "bytes": 32650,
+      "mode": 420,
+      "sha256": "148c654a19a2cce732518ae9317c883266d510c7bf2ebb4006e575dd59220c6c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-dfc2b6a0c33830f0.rmeta",
+      "bytes": 4454832,
+      "mode": 420,
+      "sha256": "c4f1afc5c446aed8e77018f7767687cb1b0d6f9ad53a33302f294cb2425f8467"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-b6c16e6dcaf77f67.rlib",
+      "bytes": 425746,
+      "mode": 420,
+      "sha256": "675f423d8a1d9787dc0068a0ab86556ca804f0de23cbe685c8b40b9623f3ded1"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-b6c16e6dcaf77f67.rmeta",
+      "bytes": 1408248,
+      "mode": 420,
+      "sha256": "5f6a8e06bddf1d050a09c149702702947713af775ba66085af7ed6f4e8ee4be5"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-ffac97f2ea43470b.rlib",
+      "bytes": 114254,
+      "mode": 420,
+      "sha256": "2f3d074cc7e69060bc3998c1d4b96195eb4b2315280c7b1da49a0a991d83ed01"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-ffac97f2ea43470b.rmeta",
+      "bytes": 140152,
+      "mode": 420,
+      "sha256": "4d80ef201eaf8af06ab849a712fda4a13b3872ef131d0e3dea1cd2db52025999"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-aee08766817d5e08.rlib",
+      "bytes": 276554,
+      "mode": 420,
+      "sha256": "7b18ce31bf4e88f72151baad67a83340825441c74ab8b0eff1c4c1efb04b1584"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-aee08766817d5e08.rmeta",
+      "bytes": 8975490,
+      "mode": 420,
+      "sha256": "b50a951e456fa06298b5f7770eb3ce450448c76973d5bed11bbf1cd9e49d7248"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-6dd30170719a023f.rlib",
+      "bytes": 11516,
+      "mode": 420,
+      "sha256": "52725fe2f8e37375ce47bc07ad7d617e2888ed4f9dfb354694857a6f1c7b3d3f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-6dd30170719a023f.rmeta",
+      "bytes": 2993,
+      "mode": 420,
+      "sha256": "b5f4f8f9a4e46d0dcb6262a1e5b2c36b5f0cab9d8c2c7af273bb1952baf0b79a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-c52c9d6e45c50e12.rlib",
+      "bytes": 33606,
+      "mode": 420,
+      "sha256": "ad7deac779d971e6845cc3fee3d7be25c025e66e60b9ba03bfde5930ecb0ca9e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-c52c9d6e45c50e12.rmeta",
+      "bytes": 8000,
+      "mode": 420,
+      "sha256": "056460007bfb1f2c740fa0f2e958297d4b2f62036a4088f1d82e85644c004dac"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-dc80172d0b54eead.rlib",
+      "bytes": 4518940,
+      "mode": 420,
+      "sha256": "dd4d4a2ea5b924a2c0d529aed4642c3d971a300318e86887f42fb7afceba79d8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-dc80172d0b54eead.rmeta",
+      "bytes": 1172706,
+      "mode": 420,
+      "sha256": "b59716ccddffda0e804a74142e8678246af2a148c555bf23e986c1bbcb66c22e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-ba6d234945299b6b.rlib",
+      "bytes": 499896,
+      "mode": 420,
+      "sha256": "001d0fee4bba22be08c74861b03e3bd95be2cf9fea571a5031f41dd97906508c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-ba6d234945299b6b.rmeta",
+      "bytes": 1366,
+      "mode": 420,
+      "sha256": "a21b0488f35448b1968d5fa16b3fee43bba15a14155a0b2a216de2449cddc8d1"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.asan.a",
+      "bytes": 3675706,
+      "mode": 420,
+      "sha256": "453521224b21a54ae3c4778a5ef8e68e5d343b3bf22b41cfaa34a76d695ec4ff"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.dfsan.a",
+      "bytes": 1190740,
+      "mode": 420,
+      "sha256": "b1570bfd9d96a41105be4888ae633e19d675828d93aaeb2939bdfb3bafc7cbdc"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.lsan.a",
+      "bytes": 1249460,
+      "mode": 420,
+      "sha256": "d00bf129062a02039302e9086e9cc8c52f7d6d98aadee0219c48b8c3cfdb6b3e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.msan.a",
+      "bytes": 3023090,
+      "mode": 420,
+      "sha256": "4f3baf6189e26cbaf22217d0dabf4e74b7f550debef8ab407d08d1a67f5379c8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.rtsan.a",
+      "bytes": 1174488,
+      "mode": 420,
+      "sha256": "fc4b65f355411025f7c0635fe151d325b034b78324ad3f84341161b037e79bb8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.safestack.a",
+      "bytes": 28554,
+      "mode": 420,
+      "sha256": "c8a0e984d6cb00c94538103c91a490be0f4342141d61229afe7e82e1b2079bd9"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.tsan.a",
+      "bytes": 3266760,
+      "mode": 420,
+      "sha256": "663d2976d9916bc4bf89751246fe976934da282200211f31ae9adcb4c8b3c785"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-nightly_rt.ubsan.a",
+      "bytes": 1079836,
+      "mode": 420,
+      "sha256": "5a457c3ea096f453dd4f90db7202286a09fee0863b20c5b58a4a887414cf671a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-f7c75ea9f6bf2a5b.rlib",
+      "bytes": 241934,
+      "mode": 420,
+      "sha256": "be19c0a0b3a1a729133e03a128535bcc9bcd40bc24629f2d85eb8e16ed5d1315"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-f7c75ea9f6bf2a5b.rmeta",
+      "bytes": 92655,
+      "mode": 420,
+      "sha256": "1663945abd1fc7a3c33b272aab7eb82cb31b2abe10d22a61ac213e95d944fedb"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-55d75add23b27e5a.rlib",
+      "bytes": 8374,
+      "mode": 420,
+      "sha256": "8a8be24aa88f473b23cf7ac11eaf051378d1785ed034d408dda4e00148ada5b4"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-55d75add23b27e5a.rmeta",
+      "bytes": 125708,
+      "mode": 420,
+      "sha256": "26ae974dc2d4b50bb8dc9e72dadb4aaabc3dc44e6358147038cdfc99d3b4dce8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-83b7504b00dd3a5e.rlib",
+      "bytes": 5584,
+      "mode": 420,
+      "sha256": "a2d2b95a45806a357bebc7743d39caa9087bf9d115559c9de4c5e8a627babfe6"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-83b7504b00dd3a5e.rmeta",
+      "bytes": 2257,
+      "mode": 420,
+      "sha256": "2d5b31ac388573b81709a84ef1955253d89dc07e4402682ab2ba379618a60ef6"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-c93cdfa401e8e3e3.rlib",
+      "bytes": 5582,
+      "mode": 420,
+      "sha256": "4dc8bbf8e9676aa0fe5cd306fa4cc53d0871173208d8ece858e214696f57cc73"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-c93cdfa401e8e3e3.rmeta",
+      "bytes": 6158,
+      "mode": 420,
+      "sha256": "6ec5af59a5dbcb63f1366a7779028c6ae618487ad269b6003e7daee737ec8c03"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-f236e243c1753443.rlib",
+      "bytes": 5564,
+      "mode": 420,
+      "sha256": "6a061c8f12578e853dd2349483f4ae329f960bbe58a0af577e0964b6f2c915c9"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-f236e243c1753443.rmeta",
+      "bytes": 7194,
+      "mode": 420,
+      "sha256": "6c3d682ddd3b696f4313c80f2204cbf4902131663bd5316fd3f76306bcce13e9"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c4cc48c1f268d5ea.rlib",
+      "bytes": 12269114,
+      "mode": 420,
+      "sha256": "95ab2bb1d88806df0c0f7b2d4a7a336b5dc3d1ee358bb82a4a3bf9c18f48b350"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c4cc48c1f268d5ea.rmeta",
+      "bytes": 7841768,
+      "mode": 420,
+      "sha256": "2341c782632db2e8236280345c27f220be9f1c75faed4d1b04a50af974a5511f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c4cc48c1f268d5ea.so",
+      "bytes": 2869808,
+      "mode": 493,
+      "sha256": "6b0e75e106ca6a463523b0b11c37466435412e7da54d8f139636ca5312172218"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-c07004c1e6ecf6f7.rlib",
+      "bytes": 69490,
+      "mode": 420,
+      "sha256": "42c16502c5f6097f23ee9e77e7d0005f011427c3bfa96ed659d8198820e2f299"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-c07004c1e6ecf6f7.rmeta",
+      "bytes": 582448,
+      "mode": 420,
+      "sha256": "83868ccbbc9dc42ef1677895c7a514539faf4fb858c335b57b0d853356c58e3a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-aa44b588a7ec7407.rlib",
+      "bytes": 5404,
+      "mode": 420,
+      "sha256": "c6b941fa5ee1285035a6a911586ad63e94fe66ad5c936cbc5a07380aac829f78"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-aa44b588a7ec7407.rmeta",
+      "bytes": 2260,
+      "mode": 420,
+      "sha256": "0faf0ee7178d7b0dcb1dbf74af84230d913d4a689e2cfbeedd54d93f72038d74"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-03a2e4571964d4dc.rlib",
+      "bytes": 7384344,
+      "mode": 420,
+      "sha256": "ddf07ee033ecc8b43d8781036ccd41fd19b7c318c138dcf42fb223013a249341"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-03a2e4571964d4dc.rmeta",
+      "bytes": 1035323,
+      "mode": 420,
+      "sha256": "8f3a6bb43112f09f8305aa8bc97b1e7c18f1d654286d6609b4ae62c76383551e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-4a962efe3e1548d9.rlib",
+      "bytes": 5394,
+      "mode": 420,
+      "sha256": "3ffa0270091a99d72071df6b6583f117e94bdd9c1db4826421a18c9b127b2f5f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-4a962efe3e1548d9.rmeta",
+      "bytes": 21734,
+      "mode": 420,
+      "sha256": "5d52853096f779873f9b79f54460ed4c1fb47b2e1050e1cac5e6e4dd2a7bb557"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 42839824,
+      "mode": 493,
+      "sha256": "828980723df339d62434390e9fb8ef8831036583343ae2316b7ab5646b5c1953"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-clippy",
+      "bytes": 1274552,
+      "mode": 493,
+      "sha256": "a0a3808dddb32f525601e608740ee7c1c5df86db4a7183ea945449f60d29509d"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/clippy-driver",
+      "bytes": 22412784,
+      "mode": 493,
+      "sha256": "e8fa6ad666c353e4c9248fc67074cf160ff2a5dbd97debd20416b81d7f917373"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-fmt",
+      "bytes": 3729264,
+      "mode": 493,
+      "sha256": "07ce638a5be73e97defbf0864f32a64ed40a0b7682b85625e68790f9e68d19e9"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustfmt",
+      "bytes": 5268472,
+      "mode": 493,
+      "sha256": "30de9e1efcd8f8fe7750e00d0c45ff8f4c480608ef1be5baf9ab6f1b4556e8f8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-gdb",
+      "bytes": 980,
+      "mode": 493,
+      "sha256": "557985ec5a31f5617d25d26bd6fe23c4b8d6f85b1498e1aae82831ca0d7f17fe"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-gdbgui",
+      "bytes": 2160,
+      "mode": 493,
+      "sha256": "bc60613775a098e59b49fa4584cea73631697fe1456c44284c337d6700340315"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rust-lldb",
+      "bytes": 1060,
+      "mode": 493,
+      "sha256": "142c31bb3900c03b2b71693b6bd16d6da1174971d93628506db8438050fa69d7"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 645000,
+      "mode": 493,
+      "sha256": "d3a664c970a9fd8361b64194861bebc1ae37b9054e5ee3400dc1c9e691797eea"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "bytes": 13680928,
+      "mode": 493,
+      "sha256": "3b0c7aef20e0dfdfe2dd19ddb0b40d3b744f76318a44031813f501e1912934df"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/libLLVM-22-rust-1.97.1-stable.so",
+      "bytes": 42,
+      "mode": 420,
+      "sha256": "6694b12226d12f5d36d4b7a0e497e0bdae45e636ef00c64f4b722c595cfa0245"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/libLLVM.so.22.1-rust-1.97.1-stable",
+      "bytes": 199494192,
+      "mode": 420,
+      "sha256": "ed4f320c4e1ed6de7d2db6fd89faccf764d63186c2f877057ddf31065b1fac09"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/librustc_driver-832cf6cfb1386559.so",
+      "bytes": 157802496,
+      "mode": 420,
+      "sha256": "b0726217c199be52842c1318a340f0fc68a2c2ca0e3fa4886191dbf6ee192a58"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-02954dcf5cbc5891.rlib",
+      "bytes": 28252,
+      "mode": 420,
+      "sha256": "8c9b38cc4cf5161a11d8f66fc5c4a9e22b84288cc2cac1b4a30b79a95f221650"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libaddr2line-02954dcf5cbc5891.rmeta",
+      "bytes": 470927,
+      "mode": 420,
+      "sha256": "01c50e79c1f7aa856e661678186c9547d722133fc7c8b8e72990e19b89cb005f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-57de982d9269a3a4.rlib",
+      "bytes": 10004,
+      "mode": 420,
+      "sha256": "5b66e8e0f27c68d2468ea7d4cf7127231d25be2793f21bb07910bcf81f8f5762"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libadler2-57de982d9269a3a4.rmeta",
+      "bytes": 20400,
+      "mode": 420,
+      "sha256": "7ec260d73f85127292258f212f3322650bc703b81705570c2afbc7aed905019c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-e17b81f57125c74c.rlib",
+      "bytes": 914792,
+      "mode": 420,
+      "sha256": "a40df9f590570169a49952c4fec4e73fb4eac1fcab56812200890909b0635b56"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liballoc-e17b81f57125c74c.rmeta",
+      "bytes": 7406501,
+      "mode": 420,
+      "sha256": "f88774168ef1ae7887f5a2359ae6a06b00099e316fcbe6c0076920f580ba2565"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-c966e4159bd8bc70.rlib",
+      "bytes": 4874,
+      "mode": 420,
+      "sha256": "f6c755e93016036697067fc5b5453c03ad57c6682650d7b659182ed820bc42fa"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcfg_if-c966e4159bd8bc70.rmeta",
+      "bytes": 5505,
+      "mode": 420,
+      "sha256": "97f25c4528287a9034f42460c79812c781745dc4a067196715be909f1c883227"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-085f534a869f02d5.rlib",
+      "bytes": 4462044,
+      "mode": 420,
+      "sha256": "802c0bb4823da7ee34c87cd1690e1daa8e13bf63d4399b0e24a2cd5cbaaad03c"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcompiler_builtins-085f534a869f02d5.rmeta",
+      "bytes": 1997842,
+      "mode": 420,
+      "sha256": "b66b15477a45e9848b2100bb857cf5b54a78bb2ae72019ae77ea7e0673983e20"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-b5d59729c8525f07.rlib",
+      "bytes": 2929948,
+      "mode": 420,
+      "sha256": "0139c4bb042efa63cbb7feb77805379d0bdc352977b648714eef8424536e9316"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libcore-b5d59729c8525f07.rmeta",
+      "bytes": 64066594,
+      "mode": 420,
+      "sha256": "f4dd656e2dc727a519ea6c38216c922ee7c5755663b4e07e1c5b745b55f0bcf6"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-bbdff6f3ac33b345.rlib",
+      "bytes": 738218,
+      "mode": 420,
+      "sha256": "02ff27826f38c1bf8f51f761536ebd0b2ebe80e1d4b1539ea395046b744cbea0"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgetopts-bbdff6f3ac33b345.rmeta",
+      "bytes": 217660,
+      "mode": 420,
+      "sha256": "bf27ef6f9238032ec46cb5eab529319fae5c11595b902785d7285710003d8642"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-34f31eace0d7245f.rlib",
+      "bytes": 915838,
+      "mode": 420,
+      "sha256": "121c083cc392bb0daed0e221bbbf3bec42ddff3935200a2f0e854b04bea8a0e3"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libgimli-34f31eace0d7245f.rmeta",
+      "bytes": 5320225,
+      "mode": 420,
+      "sha256": "cb024146fd8c2bf2f08d74c9a67ca100d52eb10dc5259182743170abffc99c16"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-51d9ae21a16391ba.rlib",
+      "bytes": 40344,
+      "mode": 420,
+      "sha256": "6ded49787ce9f0aee847ea9954edc2323e7bcc55571a8c741cd7c1b5975f01d5"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libhashbrown-51d9ae21a16391ba.rmeta",
+      "bytes": 1700303,
+      "mode": 420,
+      "sha256": "c28e09cc43b6ad698b9bea16084f739344b683849d89cb5a583ad56a69abe773"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-8da72b3f3dca3868.rlib",
+      "bytes": 30882,
+      "mode": 420,
+      "sha256": "1c6bd7db07f6e552b87752b6113012d3338080b8c78219c99edb86056a0bce9a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/liblibc-8da72b3f3dca3868.rmeta",
+      "bytes": 4240911,
+      "mode": 420,
+      "sha256": "8344a76fd6fcf5da7d50945f893e6ead3e21c87d7ab4d8e090ea66911f06e1b8"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-5338843b9da46083.rlib",
+      "bytes": 414714,
+      "mode": 420,
+      "sha256": "77b9dfa839cd3f70f8eede6a7af83b633a66647f8c8f94d6522f419be8dfa222"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libmemchr-5338843b9da46083.rmeta",
+      "bytes": 1391139,
+      "mode": 420,
+      "sha256": "229d4911def3b17d567347c5e8dd85a0efa28f7df4a38e0d2294a5c290eb5d94"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-24b69c27fbe9064f.rlib",
+      "bytes": 102168,
+      "mode": 420,
+      "sha256": "d832111ec96490710b54a436f77110429e1fb2d05f83d8d6303a8b20140ca30a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libminiz_oxide-24b69c27fbe9064f.rmeta",
+      "bytes": 124922,
+      "mode": 420,
+      "sha256": "082980f38144ce4e9c8e3eaeaa192c156a542aef6618204e4b467cf7c7ce4590"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-f810d9e1ec7b3602.rlib",
+      "bytes": 167128,
+      "mode": 420,
+      "sha256": "efecab8f5f4a48f9a8c4358c1197e91be51a6f5471b474917bf143c7f59ac99e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libobject-f810d9e1ec7b3602.rmeta",
+      "bytes": 8476715,
+      "mode": 420,
+      "sha256": "5654ac05374870fde9058cea67d68f15d09a43f56a8e6eec53aec1623e4925bc"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-ccef00ac2e243a21.rlib",
+      "bytes": 10804,
+      "mode": 420,
+      "sha256": "018d3a28ca4a1643e39656a8d103cf6b5cd14188f77837785c198a78c97bf47b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_abort-ccef00ac2e243a21.rmeta",
+      "bytes": 2908,
+      "mode": 420,
+      "sha256": "ccc3dba047d2d5c637d57f08e31f9909a2be89f0e9abb0c90badc0294ff53268"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-e8f3c569ec017ae8.rlib",
+      "bytes": 35758,
+      "mode": 420,
+      "sha256": "cc89591bdd7f70faa334894e4831762269ec499668e2f11f7d78774f431e6840"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libpanic_unwind-e8f3c569ec017ae8.rmeta",
+      "bytes": 7084,
+      "mode": 420,
+      "sha256": "ad245859d7f2f55d5c1b364f8670327c362cbd55842019a532c52ff1c304a9b7"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-46d5885eef674d45.rlib",
+      "bytes": 3604876,
+      "mode": 420,
+      "sha256": "d8320b52dd552f7372822835aa9c835aae0911c3bc793356ec7d51fc8db09a4a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libproc_macro-46d5885eef674d45.rmeta",
+      "bytes": 1100622,
+      "mode": 420,
+      "sha256": "94819dc3b39e822ca30f10325dcf2a76d01978c7e843b2080007608d5793f427"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-3bb349696bf4ca2e.rlib",
+      "bytes": 495336,
+      "mode": 420,
+      "sha256": "7556caa5538c2912bd0d752a3c42b1c01cdc43244e5130b54cb92d9ec47b167f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libprofiler_builtins-3bb349696bf4ca2e.rmeta",
+      "bytes": 1345,
+      "mode": 420,
+      "sha256": "e4077f0f20a6b839601bfa9a6cccaf04754b427e521ce36f70ad96a8a38024b3"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.asan.a",
+      "bytes": 6099288,
+      "mode": 420,
+      "sha256": "185385d2fe0f9a205a86a19cbbd31ba52e6620a01477c738600b535e674ed521"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.dfsan.a",
+      "bytes": 1984890,
+      "mode": 420,
+      "sha256": "cd724228675eb41d31f18ddf4416fd1855377fda832c50e4afcf9eaf14015671"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.lsan.a",
+      "bytes": 2079446,
+      "mode": 420,
+      "sha256": "e48df203ef882558038f23088d58f1e62d3ce4916526f7ac349835094491c0d5"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.msan.a",
+      "bytes": 4677960,
+      "mode": 420,
+      "sha256": "025f50b5d4b1c748e35e4866c2da0827c637c6ee3ec7311fbc86155846bec176"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.rtsan.a",
+      "bytes": 1859696,
+      "mode": 420,
+      "sha256": "70325bf0147c416a0407c391473d89e3dc4e167238a70fc8e7f12f85ff916e68"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.safestack.a",
+      "bytes": 29744,
+      "mode": 420,
+      "sha256": "845118a6e81883548552677c197b09d3e3c04b18d1ee20b2f52a977947afaae9"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc-stable_rt.tsan.a",
+      "bytes": 5662132,
+      "mode": 420,
+      "sha256": "8e30d43d97dd2740b9c443a2ea74a109fb9459970d8d49400c20b79401ff979e"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-73bcb43673848f30.rlib",
+      "bytes": 228822,
+      "mode": 420,
+      "sha256": "13645075852f0fc60069e7c982c1848cda0479bd365ff3841fdb91772e86343b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_demangle-73bcb43673848f30.rmeta",
+      "bytes": 90947,
+      "mode": 420,
+      "sha256": "a41772164aaabfdd0294b9417fab88082cfbfbadbd9b9330180046e23938652b"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-efb1017eaf01b596.rlib",
+      "bytes": 5048,
+      "mode": 420,
+      "sha256": "9d1aeae12789ee424f43be8ba7c6738f91aa20be71c0538d532895f9c4586be4"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_literal_escaper-efb1017eaf01b596.rmeta",
+      "bytes": 122845,
+      "mode": 420,
+      "sha256": "3af4d2bcd0b8dbbc3310b619e4dbb10b25746e241a41cc1af1ec3d6e7c84939d"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-99955b4d3549c390.rlib",
+      "bytes": 5136,
+      "mode": 420,
+      "sha256": "0fd5d99756acd3a57eeefb8533d9060924ae6290e634c2ea2ac821f4b7fd9e7f"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_alloc-99955b4d3549c390.rmeta",
+      "bytes": 2167,
+      "mode": 420,
+      "sha256": "178828a24509bbca20d32b0326aa3c8c80c1cddd8b5383063e9f97fd2a1462fb"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-79f73bde78643b0a.rlib",
+      "bytes": 5126,
+      "mode": 420,
+      "sha256": "1b9c9c155c8c2852af222702ad2053dddd1db4482fb46774a69d6f37a93d42ae"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_core-79f73bde78643b0a.rmeta",
+      "bytes": 5939,
+      "mode": 420,
+      "sha256": "e1fb1e8ffe7827e7fc34b1e14e115690e4d882665f5b5075070705c06143a8b2"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-6aad90a2a10ef45d.rlib",
+      "bytes": 5108,
+      "mode": 420,
+      "sha256": "dadc853b3d7923746a7d1819d701e25ee559c5cd2a3cb662c9468b26d730c5f6"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/librustc_std_workspace_std-6aad90a2a10ef45d.rmeta",
+      "bytes": 7132,
+      "mode": 420,
+      "sha256": "833091fbb103d7961e74c050f509b7459e25a0c1e1e7fc5dfbd4f6ee19f680bd"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c64e6e11aa24fc43.rlib",
+      "bytes": 11667026,
+      "mode": 420,
+      "sha256": "96c3ac946bdb5c09c8eb7036e495e89d2d773b30b2606b6c0323944cd9e858fe"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c64e6e11aa24fc43.rmeta",
+      "bytes": 8651231,
+      "mode": 420,
+      "sha256": "3847f93ceb44f7c976c9facb2013effce10cb63474bc5b0cf351b0ce91646ab7"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd-c64e6e11aa24fc43.so",
+      "bytes": 5421888,
+      "mode": 493,
+      "sha256": "af148991054c1e1a7ce94bbd9acbf10166b734055c0339aedfe80fdd6e91f02a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-64da8f7c5e658436.rlib",
+      "bytes": 63266,
+      "mode": 420,
+      "sha256": "2cc5d406b95565a3c039c0a325c1f15b416d7aa88f3c9805fee038cbe4253151"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libstd_detect-64da8f7c5e658436.rmeta",
+      "bytes": 578946,
+      "mode": 420,
+      "sha256": "2dc43e3a04574a1768a5b8712cefc1a73b82ac7a1ea5516ed11360588e49b278"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-1ab7d50ee4e42671.rlib",
+      "bytes": 4956,
+      "mode": 420,
+      "sha256": "5d43a38a304c36a82b76607b256c226efd45bde06d41b37afa8e0672c103d793"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libsysroot-1ab7d50ee4e42671.rmeta",
+      "bytes": 2240,
+      "mode": 420,
+      "sha256": "b0dde27cbb7b4e2befbf2c75f04c09e657a499570f75dd11ffa764fa49bfe21d"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-009e9a84885f0921.rlib",
+      "bytes": 7212084,
+      "mode": 420,
+      "sha256": "433155307ffc6cd553781ed6dbe38684e23db55cf3a65e6774a08757e0f179cb"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libtest-009e9a84885f0921.rmeta",
+      "bytes": 1008519,
+      "mode": 420,
+      "sha256": "efcda9e91ebcf21e369388db4af1c7380058c5a50d01f9c3b9ae09c5f4eaa54a"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-d90fb703b61b002d.rlib",
+      "bytes": 4938,
+      "mode": 420,
+      "sha256": "32d7150aa50999d3b556fcb26fc747f8e2d67f8d76d11d885f6d842ec3c92232"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib/libunwind-d90fb703b61b002d.rmeta",
+      "bytes": 20058,
+      "mode": 420,
+      "sha256": "12a3a60a08e96aa2176951d4b65966bb757ce56cfc4c7f171b90c176a858a01d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/Cargo.lock",
+      "bytes": 74799,
+      "mode": 420,
+      "sha256": "67efde303b0df9e4beb828bc5e8fea79d33d71b4cf1e2d7f81e913e26d2e896d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/ci/configure-build-jobs.sh",
+      "bytes": 54554,
+      "mode": 420,
+      "sha256": "7cf4d549c22350b5a004198b720f38e807980c1f50d480b22a0954dc0cb2956c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/ci/run-with-reverie-dbt-budget.sh",
+      "bytes": 23623,
+      "mode": 420,
+      "sha256": "1effc02c01c115f76da4fa6ffc81f5aa5c86a3c8fa991107ac10f648d405855a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/detcore-dbt/Cargo.toml",
+      "bytes": 955,
+      "mode": 420,
+      "sha256": "0e405c788acf84b20e26d6f182e554e4814410cacbb9b695c8f26f1067c1ba39"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/detcore-model/Cargo.toml",
+      "bytes": 1434,
+      "mode": 420,
+      "sha256": "09316020a5314ed834bd9ec1eb77c35e9c974a1e7b9049bb8bf7a0018a5496d1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/detcore-sabre/Cargo.toml",
+      "bytes": 1187,
+      "mode": 420,
+      "sha256": "14c9651dc235fa2f75d76d4e88d4168a585d9aa87557fbeaccbce862bf06bd0b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/detcore/Cargo.toml",
+      "bytes": 4387,
+      "mode": 420,
+      "sha256": "0a241dd414d03822ff8e148d9f9062488e6f680838674fcae01c05394a498d29"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/hermit-cli/Cargo.toml",
+      "bytes": 4358,
+      "mode": 420,
+      "sha256": "50a647a38e412b5db022a71b1b1437387a9cbf9dcda03d483133a132976ce0ab"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/hermit-install/Cargo.toml",
+      "bytes": 519,
+      "mode": 420,
+      "sha256": "c8bfdfc3b9f48493c11fffc84df6f739b147b4e5fa8a050b2b9cc4d0b849ed1a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/liteinst-runtime-build/Cargo.lock",
+      "bytes": 45801,
+      "mode": 420,
+      "sha256": "ab1b7862ff8404d4f314d0b15dcd1ead1a0ee93bf7f3f146ad963d300589f330"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/detcore/tests/testutils/Cargo.toml",
+      "bytes": 1282,
+      "mode": 420,
+      "sha256": "7f29942f6a30b091bbf991654d94e8ee57c1c44a8f4e12ad3de3590340ceef39"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/before-source/liteinst-runtime-build/runtime/Cargo.toml",
+      "bytes": 321,
+      "mode": 420,
+      "sha256": "904ddf33fa02224f9089c0f6f1c30e41ced00ff01a2aeafdbcbf3afc60a84b9a"
+    },
+    {
+      "path": "/usr/lib/systemd/systemd",
+      "bytes": 147616,
+      "mode": 493,
+      "sha256": "82e5f9e7fc093088b76d596431e4a161d5119bea36c5a4118034df130a1c9878"
+    },
+    {
+      "path": "/usr/bin/gnome-keyring-daemon",
+      "bytes": 1037432,
+      "mode": 493,
+      "sha256": "ab6ae80b03222cab888e64801c534f534c85b60a2f1296f0c0e91d37344431a6"
+    },
+    {
+      "path": "/usr/libexec/git-core/git-remote-http",
+      "bytes": 966832,
+      "mode": 493,
+      "sha256": "6b38881bcbde6d368dedf2a841e3bc7b9f1f17e6ff2e90161cdc2bd0ae015c4e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-correction-v1/prepare.py",
+      "bytes": 8088,
+      "mode": 420,
+      "sha256": "fd23084803c8cc03e37ef3fe29215db2c1b3e26784975b3a66c32b351a3fc085"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v6/controls-run-3/native-hermit/result.json",
+      "bytes": 4410,
+      "mode": 420,
+      "sha256": "8f3fd785aaf19c26e43cc1a7617d9f20b7a592649686660f604f30519d505139"
+    },
+    {
+      "path": "/home/newton/.cargo/config.toml",
+      "bytes": 993,
+      "mode": 420,
+      "sha256": "e36ce2ec7de39d1ea2276c016bb660190b960cf4ef23dda9414661bc40ef45b3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/prepare_phase.py",
+      "bytes": 10364,
+      "mode": 420,
+      "sha256": "783a86dd08973f1c0b47355ee0d0bd4cdf8969a3e7f898d70e4735f8829c08d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/run_phase.py",
+      "bytes": 10389,
+      "mode": 420,
+      "sha256": "c94ff93c08bf8eb8d8ba5d327143bbec150a206575569c06618a6b5e4042a7a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/admit.py",
+      "bytes": 6968,
+      "mode": 420,
+      "sha256": "07a566b90006a71bb07f1d5541d2cbc3d189de577e81fde639e333d2327d3073"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/readback.py",
+      "bytes": 17219,
+      "mode": 420,
+      "sha256": "f1bc0b43fb82cb17b1267961b5cadb032874ab4a5b2330eb8c5acbe41d506d85"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/finalize-metadata.py",
+      "bytes": 6495,
+      "mode": 420,
+      "sha256": "a2243d99434de3829ab1414ff5f3cec3d03da398c20460482038a5bd915b4d4b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/increment.patch",
+      "bytes": 4431,
+      "mode": 420,
+      "sha256": "f98da4a8b08d9064c2b0d618bfa829ea4b689a6214b2edbde465d8a8e6d69328"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/metadata-root/stdout",
+      "bytes": 1404985,
+      "mode": 384,
+      "sha256": "259d75fd7989c82af708ea03a62a494e5c2c8ce200589c9a05d15b5dbdeca753"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/metadata-root/stdout",
+      "bytes": 1404985,
+      "mode": 384,
+      "sha256": "259d75fd7989c82af708ea03a62a494e5c2c8ce200589c9a05d15b5dbdeca753"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/metadata-nested/stdout",
+      "bytes": 859139,
+      "mode": 384,
+      "sha256": "d59f8664f1df6270fa11dc4d71e7360e569cf77386d4e1dc98d798473842a387"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/finalize-dependencies.py",
+      "bytes": 2946,
+      "mode": 420,
+      "sha256": "422de059e17f724037fd6ac979aed7d4600e73fee92d21878390b8945b5c432c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/common.py",
+      "bytes": 10759,
+      "mode": 420,
+      "sha256": "f6e91aefd053016800b3446efdcfece1a8fc30d6fc19d8d117b39f8b90f668e4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare_phase.py",
+      "bytes": 10364,
+      "mode": 420,
+      "sha256": "783a86dd08973f1c0b47355ee0d0bd4cdf8969a3e7f898d70e4735f8829c08d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/run_phase.py",
+      "bytes": 10389,
+      "mode": 420,
+      "sha256": "c94ff93c08bf8eb8d8ba5d327143bbec150a206575569c06618a6b5e4042a7a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/admit.py",
+      "bytes": 6968,
+      "mode": 420,
+      "sha256": "07a566b90006a71bb07f1d5541d2cbc3d189de577e81fde639e333d2327d3073"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/readback.py",
+      "bytes": 17219,
+      "mode": 420,
+      "sha256": "f1bc0b43fb82cb17b1267961b5cadb032874ab4a5b2330eb8c5acbe41d506d85"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/assemble.py",
+      "bytes": 1669,
+      "mode": 420,
+      "sha256": "ce61c70f674251cfd6707cfee1822837d59d4bfe7f6141d3bb45f42b13d438aa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-verify-v2/RESULT.json",
+      "bytes": 5627,
+      "mode": 420,
+      "sha256": "31636662e4c3e1543153cf6f0b5569cde25796d1db572e74aa0232e566b439fb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-native-v2.py",
+      "bytes": 2807,
+      "mode": 420,
+      "sha256": "8e5aa98b700a785e43e9a2a5a0609780fee2055912c461d6f107bc1f7eb80ca1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/compile-native-systemd.json",
+      "bytes": 2628,
+      "mode": 420,
+      "sha256": "89e615ae15829ee88c6ac1e63765a809d32631d964990ada72ad32e60f244b34"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-1/compile-native/result.json",
+      "bytes": 17022,
+      "mode": 420,
+      "sha256": "f2e7fe938ab0e14f6a8ae71997e11480745da5aa0bed8315e32cacb05ff0972c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-native-controls-v2.py",
+      "bytes": 4146,
+      "mode": 420,
+      "sha256": "f36c7d8a20dcd4b8c21e70af5f48f03f7225e439b48937b454d8bd158c9c71b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/native-loader-inputs.json",
+      "bytes": 7961,
+      "mode": 420,
+      "sha256": "2b014de46f342f78ae4a8658ddfb803f187541aa718c7c8cf2ad5219d65cff98"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/lib64/libunwind-x86_64.so.8.1.0",
+      "bytes": 73128,
+      "mode": 493,
+      "sha256": "d048598794739765d468e1e17e24c9a7a734d6df9a94217e652752ae6d40ead4"
+    },
+    {
+      "path": "/usr/lib64/libunwind.so.8.1.0",
+      "bytes": 64944,
+      "mode": 493,
+      "sha256": "e7d89a0259ec83ccaddeac9b1494c551c1b8f13af31704b46acd0104ec57c293"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/run-2-native-hermit-systemd.json",
+      "bytes": 2638,
+      "mode": 420,
+      "sha256": "0463e9af5f882012aaf2eb44f1084cc6dac11556f4ff111dca3a01278950dd3b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-hardware.py",
+      "bytes": 2098,
+      "mode": 420,
+      "sha256": "30bf48ca8732d3ddf4ab881f7fb93924707057b7fffefe4911106c151c8bf8f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/compile-hardware-systemd.json",
+      "bytes": 2631,
+      "mode": 420,
+      "sha256": "ff5352af04bd5ddcbfb6688fe5c811f97982f9f8712db621443f84d5098a305c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-2/compile-hardware/result.json",
+      "bytes": 14749,
+      "mode": 420,
+      "sha256": "f88533d666a0ead5ba196d840cedf7db891d5a16ba6c3e9309d64134d4a16f73"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-hardware-controls-v3.py",
+      "bytes": 4396,
+      "mode": 420,
+      "sha256": "fac0a362d3f14a8d666926e1224c6eccadb01c0c86be9a34f1816487ba1327d5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/hardware-list-first-refusal-readback.json",
+      "bytes": 673,
+      "mode": 420,
+      "sha256": "8dec879bc9dfff695b77f12054c1b44f49f9f5dc3f1fe5fb5490c7c3500a808b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/hardware-loader-inputs.json",
+      "bytes": 6872,
+      "mode": 420,
+      "sha256": "b67181dbe0050b92fbf15202f0587065688923c0d7b4f793724a2532a766dfd8"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/lib64/libunwind-x86_64.so.8.1.0",
+      "bytes": 73128,
+      "mode": 493,
+      "sha256": "d048598794739765d468e1e17e24c9a7a734d6df9a94217e652752ae6d40ead4"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/lib64/libunwind.so.8.1.0",
+      "bytes": 64944,
+      "mode": 493,
+      "sha256": "e7d89a0259ec83ccaddeac9b1494c551c1b8f13af31704b46acd0104ec57c293"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/run-4-format-systemd.json",
+      "bytes": 2623,
+      "mode": 420,
+      "sha256": "175d4cdfe20b9afdda5fa72c743634ab61b91e90d7239024200ce480868319b9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-composition-v1/prepare-generator-v2.py",
+      "bytes": 6125,
+      "mode": 420,
+      "sha256": "e5a12d8c5afe88f3f4a922e2995b96e4b2e72b552513c89ac735cdcdd1bb69fc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v4/input-source-transition.json",
+      "bytes": 576,
+      "mode": 420,
+      "sha256": "f2e8174cfb86a5456061386ec83576ebb365c2115b1710946488d148cf2c7af8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v4/measured-count-source-update.json",
+      "bytes": 366453,
+      "mode": 420,
+      "sha256": "9f801c842accfff5dc6512f72085da302c20474cf1c68869bf376b4d5e093648"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-composition-v1/run-2-cache.json",
+      "bytes": 264,
+      "mode": 420,
+      "sha256": "22b3a40e53a4f65a29ef05eb431d3bb619e8b7d42940c890e9bd8f2b62fcfc37"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-generator-systemd.json",
+      "bytes": 2643,
+      "mode": 420,
+      "sha256": "4a0a4320a28314a5813d98377fd053934b68544cca5d8aad5a487fef3fd73c62"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-composition-v1/publish-generated-source.py",
+      "bytes": 6897,
+      "mode": 420,
+      "sha256": "78bd82e1cf4f520e224937a1c9c976e8fb82e0d1a349e13e5df3ffa3a234d84c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v5/generated-diff.json",
+      "bytes": 28391,
+      "mode": 420,
+      "sha256": "ffa15a4a54eae07f4efc33b3e369c0777422c92e6ef97e3399ebd2c46f92eafa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v5/generated-source-transition.json",
+      "bytes": 1977,
+      "mode": 420,
+      "sha256": "e92e0008f2ceea922cc3699cd67b4843d209ffda0d0c7157fcd21c2cb67f1d1b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-final-checks-context.json",
+      "bytes": 133751,
+      "mode": 420,
+      "sha256": "116a2a3ebc185bad22e92fe399f857168a1f19aaf3da37b1ca959e671247ecf6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-final-checks-v2.py",
+      "bytes": 3588,
+      "mode": 420,
+      "sha256": "affa9c14757bd3b48d057eb8b258e2f68bd7f8943879f937b65393d47565f173"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/manifest-controls-first-refusal-process.json",
+      "bytes": 85,
+      "mode": 420,
+      "sha256": "6c6835ab837b52e3e629c995e45ac5976b167583b07c9fc3dd6735d56f2c1d26"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-retry-final-format-systemd.json",
+      "bytes": 2661,
+      "mode": 420,
+      "sha256": "094dabeddc2f3ee97131c078363339bda6081914217db320bd9cd93ad43e8446"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-retry-final-format-context.json",
+      "bytes": 135852,
+      "mode": 420,
+      "sha256": "f9f5436e042334b5b82b73e8d845a16e9386243bebed1934dac00ae92e4e9de1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/prepare-committed-v2.py",
+      "bytes": 5888,
+      "mode": 420,
+      "sha256": "44d6f128894202ec9f04bfdcfb2d7adba7b4ff5509af1fd5cc18131741da88cd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-review-v1/final-commit-readback.json",
+      "bytes": 2257,
+      "mode": 420,
+      "sha256": "2d08bacfe10b144334734947d5cd7ed2a0da57db0fc1287f46a886d8738f20e3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/SOURCE-INPUTS-FOR-REUSE.json",
+      "bytes": 705536,
+      "mode": 420,
+      "sha256": "ba0192387cd85a8bfe4f401ef0a6de92c08a8c066effe53f341602b704b23790"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/RUNTIME-LOOKUP-INPUTS.json",
+      "bytes": 2640,
+      "mode": 420,
+      "sha256": "0c3e255e09652fb7544c9f575562e820820df92293136c77ecc9d7db3442f5ec"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-COMMAND-SOURCES.json",
+      "bytes": 29825,
+      "mode": 420,
+      "sha256": "c2de29fab52d52a0d8e6d0365f1a6805d55d7b5e1d72a6c82ea10b64bedebabe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-LOADER-INPUTS.json",
+      "bytes": 9237,
+      "mode": 420,
+      "sha256": "e68b88750d73e9bcb86e2c9ff03947282bdb90dc0fd0347d6167ce1d35f82c72"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-PROC-MACROS.json",
+      "bytes": 3869,
+      "mode": 420,
+      "sha256": "6c6fc845963011682888e55ed88d82b8efda067f1e88f57d1d1ac04146292685"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/committed-v2-compile-hardware-systemd.json",
+      "bytes": 2658,
+      "mode": 420,
+      "sha256": "b7673c715c02476f42e10f510a0f722299b5daee6adcf7b6bbcdc837097fda1c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v6/binding.json",
+      "bytes": 1444,
+      "mode": 420,
+      "sha256": "6f24c0877b4ca82eaa76d2e48083901021d60d7adfef6c19ce775393dccca72c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v6/REPORT.md",
+      "bytes": 3360,
+      "mode": 420,
+      "sha256": "1b0e56c1b38fdbedd61938328d8becd93442567ffe99039bca3b97342a995c30"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v6/scm.json",
+      "bytes": 485,
+      "mode": 420,
+      "sha256": "e286a9d6a240a185c5c7ce05723c19a313695ad625d461252112eb7a18f7a798"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v9/caller-increment.patch",
+      "bytes": 3778,
+      "mode": 420,
+      "sha256": "b05f70a90be0d743a4686f213ee86e5b3387d354e26c2eb3fac0da3696fb46de"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v9/added-native-names.json",
+      "bytes": 683,
+      "mode": 420,
+      "sha256": "97a814b1598dfaf9b8b7877e56668155cb10779212e4c766de0d9a9870fe895a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-review-corrections-v1/prepare-callers.py",
+      "bytes": 7003,
+      "mode": 420,
+      "sha256": "5c7706eaf6040b5678dcc3801a670d43343382cb675bab6897438188163b1fc8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v9/compile-native-systemd.json",
+      "bytes": 2628,
+      "mode": 420,
+      "sha256": "f0c16b2e9261a17723691c415778905204b48f330460b1a72a8e8c6139f6a8a6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v9/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/prepare-compile-v2.py",
+      "bytes": 2021,
+      "mode": 420,
+      "sha256": "03021323c15a51b4a1beec9b7140cc5db48fb72f990a2cc3efb7493ae302c67f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v7/binding.json",
+      "bytes": 1729,
+      "mode": 420,
+      "sha256": "34d9092303f7b57cd8b4f29d78efab91cc696dd83aefd89c12e9eee99378d9ff"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v7/REPORT.md",
+      "bytes": 3905,
+      "mode": 420,
+      "sha256": "db7edb9a5035d7fb202f6ea98275f0de1b3c7fb8ee5b94419b99c2f48f5c0ab1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v7/v6-to-v7.patch",
+      "bytes": 2348,
+      "mode": 420,
+      "sha256": "55783ce34043787f8906a23874fc207072a279af441ac236e3aa862ea7c768cc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-systemd.json",
+      "bytes": 2629,
+      "mode": 420,
+      "sha256": "e9b95c435dbb195ca0f47bb1071e4073e14326f532ca2fba602331a0f411421f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-context.json",
+      "bytes": 145374,
+      "mode": 420,
+      "sha256": "f4b115164fed95f94657cc01941ba4d5544ceb72271e86ec15d28e6ded61e01e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/bind-local-observer.py",
+      "bytes": 1133,
+      "mode": 420,
+      "sha256": "11243948dde29b90885bda17774d7631cb8dffc541075eeb434d54eaf5f5cbeb"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-v2-systemd.json",
+      "bytes": 2636,
+      "mode": 420,
+      "sha256": "16028f129227ef23c651ec8e511d826e5929dd4937421956c4bc0c75fd3fd22e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/prepare-compile-retry.py",
+      "bytes": 741,
+      "mode": 420,
+      "sha256": "6921c78ddfc33098d61670eceac5c7583e23a44c277a50256e996b55e3babb64"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/controls-run-1/compile-native/result.json",
+      "bytes": 896,
+      "mode": 420,
+      "sha256": "45125b7a510284532534dbc4c683718293e697dd9533ff6845fa19bf2f9650a2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-v3-systemd.json",
+      "bytes": 2636,
+      "mode": 420,
+      "sha256": "3c9e5e07bbe2a82194561b3525e60f60455a4c777d59b73043b896a3befa762f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/prepare-complete-observer.py",
+      "bytes": 1908,
+      "mode": 420,
+      "sha256": "bd1aa1e1fd3497eeec6b58c25bdc02b364f7ca2c82da66740e55e0c9e9bbe23c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/controls-run-1-retry/compile-native/result.json",
+      "bytes": 2495,
+      "mode": 420,
+      "sha256": "a35343f11d711fb8730aabbed61947f2c4e430a0afb41dec71087f3d2d5102cf"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-v4-systemd.json",
+      "bytes": 2636,
+      "mode": 420,
+      "sha256": "eb9be1a182be59eca49d8c4d3d521ecba2aee243896fece818ed887b7a742bfc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/prepare-documented-compile.py",
+      "bytes": 2665,
+      "mode": 420,
+      "sha256": "3c4c2267ee9a0e4aa5bcaa4d94b1028b80bf041a982081f8dc5395be550811a3"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v8/binding.json",
+      "bytes": 1728,
+      "mode": 420,
+      "sha256": "0660818abf7dbaf0db0a0bebc56524ce3f788580f43537fd07e02a9625d429d7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v8/REPORT.md",
+      "bytes": 4287,
+      "mode": 420,
+      "sha256": "469d8dfa4439598313838cb68db3726068fdb88ff529b75df50079ba1a14bcdc"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/controls-run-1-complete-observer/compile-native/result.json",
+      "bytes": 2984,
+      "mode": 420,
+      "sha256": "b272413e66c2c0f859e673ab49f1b127fb0bb69e54442d85a00f738d85b3a98b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/compile-native-v5-systemd.json",
+      "bytes": 2634,
+      "mode": 420,
+      "sha256": "b2a487389141a3ae556a27cd9eff19dfe70a659f7785e10dc7e1563db9d88e5d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/prepare-counts-and-generator.py",
+      "bytes": 5952,
+      "mode": 420,
+      "sha256": "bfe009001dc2844df561a0d4088d22335e02d06f6de96e5c393b7d309d29253e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v9/measured-count-source-update.json",
+      "bytes": 1905,
+      "mode": 420,
+      "sha256": "8203aa166b8b5ce6d3bd59c898cb0273cc474a5906c8cd4c407de134233508ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/generator-artifacts-before.json",
+      "bytes": 7067,
+      "mode": 420,
+      "sha256": "de268a31d024efa4859d6f498d772dc0dd1f9da3cfa5d2b6bf3d3e4b21e4fc7b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-COMMAND-SOURCES.json",
+      "bytes": 29825,
+      "mode": 420,
+      "sha256": "c2de29fab52d52a0d8e6d0365f1a6805d55d7b5e1d72a6c82ea10b64bedebabe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-proc-fd-identity-20260917/ignored/prejoin-failure-implementation-20260917/guest-prerequisites-follow-up/rust-script-cache-readback/GENERATED-PROC-MACROS.json",
+      "bytes": 3869,
+      "mode": 420,
+      "sha256": "6c6fc845963011682888e55ed88d82b8efda067f1e88f57d1d1ac04146292685"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/generator-systemd.json",
+      "bytes": 2619,
+      "mode": 420,
+      "sha256": "54e6ed3edb22e16f8dd7fd6c30302e5fcb1971c5477f46504c6cbca8ae7c9db6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/finish-generation.py",
+      "bytes": 5501,
+      "mode": 420,
+      "sha256": "e0e6f5899d5848fc76c602da14813b530135988e5565906d41ac23fbf8083034"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/generator-controls-run-1/official-generator-write/result.json",
+      "bytes": 3927,
+      "mode": 420,
+      "sha256": "c8271bc3f2cdb144d0af022f0b4b542ed5125c10a5dc40c7e127629adf1c1da5"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v10/generated-diff.json",
+      "bytes": 393,
+      "mode": 420,
+      "sha256": "428017c0ce17f29e9225890c8953e6d7857d143fc3ec9eb1e7cb8fa2fa9ab4dd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-parent-fixture-correction-v1/proposed.patch",
+      "bytes": 1124,
+      "mode": 420,
+      "sha256": "b3a94f1f1d40f0df8b7100e68609b66bd00151a5f8d26c45d57109a2b5361097"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-review-v3/final-commit-readback.json",
+      "bytes": 2611,
+      "mode": 420,
+      "sha256": "91b13d54965dff193a1fffdcf0e7013d49f22626d3ecfc0c670608bd930da980"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/prepare-native.py",
+      "bytes": 4681,
+      "mode": 420,
+      "sha256": "236ea8408f0128905daa545ef22c5c802f7c5358612d02a072d11a824e22554f"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/launch-native.sh",
+      "bytes": 1346,
+      "mode": 420,
+      "sha256": "a38d7cc2adda81395ed87df2d12c75e6098463aee0dbb902bccdfee33c7e8c2a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/compile-native-systemd.json",
+      "bytes": 2629,
+      "mode": 420,
+      "sha256": "c92c2c69cc200c9811fc6e1547b65955d6fdce57b0e21d8ef32dbea0399551ee"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v11/compile-native-context.json",
+      "bytes": 157520,
+      "mode": 420,
+      "sha256": "2f98752588f751652c7229d43a5bf54a2542f9c2b85a7bfcf9c300559662d7fe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/binding.json",
+      "bytes": 4200,
+      "mode": 420,
+      "sha256": "8585797fbae7890701da545cdbbdbeeb241f714efee9ccd88b25538fbbca46a4"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/RESULT.json",
+      "bytes": 309,
+      "mode": 420,
+      "sha256": "6453f36a1da8f42b3d3bbee8ddfed4cf91c932e279a6a8e271eb3acda9144327"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/EXTERNAL-INPUT-AUDIT.json",
+      "bytes": 1211,
+      "mode": 420,
+      "sha256": "fd8b2dae0bb7695310f244a0632ab0c09a654bbb05676f59e7dbf177a7eec4fe"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/CALLER-COPIES.json",
+      "bytes": 3683,
+      "mode": 420,
+      "sha256": "6e677dd03020932ed7cd8a205f40840cd4e37eebc7817bc8bf7713299da8439a"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/prepare-compile.py",
+      "bytes": 4984,
+      "mode": 420,
+      "sha256": "61c4574067a429927d418fc5eff0975623c8010f3c22dbc5a104985ac4e60b1c"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/launch-compile.sh",
+      "bytes": 980,
+      "mode": 420,
+      "sha256": "4eb78e7521bb8d6df87ed050dc8cae3f6da4ebc2b05c79d1c243935904cbfa06"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/compile-native-systemd.json",
+      "bytes": 2610,
+      "mode": 420,
+      "sha256": "988443703b031e3aff96c4342441b56e9f4cf2c9a54d19bfb96985fe617a1fe2"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/COHORTS.json",
+      "bytes": 26194,
+      "mode": 420,
+      "sha256": "c726b693cd541b1e019b1bbaf85ae8ef60d278728ebb217a497c7cc69687ba24"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/compile-native-context.json",
+      "bytes": 160873,
+      "mode": 420,
+      "sha256": "d46a2dcc0313309c2b5bb58928efcce2495c563c4f9f5be80699c8f737c8e22d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/compile-native/result.json",
+      "bytes": 16843,
+      "mode": 420,
+      "sha256": "3a703d79dd8394ad6345316f961ee3beee967809ad605887246eb6fa94e77f89"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-detcore/result.json",
+      "bytes": 60267,
+      "mode": 420,
+      "sha256": "82b7fb6e7e11da9c661298700d21d75b07249282db51ff4b05210a780c8d3a6b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-syscaller/result.json",
+      "bytes": 3412,
+      "mode": 420,
+      "sha256": "80b33c6ec778d869fc42c9c5f516de27a61dd3eb718ff3ddedc9b89714d828ae"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit/result.json",
+      "bytes": 34779,
+      "mode": 420,
+      "sha256": "ae176ddbf9b1a5137471909afb57278330a9a843a300addac1fc868a312dd3df"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-bin/result.json",
+      "bytes": 27126,
+      "mode": 420,
+      "sha256": "68e976b9751329b1b355efecd1a494824ea6c0aa91b62beed869a5d27a75bbfd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-dap/result.json",
+      "bytes": 3600,
+      "mode": 420,
+      "sha256": "bcbfea4a01ee96509f3942c1f767d45cf939671d2c39369ddcfbcb4cd56cd447"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-verification-report/result.json",
+      "bytes": 3503,
+      "mode": 420,
+      "sha256": "ad4f1781347d94783b31a5955a4d025c94d78c8ef82fe2171cd57b600ee378c7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/native-loader-inputs.json",
+      "bytes": 7673,
+      "mode": 420,
+      "sha256": "5e9eb5ba113cb4d9cd4675411210e468c4527915b12cab228b62a89099a2e9ea"
+    },
+    {
+      "path": "/usr/bin/ldd",
+      "bytes": 5446,
+      "mode": 493,
+      "sha256": "2e332feed7fe0d65afca81d83d07f997917c07d5c1f1fd5564e98330e78aa0b5"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s-11-20240719.so.1",
+      "bytes": 116408,
+      "mode": 493,
+      "sha256": "3d144b557008c93e4e67567d5dc98cb81cf55187a698d1b4872ce84ba8a26bed"
+    },
+    {
+      "path": "/usr/lib64/libm.so.6",
+      "bytes": 913048,
+      "mode": 493,
+      "sha256": "9a66ed5465040274a85266a9404268b50e69a1fdd7f34aaac3746905003c5135"
+    },
+    {
+      "path": "/usr/lib64/libc.so.6",
+      "bytes": 2549352,
+      "mode": 493,
+      "sha256": "d932cb6bc88da10cc709d5b7ecda57a1387b6571331689dba88023b4c0517776"
+    },
+    {
+      "path": "/usr/lib64/ld-linux-x86-64.so.2",
+      "bytes": 938752,
+      "mode": 493,
+      "sha256": "008e34384d4bc082a053ba086588efa1546086ecb863c9464b7269f8928b7577"
+    },
+    {
+      "path": "/usr/lib64/libunwind-x86_64.so.8.1.0",
+      "bytes": 73128,
+      "mode": 493,
+      "sha256": "d048598794739765d468e1e17e24c9a7a734d6df9a94217e652752ae6d40ead4"
+    },
+    {
+      "path": "/usr/lib64/libunwind.so.8.1.0",
+      "bytes": 64944,
+      "mode": 493,
+      "sha256": "e7d89a0259ec83ccaddeac9b1494c551c1b8f13af31704b46acd0104ec57c293"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/sequence-template.json",
+      "bytes": 65597,
+      "mode": 420,
+      "sha256": "e328de2997d1a5c929464cbc02eb983c31be46d337dcc66a45cbb0957ff89d0b"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-package-v2.py",
+      "bytes": 6365,
+      "mode": 420,
+      "sha256": "1f0ae478aa70498172c510c23162fc31f5a150560f12f79d1fde29d2bb5cab06"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/prepare-control-v2.py",
+      "bytes": 3499,
+      "mode": 420,
+      "sha256": "cdca20a59cf78e87343b11f626d716530347832c70833521933513fd87f59aa8"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/launch-controls-v2.sh",
+      "bytes": 1191,
+      "mode": 420,
+      "sha256": "b511c847efff9e7ac8098e1b4f8000dd5d06b75e168db5a6efe7cc5a319eb1ce"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/observer.py",
+      "bytes": 34363,
+      "mode": 420,
+      "sha256": "f10ab861f262dbbd18295d92e59e05174299b72b397f58de844ee1725266eae6"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/before_exec.py",
+      "bytes": 8260,
+      "mode": 420,
+      "sha256": "184d1b1dcdb8c8a75626d2c0fe403d1527e160f51e0cc98338f405bf8a0319bd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/unit_reference.py",
+      "bytes": 8569,
+      "mode": 420,
+      "sha256": "e00b79d292060b7a467d6a99ed88082719682d205efbdc56ecbe5fb7256fe0d0"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/observer/source-inputs.json",
+      "bytes": 1812,
+      "mode": 420,
+      "sha256": "af15f634235359032b1ea544207713c32318906d51447ff6de171ada09c8b5b7"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/native-m2-hermit-comparators-systemd.json",
+      "bytes": 2640,
+      "mode": 420,
+      "sha256": "e7cd958752a440199df1bcd4bb340dfd01db33ae54d144f98b5208c8d3043032"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/refresh_systemd.py",
+      "bytes": 3702,
+      "mode": 420,
+      "sha256": "a99f5bccda1ae9611f156b5c37f4e0ae7c15d58008344d135722860dd91ba738"
+    }
+  ],
+  "absent_inputs": [
+    "/etc/ld.so.preload",
+    "/home/newton/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/.cargo/config",
+    "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/.cargo/config.toml"
+  ],
+  "executables": [
+    {
+      "path": "/usr/bin/python3.9",
+      "bytes": 15448,
+      "mode": 493,
+      "sha256": "9cfdf1a01d07dadb394dd2dc9fd8316254c36764076d23dc2c895c8401735576"
+    },
+    {
+      "path": "/usr/bin/with-proxy",
+      "bytes": 375,
+      "mode": 493,
+      "sha256": "58ac36d860272774df83d2e69eecaefdc4fc54161171bf846bbb34d0903f8b1d"
+    },
+    {
+      "path": "/usr/bin/bash",
+      "bytes": 1389072,
+      "mode": 493,
+      "sha256": "97995faa249e5706dd0b0373c9da547709bf7349755d5fc8e52f97a4bd04feaf"
+    },
+    {
+      "path": "/usr/bin/git",
+      "bytes": 4397400,
+      "mode": 493,
+      "sha256": "55c09f77ea636d99e0c163c1e406ce44dfb125dd70a01c6ed6b5bbecd5f4b240"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+      "bytes": 36082008,
+      "mode": 493,
+      "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/run-reverie-pin-check.sh",
+      "bytes": 2754,
+      "mode": 493,
+      "sha256": "de02ad3ba25a5bf15c04c592498b59cc13c1ba3a41a2ce6213c8aa643889191e"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/run-with-reverie-dbt-budget.sh",
+      "bytes": 25438,
+      "mode": 493,
+      "sha256": "575379be4b049f4265356750fc68c4c1deb6d789007c2067c319197ab6fec1a4"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustc",
+      "bytes": 646120,
+      "mode": 493,
+      "sha256": "49f9fa06f3e2b93aba85273433fef67b984ddb4cacb4500de56e85f70ec2e339"
+    },
+    {
+      "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/rustdoc",
+      "bytes": 12561528,
+      "mode": 493,
+      "sha256": "b529e80dbe6f26e97ac07c6478ad54ac725b8ef906bf1e5d0b86314b784d4551"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-detcore",
+      "bytes": 170391144,
+      "mode": 493,
+      "sha256": "828dd3db23a59d27937cd4238a90a1ac68732204bab5a4ff56d5d6e09d569e36"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-syscaller",
+      "bytes": 7191808,
+      "mode": 493,
+      "sha256": "00c26309709e2a2de3253f7665cda135067583bf9f33f4a9a25c3d4df794b6f9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit",
+      "bytes": 374153824,
+      "mode": 493,
+      "sha256": "86a5c2133930ef80ddce2d9f3880bc393a741263e4074ca02333d7365793e0fa"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit-bin",
+      "bytes": 425388960,
+      "mode": 493,
+      "sha256": "5ffc803d3bd813f1eeea503ec913945bb1305a6732657f0a3775e6f4ebc7b579"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit-dap",
+      "bytes": 9371904,
+      "mode": 493,
+      "sha256": "f0c717493ab2990e8e8107680198b5d67dc3d7da75ad46bcabb180d953a9d30d"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-verification-report",
+      "bytes": 202471536,
+      "mode": 493,
+      "sha256": "211ebc2dfa69ba7a2d642ab44356410dc8cd6f350035dbdc7c179d302f955fda"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-hermit",
+      "bytes": 374210800,
+      "mode": 493,
+      "sha256": "3396774d553f2f80473d75e7e568166955377b5c5b708adcd61034e836da6688"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-cli",
+      "bytes": 314425392,
+      "mode": 493,
+      "sha256": "21fe58bbf96b6730d5a9f752413185ef42d917bd5efb9180f0952e2c6c3cbadd"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-kvm-harder",
+      "bytes": 7919920,
+      "mode": 493,
+      "sha256": "7d0ce6863fc692df93af7fc601617b8e95ec1a4c7c1afbba8b6036a9a64c9835"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-hermit-program",
+      "bytes": 411416768,
+      "mode": 493,
+      "sha256": "b05cd7f245728152f4d40ca55a765cdb595db4d26c70555090afe3e1936fd4f1"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-verification-report-program",
+      "bytes": 307769760,
+      "mode": 493,
+      "sha256": "1bf78121a4f94c104d405f7553e04627930f354a76d59abe7fb3110c84be6c46"
+    },
+    {
+      "path": "/home/newton/.cargo/bin/rust-script",
+      "bytes": 3589808,
+      "mode": 493,
+      "sha256": "90a6cc5197f2d35f9d9a7c3b30a1a8ca7dcfcfa645024fa4b7a1d565461d7a00"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/compile-native/retained-hermit-bin",
+      "bytes": 425053032,
+      "mode": 493,
+      "sha256": "837c888d2f785eb3bf9b93ef2036faf4aa378dc67fea7a6d2476c06ec701df46"
+    }
+  ],
+  "aliases": {
+    "ACTUAL_RETAINED_NATIVE_ELF:detcore": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-detcore",
+    "ACTUAL_RETAINED_NATIVE_ELF:syscaller": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-syscaller",
+    "ACTUAL_RETAINED_NATIVE_ELF:hermit": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit",
+    "ACTUAL_RETAINED_NATIVE_ELF:hermit-bin": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/compile-native/retained-hermit-bin",
+    "ACTUAL_RETAINED_NATIVE_ELF:hermit-dap": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit-dap",
+    "ACTUAL_RETAINED_NATIVE_ELF:verification-report": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-verification-report",
+    "ACTUAL_RETAINED_HARDWARE_ELF:hermit": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-hermit",
+    "ACTUAL_RETAINED_HARDWARE_ELF:cli": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-cli",
+    "ACTUAL_RETAINED_HARDWARE_ELF:kvm-harder": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-hardware/retained-kvm-harder",
+    "ACTUAL_RETAINED_HARDWARE_SHA256:hermit": "3396774d553f2f80473d75e7e568166955377b5c5b708adcd61034e836da6688",
+    "ACTUAL_RETAINED_MANIFEST_ELF": null,
+    "ACTUAL_ALL_NEXTTEST_BUILD_SELECTIONS_TEST_NAMES": null,
+    "ACTUAL_CURRENT_NORMAL_CPU_WRAPPER": null,
+    "OWNED_GENERATED_NEXTEST_CONFIG": null,
+    "ACTUAL_CURRENT_ROOT_CARGO_METADATA": null,
+    "ACTUAL_CURRENT_HARDWARE_BINARIES_ONLY_METADATA": null,
+    "ACTUAL_ORIGINAL_KVM_CLI_INVENTORY": null,
+    "ACTUAL_ORIGINAL_KVM_CLI_BINARY_MAP": null,
+    "ACTUAL_ORIGINAL_KVM_CLI_STDOUT_EVENTS": null,
+    "ACTUAL_RAW_NEXTEST_EXIT": null,
+    "ACTUAL_ORIGINAL_KVM_CLI_ATTEMPTS": null,
+    "ACTUAL_ORIGINAL_PTHREAD_INVENTORY": null,
+    "ACTUAL_ORIGINAL_PTHREAD_BINARY_MAP": null,
+    "ACTUAL_ORIGINAL_PTHREAD_STDOUT_EVENTS": null,
+    "ACTUAL_ORIGINAL_PTHREAD_ATTEMPTS": null,
+    "ACTUAL_COMBINED_HERMIT": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917/target/debug/hermit",
+    "ACTUAL_PTHREAD_GUEST_FROM_ORIGINAL_METHOD": null,
+    "ACTUAL_CURRENT_VERIFICATION_REPORT": "/home/newton/work/dev-hermit/worktrees/slots/kvm-summary-publication-20260917/target/debug/verification-report",
+    "ACTUAL_PTRACE_VERIFICATION_JSON": null,
+    "ACTUAL_KVM_VERIFICATION_JSON": null,
+    "OWNED_FRESH_0700_TMPDIR_OUTSIDE_GIT": null,
+    "OWNED_FRESH_RUST_SCRIPT_CACHE": null
+  },
+  "guest_prerequisites": [],
+  "guest_prerequisites_template": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-guest-plan-v1/guest-prerequisites.json",
+    "bytes": 1115,
+    "mode": 420,
+    "sha256": "e75c4eca5c84ddc1dd2e2c8c076358e51f5ce735e51f080b1956d47da1bd4b0a"
+  },
+  "control_root": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1",
+  "phase_bindings": {
+    "metadata-root": {
+      "ready": true,
+      "reader": "metadata",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": []
+    },
+    "metadata-nested": {
+      "ready": true,
+      "reader": "metadata",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/controls-run-1/metadata-root/result.json",
+            "bytes": 5879,
+            "mode": 420,
+            "sha256": "3bbe85ecba93b33936661cea4a3c78a1bb3c0ca3700a8f4180acc57c45f6a052"
+          }
+        }
+      ]
+    },
+    "pin-offline": {
+      "ready": false,
+      "reader": "plain",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "compile-native": {
+      "ready": true,
+      "reader": "compile",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/run-with-reverie-dbt-budget.sh",
+          "bytes": 25438,
+          "mode": 493,
+          "sha256": "575379be4b049f4265356750fc68c4c1deb6d789007c2067c319197ab6fec1a4"
+        },
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-1/pin-offline/result.json",
+            "bytes": 3458,
+            "mode": 420,
+            "sha256": "bf18c3da33c749afc4d0c86aa02aff953fb40b7fb496c2c690842ce38dfd608c"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-pin-verify-v2/RESULT.json",
+            "bytes": 5627,
+            "mode": 420,
+            "sha256": "31636662e4c3e1543153cf6f0b5569cde25796d1db572e74aa0232e566b439fb"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v9/source-transition.json",
+            "bytes": 3967,
+            "mode": 420,
+            "sha256": "a97d3dba3fa9cfb6e96d194c91c795eac64e74ab81a0e00f54800a6bb55be768"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v10/source-transition.json",
+            "bytes": 1093,
+            "mode": 420,
+            "sha256": "f63f84bda88e78ac60ad3d11ae6b2bb1d42dac477723315578c40c9dc9a08440"
+          }
+        }
+      ],
+      "artifact_selectors": [
+        {
+          "id": "detcore",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore/Cargo.toml",
+          "target": "detcore",
+          "kind": [
+            "lib"
+          ],
+          "test": true
+        },
+        {
+          "id": "syscaller",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/detcore/Cargo.toml",
+          "target": "syscaller",
+          "kind": [
+            "bin"
+          ],
+          "test": true
+        },
+        {
+          "id": "hermit",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "hermit",
+          "kind": [
+            "rlib",
+            "cdylib"
+          ],
+          "test": true
+        },
+        {
+          "id": "hermit-bin",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "hermit",
+          "kind": [
+            "bin"
+          ],
+          "test": true
+        },
+        {
+          "id": "hermit-dap",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "hermit-dap",
+          "kind": [
+            "bin"
+          ],
+          "test": true
+        },
+        {
+          "id": "verification-report",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "verification-report",
+          "kind": [
+            "bin"
+          ],
+          "test": true
+        }
+      ]
+    },
+    "list-detcore": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "list-syscaller": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "list-hermit": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "list-hermit-bin": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "list-hermit-dap": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "list-verification-report": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "inventory-hermit": {
+      "ready": false,
+      "reader": "inventory",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "baseline": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-integration-plan-v1/readback-v2/hermit-689-identities.json",
+        "bytes": 142682,
+        "mode": 420,
+        "sha256": "3d77bb350f3a92c92c3457fdbe602daa8d4f09cbc594b292f77b1e9e57b6f964"
+      }
+    },
+    "inventory-detcore": {
+      "ready": false,
+      "reader": "inventory",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "baseline": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-integration-plan-v1/readback-v2/detcore-681-identities.json",
+        "bytes": 143630,
+        "mode": 420,
+        "sha256": "5a3812f642d743c9d18b1208c6e1d788b339bf1a21105cfe671c17fa544f4c21"
+      }
+    },
+    "native-detcore": {
+      "ready": false,
+      "reader": "native",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "scheduler::test::a_vanished_thread_aborts_its_turn_and_a_live_one_does_not",
+        "scheduler::test::buffered_admission_cancelled_by_buffered_removal",
+        "scheduler::test::exec_reconnect_only_buffers_while_tentative_selection_is_live",
+        "scheduler::test::physical_exit_barrier_is_disabled_for_other_backends",
+        "scheduler::test::physical_exit_barrier_precedes_empty_queue_timer_fast_forward",
+        "tool_global::robust_exit_clock_tests::backend_failure_preserves_consuming_robust_exit_clock_accounting",
+        "tool_global::robust_exit_clock_tests::robust_exit_acknowledgements_preserve_global_action_order_and_eligibility",
+        "tool_global::robust_exit_clock_tests::robust_exit_callbacks_keep_rejected_or_mismatched_batches_incomplete",
+        "tool_global::robust_exit_clock_tests::robust_exit_callbacks_preserve_owner_clocks_across_arrival_orders",
+        "tool_global::robust_exit_clock_tests::robust_exit_clock_ack_still_refuses_a_backwards_owner_sample",
+        "tool_global::tests::abnormal_cleanup_cancels_a_registered_scheduler",
+        "tool_global::tests::abnormal_cleanup_cancels_an_unstarted_scheduler",
+        "tool_global::tests::backend_failure_tests::backend_failure_blocks_registration_that_passed_earlier_header_admission",
+        "tool_global::tests::backend_failure_tests::backend_failure_blocks_rpc_clock_and_child_registration_at_admission",
+        "tool_global::tests::backend_failure_tests::backend_failure_closes_selection_before_consuming_clear_tid_cleanup",
+        "tool_global::tests::backend_failure_tests::backend_failure_completes_registered_daemon_without_another_request",
+        "tool_global::tests::backend_failure_tests::backend_failure_completes_unstarted_daemon_without_aborting_it",
+        "tool_global::tests::backend_failure_tests::backend_failure_consumes_registered_child_before_thread_start",
+        "tool_global::tests::backend_failure_tests::backend_failure_consumes_unregistered_child_without_admission_or_clock",
+        "tool_global::tests::backend_failure_tests::backend_failure_ends_quiescence_without_another_request",
+        "tool_global::tests::backend_failure_tests::backend_failure_precedes_ready_request_without_grant_or_timer_processing",
+        "tool_global::tests::backend_failure_tests::backend_failure_wakes_each_global_subscriber_and_late_arrivals",
+        "tool_global::tests::backend_failure_tests::both_fork_and_thread_construction_reset_the_parent_start_marker",
+        "tool_global::tests::backend_failure_tests::normal_cancellation_consumes_unstarted_child_without_registration",
+        "tool_global::tests::backend_failure_tests::ordinary_unknown_started_owner_is_not_acknowledged_as_unstarted",
+        "tool_global::tests::backend_failure_tests::thread_start_marker_is_set_before_the_first_registration_wait",
+        "tool_global::tests::backend_failure_tests::unstarted_cleanup_rejects_a_different_payload_mm",
+        "tool_global::tests::backend_failure_tests::unstarted_cleanup_rejects_another_senders_identity",
+        "tool_global::tests::child_registration_fails_closed_for_a_tombstoned_tid",
+        "tool_global::tests::child_start_clock_is_independent_of_first_rpc_arrival",
+        "tool_global::tests::duplicate_deregistration_is_acknowledged_without_clock_or_scheduler_mutation",
+        "tool_global::tests::exec_reconnect_retains_inherited_work_accounting_across_local_reload",
+        "tool_global::tests::exec_reconnect_retires_siblings_and_reuses_live_scheduler_and_clock_state",
+        "tool_global::tests::external_registration_with_child_cleartid_preserves_exact_exit_wake",
+        "tool_global::tests::external_registration_without_child_cleartid_disables_exit_wake",
+        "tool_global::tests::failed_exec_clears_prepared_state_without_retiring_siblings",
+        "tool_global::tests::first_nonstartup_rpc_counts_only_new_child_work",
+        "tool_global::tests::late_child_tid_wait_after_exit_returns_spurious_wake",
+        "tool_global::tests::late_futex_rpc_after_thread_removal_returns_eintr",
+        "tool_global::tests::late_resource_request_after_logical_kill_is_cancelled",
+        "tool_global::tests::live_registration_without_next_turn_is_not_terminal",
+        "tool_global::tests::nonleader_exec_rebinds_caller_to_leader_and_preserves_its_clock",
+        "tool_global::tests::parent_continue_propagates_terminal_scheduler_cancellation",
+        "tool_global::tests::pending_futex_request_woken_by_logical_kill_is_terminal",
+        "tool_global::tests::pending_resource_request_woken_by_logical_kill_is_terminal",
+        "tool_global::tests::pending_start_request_woken_by_logical_kill_is_terminal",
+        "tool_global::tests::required_physical_thread_id_missing_is_terminal",
+        "tool_global::tests::set_child_tid_address_rpc_updates_and_resets_the_registration",
+        "tool_global::tests::tombstoned_timer_registration_cannot_mutate_scheduler_state",
+        "tool_global::tests::trace_replay_yield_propagates_terminal_scheduler_cancellation",
+        "tool_global::tests::vfork_registration_does_not_charge_inherited_work_before_startup",
+        "tool_global::tests::backend_failure_tests::dbt_missing_physical_id_start_preserves_tombstone_deregistration_accounting",
+        "tool_global::tests::backend_failure_tests::backend_failure_cleanup_does_not_build_an_invalid_run_summary",
+        "tool_global::tests::backend_failure_tests::backend_failure_cleanup_retains_panicked_scheduler_and_recording_error"
+      ],
+      "inventory_record": null
+    },
+    "native-hermit": {
+      "ready": true,
+      "reader": "native",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/observer/compile-native/retained-hermit",
+          "bytes": 374153824,
+          "mode": 493,
+          "sha256": "86a5c2133930ef80ddce2d9f3880bc393a741263e4074ca02333d7365793e0fa"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-2/native-detcore/result.json",
+            "bytes": 9644,
+            "mode": 420,
+            "sha256": "4fd6a8bc0ed6d7c8ed5434ff7af28bb9e33c0a21ac70617efe7e339df4488f94"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-1/compile-native/result.json",
+            "bytes": 17022,
+            "mode": 420,
+            "sha256": "f2e7fe938ab0e14f6a8ae71997e11480745da5aa0bed8315e32cacb05ff0972c"
+          }
+        }
+      ],
+      "selected_names": [
+        "kvm_failure_tests::combined::kvm_normal_detcore_child_registration_preserves_start_and_status_37",
+        "kvm_failure_tests::combined::kvm_worker_failure_consumes_actual_registered_detcore_child_gate_before_join",
+        "kvm_failure_tests::combined::kvm_worker_failure_consumes_actual_unregistered_detcore_child_gate_before_join",
+        "kvm_failure_tests::kvm_failed_completion_cleans_unstarted_scheduler_and_retains_typed_cause",
+        "kvm_failure_tests::kvm_normal_completion_preserves_status_and_output",
+        "tests::kvm_backend_config_marks_concurrent_process_children",
+        "tests::kvm_mountinfo_config_preserves_captured_provenance",
+        "tests::kvm_mountinfo_config_refuses_missing_or_malformed_capture",
+        "tests::kvm_mountinfo_config_refuses_uncaptured_provenance_vectors",
+        "kvm_failure_tests::kvm_failed_completion_never_publishes_a_success_summary",
+        "kvm_failure_tests::kvm_failed_completion_preserves_requested_partial_preemption_recording",
+        "kvm_failure_tests::kvm_failure_error_retains_scheduler_recording_and_primary_causes"
+      ],
+      "inventory_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-2/list-hermit/result.json",
+        "bytes": 34558,
+        "mode": 420,
+        "sha256": "79edd10ca6c66ff309b10aa34c287c1402bdc47da380b493425717730836c6f1"
+      }
+    },
+    "compile-hardware": {
+      "ready": true,
+      "reader": "compile",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/run-with-reverie-dbt-budget.sh",
+          "bytes": 25438,
+          "mode": 493,
+          "sha256": "575379be4b049f4265356750fc68c4c1deb6d789007c2067c319197ab6fec1a4"
+        },
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-2/native-hermit/result.json",
+            "bytes": 4410,
+            "mode": 420,
+            "sha256": "e20e53f89fd5c2b7915ada489ef8a67e34b3db9a38ecff316ac85656d0a38dfc"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/committed-v2-controls-run-1/official-generator-check/result.json",
+            "bytes": 3678,
+            "mode": 420,
+            "sha256": "fabc7d72141098cceee0ba4b94e319ceef8cab9895f7230ff31d2e734498bef9"
+          }
+        }
+      ],
+      "artifact_selectors": [
+        {
+          "id": "hermit",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "hermit",
+          "kind": [
+            "rlib",
+            "cdylib"
+          ],
+          "test": true
+        },
+        {
+          "id": "cli",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "cli",
+          "kind": [
+            "test"
+          ],
+          "test": true
+        },
+        {
+          "id": "kvm-harder",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "kvm_harder",
+          "kind": [
+            "test"
+          ],
+          "test": true
+        },
+        {
+          "id": "hermit-program",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "hermit",
+          "kind": [
+            "bin"
+          ],
+          "test": false
+        },
+        {
+          "id": "verification-report-program",
+          "manifest": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/hermit-cli/Cargo.toml",
+          "target": "verification-report",
+          "kind": [
+            "bin"
+          ],
+          "test": false
+        }
+      ]
+    },
+    "hardware-list-hermit": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "hardware-list-cli": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "hardware-list-kvm-harder": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "inventory-kvm-node": {
+      "ready": false,
+      "reader": "inventory",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "run_kvm_awk_mincore_probe_terminates",
+        "run_kvm_bash_process_substitution_is_deterministic",
+        "run_kvm_counts_standard_input",
+        "run_kvm_cpuid_policy_is_deterministic",
+        "run_kvm_exact_child_waits_have_stable_scheduler_turns",
+        "run_kvm_executes_dynamic_guest",
+        "run_kvm_f_getfl_and_reads_standard_input",
+        "run_kvm_lists_host_directory_metadata",
+        "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+        "run_kvm_preserves_closed_standard_input",
+        "run_kvm_propagates_explicit_environment",
+        "run_kvm_random_device_lseek_matches_linux",
+        "run_kvm_reads_host_file",
+        "run_kvm_reads_standard_input",
+        "run_kvm_reports_fixed_supplementary_groups",
+        "run_kvm_reports_hostname",
+        "run_kvm_resolves_bare_program_from_guest_path",
+        "run_kvm_respects_workdir_for_relative_paths",
+        "run_kvm_setpriv_capability_wrapper_is_deterministic",
+        "run_kvm_verify_does_not_write_to_standard_input",
+        "run_kvm_verify_f_getfl_and_replays_standard_input",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stderr_flags",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stdout_flags",
+        "run_kvm_verify_replays_standard_input",
+        "kvm_execution_tests::initialized_vm_setup_failures_consume_detcore_state_without_further_guest_execution"
+      ]
+    },
+    "initialized-vm": {
+      "ready": false,
+      "reader": "native",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "kvm_execution_tests::initialized_vm_setup_failures_consume_detcore_state_without_further_guest_execution"
+      ],
+      "inventory_record": null
+    },
+    "format": {
+      "ready": true,
+      "reader": "plain",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-4/initialized-vm/result.json",
+            "bytes": 3730,
+            "mode": 420,
+            "sha256": "2bf751f62701a60cc35d4773614f48c731404d71221b289a1f4436f19e4f4c68"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/controls-run-2/compile-hardware/result.json",
+            "bytes": 14749,
+            "mode": 420,
+            "sha256": "f88533d666a0ead5ba196d840cedf7db891d5a16ba6c3e9309d64134d4a16f73"
+          }
+        }
+      ]
+    },
+    "official-generator-write": {
+      "ready": true,
+      "reader": "output-files",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ci/run-with-reverie-dbt-budget.sh",
+          "bytes": 25438,
+          "mode": 493,
+          "sha256": "575379be4b049f4265356750fc68c4c1deb6d789007c2067c319197ab6fec1a4"
+        },
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-consumer-source-v9/measured-count-source-update.json",
+            "bytes": 1905,
+            "mode": 420,
+            "sha256": "8203aa166b8b5ce6d3bd59c898cb0273cc474a5906c8cd4c407de134233508ee"
+          }
+        }
+      ],
+      "relative_outputs": [
+        "validate.json"
+      ]
+    },
+    "official-generator-check": {
+      "ready": false,
+      "reader": "plain",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "manifest-controls-compile": {
+      "ready": false,
+      "reader": "compile",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "artifact_selectors": null
+    },
+    "manifest-controls-list": {
+      "ready": false,
+      "reader": "list",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "manifest-controls": {
+      "ready": false,
+      "reader": "native",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "inventory_record": null,
+      "selected_names": null
+    },
+    "workspace-clippy": {
+      "ready": false,
+      "reader": "plain",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "final-format": {
+      "ready": true,
+      "reader": "plain",
+      "runtime_executables": [
+        {
+          "path": "/home/newton/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo",
+          "bytes": 36082008,
+          "mode": 493,
+          "sha256": "19008157a0089896bc835c5ceb0b5bfbe26e70cdd5579c32bd09538fb68c0b76"
+        }
+      ],
+      "inputs": [],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v8/post-compose-controls-run-3/workspace-clippy/result.json",
+            "bytes": 3617,
+            "mode": 420,
+            "sha256": "e0c7bf4dc46efb63d2a0750e893b4349a8e9940cb526573bc6017eba4a89645c"
+          }
+        }
+      ]
+    },
+    "hardware-binaries-metadata": {
+      "ready": false,
+      "reader": "binaries",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "expected_binary_ids": [
+        "hermit",
+        "hermit::cli",
+        "hermit::kvm_harder"
+      ],
+      "compiled_test_executables": null
+    },
+    "normal-cpu-wrapper-build": {
+      "ready": false,
+      "reader": "cpu-wrapper",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "normal-nextest-config": {
+      "ready": false,
+      "reader": "output-files",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "relative_outputs": [
+        "nextest.toml"
+      ]
+    },
+    "original-kvm-cli-inventory": {
+      "ready": false,
+      "reader": "inventory",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "run_kvm_awk_mincore_probe_terminates",
+        "run_kvm_bash_process_substitution_is_deterministic",
+        "run_kvm_counts_standard_input",
+        "run_kvm_cpuid_policy_is_deterministic",
+        "run_kvm_exact_child_waits_have_stable_scheduler_turns",
+        "run_kvm_executes_dynamic_guest",
+        "run_kvm_f_getfl_and_reads_standard_input",
+        "run_kvm_lists_host_directory_metadata",
+        "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+        "run_kvm_preserves_closed_standard_input",
+        "run_kvm_propagates_explicit_environment",
+        "run_kvm_random_device_lseek_matches_linux",
+        "run_kvm_reads_host_file",
+        "run_kvm_reads_standard_input",
+        "run_kvm_reports_fixed_supplementary_groups",
+        "run_kvm_reports_hostname",
+        "run_kvm_resolves_bare_program_from_guest_path",
+        "run_kvm_respects_workdir_for_relative_paths",
+        "run_kvm_setpriv_capability_wrapper_is_deterministic",
+        "run_kvm_verify_does_not_write_to_standard_input",
+        "run_kvm_verify_f_getfl_and_replays_standard_input",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stderr_flags",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stdout_flags",
+        "run_kvm_verify_replays_standard_input"
+      ]
+    },
+    "original-kvm-cli-binary-map": {
+      "ready": false,
+      "reader": "output-files",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "relative_outputs": [
+        "binary-map.json"
+      ]
+    },
+    "original-kvm-cli": {
+      "ready": false,
+      "reader": "nextest",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "run_kvm_awk_mincore_probe_terminates",
+        "run_kvm_bash_process_substitution_is_deterministic",
+        "run_kvm_counts_standard_input",
+        "run_kvm_cpuid_policy_is_deterministic",
+        "run_kvm_exact_child_waits_have_stable_scheduler_turns",
+        "run_kvm_executes_dynamic_guest",
+        "run_kvm_f_getfl_and_reads_standard_input",
+        "run_kvm_lists_host_directory_metadata",
+        "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+        "run_kvm_preserves_closed_standard_input",
+        "run_kvm_propagates_explicit_environment",
+        "run_kvm_random_device_lseek_matches_linux",
+        "run_kvm_reads_host_file",
+        "run_kvm_reads_standard_input",
+        "run_kvm_reports_fixed_supplementary_groups",
+        "run_kvm_reports_hostname",
+        "run_kvm_resolves_bare_program_from_guest_path",
+        "run_kvm_respects_workdir_for_relative_paths",
+        "run_kvm_setpriv_capability_wrapper_is_deterministic",
+        "run_kvm_verify_does_not_write_to_standard_input",
+        "run_kvm_verify_f_getfl_and_replays_standard_input",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stderr_flags",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stdout_flags",
+        "run_kvm_verify_replays_standard_input"
+      ],
+      "package": "hermit",
+      "binary": "cli",
+      "test_embedded_hermit": null
+    },
+    "original-kvm-cli-typed-results": {
+      "ready": false,
+      "reader": "typed-nextest",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "test_phase_result": null,
+      "selected_names": [
+        "run_kvm_awk_mincore_probe_terminates",
+        "run_kvm_bash_process_substitution_is_deterministic",
+        "run_kvm_counts_standard_input",
+        "run_kvm_cpuid_policy_is_deterministic",
+        "run_kvm_exact_child_waits_have_stable_scheduler_turns",
+        "run_kvm_executes_dynamic_guest",
+        "run_kvm_f_getfl_and_reads_standard_input",
+        "run_kvm_lists_host_directory_metadata",
+        "run_kvm_pipe_pipe2_and_getgroups_round_trip",
+        "run_kvm_preserves_closed_standard_input",
+        "run_kvm_propagates_explicit_environment",
+        "run_kvm_random_device_lseek_matches_linux",
+        "run_kvm_reads_host_file",
+        "run_kvm_reads_standard_input",
+        "run_kvm_reports_fixed_supplementary_groups",
+        "run_kvm_reports_hostname",
+        "run_kvm_resolves_bare_program_from_guest_path",
+        "run_kvm_respects_workdir_for_relative_paths",
+        "run_kvm_setpriv_capability_wrapper_is_deterministic",
+        "run_kvm_verify_does_not_write_to_standard_input",
+        "run_kvm_verify_f_getfl_and_replays_standard_input",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stderr_flags",
+        "run_kvm_verify_is_deterministic_when_the_guest_mutates_hermit_stdout_flags",
+        "run_kvm_verify_replays_standard_input"
+      ],
+      "binary": "cli"
+    },
+    "original-pthread-inventory": {
+      "ready": false,
+      "reader": "inventory",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "kvm_matches_ptrace_for_pthread_lifecycle"
+      ]
+    },
+    "original-pthread-binary-map": {
+      "ready": false,
+      "reader": "output-files",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "relative_outputs": [
+        "binary-map.json"
+      ]
+    },
+    "original-pthread": {
+      "ready": false,
+      "reader": "nextest",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "selected_names": [
+        "kvm_matches_ptrace_for_pthread_lifecycle"
+      ],
+      "package": "hermit",
+      "binary": "kvm_harder",
+      "test_embedded_hermit": null
+    },
+    "original-pthread-typed-results": {
+      "ready": false,
+      "reader": "typed-nextest",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "test_phase_result": null,
+      "selected_names": [
+        "kvm_matches_ptrace_for_pthread_lifecycle"
+      ],
+      "binary": "kvm_harder"
+    },
+    "pthread-canonical-ptrace": {
+      "ready": false,
+      "reader": "canonical",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "pthread-canonical-ptrace-typed-read": {
+      "ready": false,
+      "reader": "typed-canonical",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "canonical_phase_result": null
+    },
+    "pthread-canonical-kvm": {
+      "ready": false,
+      "reader": "canonical",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": []
+    },
+    "pthread-canonical-kvm-typed-read": {
+      "ready": false,
+      "reader": "typed-canonical",
+      "runtime_executables": [],
+      "inputs": [],
+      "dependencies": [],
+      "canonical_phase_result": null
+    },
+    "native-m2-hermit-comparators": {
+      "ready": true,
+      "reader": "native",
+      "selected_names": [
+        "backends::tests::a_post_launch_failure_does_not_blame_the_binary",
+        "backends::tests::a_signalled_guest_is_not_reported_as_a_normal_exit",
+        "backends::tests::a_spawn_failure_still_names_the_launch",
+        "backends::tests::branch_clock_divergence_is_retained_in_the_serialized_typed_verdict",
+        "backends::tests::dbt_abnormal_cleanup_ends_an_unregistered_scheduler",
+        "backends::tests::dbt_canonical_evidence_fails_closed_on_empty_or_malformed_artifact",
+        "backends::tests::dbt_canonical_evidence_fails_closed_on_empty_or_unframed_records",
+        "backends::tests::dbt_canonical_evidence_materializes_records_unchanged",
+        "backends::tests::dbt_empty_path_component_and_hidden_script_use_physical_cwd",
+        "backends::tests::dbt_engagement_record_follows_the_typed_branch_count",
+        "backends::tests::dbt_initialization_record_counts_control_the_terminal_outcome",
+        "backends::tests::dbt_leaves_complex_env_shebang_for_launcher",
+        "backends::tests::dbt_log_file_is_refused_on_the_single_run_adapter_and_permitted_under_verify",
+        "backends::tests::dbt_log_file_refusal_names_the_adapter_it_is_about",
+        "backends::tests::dbt_path_selected_script_keeps_the_selected_script_path",
+        "backends::tests::dbt_physical_command_preserves_explicit_environment_removals",
+        "backends::tests::dbt_relative_shebang_uses_guest_cwd_and_preserves_script_arguments",
+        "backends::tests::dbt_resolves_simple_env_shebang_target_to_absolute_path",
+        "backends::tests::dbt_stats_block_labels_counters_honestly",
+        "backends::tests::dbt_stats_block_renders_the_typed_wire_snapshot",
+        "backends::tests::dbt_status_preserves_death_by_signal",
+        "backends::tests::dbt_status_preserves_normal_exit_codes",
+        "backends::tests::dbt_successful_cleanup_preserves_normal_scheduler_completion",
+        "backends::tests::dbt_summary_compares_every_non_branch_observation",
+        "backends::tests::dbt_verification_run_path_binds_terminal_verdict_to_branch_stats",
+        "backends::tests::dbt_workdir_reaches_the_dynamorio_guest_command",
+        "backends::tests::equal_branch_clocks_do_not_authorize_a_no_result",
+        "backends::tests::equal_branch_clocks_preserve_match_and_nonzero_guest_status",
+        "backends::tests::materialization_keeps_every_decoded_comparable_record",
+        "backends::tests::sabre_artifact_returns_the_validated_absolute_path",
+        "backends::tests::typed_stats_capture_aggregates_the_whole_process_tree",
+        "backends::tests::typed_stats_capture_refuses_missing_empty_or_truncated_evidence",
+        "backends::tests::typed_stats_failure_leaves_the_pre_stamped_no_result",
+        "logdiff::tests::bounded_log_refusal_is_json_refused_and_exits_two",
+        "logdiff::tests::canonical_all_records_uses_the_fixed_shared_comparator",
+        "logdiff::tests::canonical_follow_compares_only_the_complete_structured_prefix",
+        "logdiff::tests::canonical_follow_refuses_a_terminal_truncation_marker",
+        "logdiff::tests::canonical_follow_refuses_invalid_utf8",
+        "logdiff::tests::canonical_follow_refuses_prose_only_detlog_records",
+        "logdiff::tests::canonical_json_refuses_relaxed_comparisons_and_starts_as_no_result",
+        "logdiff::tests::cross_backend_envelope_matches_and_detects_a_detcore_divergence",
+        "logdiff::tests::every_report_carries_the_record_count_it_was_based_on",
+        "logdiff::tests::follow_missing_logs_reports_no_comparable_messages",
+        "logdiff::tests::follow_reports_divergence_before_either_run_finishes",
+        "logdiff::tests::follow_timing_out_is_not_reported_as_agreement",
+        "logdiff::tests::json_report_distinguishes_divergence_match_and_no_messages",
+        "logdiff::tests::json_report_is_one_line_and_replaces_the_previous_record",
+        "logdiff::tests::one_log_and_two_log_json_forms_parse",
+        "logdiff::tests::plain_follow_compares_all_info_without_json_or_compatibility_flags",
+        "logdiff::tests::plain_logdiff_compares_all_info_without_json_or_compatibility_flags",
+        "logdiff::tests::standalone_default_does_not_silently_apply_the_dbt_envelope",
+        "logdiff::tests::standalone_logdiff_admits_one_real_record",
+        "logdiff::tests::standalone_logdiff_drops_transport_beside_one_real_record",
+        "logdiff::tests::standalone_logdiff_ignores_difference_confined_to_transport",
+        "logdiff::tests::standalone_logdiff_refuses_transport_only_evidence_under_named_dbt_envelope",
+        "record_start::tests::e9patch_record_target_rejects_proc_magic_links",
+        "record_start::tests::record_guest_command_applies_explicit_environment",
+        "record_start::tests::record_guest_command_can_use_the_run_minimal_environment_and_workdir",
+        "record_start::tests::record_guest_command_refuses_missing_passthrough_environment",
+        "record_start::tests::recording_deadline_manages_sigalrm_mask",
+        "record_start::tests::replay_report_is_published_before_success_is_announced",
+        "run::backend_defaults_to_ptrace",
+        "run::backend_values_parse_and_round_trip",
+        "run::comparator_choice_does_not_depend_on_the_backend",
+        "run::dbt_backend_disables_uts_assumption",
+        "run::dbt_rejects_mount_and_bind_but_accepts_workdir",
+        "run::deprecated_preemption_timeout_alias_round_trips_canonically",
+        "run::deprecated_preemption_timeout_disabled_values_round_trip_canonically",
+        "run::detects_symlink_resolution_through_implicit_mounts",
+        "run::display_runopts1",
+        "run::display_runopts2",
+        "run::display_runopts3",
+        "run::display_runopts4",
+        "run::display_runopts_without_perf_support",
+        "run::e9patch_mount_target_rejects_parent_components",
+        "run::e9patch_mount_target_rejects_symlink_components",
+        "run::e9patch_overlay_uses_canonical_target_without_custom_mounts",
+        "run::e9patch_preserves_executable_identity_and_uses_ptrace_runtime",
+        "run::e9patch_rejects_mounts_that_change_a_symlink_target",
+        "run::e9patch_rejects_symlinked_executables_through_custom_mounts",
+        "run::every_backend_keeps_io_buffer_checking_on_by_default",
+        "run::gdbserver_conflicts_with_analyze_networking",
+        "run::gdbserver_forces_host_networking",
+        "run::gdbserver_respects_explicit_host_networking",
+        "run::guest_env_disables_sanitizer_leak_detection_on_every_backend",
+        "run::guest_path_normalization_rejects_parent_components",
+        "run::image_conflicts_with_no_namespace_with_explanatory_error",
+        "run::image_guest_program_resolution_matches_execve_pathname_rules",
+        "run::image_rejects_unqualified_backend_and_namespace_paths",
+        "run::image_script_validation_resolves_interpreter_inside_rootfs",
+        "run::mapped_guest_path_is_resolved_before_host_validation",
+        "run::max_timeslice_rejects_less_than_one_rcb",
+        "run::namespace_only_guest_command_applies_process_options_once",
+        "run::namespace_only_guest_command_preserves_sanitizer_environment",
+        "run::no_namespace_uses_host_resources_and_disables_uts_assumption",
+        "run::non_e9patch_validation_preserves_parent_component_paths",
+        "run::non_elf_entrypoints_skip_e9patch_preprocessing",
+        "run::non_strict_runs_still_allow_host_networking",
+        "run::panic_on_rbc_overshoot_flag_wires_to_detcore_config",
+        "run::passthru_optimization_rejects_fail_closed_modes",
+        "run::passthru_optimization_requires_explicit_compatibility_opt_out",
+        "run::ptrace_backend_keeps_uts_assumption_with_namespaces",
+        "run::skid_margin_override_is_available_to_liteinst_host_hybrid",
+        "run::skid_margin_override_parses_and_round_trips",
+        "run::skid_margin_override_rejects_non_ptrace_backed_backends",
+        "run::source_less_mount_hides_program_from_resolution",
+        "run::strict_flag_rejects_determinism_opt_outs",
+        "run::strict_help_describes_compatibility_and_opt_outs",
+        "run::strict_rejects_every_route_to_host_networking",
+        "run::strict_rejects_strace_only",
+        "run::tests::a_stray_git_that_does_not_ignore_the_directory_is_not_a_work_tree",
+        "run::tests::both_writers_put_their_summary_in_the_disposable_directory",
+        "run::tests::capture_preflight_preserves_summary_and_engagement_collisions",
+        "run::tests::e9patch_engagement_record_follows_the_preparation_value",
+        "run::tests::exit_status_diagnostic_reports_guest_exit_code_and_signal",
+        "run::tests::extracts_sabre_detlogs_and_preserves_guest_stderr",
+        "run::tests::first_run_rejected_report_keeps_available_guest_exit_code",
+        "run::tests::harness_guest_capture_requires_all_paths_and_supported_ordinary_backend",
+        "run::tests::ptrace_engagement_record_reads_the_typed_run_summary",
+        "run::tests::run_evidence_backend_scope_matches_authoritative_private_sinks",
+        "run::tests::run_evidence_is_only_an_ordinary_instrumented_run_option",
+        "run::tests::run_one_summary_is_empty_again_before_run_two",
+        "run::tests::summary_dir_is_the_work_tree_disposable_directory",
+        "run::tests::summary_dir_outside_a_work_tree_is_unchanged",
+        "run::tests::summary_dir_refuses_rather_than_falling_back_into_the_work_tree",
+        "run::tests::user_selected_retention_directory_is_resolved_and_created",
+        "run::tests::verification_log_flags_are_discoverable_and_old_print_spelling_still_parses",
+        "run::tests::verification_report_is_published_before_success_is_announced",
+        "run::timeslice_flags_parse_and_round_trip",
+        "run::unsupported_syscalls_fail_closed_by_default_with_explicit_opt_out",
+        "run::validate_executable_rejects_empty_shebang_interpreter",
+        "run::verification_always_compares_retained_logs",
+        "run::vmm_time_warning_does_not_recommend_disabling_virtual_time",
+        "run::vmm_time_warning_fires_for_qemu_with_virtual_time",
+        "run::vmm_time_warning_silent_for_non_vmm_programs",
+        "run::vmm_time_warning_silent_when_the_emulator_already_uses_icount",
+        "run::vmm_time_warning_silent_without_virtual_time",
+        "run::vmm_time_warning_still_fires_for_arguments_that_only_resemble_icount",
+        "verify::tests::a_bare_filename_stages_beside_its_target_not_in_the_system_temp_dir",
+        "verify::tests::a_bare_filename_target_is_overwritten_not_left_stale",
+        "verify::tests::a_green_report_says_what_it_compared_and_whether_time_was_virtual",
+        "verify::tests::a_refused_comparison_is_a_no_result_not_a_divergence",
+        "verify::tests::an_observed_difference_outranks_a_refused_comparison",
+        "verify::tests::bitwise_info_ignores_debug_diagnostics_but_rejects_real_info_divergence",
+        "verify::tests::bitwise_parity_contract_accepts_only_named_canonical_envelopes",
+        "verify::tests::caller_defined_record_filter_is_disclosed_but_never_parity",
+        "verify::tests::comparison_spec_binds_canonical_policy_and_preserves_historical_reports",
+        "verify::tests::dbt_real_detcore_record_matches_under_the_disclosed_envelope",
+        "verify::tests::dbt_transport_only_is_disclosed_and_cannot_qualify_as_parity",
+        "verify::tests::default_log_diff_opts_apply_no_line_filters",
+        "verify::tests::default_verification_diverges_on_numeric_only_log_difference",
+        "verify::tests::empty_log_comparison_matches_but_is_never_parity",
+        "verify::tests::extracts_unsupported_syscall_warning_union_from_logs",
+        "verify::tests::failed_comparison_materialization_holds_the_retained_count_at_the_bound",
+        "verify::tests::failed_comparison_retirement_protects_symlinked_readers",
+        "verify::tests::failed_comparison_retirement_refuses_a_log_diff_reader",
+        "verify::tests::identical_outputs_verify_successfully",
+        "verify::tests::nonzero_exit_with_matching_outputs_reports_verified",
+        "verify::tests::output_divergence_does_not_discard_the_log_divergence_position",
+        "verify::tests::output_only_mode_ignores_internal_log_order",
+        "verify::tests::pending_stamp_overwrites_a_previous_green_verdict",
+        "verify::tests::production_comparison_callers_bind_truthful_side_labels",
+        "verify::tests::report_carries_both_run_runtime_totals_without_changing_the_verdict",
+        "verify::tests::requested_logs_survive_log_comparison_io_error",
+        "verify::tests::requested_logs_survive_unsupported_syscall_scan_io_error",
+        "verify::tests::shared_report_preserves_the_current_no_result_bytes",
+        "verify::tests::skid_overshoot_before_comparison_is_not_reported_as_no_result",
+        "verify::tests::skid_overshoot_refusal_retains_the_completed_comparison",
+        "verify::tests::stdout_stderr_and_status_mismatches_fail_verification",
+        "verify::tests::terminal_verdict_replaces_the_pending_stamp",
+        "verify::tests::verification_capture_level_honors_info_and_preserves_explicit_debug",
+        "verify::tests::verification_log_retention_matches_the_cli_contract",
+        "verify::tests::verification_report_carries_first_log_divergence_position",
+        "verify::tests::verification_report_json_carries_the_comparison",
+        "verify::tests::verify_accepts_default_and_info_or_more_verbose_logs",
+        "verify::tests::verify_rejects_explicit_log_levels_below_info"
+      ],
+      "inventory_record": {
+        "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-bin/result.json",
+        "bytes": 27126,
+        "mode": 420,
+        "sha256": "68e976b9751329b1b355efecd1a494824ea6c0aa91b62beed869a5d27a75bbfd"
+      },
+      "inputs": [],
+      "runtime_executables": [
+        {
+          "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/observer/compile-native/retained-hermit-bin",
+          "bytes": 425053032,
+          "mode": 493,
+          "sha256": "837c888d2f785eb3bf9b93ef2036faf4aa378dc67fea7a6d2476c06ec701df46"
+        }
+      ],
+      "dependencies": [
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/compile-native/result.json",
+            "bytes": 16843,
+            "mode": 420,
+            "sha256": "3a703d79dd8394ad6345316f961ee3beee967809ad605887246eb6fa94e77f89"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-detcore/result.json",
+            "bytes": 60267,
+            "mode": 420,
+            "sha256": "82b7fb6e7e11da9c661298700d21d75b07249282db51ff4b05210a780c8d3a6b"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-syscaller/result.json",
+            "bytes": 3412,
+            "mode": 420,
+            "sha256": "80b33c6ec778d869fc42c9c5f516de27a61dd3eb718ff3ddedc9b89714d828ae"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit/result.json",
+            "bytes": 34779,
+            "mode": 420,
+            "sha256": "ae176ddbf9b1a5137471909afb57278330a9a843a300addac1fc868a312dd3df"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-bin/result.json",
+            "bytes": 27126,
+            "mode": 420,
+            "sha256": "68e976b9751329b1b355efecd1a494824ea6c0aa91b62beed869a5d27a75bbfd"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-hermit-dap/result.json",
+            "bytes": 3600,
+            "mode": 420,
+            "sha256": "bcbfea4a01ee96509f3942c1f767d45cf939671d2c39369ddcfbcb4cd56cd447"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-callers-v1/controls-run-1/list-verification-report/result.json",
+            "bytes": 3503,
+            "mode": 420,
+            "sha256": "ad4f1781347d94783b31a5955a4d025c94d78c8ef82fe2171cd57b600ee378c7"
+          }
+        },
+        {
+          "record": {
+            "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-controls-v1/controls-run-1/native-m2-hermit-reports/result.json",
+            "bytes": 5248,
+            "mode": 420,
+            "sha256": "3022f2d2d069a8887b40433f3f2a6307ac667ac05279154fdb8718b3d915903b"
+          }
+        }
+      ]
+    }
+  },
+  "non_build_processes": {
+    "boot_id": "b597126a-0485-436b-b809-4c28c423193d",
+    "processes": [
+      {
+        "pid": 32320,
+        "parent": 1,
+        "start_ticks": "5521",
+        "argv": "/usr/lib/systemd/systemd --user --deserialize=51",
+        "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/init.scope\n"
+      },
+      {
+        "pid": 33455,
+        "parent": 32320,
+        "start_ticks": "5632",
+        "argv": "(sd-pam)",
+        "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/init.scope\n"
+      },
+      {
+        "pid": 2241727,
+        "parent": 32320,
+        "start_ticks": "55644547",
+        "argv": "/usr/bin/gnome-keyring-daemon --start --foreground --components=secrets",
+        "cgroup": "0::/user.slice/user-212630.slice/user@212630.service/app.slice/app-dbus\\x2d:1.2\\x2dorg.freedesktop.secrets.slice/dbus-:1.2-org.freedesktop.secrets@0.service\n"
+      }
+    ]
+  },
+  "input_symlinks": [
+    {
+      "path": "/usr/bin/python3",
+      "target": "python3.9"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/cpuset-alloc",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/dagrun",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/herdr-agent",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/herdr-chat",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/herdr-run",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/herdr-subagents",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/parallel-experiment-runner",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/pr-landing-planner",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/tick-hub",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/wrkslots",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/common/bin/wrkviz",
+      "target": "engine-resolver"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/cpuset-alloc",
+      "target": "../dagrun/cpuset_allocator.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/dagrun",
+      "target": "../dagrun/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/herdr-agent",
+      "target": "../herdr_run/agent_cli.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/herdr-chat",
+      "target": "../herdr_run/chat.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/herdr-run",
+      "target": "../herdr_run/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/herdr-subagents",
+      "target": "../herdr_run/foreign_cli.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/parallel-experiment-runner",
+      "target": "../parallel_experiment_runner/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/pr-landing-planner",
+      "target": "../pr_landing_planner/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/tick-hub",
+      "target": "../tick_hub/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/wrkslots",
+      "target": "../wrkslots/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/bin/wrkviz",
+      "target": "../wrkviz/__main__.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/dagrun/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/dagrun/README.md",
+      "target": "../../common/docs/dagrun/rendered/python/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/dagrun/USER_GUIDE.md",
+      "target": "../../common/docs/dagrun/rendered/python/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/AGENT_USER_GUIDE.md",
+      "target": "../../common/docs/herdr-run/AGENT_USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/CHAT_USER_GUIDE.md",
+      "target": "../../common/docs/herdr-run/CHAT_USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/FOREIGN_USER_GUIDE.md",
+      "target": "../../common/docs/herdr-run/FOREIGN_USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/QUICKSTART.md",
+      "target": "../../common/docs/herdr-run/QUICKSTART.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/README.md",
+      "target": "../../common/docs/herdr-run/rendered/python/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/USER_GUIDE.md",
+      "target": "../../common/docs/herdr-run/rendered/python/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/herdr_run/config_template.yaml",
+      "target": "../../common/docs/herdr-run/CONFIG_TEMPLATE.yaml"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/parallel_experiment_runner/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/parallel_experiment_runner/README.md",
+      "target": "../../common/docs/parallel-experiment-runner/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/parallel_experiment_runner/USER_GUIDE.md",
+      "target": "../../common/docs/parallel-experiment-runner/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/pr_landing_planner/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/pr_landing_planner/README.md",
+      "target": "../../common/docs/pr-landing-planner/rendered/python/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/pr_landing_planner/USER_GUIDE.md",
+      "target": "../../common/docs/pr-landing-planner/rendered/python/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/tick_hub/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/tick_hub/README.md",
+      "target": "../../common/docs/tick-hub/rendered/python/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/tick_hub/USER_GUIDE.md",
+      "target": "../../common/docs/tick-hub/rendered/python/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkslots/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkslots/README.md",
+      "target": "../../common/docs/wrkslots/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkslots/USER_GUIDE.md",
+      "target": "../../common/docs/wrkslots/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkviz/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkviz/README.md",
+      "target": "../../common/docs/wrkviz/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/py/wrkviz/USER_GUIDE.md",
+      "target": "../../common/docs/wrkviz/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/cpuset-alloc",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/dagrun",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/herdr-agent",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/herdr-run",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/pr-landing-planner",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/bin/tick-hub",
+      "target": "cargo-runner"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/README.md",
+      "target": "../../common/docs/dagrun/rendered/rust/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/dagrun/src/embedded_userguide.md",
+      "target": "../../../common/docs/dagrun/rendered/rust/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/README.md",
+      "target": "../../common/docs/herdr-run/rendered/rust/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/src/config_template.yaml",
+      "target": "../../../common/docs/herdr-run/CONFIG_TEMPLATE.yaml"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/src/embedded_agent_userguide.md",
+      "target": "../../../common/docs/herdr-run/AGENT_USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/src/embedded_quickstart.md",
+      "target": "../../../common/docs/herdr-run/QUICKSTART.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/herdr-run/src/embedded_userguide.md",
+      "target": "../../../common/docs/herdr-run/rendered/rust/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/pr-landing-planner/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/pr-landing-planner/README.md",
+      "target": "../../common/docs/pr-landing-planner/rendered/rust/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/pr-landing-planner/src/embedded_userguide.md",
+      "target": "../../../common/docs/pr-landing-planner/rendered/rust/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/tick-hub/LICENSE",
+      "target": "../../LICENSE"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/tick-hub/README.md",
+      "target": "../../common/docs/tick-hub/rendered/rust/README.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/agent-utils/rs/tick-hub/src/embedded_userguide.md",
+      "target": "../../../common/docs/tick-hub/rendered/rust/USER_GUIDE.md"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/third-party/rr/src/test/arm/util.py",
+      "target": "../util.py"
+    },
+    {
+      "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/third-party/rr/src/test/x86/util.py",
+      "target": "../util.py"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/.llms/skills",
+      "target": "../.claude/skills"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/.skill_reset_20260816/CLAUDE.md",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/.skill_reset_20260816/reverie-liteinst/CLAUDE.md",
+      "target": "AGENTS.md"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/reverie-liteinst/.agents/skills/liteinst-binary-instrumentation",
+      "target": "../../.llms/skills/liteinst-binary-instrumentation"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/reverie-liteinst/.agents/skills/liteinst-testing",
+      "target": "../../.llms/skills/liteinst-testing"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/reverie-liteinst/.agents/skills/liteinst-tool-lifecycle",
+      "target": "../../.llms/skills/liteinst-tool-lifecycle"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/reverie-liteinst/.claude/skills",
+      "target": "../.llms/skills"
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/third-party/dynamorio/third_party/elfutils/doc/man3",
+      "target": "."
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/third-party/dynamorio/third_party/elfutils/doc/man7",
+      "target": "."
+    },
+    {
+      "path": "/home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/7d863ab/third-party/dynamorio/third_party/elfutils/tests/debuginfod-tars/bighello-sources/moremoremoremoremoremoremoremore",
+      "target": "."
+    },
+    {
+      "path": "/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1"
+    },
+    {
+      "path": "/lib64/libunwind-x86_64.so.8",
+      "target": "libunwind-x86_64.so.8.1.0"
+    },
+    {
+      "path": "/lib64/libunwind.so.8",
+      "target": "libunwind.so.8.1.0"
+    },
+    {
+      "path": "/lib64",
+      "target": "usr/lib64"
+    },
+    {
+      "path": "/usr/lib64/libgcc_s.so.1",
+      "target": "libgcc_s-11-20240719.so.1"
+    }
+  ],
+  "generated_source_transition": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/m2-source-v2/binding.json",
+    "bytes": 4200,
+    "mode": 420,
+    "sha256": "8585797fbae7890701da545cdbbdbeeb241f714efee9ccd88b25538fbbca46a4"
+  },
+  "actual_root_metadata": {
+    "path": "/home/newton/work/dev-hermit/worktrees/slots/kvm-prejoin-main-20260917/ignored/prejoin-main-callers-v7/observer/metadata-root/stdout",
+    "bytes": 1404985,
+    "mode": 384,
+    "sha256": "259d75fd7989c82af708ea03a62a494e5c2c8ce200589c9a05d15b5dbdeca753"
+  }
+}

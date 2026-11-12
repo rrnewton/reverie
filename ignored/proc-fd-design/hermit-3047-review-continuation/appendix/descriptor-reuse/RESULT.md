@@ -1,0 +1,5 @@
+Both unchanged descriptor-reuse probes passed on aa7ea482 / tree40d69 / Reverie596b9ade with published ELF a31abf55. Ptrace returned0 in1.871936609 wall seconds using0.754274 aggregate CPU seconds; KVM returned0 in1.824601680 wall using0.748192 CPU. Both produced exactly `stdio-inode-descriptor-reuse-ok\n`. Each retained complete INFO stderr, with no truncation, timeout, kill or cleanup error.
+
+Independent readback verified all22 input identities and clean unchanged source, exact payload/argv, authenticated process, configured15CPU/30wall/16GiB/0swap/1MiB lethal stderr bounds, complete accounting, and both services inactive/dead with MainPID0 and empty cgroups. All19 readback conditions per backend passed. These are conditions on two measurements, not38 tests. Collector exit0 is reported separately from both actual guest exits.
+
+The earlier KVM EACCES remains preserved as a failed observation on old7628. This measures the repaired descriptor-reuse path only: complete-stat-routes and the original full pinned-image Rust method remain separate pending obligations; no self/cross log comparison or parity qualification occurred.

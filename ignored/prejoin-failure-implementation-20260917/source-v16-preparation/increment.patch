@@ -1,0 +1,68 @@
+--- a/reverie-kvm/src/error.rs
++++ b/reverie-kvm/src/error.rs
+@@ -363,16 +363,19 @@
+         let mut causes = Vec::new();
+         split(Arc::new(self), &first, &mut Vec::new(), &mut causes);
+         // Prefer the already present worker context for the published identity
+-        // over a context-free notification alias. Other real errors retain
+-        // their original order, regardless of host completion or TID ordering.
++        // over a context-free notification alias. A canceled peer carrying the
++        // same cause cannot supply its own TID as the cause's identity. Other
++        // real errors retain their order, regardless of host completion/TID.
+         let selected = causes
+             .iter()
+             .enumerate()
+-            .filter(|(_, cause)| Arc::ptr_eq(&cause.error, &first))
++            .filter(|(_, cause)| {
++                Arc::ptr_eq(&cause.error, &first)
++                    && cause.worker_tid().is_none_or(|tid| tid == first_tid)
++            })
+             .max_by_key(|(index, cause)| {
+                 (
+                     cause.worker_tid() == Some(first_tid),
+-                    cause.worker_tid().is_some(),
+                     std::cmp::Reverse(*index),
+                 )
+             })
+--- a/reverie-kvm/src/failure.rs
++++ b/reverie-kvm/src/failure.rs
+@@ -261,6 +261,39 @@
+             no_failure.complete::<()>(Err(Error::RunAborted)),
+             Err(Error::RunAborted)
+         ));
++
++        // A canceled peer can return the root's published cause through its
++        // own join handle. Its TID is propagation context, not the origin.
++        let root_failure = RunFailure::new(&global);
++        root_failure.publish(
++            BackendFailure {
++                pid: Pid::from_raw(1),
++                tid: Pid::from_raw(1),
++                phase: "root execution",
++            },
++            Error::InvalidGuestPid(-17),
++        );
++        let root_cause = root_failure.primary().unwrap();
++        for direct_alias in [true, false] {
++            let peer = Error::WorkerFailure {
++                tid: 2,
++                error: root_cause.clone(),
++            };
++            let result = if direct_alias {
++                Error::SharedFailure(root_cause.clone()).with_cleanup(vec![peer])
++            } else {
++                peer
++            };
++            let error = root_failure.complete::<()>(Err(result)).unwrap_err();
++            assert_eq!(error.to_string(), "invalid KVM root guest PID -17");
++            assert_eq!(
++                error.worker_tid(),
++                None,
++                "canceled peer replaced the root identity"
++            );
++            assert!(error.retains_primary(&root_cause));
++            assert!(std::ptr::eq(error.primary(), root_cause.primary()));
++        }
+     }
+ 
+     #[test]
