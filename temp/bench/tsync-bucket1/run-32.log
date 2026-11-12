@@ -1,0 +1,24 @@
+
+running 1 test
+test tracer::plain_guest_regression_tests::a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken ... FAILED
+
+failures:
+
+---- tracer::plain_guest_regression_tests::a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken stdout ----
+sigtrap_tsync_filter_kill inject contract=false: tsync-filter action=0x80000000 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+sigtrap_tsync_filter_kill tail contract=false: tsync-filter action=0x80000000 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+sigtrap_tsync_filter_trap inject contract=false: tsync-filter action=0x30000 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+sigtrap_tsync_filter_trap tail contract=false: tsync-filter action=0x30000 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+sigtrap_tsync_filter_errno inject contract=false: tsync-filter action=0x50001 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+sigtrap_tsync_filter_errno tail contract=false: tsync-filter action=0x50001 children=40 ok=40 sigsys=0 sigkill=0 other=0 ostatus=0
+
+thread 'tracer::plain_guest_regression_tests::a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken' (559493) panicked at reverie-ptrace/src/plain_guest_regression_tests.rs:2136:17:
+regression fixture run sigtrap_tsync_filter_kill tail=true failed: write back SIGTRAP's action at a seccomp stop failed for tracee 842269: -3 ESRCH (No such process)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tracer::plain_guest_regression_tests::a_sibling_tsync_filter_kills_no_guest_unless_the_contract_is_broken
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 822 filtered out; finished in 59.48s
+
