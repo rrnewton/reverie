@@ -117,23 +117,98 @@ fn fd_link_subpaths_resolve_below_the_guest_descriptor() {
     );
 }
 
+/// Every kernel-equivalent spelling of a path below an fd link answers
+/// as the native kernel answers for the same spelling on a native
+/// descriptor (the oracle runs in this test process), and every
+/// spelling answers ENOENT for a descriptor number only the supervisor
+/// holds.
+#[test]
+fn fd_link_spellings_match_the_native_oracle() {
+    let root = TestDir::new();
+    std::fs::create_dir(root.0.join("sentinel")).unwrap();
+    std::fs::write(root.0.join("sentinel/marker"), b"guest-marker").unwrap();
+    let mut state = test_state(&root.0);
+    let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+    let guest_dir = guest_open(&mut memory, &mut state, "sentinel", libc::O_RDONLY);
+    assert!(guest_dir >= 0, "open sentinel dir: {guest_dir}");
+
+    // The supervisor's plant, at a number the guest does not hold:
+    // F_DUPFD_CLOEXEC from 4000 picks a free number atomically, so
+    // parallel tests in this process cannot plant at the same one.
+    let secret = std::fs::File::open(root.0.join("sentinel")).unwrap();
+    let planted = unsafe { libc::fcntl(secret.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4000) };
+    assert!(planted >= 4000, "planting supervisor descriptor: {planted}");
+    let _planted =
+        unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(planted) };
+
+    // The native oracle descriptor: this process's own dir fd.
+    let native_dir = std::fs::File::open(root.0.join("sentinel")).unwrap();
+    let native_fd = native_dir.as_raw_fd();
+    let tid = unsafe { libc::syscall(libc::SYS_gettid) };
+
+    // Spelling templates over a dir fd; `F` is the descriptor number and
+    // `T` the caller's tid (guest tid 1, native this thread's).
+    let templates = [
+        "/proc/self/fd/F/marker",
+        "//proc/self/fd/F/marker",
+        "/proc//self/fd/F/marker",
+        "/proc/./self/fd/F/marker",
+        "/proc/self/./fd/F/marker",
+        "/proc/self/fd//F/marker",
+        "/proc/self/fd/./F/marker",
+        "/proc/self/fd/../fd/F/marker",
+        "/proc/self/fd/F//marker",
+        "/proc/self/task/T/fd/F/marker",
+        "/proc/self/task/424242/fd/F/marker",
+        "/proc/thread-self/task/T/fd/F/marker",
+        "/proc/self/fd/0F/marker",
+    ];
+    for template in templates {
+        let guest_path = template
+            .replace('F', &guest_dir.to_string())
+            .replace('T', "1");
+        let native_path = template
+            .replace('F', &native_fd.to_string())
+            .replace('T', &tid.to_string());
+        // Native outcome: read the marker, or the errno.
+        let native = std::fs::read(&native_path).map_err(|err| err.raw_os_error());
+        let guest_fd = guest_open(&mut memory, &mut state, &guest_path, libc::O_RDONLY);
+        match (native, guest_fd) {
+            (Ok(bytes), fd) if fd >= 0 => {
+                assert_eq!(
+                    guest_read(&mut memory, &mut state, fd),
+                    bytes,
+                    "{template}"
+                );
+            }
+            (Err(Some(errno)), fd) => {
+                assert_eq!(fd, negative_errno(errno), "{template}");
+            }
+            (native, fd) => panic!("{template}: native {native:?}, guest fd {fd}"),
+        }
+        // The planted supervisor number answers ENOENT through the same
+        // spelling, whatever the oracle says for its own descriptor.
+        let planted_path = template
+            .replace('F', &planted.to_string())
+            .replace('T', "1");
+        assert_eq!(
+            guest_open(&mut memory, &mut state, &planted_path, libc::O_RDONLY),
+            negative_errno(libc::ENOENT),
+            "{template} reached the supervisor's descriptor {planted}"
+        );
+    }
+}
+
 #[test]
 fn fd_link_spellings_never_reach_the_supervisors_descriptors() {
     let root = TestDir::new();
     std::fs::write(root.0.join("supervisor-secret"), b"supervisor-secret").unwrap();
-    // Plant the secret at a known supervisor (this process) descriptor
-    // number the guest does not hold: the first free number in a range
-    // far above anything the guest allocates in these tests (other
-    // tests in this process may hold any fixed number).
-    let planted = (4000..4010)
-        .find(|&fd| unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1)
-        .expect("no free supervisor descriptor to plant at");
-    let planted_fd = planted;
+    // Plant the secret at a supervisor (this process) descriptor number
+    // the guest does not hold: F_DUPFD_CLOEXEC from 4000 picks a free
+    // number atomically, far above anything the guest allocates here.
     let secret = std::fs::File::open(root.0.join("supervisor-secret")).unwrap();
-    assert_eq!(
-        unsafe { libc::dup2(secret.as_raw_fd(), planted_fd) },
-        planted_fd
-    );
+    let planted_fd = unsafe { libc::fcntl(secret.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 4000) };
+    assert!(planted_fd >= 4000, "planting supervisor descriptor: {planted_fd}");
     // Owns only the planted number; `secret` keeps its own descriptor.
     let _planted =
         unsafe { <std::os::fd::OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(planted_fd) };
