@@ -1065,7 +1065,17 @@ pub struct BuckCompiledSourceExpectation<'a> {
     pub reverie_files: &'a [&'a str],
 }
 const BUCK_PROFILE_BZL_NAME: &str = "liteinst-runtime-profile.bzl";
-const BUCK_REQUIRED_CONSTRAINTS: [&str; 2] = ["ovr_config//cpu:x86_64", "ovr_config//os:linux"];
+/// Canonical Buck literals, matched exactly (never by substring or superset).
+/// The target is the liteinst-runtime configured alias in the Hermit root
+/// `BUCK`; the constraints are the exact set that alias carries: the
+/// `:detcore-liteinst` cpu/os pair plus the profile's opt build mode.
+const BUCK_TARGET: &str = "//hermetic_infra/hermit:detcore-liteinst-liteinst-runtime[cdylib]";
+const BUCK_PLATFORM: &str = "ovr_config//platform/linux:x86_64-fbcode";
+const BUCK_CONSTRAINTS: [&str; 3] = [
+    "ovr_config//build_mode/constraints:opt",
+    "ovr_config//cpu:x86_64",
+    "ovr_config//os:linux",
+];
 const BUCK_QUALIFIER_SOURCE: &str = "reverie-liteinst-artifact/src/lib.rs";
 const BUCK_LEAF_SOURCE: &str = "detcore-liteinst/src/lib.rs";
 const BUCK_WORKSPACE_EXTRA_FILES: [&str; 2] = [
@@ -1134,8 +1144,8 @@ struct CompilerRootBinding {
     canonical_root: PathBuf,
     cargo_home: Option<(PathBuf, PathBuf)>,
 }
-/// Only the fresh Git/content factories can construct this type. Deserializing evidence does not
-/// authorize compiler filenames or establish the current Cargo source graph.
+/// Only the fresh Git/content/Buck factories can construct this type. Deserializing evidence does
+/// not authorize compiler filenames or establish the current Cargo source graph.
 pub struct VerifiedCompiledSources {
     record: CompiledSources,
     current_build: Option<BuildWitness>,
@@ -1932,6 +1942,55 @@ fn logical_declared_relative(relative: &str) -> Result<()> {
         format!("declared Buck source is not a logical relative path: {relative}"),
     )
 }
+/// Refuse a declared Buck workspace inventory that subsets the sources on
+/// disk: every `.rs` file under `detcore-liteinst/src/` must be declared, so
+/// an undeclared source file can never ride along outside the authority.
+fn require_complete_detcore_src_inventory(
+    workspace_root: &Path,
+    declared: &BTreeSet<&str>,
+) -> Result<()> {
+    fn scan(dir: &Path, workspace_root: &Path, declared: &BTreeSet<&str>) -> Result<()> {
+        let mut entries: Vec<_> = fs::read_dir(dir)
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| e.to_string())?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let file_type = entry.file_type().map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if file_type.is_symlink() {
+                return Err(format!(
+                    "Buck detcore-liteinst source scan refuses a symlink: {}",
+                    path.display()
+                ));
+            } else if file_type.is_dir() {
+                scan(&path, workspace_root, declared)?;
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|extension| extension == "rs")
+            {
+                let relative_path = path
+                    .strip_prefix(workspace_root)
+                    .map_err(|e| e.to_string())?;
+                let relative = relative_path
+                    .to_str()
+                    .ok_or("Buck detcore-liteinst source path is not UTF-8")?;
+                require(
+                    declared.contains(relative),
+                    format!(
+                        "Buck workspace inventory is incomplete: {relative} is present under \
+                         detcore-liteinst/src but absent from the declared inventory"
+                    ),
+                )?;
+            }
+        }
+        Ok(())
+    }
+    scan(
+        &workspace_root.join("detcore-liteinst/src"),
+        workspace_root,
+        declared,
+    )
+}
 fn verify_buck_declared_content(
     (workspace_root, workspace_inventory, workspace_sha256): (&Path, &[DeclaredSourceFile], &str),
     (reverie_root, reverie_inventory, reverie_sha256): (&Path, &[DeclaredSourceFile], &str),
@@ -1964,6 +2023,13 @@ fn verify_buck_declared_content(
     require(
         qualifier.sha256 == qualifier_source_sha256(),
         "declared Buck qualifier source differs from compiled host qualifier",
+    )?;
+    require_complete_detcore_src_inventory(
+        workspace_root,
+        &workspace_inventory
+            .iter()
+            .map(|entry| entry.relative.as_str())
+            .collect(),
     )?;
     Ok(())
 }
@@ -2973,25 +3039,20 @@ impl VerifiedCompiledSources {
             "Buck compiled source requires a full imported Hermit SHA",
         )?;
         require(
-            !expected.target.is_empty()
-                && expected.target.contains("detcore-liteinst")
-                && !expected.platform.is_empty(),
-            "Buck compiled source requires detcore-liteinst target and platform literals",
+            expected.target == BUCK_TARGET && expected.platform == BUCK_PLATFORM,
+            "Buck compiled source requires the exact detcore-liteinst-liteinst-runtime \
+             target and x86_64-fbcode platform literals",
         )?;
-        let constraints: Vec<String> = expected
-            .constraints
-            .iter()
-            .map(|s| (*s).to_owned())
-            .collect();
+        let constraint_set: BTreeSet<&str> = expected.constraints.iter().copied().collect();
         require(
-            !constraints.is_empty()
-                && constraints.iter().all(|c| !c.is_empty())
-                && constraints.windows(2).all(|pair| pair[0] < pair[1])
-                && BUCK_REQUIRED_CONSTRAINTS
-                    .iter()
-                    .all(|required| constraints.iter().any(|c| c == required)),
-            "Buck constraints must be sorted, unique and include the x86_64/Linux literals",
+            constraint_set.len() == expected.constraints.len()
+                && constraint_set == BUCK_CONSTRAINTS.iter().copied().collect(),
+            "Buck constraints must be exactly the cpu, os and opt constraint set",
         )?;
+        let constraints: Vec<String> = BUCK_CONSTRAINTS
+            .iter()
+            .map(|constraint| (*constraint).to_owned())
+            .collect();
         for relative in expected
             .workspace_files
             .iter()
@@ -3034,6 +3095,10 @@ impl VerifiedCompiledSources {
         require(
             reverie_root.as_os_str() == expected.reverie_root.as_os_str(),
             "Buck compiled Reverie root is not canonical",
+        )?;
+        require_complete_detcore_src_inventory(
+            &root,
+            &expected.workspace_files.iter().copied().collect(),
         )?;
         let profile_bzl = FileIdentity::read(expected.profile_bzl)?;
         require(
@@ -20018,12 +20083,15 @@ fn validate_no_installation_scope_evidence(
                 }
                 BuildWitness::Buck(build) => {
                     build.builder == "buck2"
-                        && build.target.contains("detcore-liteinst")
-                        && !build.platform.is_empty()
-                        && build.constraints.windows(2).all(|pair| pair[0] < pair[1])
-                        && BUCK_REQUIRED_CONSTRAINTS
+                        && build.target == BUCK_TARGET
+                        && build.platform == BUCK_PLATFORM
+                        && build.constraints.len() == BUCK_CONSTRAINTS.len()
+                        && build
+                            .constraints
                             .iter()
-                            .all(|required| build.constraints.iter().any(|c| c == required))
+                            .map(String::as_str)
+                            .collect::<BTreeSet<_>>()
+                            == BUCK_CONSTRAINTS.iter().copied().collect::<BTreeSet<_>>()
                         && build
                             .profile_bzl
                             .path
@@ -39148,9 +39216,9 @@ mod tests {
                 reverie_pin: pin,
                 imported_sha: imported,
                 profile_bzl: profile,
-                target: "//hermetic_infra/hermit:detcore-liteinst",
-                platform: "ovr_config//platform/linux:x86_64-fbcode",
-                constraints: &BUCK_REQUIRED_CONSTRAINTS,
+                target: BUCK_TARGET,
+                platform: BUCK_PLATFORM,
+                constraints: &BUCK_CONSTRAINTS,
                 workspace_files,
                 reverie_files,
             }
@@ -39177,6 +39245,72 @@ mod tests {
                 .is_err(),
             "incomplete declared Reverie file set"
         );
+        // Buck literals are exact: a target/platform that merely contains or
+        // extends the canonical spelling, and any constraint subset or
+        // superset, refuse.
+        for bad_target in [
+            "//hermetic_infra/hermit:detcore-liteinst",
+            "//hermetic_infra/hermit:detcore-liteinst[cdylib]",
+            "//hermetic_infra/hermit:detcore-liteinst-liteinst-runtime[cdylib]-extra",
+            "detcore-liteinst",
+        ] {
+            let mut bad = expectation!(&pin, &reverie_files);
+            bad.target = bad_target;
+            assert!(
+                VerifiedCompiledSources::resolve_buck(&bad).is_err(),
+                "non-canonical Buck target {bad_target}"
+            );
+        }
+        for bad_platform in [
+            "",
+            "ovr_config//platform/linux:x86_64-fbcode-extra",
+            "ovr_config//platform/linux:x86_64",
+        ] {
+            let mut bad = expectation!(&pin, &reverie_files);
+            bad.platform = bad_platform;
+            assert!(
+                VerifiedCompiledSources::resolve_buck(&bad).is_err(),
+                "non-canonical Buck platform {bad_platform}"
+            );
+        }
+        let subset: &[&str] = &["ovr_config//cpu:x86_64", "ovr_config//os:linux"];
+        let superset: &[&str] = &[
+            "ovr_config//build_mode/constraints:opt",
+            "ovr_config//cpu:x86_64",
+            "ovr_config//os:linux",
+            "ovr_config//os:linux-extra",
+        ];
+        let wrong_opt: &[&str] = &[
+            "ovr_config//build_mode:opt",
+            "ovr_config//cpu:x86_64",
+            "ovr_config//os:linux",
+        ];
+        for bad_constraints in [subset, superset, wrong_opt] {
+            let mut bad = expectation!(&pin, &reverie_files);
+            bad.constraints = bad_constraints;
+            assert!(
+                VerifiedCompiledSources::resolve_buck(&bad).is_err(),
+                "non-canonical Buck constraints {bad_constraints:?}"
+            );
+        }
+        // Inventory completeness: an on-disk .rs under detcore-liteinst/src
+        // that is absent from the declared inventory refuses, nested or not.
+        let undeclared = workspace.join("detcore-liteinst/src/undeclared.rs");
+        fs::write(&undeclared, b"undeclared source").unwrap();
+        assert!(
+            VerifiedCompiledSources::resolve_buck(&expectation!(&pin, &reverie_files)).is_err(),
+            "undeclared detcore-liteinst source present on disk"
+        );
+        fs::remove_file(&undeclared).unwrap();
+        let nested = workspace.join("detcore-liteinst/src/nested/undeclared.rs");
+        fs::create_dir_all(nested.parent().unwrap()).unwrap();
+        fs::write(&nested, b"undeclared nested source").unwrap();
+        assert!(
+            VerifiedCompiledSources::resolve_buck(&expectation!(&pin, &reverie_files)).is_err(),
+            "undeclared nested detcore-liteinst source present on disk"
+        );
+        fs::remove_file(&nested).unwrap();
+        fs::remove_dir(nested.parent().unwrap()).unwrap();
         let sources =
             VerifiedCompiledSources::resolve_buck(&expectation!(&pin, &reverie_files)).unwrap();
         let leaf = sources.package();
@@ -39196,7 +39330,7 @@ mod tests {
             panic!("Buck factory must record the Buck authority");
         };
         assert_eq!(imported_sha, &imported);
-        assert!(target.contains("detcore-liteinst"));
+        assert_eq!(target, BUCK_TARGET);
         assert!(
             workspace_inventory
                 .windows(2)
@@ -39204,6 +39338,15 @@ mod tests {
             "inventory is sorted by logical relative path"
         );
         let mut runner = Runner::new(root.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        sources.verify_unchanged(&mut runner).unwrap();
+        // Completeness also binds retained sources: a new undeclared source
+        // appearing after resolution refuses verification.
+        fs::write(&undeclared, b"undeclared source").unwrap();
+        assert!(
+            sources.verify_unchanged(&mut runner).is_err(),
+            "undeclared detcore-liteinst source appeared after resolution"
+        );
+        fs::remove_file(&undeclared).unwrap();
         sources.verify_unchanged(&mut runner).unwrap();
         // Mixed builder arms refuse at the factory boundary, in both directions.
         let dummy_file = FileIdentity {
@@ -39364,12 +39507,9 @@ mod tests {
         let buck = BuckBuildEvidence {
             builder: "buck2".into(),
             profile_bzl: file("/witness/fb-only/liteinst-runtime-profile.bzl"),
-            target: "//hermetic_infra/hermit:detcore-liteinst".into(),
-            platform: "ovr_config//platform/linux:x86_64-fbcode".into(),
-            constraints: BUCK_REQUIRED_CONSTRAINTS
-                .iter()
-                .map(|c| (*c).to_owned())
-                .collect(),
+            target: BUCK_TARGET.into(),
+            platform: BUCK_PLATFORM.into(),
+            constraints: BUCK_CONSTRAINTS.iter().map(|c| (*c).to_owned()).collect(),
             artifact: file("/witness/target/lib.so"),
             compiled_sources_sha256: "1".repeat(64),
             packages: buck_packages,
@@ -39378,6 +39518,62 @@ mod tests {
         assert_eq!(
             serde_json::to_vec(&BuildWitness::Cargo(Box::new(cargo.clone()))).unwrap(),
             serde_json::to_vec(&cargo).unwrap()
+        );
+        // Golden bytes for the `cargo` value above: the pre-Buck
+        // `CurrentBuildEvidence` serialization, with the field set and
+        // field order of the struct at a9355f0 (before `BuildWitness`
+        // existed) and `standalone_sources: None` omitted. The Cargo arm
+        // must keep producing exactly these bytes, so field or order
+        // drift in the inner struct fails here rather than silently
+        // changing retained evidence.
+        const CARGO_WITNESS_GOLDEN: &str = concat!(
+            r#"{"command":{"program":"cargo","arguments":[],"cwd":"/witness","status":0,"#,
+            r#""elapsed_millis":0,"stdout":{"path":"/witness/stdout","sha256":"#,
+            r#""0000000000000000000000000000000000000000000000000000000000000000"},"stderr":"#,
+            r#"{"path":"/witness/stderr","sha256":"#,
+            r#""0000000000000000000000000000000000000000000000000000000000000000"}},"#,
+            r#""cargo_executable":null,"target_directory":"/witness/target","artifact":"#,
+            r#"{"path":"/witness/target/lib.so","sha256":"#,
+            r#""0000000000000000000000000000000000000000000000000000000000000000"},"#,
+            r#""compiled_sources_sha256":"#,
+            r#""1111111111111111111111111111111111111111111111111111111111111111","packages":"#,
+            r#"{"detcore-liteinst":{"package":{"id":"detcore-liteinst","name":"#,
+            r#""detcore-liteinst","manifest":"/witness/detcore-liteinst/Cargo.toml","#,
+            r#""source":null,"target":"detcore_liteinst","kind":["lib"],"crate_types":"#,
+            r#"["lib"],"target_source":"/witness/detcore-liteinst/lib.rs"},"features":[],"#,
+            r#""profile":{"debug_assertions":true,"debuginfo":0,"opt_level":"3","#,
+            r#""overflow_checks":true,"test":false},"outputs":"#,
+            r#"["/witness/target/detcore-liteinst"]},"reverie-inguest":{"package":"#,
+            r#"{"id":"reverie-inguest","name":"reverie-inguest","manifest":"#,
+            r#""/witness/reverie-inguest/Cargo.toml","source":null,"target":"#,
+            r#""reverie_inguest","kind":["lib"],"crate_types":["lib"],"target_source":"#,
+            r#""/witness/reverie-inguest/lib.rs"},"features":["coordinator-rpc","launcher","#,
+            r#""rcb-clock"],"profile":{"debug_assertions":true,"debuginfo":0,"opt_level":"#,
+            r#""3","overflow_checks":true,"test":false},"outputs":"#,
+            r#"["/witness/target/reverie-inguest"]},"reverie-liteinst":{"package":"#,
+            r#"{"id":"reverie-liteinst","name":"reverie-liteinst","manifest":"#,
+            r#""/witness/reverie-liteinst/Cargo.toml","source":null,"target":"#,
+            r#""reverie_liteinst","kind":["lib"],"crate_types":["lib"],"target_source":"#,
+            r#""/witness/reverie-liteinst/lib.rs"},"features":[],"profile":"#,
+            r#"{"debug_assertions":true,"debuginfo":0,"opt_level":"3","overflow_checks":"#,
+            r#"true,"test":false},"outputs":["/witness/target/reverie-liteinst"]}}}"#,
+        );
+        assert_eq!(
+            String::from_utf8(
+                serde_json::to_vec(&BuildWitness::Cargo(Box::new(cargo.clone()))).unwrap()
+            )
+            .unwrap(),
+            CARGO_WITNESS_GOLDEN,
+            "Cargo witness bytes drifted from the pre-Buck golden serialization"
+        );
+        assert_eq!(
+            serde_json::from_str::<CurrentBuildEvidence>(CARGO_WITNESS_GOLDEN).unwrap(),
+            cargo,
+            "golden bytes must decode as the pre-Buck inner struct"
+        );
+        assert_eq!(
+            serde_json::from_str::<BuildWitness>(CARGO_WITNESS_GOLDEN).unwrap(),
+            BuildWitness::Cargo(Box::new(cargo.clone()))
         );
         for witness in [
             BuildWitness::Cargo(Box::new(cargo.clone())),
@@ -49873,6 +50069,55 @@ mod tests {
             validate_no_installation_scope_evidence(&backing, proof, FixedImageKind::Detcore)
         };
         check(&proof).unwrap();
+        // The retained Buck arm binds the same exact literals as the factory:
+        // the canonical witness validates, and a merely-containing target,
+        // an extended platform, and constraint subsets/supersets refuse.
+        let buck_packages = NoScopeCohort::DetcoreOrdinaryBuck
+            .features()
+            .iter()
+            .map(|(name, features)| {
+                (
+                    (*name).to_owned(),
+                    BuckBuildPackage {
+                        features: features.iter().map(|f| (*f).to_owned()).collect(),
+                        profile: NoScopeCohort::DetcoreOrdinaryBuck.profile(),
+                    },
+                )
+            })
+            .collect();
+        let mut buck_proof = proof.clone();
+        buck_proof.current_build = BuildWitness::Buck(Box::new(BuckBuildEvidence {
+            builder: "buck2".into(),
+            profile_bzl: file(
+                "/schema/fb-only/liteinst-runtime-profile.bzl",
+                &"0".repeat(64),
+            ),
+            target: BUCK_TARGET.into(),
+            platform: BUCK_PLATFORM.into(),
+            constraints: BUCK_CONSTRAINTS.iter().map(|c| (*c).to_owned()).collect(),
+            artifact: file("/schema/target/lib.so", &"1".repeat(64)),
+            compiled_sources_sha256: "2".repeat(64),
+            packages: buck_packages,
+        }));
+        check(&buck_proof).unwrap();
+        for mutation in 0..5 {
+            let mut bad = buck_proof.clone();
+            let BuildWitness::Buck(build) = &mut bad.current_build else {
+                unreachable!("retained Buck controls require a Buck witness");
+            };
+            match mutation {
+                0 => build.target = "//hermetic_infra/hermit:detcore-liteinst[cdylib]".into(),
+                1 => build.target.push_str("-extra"),
+                2 => build.platform.push_str("-extra"),
+                3 => build.constraints.pop().map(|_| ()).unwrap(),
+                4 => build.constraints.push("ovr_config//os:linux-extra".into()),
+                _ => unreachable!(),
+            }
+            assert!(
+                check(&bad).is_err(),
+                "retained Buck witness with non-canonical literals{mutation}"
+            );
+        }
         let value = serde_json::to_value(AllocatorInstallationEvidence::NoInstallationScope(
             Box::new(proof.clone()),
         ))
