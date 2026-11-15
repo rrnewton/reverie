@@ -3060,6 +3060,210 @@ pub(crate) mod tests {
         });
     }
 
+    /// `perf_event_open` of a software task-clock event on this thread,
+    /// counting user time only (`perf_event_paranoid` up to 2 allows it), in
+    /// the group led by `group` (-1 for its own), disabled if `disabled`.
+    /// Returns the call's arguments; the attribute words are in `attr`.
+    fn task_clock_args(attr: &mut [u64; 8], group: i64, disabled: bool) -> [u64; 6] {
+        *attr = [0; 8];
+        attr[0] = 1 | (64 << 32); // PERF_TYPE_SOFTWARE; size PERF_ATTR_SIZE_VER0
+        attr[1] = 1; // PERF_COUNT_SW_TASK_CLOCK
+        attr[5] = 0x60 | u64::from(disabled); // exclude_kernel, exclude_hv, disabled
+        let no_cpu = u64::from(u32::MAX);
+        let cloexec = 8; // PERF_FLAG_FD_CLOEXEC
+        [attr.as_ptr() as u64, 0, no_cpu, group as u64, cloexec, 0]
+    }
+
+    /// A task-clock event of the test's own, placed and recorded as the
+    /// runtime's counter is (guest/clock.rs).
+    fn runtime_task_clock() -> libc::c_int {
+        let mut attr = [0u64; 8];
+        let created = unsafe {
+            raw_syscall6(
+                libc::SYS_perf_event_open,
+                task_clock_args(&mut attr, -1, false),
+            )
+        };
+        assert!(
+            created >= 0,
+            "a software perf event is needed here (perf_event_paranoid <= 2): {created}"
+        );
+        let counter = place_runtime_fd(created as libc::c_int).unwrap();
+        record_runtime_fd(counter).unwrap();
+        counter
+    }
+
+    /// The count `read` gives for perf event `fd`.
+    fn perf_count(fd: libc::c_int) -> u64 {
+        let mut count = 0u64;
+        let read = unsafe { libc::read(fd, (&raw mut count).cast(), 8) };
+        assert_eq!(read, 8, "read of perf event {fd}");
+        count
+    }
+
+    /// Spins for five milliseconds of wall time, running all along, so that
+    /// a task clock of this thread advances.
+    fn spin() {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(5) {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// A guest `perf_event_open` whose group leader is the runtime's counter
+    /// fails with EBADF. Run, it would make the guest's event a sibling of the
+    /// counter, and a DISABLE with PERF_IOC_FLAG_GROUP on the sibling disables
+    /// the whole group, the counter included (perf_event_for_each starts at
+    /// the group leader). A call that is not refused runs here as the
+    /// dispatcher would run it, so on a build without the check the counter
+    /// stops. A guest event in a group of its own, and one led by the guest's
+    /// own event, are admitted and open.
+    #[test]
+    fn a_guest_perf_event_cannot_join_the_runtime_counter() {
+        in_child_with_soft_nofile(2048, || {
+            let counter = runtime_task_clock();
+            let mut attr = [0u64; 8];
+            let args = task_clock_args(&mut attr, i64::from(counter), false);
+            let mut join = event(libc::SYS_perf_event_open, args);
+            let checked = unsafe { protect_runtime_descriptors(&mut join, true) };
+            if !checked {
+                let sibling = unsafe { raw_syscall6(libc::SYS_perf_event_open, args) };
+                if sibling >= 0 {
+                    // PERF_EVENT_IOC_DISABLE with PERF_IOC_FLAG_GROUP.
+                    let disable = [sibling as u64, 0x2401, 1, 0, 0, 0];
+                    unsafe { raw_syscall6(libc::SYS_ioctl, disable) };
+                }
+            }
+            let before = perf_count(counter);
+            spin();
+            let after = perf_count(counter);
+            assert!(
+                after > before,
+                "the runtime counter stopped counting: {before} then {after}"
+            );
+            assert!(
+                checked,
+                "a guest perf_event_open joined the runtime counter"
+            );
+            assert_eq!(join.result, -i64::from(libc::EBADF));
+
+            // A guest event in a group of its own is admitted and opens, and
+            // so does one whose leader is the guest's own event.
+            let mut own = [0u64; 8];
+            let alone_args = task_clock_args(&mut own, -1, false);
+            let mut alone = event(libc::SYS_perf_event_open, alone_args);
+            assert!(!unsafe { protect_runtime_descriptors(&mut alone, true) });
+            let leader = unsafe { raw_syscall6(libc::SYS_perf_event_open, alone_args) };
+            assert!(leader >= 0, "the guest's own event: {leader}");
+            let mut sibling_attr = [0u64; 8];
+            let sibling_args = task_clock_args(&mut sibling_attr, leader, false);
+            let mut grouped = event(libc::SYS_perf_event_open, sibling_args);
+            assert!(!unsafe { protect_runtime_descriptors(&mut grouped, true) });
+            let sibling = unsafe { raw_syscall6(libc::SYS_perf_event_open, sibling_args) };
+            assert!(
+                sibling >= 0,
+                "a sibling of the guest's own event: {sibling}"
+            );
+        });
+    }
+
+    /// A guest `PERF_EVENT_IOC_SET_OUTPUT` into the runtime's counter fails
+    /// with EBADF. Run, it would attach the guest's event to the counter's
+    /// buffer, and every update of the guest's event would rewrite the
+    /// counter's user page, which the runtime reads its count through
+    /// (_perf_event_reset calls perf_event_update_userpage). A call that is
+    /// not refused runs here as the dispatcher would run it, so on a build
+    /// without the check the guest's RESET writes its own time_enabled, 0 for
+    /// an event never enabled, over the counter's. A SET_OUTPUT between two
+    /// guest events is admitted and succeeds.
+    #[test]
+    fn a_guest_perf_event_cannot_write_the_runtime_counter_user_page() {
+        in_child_with_soft_nofile(2048, || {
+            let counter = runtime_task_clock();
+            // The runtime maps its counter's user page, as the RCB clock does.
+            let page = unsafe {
+                libc::mmap(
+                    core::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    counter,
+                    0,
+                )
+            };
+            assert_ne!(page, libc::MAP_FAILED, "{}", io::Error::last_os_error());
+            // perf_event_mmap_page: time_enabled at byte 24.
+            let time_enabled = unsafe { page.cast::<u8>().add(24).cast::<u64>() };
+            spin();
+            let mut attr = [0u64; 8];
+            let guest = unsafe {
+                raw_syscall6(
+                    libc::SYS_perf_event_open,
+                    task_clock_args(&mut attr, -1, true),
+                )
+            };
+            assert!(guest >= 0, "the guest's own perf event: {guest}");
+            let set_output = 0x2405; // PERF_EVENT_IOC_SET_OUTPUT
+            let args = [guest as u64, set_output, counter as u64, 0, 0, 0];
+            let mut redirect = event(libc::SYS_ioctl, args);
+            let checked = unsafe { protect_runtime_descriptors(&mut redirect, true) };
+            let redirected = !checked && unsafe { raw_syscall6(libc::SYS_ioctl, args) } == 0;
+            // PERF_EVENT_IOC_RESET of the guest's event updates the user page
+            // of the buffer it writes. Repeated, so that the counter's own
+            // update at a reschedule cannot hide a rewrite.
+            let reset = [guest as u64, 0x2403, 0, 0, 0, 0];
+            for _ in 0..64 {
+                unsafe { raw_syscall6(libc::SYS_ioctl, reset) };
+                let enabled = unsafe { time_enabled.read_volatile() };
+                assert_ne!(
+                    enabled, 0,
+                    "the guest's event rewrote the runtime counter's user page \
+                     (SET_OUTPUT returned 0: {redirected})"
+                );
+            }
+            assert!(checked, "a guest SET_OUTPUT into the runtime counter ran");
+            assert_eq!(redirect.result, -i64::from(libc::EBADF));
+
+            let mut other_attr = [0u64; 8];
+            let other = unsafe {
+                raw_syscall6(
+                    libc::SYS_perf_event_open,
+                    task_clock_args(&mut other_attr, -1, true),
+                )
+            };
+            assert!(other >= 0);
+            // A SET_OUTPUT between two guest events is admitted and runs: the
+            // guest's event gets a buffer of its own, which Linux requires of
+            // the output event (kernel/events/core.c:13739-13751).
+            let guest_page = unsafe {
+                libc::mmap(
+                    core::ptr::null_mut(),
+                    4096,
+                    libc::PROT_READ,
+                    libc::MAP_SHARED,
+                    guest as libc::c_int,
+                    0,
+                )
+            };
+            assert_ne!(
+                guest_page,
+                libc::MAP_FAILED,
+                "{}",
+                io::Error::last_os_error()
+            );
+            let between_args = [other as u64, set_output, guest as u64, 0, 0, 0];
+            let mut between = event(libc::SYS_ioctl, between_args);
+            assert!(!unsafe { protect_runtime_descriptors(&mut between, true) });
+            assert_eq!(
+                unsafe { raw_syscall6(libc::SYS_ioctl, between_args) },
+                0,
+                "SET_OUTPUT between two guest events"
+            );
+            unsafe { libc::munmap(guest_page, 4096) };
+            unsafe { libc::munmap(page, 4096) };
+        });
+    }
+
     /// A descriptor the runtime records sits at or above [`RUNTIME_FD_MIN`]
     /// where the limit leaves room, is reported as the runtime's, and is
     /// invisible to the guest as the coordinator connection is: a `close` of

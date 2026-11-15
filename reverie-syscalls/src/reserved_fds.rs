@@ -54,9 +54,10 @@ pub fn descriptor_arg(args: &[u64; 6], index: usize) -> u64 {
 
 /// Whether syscall `number` with `args` operates on descriptor `fd` through
 /// one of its descriptor arguments: reads and writes, fcntl, ioctl, dup, mmap
-/// of a file, splice, sendfile, epoll_ctl and the other descriptor calls listed
-/// below. It does not cover the socket calls ([`socket_call_names_descriptor`]),
-/// `close`, `close_range` or epoll readiness ([`epoll_wait_result`]).
+/// of a file, splice, sendfile, epoll_ctl, perf_event_open's group leader and
+/// cgroup, and the other descriptor calls listed below. It does not cover the
+/// socket calls ([`socket_call_names_descriptor`]), `close`, `close_range` or
+/// epoll readiness ([`epoll_wait_result`]).
 pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
     let is = |index| descriptor_arg(args, index) == fd;
     match number {
@@ -75,7 +76,6 @@ pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
         | libc::SYS_fcntl
-        | libc::SYS_ioctl
         | libc::SYS_dup
         // Operations that change, lock or describe the open file itself.
         | libc::SYS_ftruncate
@@ -115,6 +115,39 @@ pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
         | libc::SYS_quotactl_fd
         | libc::SYS_landlock_add_rule
         | libc::SYS_landlock_restrict_self => is(0),
+        // ioctl acts on its descriptor, and two perf event commands name a
+        // second one by value in argument 2: PERF_EVENT_IOC_SET_OUTPUT, the
+        // event whose buffer takes this one's output (-1 for none, which no
+        // descriptor is), and PERF_EVENT_IOC_SET_BPF, a BPF program. Linux
+        // reads the command as 32 bits and the descriptor as an int.
+        libc::SYS_ioctl => {
+            is(0)
+                || (matches!(
+                    args[1] as u32,
+                    PERF_EVENT_IOC_SET_OUTPUT | PERF_EVENT_IOC_SET_BPF
+                ) && is(2))
+        }
+        // perf_event_open(attr, pid, cpu, group_fd, flags) looks up its group
+        // leader unless group_fd is -1, and under PERF_FLAG_PID_CGROUP its pid
+        // argument is a cgroup directory's descriptor. With only the flags
+        // Linux 7.1.3 defines, a cgroup event with no pid or no cpu fails with
+        // EINVAL before either lookup (kernel/events/core.c:13914-13915), so
+        // Linux answers that call, whatever group_fd names. A flag 7.1.3 does
+        // not define fails there with EINVAL too (:13863-13864), but a later
+        // kernel may give it a meaning, so with one, group_fd or pid naming
+        // the descriptor refuses the call: EBADF where 7.1.3 says EINVAL.
+        libc::SYS_perf_event_open => {
+            let flags = args[4];
+            let cgroup = flags & PERF_FLAG_PID_CGROUP != 0;
+            let minus_one = |index: usize| args[index] as u32 == u32::MAX;
+            if flags & !PERF_FLAGS_DEFINED_AT_LINUX_7_1_3 != 0 {
+                is(1) || (!minus_one(3) && is(3))
+            } else if cgroup && (minus_one(1) || minus_one(2)) {
+                false
+            } else {
+                (!minus_one(3) && is(3)) || (cgroup && is(1))
+            }
+        }
         libc::SYS_sendfile => is(0) || is(1),
         libc::SYS_epoll_ctl => is(0) || is(2),
         // waitid(P_PIDFD, fd, ...).
@@ -162,6 +195,17 @@ pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
 const FSPICK_EMPTY_PATH: u64 = 0x8;
 const MOVE_MOUNT_F_EMPTY_PATH: u64 = 0x4;
 const MOVE_MOUNT_T_EMPTY_PATH: u64 = 0x40;
+/// `PERF_EVENT_IOC_SET_OUTPUT`, `_IO('$', 5)`.
+const PERF_EVENT_IOC_SET_OUTPUT: u32 = 0x2405;
+/// `PERF_EVENT_IOC_SET_BPF`, `_IOW('$', 8, __u32)`.
+const PERF_EVENT_IOC_SET_BPF: u32 = 0x4004_2408;
+/// `PERF_FLAG_PID_CGROUP`.
+const PERF_FLAG_PID_CGROUP: u64 = 1 << 2;
+/// The `perf_event_open` flags Linux 7.1.3 defines, its `PERF_FLAG_ALL`
+/// (kernel/events/core.c:427; include/uapi/linux/perf_event.h:1314-1317):
+/// `FD_NO_GROUP`, `FD_OUTPUT`, `PID_CGROUP` and `FD_CLOEXEC`. A later kernel
+/// that defines another flag needs this list, and the rule, reviewed.
+const PERF_FLAGS_DEFINED_AT_LINUX_7_1_3: u64 = 0xf;
 
 /// Whether `*at` flags `flags` hold `AT_EMPTY_PATH`.
 fn empty_path(flags: u64) -> bool {
@@ -500,6 +544,152 @@ mod tests {
         let mut huge = control_data(&[(libc::SOL_SOCKET, libc::SCM_RIGHTS, &[1025])]);
         huge[..8].copy_from_slice(&u64::MAX.to_ne_bytes());
         assert_eq!(scm_rights_hide_reserved(&mut huge, &[1025]), 0);
+    }
+
+    #[test]
+    fn a_perf_event_names_its_group_leader_and_cgroup() {
+        let open = libc::SYS_perf_event_open;
+        let none = u64::from(u32::MAX);
+        let cgroup = PERF_FLAG_PID_CGROUP;
+        let defined = PERF_FLAGS_DEFINED_AT_LINUX_7_1_3;
+        // perf_event_open(attr, pid 0, cpu -1, group_fd 7, flags).
+        assert!(names_descriptor(open, &[0, 0, none, 7, 0, 0], 7));
+        // Every defined flag but PID_CGROUP keeps the leader named;
+        // PERF_FLAG_FD_OUTPUT sends the new event's output to the leader's
+        // buffer. All four, in a cgroup shape Linux accepts (pid a cgroup
+        // directory's descriptor, cpu 0), name it too.
+        assert!(names_descriptor(
+            open,
+            &[0, 0, none, 7, defined & !cgroup, 0],
+            7
+        ));
+        assert!(names_descriptor(open, &[0, 5, 0, 7, defined, 0], 7));
+        // Linux reads group_fd as an int.
+        assert!(names_descriptor(open, &[0, 0, none, 7 | 1 << 32, 0, 0], 7));
+        // No group: not named.
+        assert!(!names_descriptor(open, &[0, 0, none, none, 0, 0], 7));
+        assert!(!names_descriptor(open, &[0, 0, none, u64::MAX, 0, 0], 7));
+        // Under PERF_FLAG_PID_CGROUP the pid argument is a cgroup directory.
+        assert!(names_descriptor(open, &[0, 7, 0, none, cgroup, 0], 7));
+        assert!(names_descriptor(
+            open,
+            &[0, 7 | 1 << 32, 0, none, cgroup, 0],
+            7
+        ));
+        // Without the flag it is a pid.
+        assert!(!names_descriptor(open, &[0, 7, 0, none, 0, 0], 7));
+        // The attr pointer and the cpu are never descriptors.
+        assert!(!names_descriptor(open, &[7, 0, 7, none, 0, 0], 7));
+    }
+
+    /// A cgroup event with no pid or no cpu fails with EINVAL before Linux
+    /// looks up either descriptor (kernel/events/core.c:13914-13915), so it is
+    /// left to Linux even when group_fd or the cgroup names a reserved number.
+    #[test]
+    fn a_cgroup_event_linux_refuses_first_is_left_to_linux() {
+        let open = libc::SYS_perf_event_open;
+        let none = u64::from(u32::MAX);
+        let cgroup = PERF_FLAG_PID_CGROUP;
+        // Both register spellings of int -1.
+        for minus_one in [none, u64::MAX] {
+            // No cpu, with a reserved group leader (pid 0 or a cgroup).
+            assert!(!names_descriptor(open, &[0, 0, minus_one, 7, cgroup, 0], 7));
+            assert!(!names_descriptor(open, &[0, 5, minus_one, 7, cgroup, 0], 7));
+            // No pid, with a reserved group leader.
+            assert!(!names_descriptor(open, &[0, minus_one, 0, 7, cgroup, 0], 7));
+            // No cpu, with the cgroup itself reserved, with and without a leader.
+            assert!(!names_descriptor(
+                open,
+                &[0, 7, minus_one, none, cgroup, 0],
+                7
+            ));
+            assert!(!names_descriptor(open, &[0, 7, minus_one, 7, cgroup, 0], 7));
+            // Every other defined flag too.
+            let all = PERF_FLAGS_DEFINED_AT_LINUX_7_1_3;
+            assert!(!names_descriptor(open, &[0, 0, minus_one, 7, all, 0], 7));
+        }
+        // High register bits do not change group_fd.
+        assert!(!names_descriptor(
+            open,
+            &[0, 0, none, 7 | 1 << 32, cgroup, 0],
+            7
+        ));
+    }
+
+    /// A flag Linux 7.1.3 does not define fails there with EINVAL before
+    /// either lookup, but a later kernel may define it. So with one, a
+    /// reserved number in group_fd or pid refuses the call (EBADF, a different
+    /// errno), even in a shape the defined flags leave to Linux.
+    #[test]
+    fn an_undefined_perf_flag_with_a_reserved_number_is_refused() {
+        let open = libc::SYS_perf_event_open;
+        let none = u64::from(u32::MAX);
+        let cgroup = PERF_FLAG_PID_CGROUP;
+        for flag in [1_u64 << 4, 1 << 31, 1 << 32, 1 << 63] {
+            assert_eq!(flag & PERF_FLAGS_DEFINED_AT_LINUX_7_1_3, 0);
+            // A reserved group leader, alone or with defined flags.
+            assert!(names_descriptor(open, &[0, 0, none, 7, flag, 0], 7));
+            assert!(names_descriptor(
+                open,
+                &[0, 0, none, 7 | 1 << 32, flag | 0xb, 0],
+                7
+            ));
+            // With PID_CGROUP and no cpu as well: that EINVAL is 7.1.3's.
+            assert!(names_descriptor(
+                open,
+                &[0, 0, none, 7, flag | cgroup, 0],
+                7
+            ));
+            assert!(names_descriptor(
+                open,
+                &[0, 7, none, none, flag | cgroup, 0],
+                7
+            ));
+            // The pid argument, with or without PID_CGROUP.
+            assert!(names_descriptor(open, &[0, 7, 0, none, flag, 0], 7));
+            // Nothing reserved named: not refused.
+            assert!(!names_descriptor(open, &[0, 0, none, none, flag, 0], 7));
+            assert!(!names_descriptor(open, &[0, 8, 0, 9, flag | cgroup, 0], 7));
+        }
+    }
+
+    #[test]
+    fn perf_set_output_and_set_bpf_name_their_argument() {
+        let ioctl = libc::SYS_ioctl;
+        let set_output = u64::from(PERF_EVENT_IOC_SET_OUTPUT);
+        let set_bpf = u64::from(PERF_EVENT_IOC_SET_BPF);
+        // The event itself, under any command.
+        assert!(names_descriptor(ioctl, &[7, 0x2401, 0, 0, 0, 0], 7));
+        // SET_OUTPUT and SET_BPF name their argument; Linux reads the command
+        // as 32 bits and the descriptor as an int.
+        assert!(names_descriptor(ioctl, &[3, set_output, 7, 0, 0, 0], 7));
+        assert!(names_descriptor(ioctl, &[3, set_bpf, 7, 0, 0, 0], 7));
+        assert!(names_descriptor(
+            ioctl,
+            &[3, set_output | 1 << 32, 7 | 1 << 32, 0, 0, 0],
+            7
+        ));
+        // SET_OUTPUT with -1 clears the redirect and names nothing.
+        assert!(!names_descriptor(
+            ioctl,
+            &[3, set_output, u64::MAX, 0, 0, 0],
+            7
+        ));
+        // Other perf commands' argument is a flag, a value or a pointer:
+        // ENABLE, DISABLE, RESET, PERIOD, ID and PAUSE_OUTPUT.
+        for command in [
+            0x2400u64,
+            0x2401,
+            0x2403,
+            0x4008_2404,
+            0x8008_2407,
+            0x4004_2409,
+        ] {
+            assert!(
+                !names_descriptor(ioctl, &[3, command, 7, 0, 0, 0], 7),
+                "{command:#x}"
+            );
+        }
     }
 
     #[test]
