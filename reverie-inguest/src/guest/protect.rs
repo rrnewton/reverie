@@ -29,6 +29,7 @@ use std::io;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -38,6 +39,7 @@ use crate::arch::SYS_VFORK;
 use crate::dispatch::is_fork_like;
 use crate::guest::event::SyscallEvent;
 use crate::guest::signal::signal_action_supported;
+use crate::guest::tool_region::StackBacking;
 use crate::reserved_fds;
 use crate::trap::raw_syscall6;
 
@@ -831,6 +833,43 @@ pub fn take_refused_process_creations() -> RefusedProcessCreations {
     }
 }
 
+/// How many guest io_uring calls [`protect_runtime_descriptors`] refused since
+/// the Tool last took them ([`take_refused_io_uring`]), in the process whose
+/// pid is [`REFUSED_IO_URING_PID`].
+static REFUSED_IO_URING: AtomicU64 = AtomicU64::new(0);
+
+/// The process that made the refusals [`REFUSED_IO_URING`] counts. A forked
+/// child inherits both statics; the pid tells its own refusals from its
+/// parent's, which it never reports.
+static REFUSED_IO_URING_PID: AtomicI32 = AtomicI32::new(0);
+
+/// Counts one refused guest io_uring call. Runs on the refusal path only, so
+/// the getpid it makes never touches an admitted call.
+fn record_refused_io_uring() {
+    let pid = current_pid();
+    if REFUSED_IO_URING_PID.load(Ordering::Acquire) != pid {
+        REFUSED_IO_URING.store(0, Ordering::Release);
+        REFUSED_IO_URING_PID.store(pid, Ordering::Release);
+    }
+    REFUSED_IO_URING.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Takes the number of guest `io_uring_setup`, `io_uring_enter` and
+/// `io_uring_register` calls refused with `ENOSYS` in this process since the
+/// last call: one total for the three, so that the Tool can report it (each
+/// refusal is reported once: taking clears it). Tool calls are never counted.
+/// A forked child reports only its own refusals; a new image starts at zero.
+pub fn take_refused_io_uring() -> u64 {
+    // A caller may ask often; almost always nothing was refused.
+    if REFUSED_IO_URING.load(Ordering::Acquire) == 0 {
+        return 0;
+    }
+    if REFUSED_IO_URING_PID.load(Ordering::Acquire) != current_pid() {
+        return 0;
+    }
+    REFUSED_IO_URING.swap(0, Ordering::AcqRel)
+}
+
 /// Adds the kind of the fork-like call `event` asked for to the refused set.
 fn record_refused_process_creation(event: &SyscallEvent) {
     let bit = if event.number == libc::SYS_clone {
@@ -1019,6 +1058,16 @@ unsafe fn protect_runtime_descriptors_inner(
 ) -> bool {
     if leave_descriptor_changes_to_tool && is_descriptor_change_left_to_tool(event.number) {
         return false;
+    }
+    // io_uring reaches descriptors through submission entries, fixed-file
+    // tables and registered descriptors that no argument shows, so every
+    // guest call to it fails as on a kernel without io_uring, whether or not
+    // the runtime holds a descriptor yet. io_uring state created before the
+    // runtime was installed is not reached by this.
+    if guest_syscall && reserved_fds::unchecked_descriptor_syscall(event.number) {
+        record_refused_io_uring();
+        event.result = -i64::from(libc::ENOSYS);
+        return true;
     }
     let (slots, mut count) = protected_descriptors(guest_syscall);
     let mut protected = [u64::MAX; PROTECTED_FD_CAPACITY + 1];
@@ -1367,6 +1416,368 @@ pub unsafe fn dispatch_with_scm_rights_copy(
         }
     }
     event.args = copy.guest_args;
+}
+
+/// `FICLONERANGE`, `_IOW(0x94, 13, struct file_clone_range)`.
+const FICLONERANGE: u32 = 0x4020_940d;
+/// `FIDEDUPERANGE`, `_IOWR(0x94, 54, struct file_dedupe_range)`.
+const FIDEDUPERANGE: u32 = 0xc018_9436;
+
+/// The operand pointer forwarded when the runtime cannot copy an operand: a
+/// user address both architectures refuse, so Linux answers EFAULT at its
+/// first read of that operand, after every check it makes first. x86-64's
+/// `__access_ok` takes it without untagging
+/// (arch/x86/include/asm/uaccess_64.h:56-57, 98-107) and `get_user` clamps it
+/// (arch/x86/lib/getuser.S:42-50); arm64 untags only bits 56-63 of a user
+/// address (arch/arm64/include/asm/memory.h:287-294) and refuses it in
+/// `access_ok` (arch/arm64/include/asm/uaccess.h:38-49).
+const REFUSED_USER_POINTER: u64 = 0xFFFF_FFFF_FFFF_F000;
+
+/// Bytes of a FIDEDUPERANGE request the runtime can copy: the largest page on
+/// x86-64 or arm64, so a correct page size never limits a request Linux runs.
+const DEDUPE_BUFFER_BYTES: usize = 65_536;
+/// Entries such a request holds: (65,536 − 24) / 32 = 2,047.
+const DEDUPE_MAX_ENTRIES: usize =
+    (DEDUPE_BUFFER_BYTES - reserved_fds::DEDUPE_HEADER_SIZE) / reserved_fds::DEDUPE_INFO_SIZE;
+/// The capacity used when the page size cannot be read.
+const DEDUPE_FALLBACK_CAPACITY: usize = 4096;
+
+/// The process's FIDEDUPERANGE buffer: the copy the kernel reads, the guest's
+/// own `dest_fd` values for the write-back, and who holds it.
+#[repr(C, align(64))]
+struct OperandBuffer {
+    /// The holder's thread id while a call holds the buffer, else 0.
+    holder: AtomicI32,
+    data: core::cell::UnsafeCell<[u8; DEDUPE_BUFFER_BYTES]>,
+    originals: core::cell::UnsafeCell<[i64; DEDUPE_MAX_ENTRIES]>,
+}
+
+// The holder (4 bytes), the request (65,536) and, after 4 bytes of padding,
+// the 2,047 saved `dest_fd` values (16,376): 81,920 bytes, a multiple of the
+// 64-byte alignment, so 20 pages of 4 KiB.
+const _: () = assert!(size_of::<OperandBuffer>() == 81_920);
+
+/// The buffer, or null when install could not take one. Set once per image,
+/// at install, before any guest call is dispatched; a forked child inherits
+/// its own copy.
+static OPERAND_BUFFER: AtomicPtr<OperandBuffer> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Takes the FIDEDUPERANGE buffer with the callback stack's own backing, in
+/// the same install step ([`crate::guest::continuation`]): a ToolRegion lease
+/// when a region is reserved, so the mapping guard refuses a guest's remap of
+/// it (restorer.rs `owner_overlaps`, `mapping_change_result`); otherwise
+/// guarded anonymous memory, made as the callback stack's fallback is, which
+/// the guest can remap between calls (a declared limit). Runs in ordinary
+/// initialization only, never on a callback path. A failure leaves no
+/// buffer, and every FIDEDUPERANGE then answers ENOMEM through the oversize
+/// path of [`dispatch_with_descriptor_operand_copy`].
+pub(crate) fn initialize_operand_buffer(backing: StackBacking) {
+    if !OPERAND_BUFFER.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    let bytes = size_of::<OperandBuffer>();
+    let base = match backing {
+        StackBacking::ToolRegion(region) => region.stack(bytes).ok().map(|lease| {
+            let base = lease.base();
+            // The lease is the buffer's for the life of the image.
+            core::mem::forget(lease);
+            base
+        }),
+        StackBacking::Legacy => guarded_anonymous(bytes),
+    };
+    let Some(base) = base else { return };
+    let buffer = base as *mut OperandBuffer;
+    // SAFETY: the interior is writable, page-aligned and at least `bytes`
+    // long; only the holder needs initializing, and it starts free.
+    unsafe { core::ptr::addr_of_mut!((*buffer).holder).write(AtomicI32::new(0)) };
+    OPERAND_BUFFER.store(buffer, Ordering::Release);
+}
+
+/// `bytes` of read-write anonymous memory between two inaccessible guard
+/// pages, made as the callback stack's fallback is (continuation.rs
+/// `CallbackStack::new`): raw syscalls, never libc's interposable wrappers.
+fn guarded_anonymous(bytes: usize) -> Option<usize> {
+    let page = usize::try_from(crate::arch::page_size().ok()?).ok()?;
+    let interior = bytes.checked_add(page - 1)? & !(page - 1);
+    let total = interior.checked_add(page.checked_mul(2)?)?;
+    // SAFETY: a fresh private anonymous mapping, owned by the caller.
+    let mapping = unsafe {
+        raw_syscall6(
+            libc::SYS_mmap,
+            [
+                0,
+                total as u64,
+                libc::PROT_NONE as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                u64::MAX,
+                0,
+            ],
+        )
+    };
+    if mapping < 0 {
+        return None;
+    }
+    let base = mapping as usize + page;
+    // SAFETY: the interior of the mapping just made.
+    let protected = unsafe {
+        raw_syscall6(
+            libc::SYS_mprotect,
+            [
+                base as u64,
+                interior as u64,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if protected < 0 {
+        // SAFETY: the mapping just made, which nothing else uses.
+        unsafe { raw_syscall6(libc::SYS_munmap, [mapping as u64, total as u64, 0, 0, 0, 0]) };
+        return None;
+    }
+    Some(base)
+}
+
+/// The FIDEDUPERANGE buffer, held by one call from its copy to its
+/// write-back. Dropping it, on every exit including an unwind, frees the
+/// buffer; a call that finds it held never takes it, so it cannot free
+/// another's hold.
+struct HeldOperandBuffer(&'static OperandBuffer);
+
+impl HeldOperandBuffer {
+    /// Holds the buffer for this thread, or None when there is no buffer or
+    /// another call holds it.
+    fn take() -> Option<Self> {
+        let buffer = OPERAND_BUFFER.load(Ordering::Acquire);
+        if buffer.is_null() {
+            return None;
+        }
+        // SAFETY: published once at install and never unmapped in this image.
+        let buffer = unsafe { &*buffer };
+        // SAFETY: gettid has no arguments and no effect.
+        let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+        let tid = if tid > 0 { tid as i32 } else { -1 };
+        buffer
+            .holder
+            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Self(buffer))
+    }
+
+    /// The copy and the saved `dest_fd` values. Only the holder reaches them.
+    fn parts(&mut self) -> (&mut [u8; DEDUPE_BUFFER_BYTES], &mut [i64; DEDUPE_MAX_ENTRIES]) {
+        // SAFETY: `holder` names this hold, so no other reference exists.
+        unsafe { (&mut *self.0.data.get(), &mut *self.0.originals.get()) }
+    }
+}
+
+impl Drop for HeldOperandBuffer {
+    fn drop(&mut self) {
+        self.0.holder.store(0, Ordering::Release);
+    }
+}
+
+/// The operand copies [`dispatch_with_descriptor_operand_copy`] makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescriptorOperand {
+    CloneRange,
+    Dedupe,
+    KcmpFile,
+    KcmpEpoll,
+}
+
+fn descriptor_operand(event: &SyscallEvent) -> Option<DescriptorOperand> {
+    match event.number {
+        libc::SYS_ioctl => match event.args[1] as u32 {
+            FICLONERANGE => Some(DescriptorOperand::CloneRange),
+            FIDEDUPERANGE => Some(DescriptorOperand::Dedupe),
+            _ => None,
+        },
+        libc::SYS_kcmp => match event.args[2] as u32 {
+            reserved_fds::KCMP_FILE => Some(DescriptorOperand::KcmpFile),
+            reserved_fds::KCMP_EPOLL_TFD => Some(DescriptorOperand::KcmpEpoll),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Runs `dispatch` on `event`, a genuine guest syscall not yet run. Calls that
+/// name descriptors inside memory or by index run with every reserved
+/// descriptor hidden (https://github.com/facebookexperimental/reverie/issues/56):
+///
+/// - FICLONERANGE's 32-byte operand and KCMP_EPOLL_TFD's 12-byte slot are
+///   copied into this frame ([`copy_from_guest`], with the guest's
+///   protection-key rights). A reserved `src_fd` or `efd` in the copy becomes
+///   a closed number, and the call's pointer names the copy.
+/// - FIDEDUPERANGE is copied in two reads, as Linux reads it
+///   (fs/ioctl.c:415-453): its `dest_count`, then the header and that many
+///   entries into the process's buffer. That count is pinned into the copy,
+///   and reserved `dest_fd`s among those entries become -1. After a
+///   successful call the guest's own `dest_fd`s go back into the copy, which
+///   is written to the guest ([`write_to_guest`]). A request larger than the
+///   buffer, or one that finds it held or absent, is forwarded with a header
+///   whose count no page holds, for Linux's own ENOMEM.
+/// - kcmp's KCMP_FILE and KCMP_EPOLL_TFD indices that are reserved here
+///   become a closed number, whatever task they name.
+/// - A copy that fails forwards [`REFUSED_USER_POINTER`] in place of the
+///   operand, so Linux answers EFAULT where it first reads it.
+///
+/// Linux runs every check of its own, in its own order, on what it is given.
+/// The guest's own arguments are put back after `dispatch`. The Tool sees
+/// the copy, a closed number or the refused pointer during `dispatch`. The
+/// copies live in this frame or in the held buffer, so the call must be
+/// issued before `dispatch` returns.
+///
+/// # Safety
+///
+/// As [`protect_runtime_descriptors`]: `event` is a genuine guest syscall of
+/// this thread, not yet run. `dispatch` runs it at most once, before this
+/// returns, and keeps no pointer from its arguments.
+pub unsafe fn dispatch_with_descriptor_operand_copy(
+    event: &mut SyscallEvent,
+    dispatch: impl FnOnce(&mut SyscallEvent),
+) {
+    let Some(operand) = descriptor_operand(event) else {
+        return dispatch(event);
+    };
+    let (protected, count) = protected_descriptors(true);
+    let reserved = &protected[..count];
+    if reserved.is_empty() {
+        return dispatch(event);
+    }
+    let guest_args = event.args;
+    let guest_pkru = event.guest_pkru;
+    // SAFETY: getpid has no arguments and no effect.
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    // A pid this call cannot use fails only the copies, which then forward
+    // the refused pointer; kcmp's indices need none.
+    let read = |address: u64, buffer: &mut [u8]| {
+        if pid <= 0 {
+            return Err(-i64::from(libc::EFAULT));
+        }
+        copy_from_guest(pid as u64, address, buffer, guest_pkru)
+    };
+    match operand {
+        DescriptorOperand::KcmpFile => {
+            if let Some(args) = reserved_fds::kcmp_hidden_indices(&event.args, reserved) {
+                event.args = args;
+            }
+            dispatch(event);
+        }
+        DescriptorOperand::KcmpEpoll => {
+            if let Some(args) = reserved_fds::kcmp_hidden_indices(&event.args, reserved) {
+                event.args = args;
+            }
+            let mut slot = [0u8; reserved_fds::KCMP_EPOLL_SLOT_SIZE];
+            event.args[4] = match read(guest_args[4], &mut slot) {
+                Ok(()) => {
+                    reserved_fds::kcmp_slot_hide_reserved(&mut slot, reserved);
+                    slot.as_ptr() as u64
+                }
+                Err(_) => REFUSED_USER_POINTER,
+            };
+            dispatch(event);
+        }
+        DescriptorOperand::CloneRange => {
+            let mut range = [0u8; reserved_fds::FILE_CLONE_RANGE_SIZE];
+            event.args[2] = match read(guest_args[2], &mut range) {
+                Ok(()) => {
+                    reserved_fds::clone_range_hide_reserved(&mut range, reserved);
+                    range.as_ptr() as u64
+                }
+                Err(_) => REFUSED_USER_POINTER,
+            };
+            dispatch(event);
+        }
+        DescriptorOperand::Dedupe => {
+            let capacity = crate::arch::page_size()
+                .ok()
+                .and_then(|size| usize::try_from(size).ok())
+                .map_or(DEDUPE_FALLBACK_CAPACITY, |size| {
+                    size.min(DEDUPE_BUFFER_BYTES)
+                });
+            dedupe_with_copy(
+                event,
+                reserved,
+                capacity,
+                HeldOperandBuffer::take,
+                read,
+                |address, bytes| write_to_guest(address, bytes, guest_pkru),
+                dispatch,
+            );
+        }
+    }
+    event.args = guest_args;
+}
+
+/// FIDEDUPERANGE through the runtime's copy, with its reads, its buffer and
+/// its write-back passed in: production passes [`copy_from_guest`],
+/// [`HeldOperandBuffer::take`] and [`write_to_guest`]; tests pass readers
+/// that change the guest's struct between the two reads.
+fn dedupe_with_copy(
+    event: &mut SyscallEvent,
+    reserved: &[u64],
+    capacity: usize,
+    take: impl FnOnce() -> Option<HeldOperandBuffer>,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), i64>,
+    write: impl FnOnce(u64, &[u8]) -> bool,
+    dispatch: impl FnOnce(&mut SyscallEvent),
+) {
+    let address = event.args[2];
+    // 1. The count, read once: Linux's `get_user` (fs/ioctl.c:423-426).
+    let mut count = [0u8; 2];
+    if read(
+        address.wrapping_add(reserved_fds::DEDUPE_COUNT_OFFSET as u64),
+        &mut count,
+    )
+    .is_err()
+    {
+        event.args[2] = REFUSED_USER_POINTER;
+        return dispatch(event);
+    }
+    let count = u16::from_ne_bytes(count);
+    // 2. The plan, and the buffer for a request that fits. A request that does
+    // not fit, or finds the buffer held or absent, forwards a header whose
+    // count no page holds: Linux's own ENOMEM (:428-432).
+    let mut oversize = [0u8; reserved_fds::DEDUPE_HEADER_SIZE];
+    oversize[reserved_fds::DEDUPE_COUNT_OFFSET..reserved_fds::DEDUPE_COUNT_OFFSET + 2]
+        .copy_from_slice(&reserved_fds::DEDUPE_OVERSIZE_COUNT.to_ne_bytes());
+    let held = match reserved_fds::dedupe_plan(count, capacity) {
+        reserved_fds::DedupePlan::Copy { size } => take().map(|held| (held, size)),
+        reserved_fds::DedupePlan::OversizeHeader => None,
+    };
+    let Some((mut held, size)) = held else {
+        event.args[2] = oversize.as_ptr() as u64;
+        return dispatch(event);
+    };
+    let (data, originals) = held.parts();
+    let copy = &mut data[..size];
+    // 3. The header and `count` entries, into zeroed bytes.
+    copy.fill(0);
+    if read(address, copy).is_err() {
+        event.args[2] = REFUSED_USER_POINTER;
+        return dispatch(event);
+    }
+    // 4. Pin the count and hide reserved destinations.
+    if reserved_fds::dedupe_hide_reserved(copy, count, reserved, originals).is_none() {
+        // Unreachable for a planned size; fail closed as an oversize request.
+        event.args[2] = oversize.as_ptr() as u64;
+        return dispatch(event);
+    }
+    // 5. Dispatch on the copy; on success the guest's `dest_fd`s go back and
+    // `size` bytes are written to the guest, as Linux writes back (:443-448).
+    event.args[2] = copy.as_ptr() as u64;
+    dispatch(event);
+    if event.result == 0 {
+        let restored = reserved_fds::dedupe_restore(copy, count, originals).is_some();
+        if !restored || !write(address, copy) {
+            event.result = -i64::from(libc::EFAULT);
+        }
+    }
+    // `held` drops here, freeing the buffer.
 }
 
 /// Same runtime descriptor protections plus the mapped owner's actual sealed

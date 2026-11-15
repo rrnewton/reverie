@@ -224,14 +224,17 @@ pub unsafe fn process_tool_syscall_with(event: &mut SyscallEvent, patcher: &dyn 
     if unsafe { crate::guest::protect::protect_runtime_descriptors_before_tool(event) } {
         return;
     }
-    // A guest send runs on a runtime-owned, checked copy of its message
-    // headers and control data, which this frame holds until the call returns
+    // A guest call that names descriptors inside memory or by index, and a
+    // guest send, run on runtime-owned, checked copies of what names them,
+    // which these frames and the operand buffer hold until the call returns
     // (https://github.com/facebookexperimental/reverie/issues/56).
     // SAFETY: as above; the Tool's dispatch runs the call at most once, before
-    // the wrapper returns.
+    // either wrapper returns.
     unsafe {
-        crate::guest::protect::dispatch_with_scm_rights_copy(event, |event| {
-            crate::guest::installed_tool::dispatch(event)
+        crate::guest::protect::dispatch_with_descriptor_operand_copy(event, |event| {
+            crate::guest::protect::dispatch_with_scm_rights_copy(event, |event| {
+                crate::guest::installed_tool::dispatch(event)
+            })
         })
     };
     crate::guest::protect::observe_guest_descriptor_change(event);
