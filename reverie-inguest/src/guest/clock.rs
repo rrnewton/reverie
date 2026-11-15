@@ -316,8 +316,9 @@ fn rcb_clock() -> io::Result<Option<&'static reverie::InGuestRcbCounter>> {
         // emulated through the fallback continuation, which a fork child can
         // still be running when it first gets here.
         // In a fork child this first read comes after the child's Tool was
-        // constructed (the ordering contract on host.rs
-        // `finish_fork_child`); a Tool may have re-placed its recorded
+        // constructed, provided the Tool code that runs before construction
+        // reads no clock (the ordering contract on host.rs
+        // `finish_fork_child`). A Tool may have re-placed its recorded
         // descriptors there, under this pid, so the close below leaves them.
         let _runtime_code = crate::guest::support::ToolCallbackGuard::enter();
         crate::guest::protect::close_inherited_runtime_fds()?;

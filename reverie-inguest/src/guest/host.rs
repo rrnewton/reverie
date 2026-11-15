@@ -2079,22 +2079,33 @@ where
     }
 }
 
-/// The fork child's side of a plain fork, run on the child's thread
-/// right after the raw fork returns, inside the forking callback.
+/// The fork child's side of a plain fork, run on the child's thread right
+/// after the raw fork returns, inside the runtime's dispatch of the forking
+/// syscall.
 ///
-/// Ordering contract: the child's Tool is constructed (`new_process`, so
-/// `Tool::new`) before anything in this child reads the RCB clock. No step
-/// before `new_process` reads the clock, calls a guest libc wrapper, or
-/// runs guest code; the first clock read comes later, from a guest
-/// syscall or instruction event or a Tool's `read_clock`, and it closes
-/// every descriptor the parent recorded (`clock.rs` `rcb_clock`, `protect.rs`
+/// Ordering contract: no runtime step before `new_process` (so `Tool::new`)
+/// reads the RCB clock, calls a guest libc wrapper, or runs guest code. Two
+/// pieces of Tool code do run first: the drop of the inherited `ThreadState`
+/// (the abandoned parent lease below) and, when the Tool injected the fork
+/// from its syscall handler, the drop of that handler's parked future
+/// (`drive_syscall` returns `ForkChild` and drops it before this runs). A
+/// Tool must keep both free of clock reads (`Guest::read_clock`,
+/// `clock::read_guest_rcb_clock`) and of guest libc calls. The child's
+/// first clock read then comes after `new_process`: from Tool code that
+/// runs later in this function, or else, normally, from the
+/// `leave_rcb_handler` that closes the forking syscall's own entry
+/// (`installed_tool::dispatch_saved_syscall`), before the child runs any
+/// guest code. That read closes every recorded descriptor whose recording
+/// pid is not the child's (`clock.rs` `rcb_clock`, `protect.rs`
 /// `close_inherited_runtime_fds`). A Tool that keeps its own descriptors in
-/// the runtime's record (`protect::place_runtime_fd_and`) can therefore,
-/// as the first act of `Tool::new`, reopen the inherited copies through
-/// the trusted gate (`trap::raw_syscall6`, which never reaches a patched
-/// site) and place the new copies under the child's pid. Keep any new step
-/// added before `new_process` free of clock reads and guest libc calls, or
-/// such a Tool loses those descriptors in every fork child.
+/// the runtime's record (`protect::place_runtime_fd_and` with
+/// `protect::record_runtime_fd`) can therefore, as the first act of
+/// `Tool::new`, reopen the inherited copies through the trusted gate
+/// (`trap::raw_syscall6`, which never reaches a patched site) and place the
+/// new copies under the child's pid, which that close leaves alone. Keep
+/// any new runtime step added before `new_process` free of clock reads and
+/// guest libc calls, or such a Tool loses those descriptors in every fork
+/// child.
 fn finish_fork_child<T: Tool + 'static, R: HostRuntime>(
     host: &ToolHost<T, R>,
     parent_lease: thread_lease::Lease<'_, T::ThreadState>,
