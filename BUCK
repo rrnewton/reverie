@@ -1499,6 +1499,76 @@ rust_library(
     ],
 )
 
+# reverie-liteinst with Cargo's default `liteinst` feature: site patching
+# over the vendored liteinst trampoline builder and iced-x86. :reverie-liteinst
+# above builds the same crate without it (trap-only); the in-guest preloads
+# (:reverie-liteinst-preload, Hermit's detcore-liteinst) link this variant, as
+# their Cargo builds do. One final image must hold one reverie_liteinst:
+# consumers pick exactly one of the variants.
+rust_library(
+    name = "reverie-liteinst-sitepatch",
+    srcs = glob(["reverie-liteinst/src/**/*.rs"]),
+    autocargo = {"ignore_rule": True},
+    crate = "reverie_liteinst",
+    crate_root = "reverie-liteinst/src/lib.rs",
+    features = ["liteinst"],
+    # As :reverie-liteinst: selected_backing() needs the final image's link.
+    preferred_linkage = "static",
+    target_compatible_with = [
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    unittests = False,
+    deps = [
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:liteinst",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        ":reverie",
+        ":reverie-inguest-liteinst",  # @manual name:reverie_inguest
+        ":reverie-rpc-transport",
+    ],
+)
+
+# Request :reverie-liteinst-preload[cdylib] explicitly. The default is a
+# check output; [shared]/[dylib] is not this preload's C ABI artifact.
+rust_library(
+    name = "reverie-liteinst-preload",
+    srcs = glob(
+        ["reverie-liteinst-preload/src/**/*.rs"],
+        # The non-PIE glibc-compat test guest; Cargo's [[bin]], not the leaf.
+        exclude = ["reverie-liteinst-preload/src/bin/**"],
+    ) + ["reverie-liteinst-preload/build.rs"],
+    autocargo = {"ignore_rule": True},
+    crate = "reverie_liteinst_preload",
+    crate_root = "reverie-liteinst-preload/src/lib.rs",
+    doctests = False,
+    env = {"NIX_DONT_SET_RPATH_x86_64_unknown_linux_gnu": "1"},
+    # Site patching comes from the :reverie-liteinst-sitepatch dependency,
+    # as Cargo's default `liteinst` feature forwards it there; this crate's
+    # own sources read no feature cfg.
+    features = [],
+    linker_flags = ["-Wl,-u,_Unwind_RaiseException"],
+    preferred_linkage = "any",
+    # Keep Cargo build.rs's static unwinder / no build-root RUNPATH policy
+    # in the native output (reverie-liteinst-preload/build.rs).
+    rustc_flags = ["-lstatic:-bundle=gcc_eh"],
+    target_compatible_with = [
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    unittests = False,
+    deps = [
+        "fbsource//third-party/rust:libc",
+        ":reverie",
+        ":reverie-liteinst-sitepatch",  # @manual name:reverie_liteinst
+    ],
+)
+
 # reverie-kvm/tests/fixtures laid out as under CARGO_MANIFEST_DIR.
 buck_filegroup(
     name = "kvm-signal-abi-fixtures",
