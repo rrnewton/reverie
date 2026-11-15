@@ -75,7 +75,6 @@ pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
         | libc::SYS_pwritev
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
-        | libc::SYS_fcntl
         | libc::SYS_dup
         // Operations that change, lock or describe the open file itself.
         | libc::SYS_ftruncate
@@ -115,16 +114,23 @@ pub fn names_descriptor(number: i64, args: &[u64; 6], fd: u64) -> bool {
         | libc::SYS_quotactl_fd
         | libc::SYS_landlock_add_rule
         | libc::SYS_landlock_restrict_self => is(0),
-        // ioctl acts on its descriptor, and two perf event commands name a
-        // second one by value in argument 2: PERF_EVENT_IOC_SET_OUTPUT, the
-        // event whose buffer takes this one's output (-1 for none, which no
-        // descriptor is), and PERF_EVENT_IOC_SET_BPF, a BPF program. Linux
-        // reads the command as 32 bits and the descriptor as an int.
+        // fcntl acts on its descriptor, and F_DUPFD_QUERY compares that open
+        // file with a second descriptor named by value in argument 2
+        // (fs/fcntl.c:396-412, 463-464). Linux reads the command and that
+        // descriptor as ints.
+        libc::SYS_fcntl => is(0) || (args[1] as u32 == F_DUPFD_QUERY && is(2)),
+        // ioctl acts on its descriptor, and three commands name a second one
+        // by value in argument 2: PERF_EVENT_IOC_SET_OUTPUT, the event whose
+        // buffer takes this one's output (-1 for none, which no descriptor
+        // is); PERF_EVENT_IOC_SET_BPF, a BPF program; and FICLONE, the file
+        // whose whole contents are cloned into this one (fs/ioctl.c:230-238,
+        // 540). Linux reads the command as 32 bits and the descriptor as an
+        // int.
         libc::SYS_ioctl => {
             is(0)
                 || (matches!(
                     args[1] as u32,
-                    PERF_EVENT_IOC_SET_OUTPUT | PERF_EVENT_IOC_SET_BPF
+                    PERF_EVENT_IOC_SET_OUTPUT | PERF_EVENT_IOC_SET_BPF | FICLONE
                 ) && is(2))
         }
         // perf_event_open(attr, pid, cpu, group_fd, flags) looks up its group
@@ -206,6 +212,42 @@ const PERF_FLAG_PID_CGROUP: u64 = 1 << 2;
 /// `FD_NO_GROUP`, `FD_OUTPUT`, `PID_CGROUP` and `FD_CLOEXEC`. A later kernel
 /// that defines another flag needs this list, and the rule, reviewed.
 const PERF_FLAGS_DEFINED_AT_LINUX_7_1_3: u64 = 0xf;
+/// `FICLONE`, `_IOW(0x94, 9, int)`.
+const FICLONE: u32 = 0x4004_9409;
+/// `F_DUPFD_QUERY`, `F_LINUX_SPECIFIC_BASE + 3`.
+const F_DUPFD_QUERY: u32 = 1027;
+/// `__X32_SYSCALL_BIT`: an x32 call is the x86-64 number with this bit set.
+#[cfg(target_arch = "x86_64")]
+const X32_SYSCALL_BIT: u32 = 0x4000_0000;
+/// `io_uring_setup`, `io_uring_enter` and `io_uring_register`, the same
+/// numbers on every architecture.
+const IO_URING_SYSCALLS: core::ops::RangeInclusive<u32> = 425..=427;
+/// kcmp's `KCMP_FILE`: compare two tasks' descriptors.
+pub const KCMP_FILE: u32 = 0;
+/// kcmp's `KCMP_EPOLL_TFD`: whether a file is a target of an epoll.
+pub const KCMP_EPOLL_TFD: u32 = 7;
+/// The descriptor number put in place of a hidden one: above every possible
+/// `max_fds` (fs/file.c:100-101), so it is never open.
+pub const CLOSED_DESCRIPTOR: u32 = u32::MAX;
+/// Size of `struct file_clone_range`: `src_fd` (s64), then `src_offset`,
+/// `src_length` and `dest_offset` (u64).
+pub const FILE_CLONE_RANGE_SIZE: usize = 32;
+/// Size of `struct file_dedupe_range`'s header: `src_offset`, `src_length`
+/// (u64), `dest_count`, `reserved1` (u16) and `reserved2` (u32).
+pub const DEDUPE_HEADER_SIZE: usize = 24;
+/// Offset of `dest_count` in that header.
+pub const DEDUPE_COUNT_OFFSET: usize = 16;
+/// Size of one `struct file_dedupe_range_info`: `dest_fd` (s64),
+/// `dest_offset`, `bytes_deduped` (u64), `status` (s32) and `reserved`
+/// (u32).
+pub const DEDUPE_INFO_SIZE: usize = 32;
+/// The `dest_count` forwarded when a request does not fit the runtime's
+/// buffer: 24 + 32 × 65535 = 2,097,144 bytes, more than any x86-64 or arm64
+/// page, so Linux answers ENOMEM itself (fs/ioctl.c:428-432) after reading
+/// only the count.
+pub const DEDUPE_OVERSIZE_COUNT: u16 = u16::MAX;
+/// Size of `struct kcmp_epoll_slot`: `efd`, `tfd` and `toff` (u32).
+pub const KCMP_EPOLL_SLOT_SIZE: usize = 12;
 
 /// Whether `*at` flags `flags` hold `AT_EMPTY_PATH`.
 fn empty_path(flags: u64) -> bool {
@@ -415,6 +457,169 @@ pub unsafe fn close_range_sparing(
         }
     }
     0
+}
+
+/// Whether syscall `number` is one of io_uring's three entries. Their
+/// submission entries, fixed-file tables and registered descriptors reach
+/// descriptors through lookups no syscall argument shows, so a backend that
+/// keeps descriptors from its guest refuses them outright. Linux reads the
+/// number as 32 bits (arch/x86/entry/syscall_64.c:87, :59;
+/// arch/arm64/kernel/syscall.c:62), and on x86-64 an x32 call is the same
+/// number with `__X32_SYSCALL_BIT` set (arch/x86/entry/syscall_64.c:76).
+pub fn unchecked_descriptor_syscall(number: i64) -> bool {
+    let number = number as u32;
+    #[cfg(target_arch = "x86_64")]
+    let number = number & !X32_SYSCALL_BIT;
+    IO_URING_SYSCALLS.contains(&number)
+}
+
+/// Whether the descriptor value `fd`, as the kernel reads it (32 bits), is
+/// one of `reserved`. Every operand check below goes through here, descriptor
+/// 0 included: a runtime descriptor that could not be moved keeps the number
+/// it was created at, whatever that is.
+fn is_reserved(reserved: &[u64], fd: u32) -> bool {
+    reserved.contains(&u64::from(fd))
+}
+
+fn read_i64(bytes: &[u8], at: usize) -> Option<i64> {
+    Some(i64::from_ne_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
+}
+
+fn write_i64(bytes: &mut [u8], at: usize, value: i64) -> Option<()> {
+    bytes
+        .get_mut(at..at + 8)?
+        .copy_from_slice(&value.to_ne_bytes());
+    Some(())
+}
+
+/// Hides a reserved `src_fd` in a runtime copy of FICLONERANGE's operand.
+/// Linux passes `src_fd` on as an unsigned long and looks it up as an
+/// unsigned int (fs/ioctl.c:233, 257), so a reserved low 32 bits makes it -1,
+/// which no descriptor is. Returns whether it hid one.
+pub fn clone_range_hide_reserved(
+    range: &mut [u8; FILE_CLONE_RANGE_SIZE],
+    reserved: &[u64],
+) -> bool {
+    let Some(src_fd) = read_i64(range, 0) else {
+        return false;
+    };
+    if !is_reserved(reserved, src_fd as u32) {
+        return false;
+    }
+    write_i64(range, 0, -1).is_some()
+}
+
+/// How the runtime passes a FIDEDUPERANGE request of `count` entries on to
+/// Linux, given a buffer of `capacity` bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DedupePlan {
+    /// Copy the header and `count` entries, `size` bytes, into the buffer.
+    Copy {
+        /// The header and `count` entries, in bytes.
+        size: usize,
+    },
+    /// The request does not fit: forward a header holding
+    /// [`DEDUPE_OVERSIZE_COUNT`], for Linux's own ENOMEM.
+    OversizeHeader,
+}
+
+/// The plan for a request whose `dest_count` read `count`.
+pub fn dedupe_plan(count: u16, capacity: usize) -> DedupePlan {
+    let size = DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * usize::from(count);
+    if size <= capacity {
+        DedupePlan::Copy { size }
+    } else {
+        DedupePlan::OversizeHeader
+    }
+}
+
+/// Pins `count`, the `dest_count` read once from the guest, into a runtime
+/// copy of FIDEDUPERANGE's operand, as Linux pins it in its own copy
+/// (fs/ioctl.c:441). It then hides every reserved `dest_fd` among entries
+/// `0..count`: Linux looks each up as an unsigned int (fs/remap_range.c:539),
+/// so a reserved low 32 bits makes it -1. `originals[i]` receives entry i's
+/// `dest_fd` before hiding, for [`dedupe_restore`].
+///
+/// Returns how many entries it hid, or None, changing nothing, when `copy`
+/// is shorter than the header and `count` entries or `originals` is shorter
+/// than `count`.
+pub fn dedupe_hide_reserved(
+    copy: &mut [u8],
+    count: u16,
+    reserved: &[u64],
+    originals: &mut [i64],
+) -> Option<usize> {
+    let entries = usize::from(count);
+    if copy.len() < DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * entries || originals.len() < entries {
+        return None;
+    }
+    copy[DEDUPE_COUNT_OFFSET..DEDUPE_COUNT_OFFSET + 2].copy_from_slice(&count.to_ne_bytes());
+    let mut hidden = 0;
+    for (index, original) in originals[..entries].iter_mut().enumerate() {
+        let at = DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * index;
+        let dest_fd = read_i64(copy, at)?;
+        *original = dest_fd;
+        if is_reserved(reserved, dest_fd as u32) {
+            write_i64(copy, at, -1)?;
+            hidden += 1;
+        }
+    }
+    Some(hidden)
+}
+
+/// Puts back the `dest_fd` values [`dedupe_hide_reserved`] saved, so that
+/// the guest's struct gets its own values beside Linux's per-entry results,
+/// as Linux writes back what it read (fs/ioctl.c:446). Returns None,
+/// changing nothing, under the same length conditions.
+pub fn dedupe_restore(copy: &mut [u8], count: u16, originals: &[i64]) -> Option<()> {
+    let entries = usize::from(count);
+    if copy.len() < DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * entries || originals.len() < entries {
+        return None;
+    }
+    for (index, original) in originals[..entries].iter().enumerate() {
+        write_i64(
+            copy,
+            DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * index,
+            *original,
+        )?;
+    }
+    Some(())
+}
+
+/// kcmp's arguments with each reserved descriptor index replaced by
+/// [`CLOSED_DESCRIPTOR`], whatever task the index names, or None when there
+/// is none. Linux reads `type` as an int (kernel/kcmp.c:135) and an index as
+/// an unsigned int (:62). KCMP_FILE looks up `idx1` and `idx2` (:170-174);
+/// KCMP_EPOLL_TFD looks up `idx1` only (:109), and its last argument is a
+/// pointer to the slot [`kcmp_slot_hide_reserved`] checks.
+pub fn kcmp_hidden_indices(args: &[u64; 6], reserved: &[u64]) -> Option<[u64; 6]> {
+    let indices: &[usize] = match args[2] as u32 {
+        KCMP_FILE => &[3, 4],
+        KCMP_EPOLL_TFD => &[3],
+        _ => return None,
+    };
+    let mut hidden = *args;
+    let mut any = false;
+    for &index in indices {
+        if is_reserved(reserved, args[index] as u32) {
+            hidden[index] = u64::from(CLOSED_DESCRIPTOR);
+            any = true;
+        }
+    }
+    any.then_some(hidden)
+}
+
+/// Hides a reserved `efd` in a runtime copy of KCMP_EPOLL_TFD's slot, which
+/// Linux reads (kernel/kcmp.c:106-107) and whose `efd` it looks up (:113).
+/// `tfd` and `toff` are an epoll key, not a descriptor lookup. Returns
+/// whether it hid one.
+pub fn kcmp_slot_hide_reserved(slot: &mut [u8; KCMP_EPOLL_SLOT_SIZE], reserved: &[u64]) -> bool {
+    let efd = u32::from_ne_bytes([slot[0], slot[1], slot[2], slot[3]]);
+    if !is_reserved(reserved, efd) {
+        return false;
+    }
+    slot[..4].copy_from_slice(&CLOSED_DESCRIPTOR.to_ne_bytes());
+    true
 }
 
 #[cfg(test)]
@@ -850,5 +1055,221 @@ mod tests {
             })
         };
         assert_eq!((result, calls), (-i64::from(libc::EPERM), 1));
+    }
+
+    #[test]
+    fn ficlone_names_its_source() {
+        let ioctl = libc::SYS_ioctl;
+        let ficlone = u64::from(FICLONE);
+        assert!(names_descriptor(ioctl, &[3, ficlone, 7, 0, 0, 0], 7));
+        assert!(names_descriptor(
+            ioctl,
+            &[3, ficlone | 1 << 32, 7 | 1 << 32, 0, 0, 0],
+            7
+        ));
+        assert!(!names_descriptor(ioctl, &[3, ficlone, 8, 0, 0, 0], 7));
+        // FICLONERANGE and FIDEDUPERANGE take a pointer in argument 2.
+        for command in [0x4020_940du64, 0xc018_9436] {
+            assert!(
+                !names_descriptor(ioctl, &[3, command, 7, 0, 0, 0], 7),
+                "{command:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn dupfd_query_names_its_second_descriptor() {
+        let fcntl = libc::SYS_fcntl;
+        let query = u64::from(F_DUPFD_QUERY);
+        assert!(names_descriptor(fcntl, &[3, query, 7, 0, 0, 0], 7));
+        assert!(names_descriptor(
+            fcntl,
+            &[3, query | 1 << 32, 7 | 1 << 32, 0, 0, 0],
+            7
+        ));
+        assert!(!names_descriptor(fcntl, &[3, query, 8, 0, 0, 0], 7));
+        // The fcntl's own descriptor, under any command.
+        assert!(names_descriptor(
+            fcntl,
+            &[7, libc::F_GETFD as u64, 0, 0, 0, 0],
+            7
+        ));
+        // F_DUPFD's argument is a minimum, not a descriptor.
+        assert!(!names_descriptor(
+            fcntl,
+            &[3, libc::F_DUPFD as u64, 7, 0, 0, 0],
+            7
+        ));
+    }
+
+    #[test]
+    fn io_uring_numbers_are_unchecked_descriptor_syscalls() {
+        for number in 425..=427 {
+            assert!(unchecked_descriptor_syscall(number), "{number}");
+            // Linux reads the number as 32 bits.
+            assert!(unchecked_descriptor_syscall(number | 1 << 32), "{number}");
+        }
+        #[cfg(target_arch = "x86_64")]
+        for number in 0x4000_01a9..=0x4000_01ab {
+            assert!(unchecked_descriptor_syscall(number), "{number:#x}");
+        }
+        for number in [424, 428, -1, i64::MAX, i64::MIN, 0] {
+            assert!(!unchecked_descriptor_syscall(number), "{number}");
+        }
+    }
+
+    #[test]
+    fn kcmp_hides_reserved_indices_whatever_task() {
+        let reserved = [7u64, 9];
+        let closed = u64::from(CLOSED_DESCRIPTOR);
+        let file = u64::from(KCMP_FILE);
+        let epoll = u64::from(KCMP_EPOLL_TFD);
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, file, 7, 9, 0], &reserved),
+            Some([1, 2, file, closed, closed, 0])
+        );
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, file, 3, 9 | 1 << 32, 0], &reserved),
+            Some([1, 2, file, 3, closed, 0])
+        );
+        assert_eq!(kcmp_hidden_indices(&[1, 2, file, 3, 4, 0], &reserved), None);
+        // Linux reads `type` as an int.
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, file | 1 << 32, 7, 4, 0], &reserved),
+            Some([1, 2, file | 1 << 32, closed, 4, 0])
+        );
+        // Under KCMP_EPOLL_TFD the last argument is a pointer, never an index.
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, epoll, 7, 9, 0], &reserved),
+            Some([1, 2, epoll, closed, 9, 0])
+        );
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, epoll | 1 << 32, 3, 7, 0], &reserved),
+            None
+        );
+        // The other types compare tasks' resources, not descriptors.
+        for kind in 1..=6u64 {
+            assert_eq!(
+                kcmp_hidden_indices(&[1, 2, kind, 7, 9, 0], &reserved),
+                None,
+                "{kind}"
+            );
+        }
+    }
+
+    #[test]
+    fn dedupe_plan_keeps_requests_within_the_buffer() {
+        assert_eq!(dedupe_plan(0, 4096), DedupePlan::Copy { size: 24 });
+        assert_eq!(dedupe_plan(127, 4096), DedupePlan::Copy { size: 4088 });
+        assert_eq!(dedupe_plan(128, 4096), DedupePlan::OversizeHeader);
+        assert_eq!(dedupe_plan(2047, 65536), DedupePlan::Copy { size: 65528 });
+        assert_eq!(dedupe_plan(2048, 65536), DedupePlan::OversizeHeader);
+        assert_eq!(dedupe_plan(u16::MAX, 65536), DedupePlan::OversizeHeader);
+    }
+
+    fn dedupe_copy(header_count: u16, dest_fds: &[i64]) -> Vec<u8> {
+        let mut copy = vec![0u8; DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * dest_fds.len()];
+        copy[DEDUPE_COUNT_OFFSET..DEDUPE_COUNT_OFFSET + 2]
+            .copy_from_slice(&header_count.to_ne_bytes());
+        for (index, fd) in dest_fds.iter().enumerate() {
+            let at = DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * index;
+            copy[at..at + 8].copy_from_slice(&fd.to_ne_bytes());
+        }
+        copy
+    }
+
+    fn dest_fd(copy: &[u8], index: usize) -> i64 {
+        read_i64(copy, DEDUPE_HEADER_SIZE + DEDUPE_INFO_SIZE * index).unwrap()
+    }
+
+    #[test]
+    fn dedupe_pins_the_count_and_hides_only_that_many_entries() {
+        let reserved = [7u64];
+        // The count read once is 1; the full copy claims 100 and names the
+        // reserved descriptor in entry 1, which the pinned count excludes.
+        let mut copy = dedupe_copy(100, &[3, 7]);
+        let mut originals = [0i64; 2];
+        assert_eq!(
+            dedupe_hide_reserved(&mut copy, 1, &reserved, &mut originals),
+            Some(0)
+        );
+        assert_eq!(u16::from_ne_bytes([copy[16], copy[17]]), 1);
+        assert_eq!(dest_fd(&copy, 1), 7, "entry 1 is beyond the pinned count");
+        // Within the count, a reserved low 32 bits is hidden and restored.
+        let mut copy = dedupe_copy(2, &[7 | 1 << 32, 3]);
+        assert_eq!(
+            dedupe_hide_reserved(&mut copy, 2, &reserved, &mut originals),
+            Some(1)
+        );
+        assert_eq!((dest_fd(&copy, 0), dest_fd(&copy, 1)), (-1, 3));
+        assert_eq!(dedupe_restore(&mut copy, 2, &originals), Some(()));
+        assert_eq!((dest_fd(&copy, 0), dest_fd(&copy, 1)), (7 | 1 << 32, 3));
+        // A copy or snapshot shorter than the count changes nothing.
+        let mut short = dedupe_copy(2, &[7]);
+        let before = short.clone();
+        assert_eq!(
+            dedupe_hide_reserved(&mut short, 2, &reserved, &mut originals),
+            None
+        );
+        assert_eq!(short, before);
+        assert_eq!(
+            dedupe_hide_reserved(&mut copy, 2, &reserved, &mut originals[..1]),
+            None
+        );
+    }
+
+    #[test]
+    fn clone_range_and_epoll_slot_hide_a_reserved_descriptor() {
+        let reserved = [7u64];
+        let mut range = [0u8; FILE_CLONE_RANGE_SIZE];
+        range[..8].copy_from_slice(&(7i64 | 1 << 32).to_ne_bytes());
+        range[8..16].copy_from_slice(&4096u64.to_ne_bytes());
+        assert!(clone_range_hide_reserved(&mut range, &reserved));
+        assert_eq!(read_i64(&range, 0), Some(-1));
+        assert_eq!(read_i64(&range, 8), Some(4096));
+        range[..8].copy_from_slice(&3i64.to_ne_bytes());
+        assert!(!clone_range_hide_reserved(&mut range, &reserved));
+        assert_eq!(read_i64(&range, 0), Some(3));
+
+        let mut slot = [0u8; KCMP_EPOLL_SLOT_SIZE];
+        slot[..4].copy_from_slice(&7u32.to_ne_bytes());
+        slot[4..8].copy_from_slice(&7u32.to_ne_bytes());
+        assert!(kcmp_slot_hide_reserved(&mut slot, &reserved));
+        assert_eq!(slot[..4], CLOSED_DESCRIPTOR.to_ne_bytes());
+        assert_eq!(
+            slot[4..8],
+            7u32.to_ne_bytes(),
+            "tfd is an epoll key, not a lookup"
+        );
+    }
+
+    #[test]
+    fn a_reserved_descriptor_zero_is_hidden_like_any_other() {
+        // A runtime descriptor that could not be moved keeps the number it
+        // was created at, 0 included; zero-filled fields are checked too.
+        let reserved = [0u64];
+        let mut range = [0u8; FILE_CLONE_RANGE_SIZE];
+        assert!(clone_range_hide_reserved(&mut range, &reserved));
+        assert_eq!(read_i64(&range, 0), Some(-1));
+        let mut copy = dedupe_copy(3, &[0, 0, 0]);
+        let mut originals = [9i64; 3];
+        assert_eq!(
+            dedupe_hide_reserved(&mut copy, 3, &reserved, &mut originals),
+            Some(3)
+        );
+        assert_eq!(
+            [dest_fd(&copy, 0), dest_fd(&copy, 1), dest_fd(&copy, 2)],
+            [-1, -1, -1]
+        );
+        assert_eq!(originals, [0, 0, 0]);
+        let closed = u64::from(CLOSED_DESCRIPTOR);
+        let file = u64::from(KCMP_FILE);
+        assert_eq!(
+            kcmp_hidden_indices(&[1, 2, file, 0, 0, 0], &reserved),
+            Some([1, 2, file, closed, closed, 0])
+        );
+        let mut slot = [0u8; KCMP_EPOLL_SLOT_SIZE];
+        assert!(kcmp_slot_hide_reserved(&mut slot, &reserved));
+        assert_eq!(slot[..4], CLOSED_DESCRIPTOR.to_ne_bytes());
     }
 }

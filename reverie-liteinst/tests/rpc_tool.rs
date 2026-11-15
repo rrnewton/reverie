@@ -2479,3 +2479,871 @@ fn public_installers_admit_the_typed_role_before_new_and_start() {
         }
     }
 }
+
+/// The runtime's own descriptors where a guest call names them inside
+/// memory, by index, or through io_uring
+/// (https://github.com/facebookexperimental/reverie/issues/56), on LiteInst's
+/// patched hook and on the trap fallback. Each cell is a guest call whose
+/// observed value is compared with its required one. The cells are in two
+/// groups: protected cells, whose required value is the runtime's protection
+/// (or a native control a protected cell depends on), and EXCLUDED-DECLARED
+/// cells, which pin io_uring state from before activation that the runtime
+/// declares it does not cover. The run summary counts only the protected
+/// cells and shows the others apart; a cell list naming a cell in both groups
+/// is refused before anything runs.
+///
+/// A cell that cannot run on this host is REFUSED, and one whose own
+/// precondition fails gives NO RESULT. Either fails the test with a message
+/// starting `REFUSED:` or `NO RESULT:`; neither is ever a pass.
+mod descriptor_operands {
+    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
+    use std::ffi::CString;
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::process::Output;
+    use std::process::Stdio;
+    use std::thread;
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use super::KillOnDropChild;
+    use super::output_with_timeout;
+
+    /// The guest's runs, each a mode of the rpc_tool guest.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    enum Mode {
+        /// `descriptor-operands <socket> <route>`, once per route.
+        Operands,
+        /// `descriptor-operands-reflink <socket> <route> <reflink> <second>`,
+        /// once per route, in fresh directories on a btrfs or XFS file system
+        /// and on a second file system.
+        Reflink,
+        /// `descriptor-operands-native`: the native controls, no runtime.
+        Native,
+        /// `preactivation-ring <socket>`.
+        PreactivationRing,
+        /// `exec-ring-launcher <socket>`.
+        ExecRing,
+    }
+
+    /// One cell: its id, its name in the group lists, the value it requires,
+    /// the run that reports it, and the routes it is reported on.
+    struct Cell {
+        id: &'static str,
+        name: &'static str,
+        required: &'static str,
+        mode: Mode,
+        routes: &'static [&'static str],
+    }
+
+    const ROUTES: &[&str] = &["hook", "trap"];
+    const NATIVE: &[&str] = &["native"];
+    const RING: &[&str] = &["ring"];
+    const EXEC: &[&str] = &["exec"];
+
+    static CELLS: [Cell; 17] = [
+        Cell {
+            id: "E1",
+            name: "ficlone reserved",
+            required: "errno=9",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E2",
+            name: "ficlonerange reserved",
+            required: "errno=9",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E3",
+            name: "fideduperange reserved",
+            required: "status=-9",
+            mode: Mode::Reflink,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E4",
+            name: "dupfd_query reserved",
+            required: "errno=9",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E5",
+            name: "kcmp_file reserved",
+            required: "errno=9",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E6",
+            name: "kcmp_file guest-guest",
+            required: "ret=0",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E7",
+            name: "kcmp_epoll reserved",
+            required: "errno=9",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E8",
+            name: "io_uring_setup",
+            required: "errno=38",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E9",
+            name: "io_uring_enter(C)",
+            required: "errno=38",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E10",
+            name: "io_uring_register(C, 0)",
+            required: "errno=38",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E11",
+            name: "ficlonerange filtered-copy",
+            required: "errno=14",
+            mode: Mode::Operands,
+            routes: ROUTES,
+        },
+        // Unmeasured: if the first measured value differs, it goes back for
+        // review and is never re-fitted here.
+        Cell {
+            id: "E12",
+            name: "fideduperange staged-fabricated",
+            required: "status=-18",
+            mode: Mode::Reflink,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E13",
+            name: "native control io_uring_setup",
+            required: "ok",
+            mode: Mode::Native,
+            routes: NATIVE,
+        },
+        Cell {
+            id: "E14",
+            name: "native control kcmp",
+            required: "works",
+            mode: Mode::Native,
+            routes: NATIVE,
+        },
+        Cell {
+            id: "E15",
+            name: "preactivation-ring setup-after-install",
+            required: "errno=38",
+            mode: Mode::PreactivationRing,
+            routes: ROUTES,
+        },
+        Cell {
+            id: "E16",
+            name: "preactivation-ring statx-reserved",
+            required: "res=0 type=S_IFSOCK ino=match",
+            mode: Mode::PreactivationRing,
+            routes: RING,
+        },
+        Cell {
+            id: "E17",
+            name: "exec-surviving-ring fd-open poller-threads=0",
+            required: "fd=open poller-threads=0",
+            mode: Mode::ExecRing,
+            routes: EXEC,
+        },
+    ];
+
+    /// E12's request as the guest's memory holds it afterwards: the
+    /// zero-filled copy's header with the pinned count of 1, and its one
+    /// entry naming fd 0, with W's EXDEV. G2, which the guest's own request
+    /// named, is untouched, and no byte of FC0's request appears.
+    const STAGED_DETAIL: &str = "ret=0 header=0,0,1,0,0 entry=0,0,0,-18,0 g2=unchanged";
+
+    /// Every protected cell.
+    const PROTECTED: [&str; 14] = [
+        "ficlone reserved",
+        "ficlonerange reserved",
+        "fideduperange reserved",
+        "dupfd_query reserved",
+        "kcmp_file reserved",
+        "kcmp_file guest-guest",
+        "kcmp_epoll reserved",
+        "io_uring_setup",
+        "io_uring_enter(C)",
+        "io_uring_register(C, 0)",
+        "ficlonerange filtered-copy",
+        "fideduperange staged-fabricated",
+        "native control io_uring_setup",
+        "native control kcmp",
+    ];
+
+    /// The protected cells every supported host runs.
+    const ORDINARY_PROTECTED: [&str; 12] = [
+        "ficlone reserved",
+        "ficlonerange reserved",
+        "dupfd_query reserved",
+        "kcmp_file reserved",
+        "kcmp_file guest-guest",
+        "kcmp_epoll reserved",
+        "io_uring_setup",
+        "io_uring_enter(C)",
+        "io_uring_register(C, 0)",
+        "ficlonerange filtered-copy",
+        "native control io_uring_setup",
+        "native control kcmp",
+    ];
+
+    /// The protected cells that need a file system that dedupes.
+    const DEDUPE_PROTECTED: [&str; 2] =
+        ["fideduperange reserved", "fideduperange staged-fabricated"];
+
+    /// The cells that pin a declared exclusion: never counted as protected.
+    const EXCLUDED_DECLARED: [&str; 3] = [
+        "preactivation-ring setup-after-install",
+        "preactivation-ring statx-reserved",
+        "exec-surviving-ring fd-open poller-threads=0",
+    ];
+
+    const EXCLUDED_HEADING: &str = "EXCLUDED-DECLARED";
+    const GUEST_LIMIT: Duration = Duration::from_secs(30);
+    const REFLINK_DIR_ENV: &str = "REVERIE_TEST_REFLINK_DIR";
+    const SECOND_FS_DIR_ENV: &str = "REVERIE_TEST_SECOND_FS_DIR";
+    const BTRFS_SUPER_MAGIC: u64 = 0x9123_683E;
+    const XFS_SUPER_MAGIC: u64 = 0x5846_5342;
+
+    /// Refuses a cell list naming an unknown cell, naming a cell twice in a
+    /// group, or naming a cell in both the protected group and
+    /// EXCLUDED-DECLARED, with a message naming the cell.
+    fn check_cell_groups(protected: &[&str], excluded: &[&str]) -> Result<(), String> {
+        let groups = [("protected", protected), (EXCLUDED_HEADING, excluded)];
+        for (group, names) in groups {
+            for (index, name) in names.iter().enumerate() {
+                if !CELLS.iter().any(|cell| cell.name == *name) {
+                    return Err(format!("refused: no cell is named `{name}`"));
+                }
+                if names[..index].contains(name) {
+                    return Err(format!("refused: `{name}` is named twice in {group}"));
+                }
+            }
+        }
+        if let Some(name) = protected.iter().find(|name| excluded.contains(name)) {
+            return Err(format!(
+                "refused: `{name}` is named in both the protected group and {EXCLUDED_HEADING}"
+            ));
+        }
+        Ok(())
+    }
+
+    fn cell_named(name: &str) -> &'static Cell {
+        let cell = CELLS.iter().find(|cell| cell.name == name);
+        cell.expect("a cell name the group check accepted")
+    }
+
+    /// The native control a cell's answer depends on, and the value it must
+    /// give: kcmp (E14) for the kcmp cells, io_uring_setup (E13) for the
+    /// io_uring cells. Without it the cell's errno would not be the runtime's.
+    fn precondition(id: &str) -> Option<(&'static str, &'static str)> {
+        match id {
+            "E5" | "E6" | "E7" => Some(("E14", "works")),
+            "E8" | "E9" | "E10" => Some(("E13", "ok")),
+            _ => None,
+        }
+    }
+
+    /// (cell id, route).
+    type Key = (String, String);
+    /// (line kind, observed text).
+    type Line = (String, String);
+
+    fn key(id: &str, route: &str) -> Key {
+        (id.to_string(), route.to_string())
+    }
+
+    /// What the guests printed.
+    #[derive(Default)]
+    struct Observations {
+        /// Each cell's line on each route; of several, the most severe.
+        lines: BTreeMap<Key, Line>,
+        details: BTreeMap<Key, String>,
+        setups: Vec<String>,
+        /// A run's failure that no single cell carries.
+        run_failures: Vec<String>,
+        /// Runs this host cannot make, and why.
+        refused_modes: BTreeMap<Mode, String>,
+    }
+
+    impl Observations {
+        fn fail(&mut self, failure: String) {
+            self.run_failures.push(failure);
+        }
+
+        fn record(&mut self, id: &str, route: &str, kind: &str, text: String) {
+            fn severity(kind: &str) -> u8 {
+                match kind {
+                    "fail" => 3,
+                    "no-result" => 2,
+                    "refused" => 1,
+                    _ => 0,
+                }
+            }
+            let key = key(id, route);
+            let previous = self.lines.get(&key);
+            if previous.is_none_or(|(old, _)| severity(kind) >= severity(old)) {
+                self.lines.insert(key, (kind.to_string(), text));
+            }
+        }
+
+        /// Reads one run's output: `operands <kind> <id> <route> <text>`
+        /// lines, its exit status and its standard error.
+        fn collect(&mut self, run: &str, output: &Output) {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let mut fields = line.splitn(5, ' ');
+                let head = (fields.next(), fields.next(), fields.next(), fields.next());
+                let (Some("operands"), Some(kind), Some(id), Some(route)) = head else {
+                    self.fail(format!("{run}: unexpected line {line:?}"));
+                    continue;
+                };
+                let text = fields.next().unwrap_or_default().to_string();
+                match (kind, id) {
+                    ("setup", _) => self.setups.push(format!("{run}: {id} {route} {text}")),
+                    ("detail", _) => {
+                        self.details.insert(key(id, route), text);
+                    }
+                    (_, "*") => self.fail(format!("{run} {route} {kind}: {text}")),
+                    ("cell" | "fail" | "no-result" | "refused", _) => {
+                        self.record(id, route, kind, text);
+                    }
+                    _ => self.fail(format!("{run}: unexpected line {line:?}")),
+                }
+            }
+            if !output.status.success() {
+                let status = output.status;
+                self.fail(format!("{run}: the guest ended with {status}"));
+            }
+            if !output.stderr.is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                self.fail(format!("{run}: the guest wrote to stderr: {stderr}"));
+            }
+        }
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Verdict {
+        Pass,
+        Fail(String),
+        NoResult(String),
+        Refused(String),
+    }
+
+    /// One cell's verdict on one route.
+    struct Outcome {
+        cell: &'static Cell,
+        route: &'static str,
+        excluded: bool,
+        observed: Option<String>,
+        verdict: Verdict,
+    }
+
+    /// The run summary: the protected cells' count and lines, then the
+    /// EXCLUDED-DECLARED cells' lines under their own heading.
+    struct Summary {
+        protected_passed: usize,
+        protected_total: usize,
+        text: String,
+    }
+
+    fn summary_line(outcome: &Outcome) -> String {
+        let label = match (&outcome.verdict, outcome.excluded) {
+            (Verdict::Pass, false) => "PASS",
+            (Verdict::Pass, true) => "AS DECLARED",
+            (Verdict::Fail(_), _) => "FAIL",
+            (Verdict::NoResult(_), _) => "NO RESULT",
+            (Verdict::Refused(_), _) => "REFUSED",
+        };
+        let detail = match &outcome.verdict {
+            Verdict::Pass => outcome.observed.clone().unwrap_or_default(),
+            Verdict::Fail(reason) | Verdict::NoResult(reason) | Verdict::Refused(reason) => {
+                reason.clone()
+            }
+        };
+        let Cell { id, name, .. } = outcome.cell;
+        let route = outcome.route;
+        format!("  {label:<11} {id} {name} [{route}]: {detail}\n")
+    }
+
+    /// The run summary of `outcomes`. Only the protected cells are counted;
+    /// EXCLUDED-DECLARED cells are listed after their heading, never among the
+    /// protected cells and never in the count.
+    fn run_summary(outcomes: &[Outcome]) -> Summary {
+        let (excluded, protected): (Vec<&Outcome>, Vec<&Outcome>) =
+            outcomes.iter().partition(|outcome| outcome.excluded);
+        let passed = protected
+            .iter()
+            .filter(|outcome| outcome.verdict == Verdict::Pass)
+            .count();
+        let total = protected.len();
+        let mut text = format!("protected cells: {passed} of {total} cell lines passed\n");
+        for outcome in &protected {
+            text.push_str(&summary_line(outcome));
+        }
+        text.push_str(EXCLUDED_HEADING);
+        text.push_str(" (shown apart, never counted as protected):\n");
+        if excluded.is_empty() {
+            text.push_str("  none selected\n");
+        }
+        for outcome in &excluded {
+            text.push_str(&summary_line(outcome));
+        }
+        Summary {
+            protected_passed: passed,
+            protected_total: total,
+            text,
+        }
+    }
+
+    /// Checks that `summary` counts exactly the protected outcomes and that
+    /// no EXCLUDED-DECLARED cell's line appears before that group's heading.
+    fn check_summary(summary: &Summary, outcomes: &[Outcome]) -> Result<(), String> {
+        let protected = outcomes.iter().filter(|outcome| !outcome.excluded).count();
+        if summary.protected_total != protected {
+            let counted = summary.protected_total;
+            return Err(format!("{counted} protected lines, not {protected}"));
+        }
+        let Some((before, _)) = summary.text.split_once(EXCLUDED_HEADING) else {
+            return Err(format!("the summary has no {EXCLUDED_HEADING} heading"));
+        };
+        for name in EXCLUDED_DECLARED {
+            let cell = cell_named(name);
+            let line = format!("{} {}", cell.id, cell.name);
+            if before.contains(&line) {
+                return Err(format!("`{line}` appears among the protected cells"));
+            }
+        }
+        Ok(())
+    }
+
+    /// One cell's verdict on one route from what the guests printed.
+    fn judge(
+        cell: &'static Cell,
+        route: &'static str,
+        excluded: bool,
+        observations: &Observations,
+    ) -> Outcome {
+        let line = observations.lines.get(&key(cell.id, route));
+        let observed = line
+            .filter(|(kind, _)| kind == "cell")
+            .map(|(_, text)| text.clone());
+        let verdict = if let Some(reason) = observations.refused_modes.get(&cell.mode) {
+            Verdict::Refused(reason.clone())
+        } else if let Some(reason) = precondition_refusal(cell.id, observations) {
+            Verdict::Refused(reason)
+        } else {
+            match line.map(|(kind, text)| (kind.as_str(), text)) {
+                None => Verdict::Fail("the guest printed no line for this cell".to_string()),
+                Some(("fail", reason)) => Verdict::Fail(reason.clone()),
+                Some(("no-result", reason)) => Verdict::NoResult(reason.clone()),
+                Some(("refused", reason)) => Verdict::Refused(reason.clone()),
+                Some((_, text)) => compare(cell, route, text, observations),
+            }
+        };
+        Outcome {
+            cell,
+            route,
+            excluded,
+            observed,
+            verdict,
+        }
+    }
+
+    fn compare(cell: &Cell, route: &str, text: &str, observations: &Observations) -> Verdict {
+        let required = cell.required;
+        if text != required {
+            if cell.mode == Mode::Native {
+                // A native control is a host precondition, not the runtime's
+                // answer.
+                return Verdict::Refused(format!(
+                    "host precondition not met: the native control gave {text}, not {required}"
+                ));
+            }
+            return Verdict::Fail(format!("observed {text}, required {required}"));
+        }
+        if cell.id == "E12" {
+            let detail = observations.details.get(&key(cell.id, route));
+            if detail.map(String::as_str) != Some(STAGED_DETAIL) {
+                return Verdict::Fail(format!(
+                    "written back {detail:?}, required {STAGED_DETAIL:?}"
+                ));
+            }
+        }
+        Verdict::Pass
+    }
+
+    /// Why a cell is refused when the native control it depends on did not
+    /// give its value; None when it did.
+    fn precondition_refusal(id: &str, observations: &Observations) -> Option<String> {
+        let (control, required) = precondition(id)?;
+        match observations.lines.get(&key(control, "native")) {
+            Some((kind, text)) if kind == "cell" && text == required => None,
+            other => Some(format!(
+                "the native control {control} gave {other:?}, not `{required}`"
+            )),
+        }
+    }
+
+    /// Runs `run` with a coordinator listening at a socket in a fresh
+    /// directory, which the guests also use for their own files.
+    fn with_coordinator(run: impl FnOnce(&Path)) {
+        let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("coordinator.sock");
+        let mut command = Command::new(binary);
+        command
+            .arg("coordinator")
+            .arg(&socket)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut coordinator = KillOnDropChild::new(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(socket.exists(), "coordinator socket was not created");
+        run(&socket);
+        let _ = coordinator.kill_and_wait();
+    }
+
+    /// One guest run, under the runtime's default configuration: site
+    /// patching on, forks allowed, guest SIGALRM handlers not admitted (so
+    /// guest seccomp filters are), and no statistics coordinator, whose
+    /// connection would be a second reserved socket.
+    fn guest(mode: &str, socket: &Path, arguments: &[&OsStr]) -> Output {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest"));
+        command
+            .arg(mode)
+            .arg(socket)
+            .args(arguments)
+            .env_remove(reverie_liteinst::SITE_PATCHING_ENV)
+            .env_remove(reverie_liteinst::PROCESS_FORK_ENV)
+            .env_remove(reverie_liteinst::SIGALRM_HANDLERS_ENV)
+            .env_remove(reverie_liteinst::STATS_COORDINATOR_ENV);
+        output_with_timeout(command, GUEST_LIMIT)
+    }
+
+    fn c_path(path: &Path) -> Result<CString, String> {
+        let bytes = path.as_os_str().as_bytes();
+        CString::new(bytes).map_err(|error| format!("{}: {error}", path.display()))
+    }
+
+    /// The directory an environment variable names, which must exist and be
+    /// writable.
+    fn directory_from(name: &str) -> Result<PathBuf, String> {
+        let value = std::env::var_os(name);
+        let value = value.ok_or_else(|| format!("{name} is not set"))?;
+        let path = std::fs::canonicalize(&value);
+        let path = path.map_err(|error| format!("{name}: {error}"))?;
+        let shown = path.display();
+        if !path.is_dir() {
+            return Err(format!("{name} ({shown}) is not a directory"));
+        }
+        let c_path = c_path(&path)?;
+        if unsafe { libc::access(c_path.as_ptr(), libc::W_OK) } != 0 {
+            return Err(format!("{name} ({shown}) is not writable"));
+        }
+        Ok(path)
+    }
+
+    fn file_system_type(path: &Path) -> Result<u64, String> {
+        let c_path = c_path(path)?;
+        let mut stat: libc::statfs = unsafe { core::mem::zeroed() };
+        if unsafe { libc::statfs(c_path.as_ptr(), &mut stat) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(format!("statfs {}: {error}", path.display()));
+        }
+        Ok(stat.f_type as u64 & 0xFFFF_FFFF)
+    }
+
+    fn file_system_id(path: &Path) -> Result<u64, String> {
+        let c_path = c_path(path)?;
+        let mut stat: libc::statvfs = unsafe { core::mem::zeroed() };
+        if unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(format!("statvfs {}: {error}", path.display()));
+        }
+        Ok(stat.f_fsid)
+    }
+
+    fn device(path: &Path) -> Result<u64, String> {
+        let shown = path.display();
+        let metadata = std::fs::metadata(path);
+        let metadata = metadata.map_err(|error| format!("{shown}: {error}"))?;
+        Ok(metadata.dev())
+    }
+
+    /// The dedupe cells' directories: a btrfs or XFS directory, never under
+    /// /tmp, from REVERIE_TEST_REFLINK_DIR, and a writable directory on
+    /// another file system (another device and another file system id) from
+    /// REVERIE_TEST_SECOND_FS_DIR. Err says why this host cannot run them.
+    fn reflink_directories() -> Result<(PathBuf, PathBuf), String> {
+        let reflink = directory_from(REFLINK_DIR_ENV)?;
+        let shown = reflink.display();
+        if reflink.starts_with("/tmp") {
+            return Err(format!("{REFLINK_DIR_ENV} ({shown}) is under /tmp"));
+        }
+        let kind = file_system_type(&reflink)?;
+        if kind != BTRFS_SUPER_MAGIC && kind != XFS_SUPER_MAGIC {
+            return Err(format!(
+                "{REFLINK_DIR_ENV} ({shown}) is on file system type {kind:#x}, not btrfs or XFS"
+            ));
+        }
+        let second = directory_from(SECOND_FS_DIR_ENV)?;
+        let same = format!("{SECOND_FS_DIR_ENV} and {REFLINK_DIR_ENV} share");
+        if device(&reflink)? == device(&second)? {
+            return Err(format!("{same} a device"));
+        }
+        if file_system_id(&reflink)? == file_system_id(&second)? {
+            return Err(format!("{same} a file system id"));
+        }
+        Ok((reflink, second))
+    }
+
+    /// A fresh directory in `parent` for one run's files.
+    fn scratch_in(parent: &Path) -> tempfile::TempDir {
+        let made = tempfile::Builder::new()
+            .prefix("reverie-operands-")
+            .tempdir_in(parent);
+        let shown = parent.display();
+        match made {
+            Ok(directory) => directory,
+            Err(error) => panic!("REFUSED: no directory can be made in {shown}: {error}"),
+        }
+    }
+
+    /// Makes the runs of `mode`, recording what they printed.
+    fn run_mode(mode: Mode, socket: &Path, observations: &mut Observations) {
+        match mode {
+            Mode::Operands => {
+                for route in ROUTES {
+                    let output = guest("descriptor-operands", socket, &[OsStr::new(route)]);
+                    observations.collect(&format!("descriptor-operands {route}"), &output);
+                }
+            }
+            Mode::Reflink => {
+                let (reflink, second) = match reflink_directories() {
+                    Ok(directories) => directories,
+                    Err(reason) => {
+                        observations.refused_modes.insert(mode, reason);
+                        return;
+                    }
+                };
+                for route in ROUTES {
+                    let (reflink, second) = (scratch_in(&reflink), scratch_in(&second));
+                    let arguments = [
+                        OsStr::new(route),
+                        reflink.path().as_os_str(),
+                        second.path().as_os_str(),
+                    ];
+                    let output = guest("descriptor-operands-reflink", socket, &arguments);
+                    observations.collect(&format!("descriptor-operands-reflink {route}"), &output);
+                }
+            }
+            Mode::Native => {
+                let output = guest("descriptor-operands-native", socket, &[]);
+                observations.collect("descriptor-operands-native", &output);
+            }
+            Mode::PreactivationRing => {
+                let output = guest("preactivation-ring", socket, &[]);
+                observations.collect("preactivation-ring", &output);
+            }
+            Mode::ExecRing => {
+                let output = guest("exec-ring-launcher", socket, &[]);
+                observations.collect("exec-ring-launcher", &output);
+            }
+        }
+    }
+
+    /// Runs the cells `protected` and `excluded` name, prints the run
+    /// summary, and fails unless every protected cell passed and every
+    /// EXCLUDED-DECLARED cell gave its declared value: with `FAILED:` for a
+    /// wrong value, `NO RESULT:` for a cell whose own precondition failed,
+    /// and `REFUSED:` for a cell this host cannot run.
+    fn assert_cells(protected: &[&str], excluded: &[&str]) {
+        if let Err(refusal) = check_cell_groups(protected, excluded) {
+            panic!("{refusal}");
+        }
+        let protected = protected.iter().map(|name| (cell_named(name), false));
+        let excluded = excluded.iter().map(|name| (cell_named(name), true));
+        let selected: Vec<(&'static Cell, bool)> = protected.chain(excluded).collect();
+        let mut modes = BTreeSet::new();
+        for (cell, _) in &selected {
+            modes.insert(cell.mode);
+            if precondition(cell.id).is_some() {
+                modes.insert(Mode::Native);
+            }
+        }
+        let mut observations = Observations::default();
+        with_coordinator(|socket| {
+            for mode in modes {
+                run_mode(mode, socket, &mut observations);
+            }
+        });
+        let mut outcomes = Vec::new();
+        for (cell, excluded) in selected {
+            for route in cell.routes {
+                outcomes.push(judge(cell, route, excluded, &observations));
+            }
+        }
+        let summary = run_summary(&outcomes);
+        for setup in &observations.setups {
+            println!("setup {setup}");
+        }
+        println!("{}", summary.text);
+        if let Err(error) = check_summary(&summary, &outcomes) {
+            panic!("FAILED: the run summary: {error}\n{}", summary.text);
+        }
+        let mut failed = observations.run_failures.clone();
+        let mut no_result = Vec::new();
+        let mut refused = Vec::new();
+        for outcome in &outcomes {
+            let Cell { id, name, .. } = outcome.cell;
+            let line = format!("{id} {name} [{}]", outcome.route);
+            match &outcome.verdict {
+                Verdict::Pass => {}
+                Verdict::Fail(reason) => failed.push(format!("{line}: {reason}")),
+                Verdict::NoResult(reason) => no_result.push(format!("{line}: {reason}")),
+                Verdict::Refused(reason) => refused.push(format!("{line}: {reason}")),
+            }
+        }
+        let text = &summary.text;
+        if !failed.is_empty() {
+            panic!("FAILED:\n  {}\n{text}", failed.join("\n  "));
+        }
+        if !no_result.is_empty() {
+            panic!("NO RESULT:\n  {}\n{text}", no_result.join("\n  "));
+        }
+        if !refused.is_empty() {
+            panic!("REFUSED:\n  {}\n{text}", refused.join("\n  "));
+        }
+    }
+
+    /// Cells E1, E2 and E4-E11 on LiteInst's patched hook and on the trap
+    /// fallback, with the native controls E13 and E14 they depend on: the
+    /// reserved performance counter named by FICLONE, in FICLONERANGE's
+    /// operand, by F_DUPFD_QUERY, by a kcmp index and in a kcmp epoll slot
+    /// answers EBADF; a kcmp of two guest descriptors still compares; every
+    /// io_uring call answers ENOSYS; and FICLONERANGE answers EFAULT when a
+    /// guest filter fails the runtime's copy of its operand.
+    #[test]
+    fn descriptor_operand_cells_on_the_patched_hook_and_the_trap_fallback() {
+        assert_cells(&ORDINARY_PROTECTED, &[]);
+    }
+
+    /// Cells E3 and E12 on both routes: a FIDEDUPERANGE destination that is
+    /// the reserved counter gives status EBADF, and a dedupe whose second
+    /// copy a supervisor fabricates reaches the kernel as zeroed bytes.
+    #[test]
+    #[ignore = "requires a btrfs or XFS directory in REVERIE_TEST_REFLINK_DIR and a second file system in REVERIE_TEST_SECOND_FS_DIR; explicit supported-host selection"]
+    fn dedupe_cells_on_the_patched_hook_and_the_trap_fallback() {
+        assert_cells(&DEDUPE_PROTECTED, &[]);
+    }
+
+    /// Cells E15-E17, the EXCLUDED-DECLARED group, shown apart from the
+    /// protected cells: a ring made before an explicit `install_tool` still
+    /// reaches the coordinator connection with no system call while a new
+    /// ring is refused, and a ring descriptor survives exec without its
+    /// polling thread.
+    #[test]
+    #[ignore = "requires native io_uring submission polling (IORING_SETUP_SQPOLL); explicit supported-host selection"]
+    fn excluded_declared_io_uring_cells_are_shown_apart_from_protected_cells() {
+        assert_cells(&[], &EXCLUDED_DECLARED);
+    }
+
+    /// Every cell, E1-E17, in one run with one summary: the protected count
+    /// beside the EXCLUDED-DECLARED group.
+    #[test]
+    #[ignore = "requires a btrfs or XFS directory in REVERIE_TEST_REFLINK_DIR, a second file system in REVERIE_TEST_SECOND_FS_DIR and native io_uring submission polling; explicit supported-host selection"]
+    fn every_descriptor_operand_cell_with_its_run_summary() {
+        assert_cells(&PROTECTED, &EXCLUDED_DECLARED);
+    }
+
+    /// G-1 (cell E19): the runner refuses a cell list that names an
+    /// EXCLUDED-DECLARED cell in the protected group too, with a message
+    /// naming the cell, and accepts the declared lists.
+    #[test]
+    fn g1_a_cell_list_naming_a_cell_in_both_groups_is_refused() {
+        assert_eq!(check_cell_groups(&PROTECTED, &EXCLUDED_DECLARED), Ok(()));
+        let both = [
+            "preactivation-ring statx-reserved",
+            "exec-surviving-ring fd-open poller-threads=0",
+        ];
+        for name in both {
+            let mut protected = PROTECTED.to_vec();
+            protected.push(name);
+            let checked = check_cell_groups(&protected, &EXCLUDED_DECLARED);
+            let refusal = checked.expect_err("a cell named in both groups was accepted");
+            assert!(refusal.contains(name), "{refusal}");
+            assert!(refusal.contains("both"), "{refusal}");
+        }
+    }
+
+    fn passed(name: &str, route: &'static str, excluded: bool) -> Outcome {
+        let cell = cell_named(name);
+        Outcome {
+            cell,
+            route,
+            excluded,
+            observed: Some(cell.required.to_string()),
+            verdict: Verdict::Pass,
+        }
+    }
+
+    /// Cell E18: the run summary's protected count excludes E15-E17 even when
+    /// they give their declared values, and their names appear only under the
+    /// EXCLUDED-DECLARED heading; a summary listing one among the protected
+    /// cells is refused.
+    #[test]
+    fn the_run_summary_counts_excluded_declared_cells_apart() {
+        let outcomes = [
+            passed("ficlone reserved", "hook", false),
+            passed("io_uring_setup", "trap", false),
+            passed(EXCLUDED_DECLARED[0], "hook", true),
+            passed(EXCLUDED_DECLARED[1], "ring", true),
+            passed(EXCLUDED_DECLARED[2], "exec", true),
+        ];
+        let summary = run_summary(&outcomes);
+        let counts = (summary.protected_passed, summary.protected_total);
+        assert_eq!(counts, (2, 2), "{}", summary.text);
+        assert_eq!(check_summary(&summary, &outcomes), Ok(()));
+        let (protected, excluded) = summary.text.split_once(EXCLUDED_HEADING).unwrap();
+        let count = "protected cells: 2 of 2 cell lines passed\n";
+        assert!(protected.starts_with(count), "{}", summary.text);
+        for name in EXCLUDED_DECLARED {
+            assert!(!protected.contains(name), "{}", summary.text);
+            assert!(excluded.contains(name), "{}", summary.text);
+        }
+        let misplaced = Summary {
+            protected_passed: 2,
+            protected_total: 2,
+            text: format!("{}{EXCLUDED_HEADING}\n", summary_line(&outcomes[3])),
+        };
+        let refusal = check_summary(&misplaced, &outcomes).unwrap_err();
+        assert!(refusal.contains(EXCLUDED_DECLARED[1]), "{refusal}");
+    }
+}

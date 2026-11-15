@@ -547,6 +547,10 @@ pub fn initialize_with_stack_backing(backing: StackBacking) -> io::Result<()> {
     if owner_get().is_null() {
         let saved = SavedState::new()?;
         let stack = CallbackStack::new(backing)?;
+        // The operand buffer guest FIDEDUPERANGE calls are copied into, with
+        // the same backing, in the same step (see
+        // crate::guest::protect::initialize_operand_buffer).
+        crate::guest::protect::initialize_operand_buffer(backing);
         let owner = Box::new(Continuation {
             stack,
             saved,
