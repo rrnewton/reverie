@@ -153,6 +153,12 @@ pub unsafe trait PatchHost {
 /// With `remove_coordinator_environment`, the legacy coordinator variable
 /// ([`crate::bootstrap::COORDINATOR_ENV`]) is removed from the environment.
 ///
+/// The runtime refuses io_uring calls made after this call, but not
+/// io_uring state that already exists: a ring created earlier in this
+/// image (by the program, a constructor or the loader) keeps its polling
+/// thread and workers, which can act on descriptors the runtime places
+/// later. Call this before any io_uring ring is created.
+///
 /// # Safety
 ///
 /// Installs process-global signal, seccomp and instrumentation state. Call

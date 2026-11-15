@@ -156,6 +156,13 @@ impl HostRuntime for LiteinstRuntime {
 ///
 /// The caller is normally a tool-specific preload DSO. It must invoke this
 /// before application threads start and before any seccomp filter is active.
+///
+/// The runtime refuses io_uring calls made after this call, but not
+/// io_uring state that already exists: a ring created earlier in this
+/// image (by the program, a constructor or the loader) keeps its polling
+/// thread and workers, which can act on descriptors the runtime places
+/// later. Call this before any io_uring ring is created.
+///
 /// Use [`crate::declare_fixed_tool_allocator!`] in a true preload root, after
 /// authenticated fixed-region startup, or an explicit legacy allocator
 /// declaration for an embedded Tool. Missing or duplicate per-image backing

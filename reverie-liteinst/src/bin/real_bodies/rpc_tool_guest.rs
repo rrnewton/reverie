@@ -36,6 +36,9 @@ use reverie_rpc_transport::RpcServer;
 #[path = "../rpc_tool_guest/syscall_fallback.rs"]
 mod syscall_fallback_guest;
 
+#[path = "../rpc_tool_guest/descriptor_operands.rs"]
+mod descriptor_operands_guest;
+
 #[path = "../rpc_tool_guest/memory_access.rs"]
 mod memory_access_guest;
 
@@ -3518,6 +3521,26 @@ pub fn main() {
         Some("syscall-installed-fork") => syscall_fallback_guest::run_fork(Path::new(&path), true),
         Some("syscall-fallback-pkey") => syscall_fallback_guest::run_pkey(Path::new(&path)),
         Some("syscall-fallback-scm-pkey") => syscall_fallback_guest::run_scm_pkey(Path::new(&path)),
+        Some("descriptor-operands") => {
+            descriptor_operands_guest::run(Path::new(&path), &args.next().expect("route"))
+        }
+        Some("descriptor-operands-reflink") => descriptor_operands_guest::run_reflink(
+            Path::new(&path),
+            &args.next().expect("route"),
+            &args.next().expect("reflink directory"),
+            &args.next().expect("second file system directory"),
+        ),
+        Some("descriptor-operands-native") => descriptor_operands_guest::run_native(),
+        Some("preactivation-ring") => {
+            descriptor_operands_guest::run_preactivation_ring(Path::new(&path))
+        }
+        Some("exec-ring-launcher") => {
+            descriptor_operands_guest::run_exec_ring_launcher(Path::new(&path))
+        }
+        Some("exec-ring-guest") => descriptor_operands_guest::run_exec_ring_guest(
+            Path::new(&path),
+            &args.next().expect("ring descriptor"),
+        ),
         Some("memory-access") => memory_access_guest::run(Path::new(&path)),
         Some("owned-frame") => owned_frame_guest::run(Path::new(&path)),
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),

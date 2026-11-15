@@ -29,6 +29,7 @@ use std::io;
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -38,6 +39,7 @@ use crate::arch::SYS_VFORK;
 use crate::dispatch::is_fork_like;
 use crate::guest::event::SyscallEvent;
 use crate::guest::signal::signal_action_supported;
+use crate::guest::tool_region::StackBacking;
 use crate::reserved_fds;
 use crate::trap::raw_syscall6;
 
@@ -831,6 +833,43 @@ pub fn take_refused_process_creations() -> RefusedProcessCreations {
     }
 }
 
+/// How many guest io_uring calls [`protect_runtime_descriptors`] refused since
+/// the Tool last took them ([`take_refused_io_uring`]), in the process whose
+/// pid is [`REFUSED_IO_URING_PID`].
+static REFUSED_IO_URING: AtomicU64 = AtomicU64::new(0);
+
+/// The process that made the refusals [`REFUSED_IO_URING`] counts. A forked
+/// child inherits both statics; the pid tells its own refusals from its
+/// parent's, which it never reports.
+static REFUSED_IO_URING_PID: AtomicI32 = AtomicI32::new(0);
+
+/// Counts one refused guest io_uring call. Runs on the refusal path only, so
+/// the getpid it makes never touches an admitted call.
+fn record_refused_io_uring() {
+    let pid = current_pid();
+    if REFUSED_IO_URING_PID.load(Ordering::Acquire) != pid {
+        REFUSED_IO_URING.store(0, Ordering::Release);
+        REFUSED_IO_URING_PID.store(pid, Ordering::Release);
+    }
+    REFUSED_IO_URING.fetch_add(1, Ordering::AcqRel);
+}
+
+/// Takes the number of guest `io_uring_setup`, `io_uring_enter` and
+/// `io_uring_register` calls refused with `ENOSYS` in this process since the
+/// last call: one total for the three, so that the Tool can report it (each
+/// refusal is reported once: taking clears it). Tool calls are never counted.
+/// A forked child reports only its own refusals; a new image starts at zero.
+pub fn take_refused_io_uring() -> u64 {
+    // A caller may ask often; almost always nothing was refused.
+    if REFUSED_IO_URING.load(Ordering::Acquire) == 0 {
+        return 0;
+    }
+    if REFUSED_IO_URING_PID.load(Ordering::Acquire) != current_pid() {
+        return 0;
+    }
+    REFUSED_IO_URING.swap(0, Ordering::AcqRel)
+}
+
 /// Adds the kind of the fork-like call `event` asked for to the refused set.
 fn record_refused_process_creation(event: &SyscallEvent) {
     let bit = if event.number == libc::SYS_clone {
@@ -1019,6 +1058,16 @@ unsafe fn protect_runtime_descriptors_inner(
 ) -> bool {
     if leave_descriptor_changes_to_tool && is_descriptor_change_left_to_tool(event.number) {
         return false;
+    }
+    // io_uring reaches descriptors through submission entries, fixed-file
+    // tables and registered descriptors that no argument shows, so every
+    // guest call to it fails as on a kernel without io_uring, whether or not
+    // the runtime holds a descriptor yet. io_uring state created before the
+    // runtime was installed is not reached by this.
+    if guest_syscall && reserved_fds::unchecked_descriptor_syscall(event.number) {
+        record_refused_io_uring();
+        event.result = -i64::from(libc::ENOSYS);
+        return true;
     }
     let (slots, mut count) = protected_descriptors(guest_syscall);
     let mut protected = [u64::MAX; PROTECTED_FD_CAPACITY + 1];
@@ -1367,6 +1416,373 @@ pub unsafe fn dispatch_with_scm_rights_copy(
         }
     }
     event.args = copy.guest_args;
+}
+
+/// `FICLONERANGE`, `_IOW(0x94, 13, struct file_clone_range)`.
+const FICLONERANGE: u32 = 0x4020_940d;
+/// `FIDEDUPERANGE`, `_IOWR(0x94, 54, struct file_dedupe_range)`.
+const FIDEDUPERANGE: u32 = 0xc018_9436;
+
+/// The operand pointer forwarded when the runtime cannot copy an operand: a
+/// user address both architectures refuse, so Linux answers EFAULT at its
+/// first read of that operand, after every check it makes first. x86-64's
+/// `__access_ok` takes it without untagging
+/// (arch/x86/include/asm/uaccess_64.h:56-57, 98-107) and `get_user` clamps it
+/// (arch/x86/lib/getuser.S:42-50); arm64 untags only bits 56-63 of a user
+/// address (arch/arm64/include/asm/memory.h:287-294) and refuses it in
+/// `access_ok` (arch/arm64/include/asm/uaccess.h:38-49).
+const REFUSED_USER_POINTER: u64 = 0xFFFF_FFFF_FFFF_F000;
+
+/// Bytes of a FIDEDUPERANGE request the runtime can copy: the largest page on
+/// x86-64 or arm64, so a correct page size never limits a request Linux runs.
+const DEDUPE_BUFFER_BYTES: usize = 65_536;
+/// Entries such a request holds: (65,536 − 24) / 32 = 2,047.
+const DEDUPE_MAX_ENTRIES: usize =
+    (DEDUPE_BUFFER_BYTES - reserved_fds::DEDUPE_HEADER_SIZE) / reserved_fds::DEDUPE_INFO_SIZE;
+/// The capacity used when the page size cannot be read.
+const DEDUPE_FALLBACK_CAPACITY: usize = 4096;
+
+/// The process's FIDEDUPERANGE buffer: the copy the kernel reads, the guest's
+/// own `dest_fd` values for the write-back, and who holds it.
+#[repr(C, align(64))]
+struct OperandBuffer {
+    /// The holder's thread id while a call holds the buffer, else 0.
+    holder: AtomicI32,
+    data: core::cell::UnsafeCell<[u8; DEDUPE_BUFFER_BYTES]>,
+    originals: core::cell::UnsafeCell<[i64; DEDUPE_MAX_ENTRIES]>,
+}
+
+// The holder (4 bytes), the request (65,536) and, after 4 bytes of padding,
+// the 2,047 saved `dest_fd` values (16,376): 81,920 bytes, a multiple of the
+// 64-byte alignment, so 20 pages of 4 KiB.
+const _: () = assert!(size_of::<OperandBuffer>() == 81_920);
+
+/// The buffer, or null when install could not take one. Set once per image,
+/// at install, before any guest call is dispatched; a forked child inherits
+/// its own copy.
+static OPERAND_BUFFER: AtomicPtr<OperandBuffer> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Takes the FIDEDUPERANGE buffer with the callback stack's own backing, in
+/// the same install step ([`crate::guest::continuation`]): a ToolRegion lease
+/// when a region is reserved, so the mapping guard refuses a guest's remap of
+/// it (restorer.rs `owner_overlaps`, `mapping_change_result`); otherwise
+/// guarded anonymous memory, made as the callback stack's fallback is, which
+/// the guest can remap between calls (a declared limit). Runs in ordinary
+/// initialization only, never on a callback path. A failure leaves no
+/// buffer, and every FIDEDUPERANGE then answers ENOMEM through the oversize
+/// path of [`dispatch_with_descriptor_operand_copy`].
+pub(crate) fn initialize_operand_buffer(backing: StackBacking) {
+    if !OPERAND_BUFFER.load(Ordering::Acquire).is_null() {
+        return;
+    }
+    let bytes = size_of::<OperandBuffer>();
+    let base = match backing {
+        StackBacking::ToolRegion(region) => region.stack(bytes).ok().map(|lease| {
+            let base = lease.base();
+            // The lease is the buffer's for the life of the image.
+            core::mem::forget(lease);
+            base
+        }),
+        StackBacking::Legacy => guarded_anonymous(bytes),
+    };
+    let Some(base) = base else { return };
+    let buffer = base as *mut OperandBuffer;
+    // SAFETY: the interior is writable, page-aligned and at least `bytes`
+    // long; only the holder needs initializing, and it starts free.
+    unsafe { core::ptr::addr_of_mut!((*buffer).holder).write(AtomicI32::new(0)) };
+    OPERAND_BUFFER.store(buffer, Ordering::Release);
+}
+
+/// `bytes` of read-write anonymous memory between two inaccessible guard
+/// pages, made as the callback stack's fallback is (continuation.rs
+/// `CallbackStack::new`): raw syscalls, never libc's interposable wrappers.
+fn guarded_anonymous(bytes: usize) -> Option<usize> {
+    let page = usize::try_from(crate::arch::page_size().ok()?).ok()?;
+    let interior = bytes.checked_add(page - 1)? & !(page - 1);
+    let total = interior.checked_add(page.checked_mul(2)?)?;
+    // SAFETY: a fresh private anonymous mapping, owned by the caller.
+    let mapping = unsafe {
+        raw_syscall6(
+            libc::SYS_mmap,
+            [
+                0,
+                total as u64,
+                libc::PROT_NONE as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                u64::MAX,
+                0,
+            ],
+        )
+    };
+    if mapping < 0 {
+        return None;
+    }
+    let base = mapping as usize + page;
+    // SAFETY: the interior of the mapping just made.
+    let protected = unsafe {
+        raw_syscall6(
+            libc::SYS_mprotect,
+            [
+                base as u64,
+                interior as u64,
+                (libc::PROT_READ | libc::PROT_WRITE) as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if protected < 0 {
+        // SAFETY: the mapping just made, which nothing else uses.
+        unsafe { raw_syscall6(libc::SYS_munmap, [mapping as u64, total as u64, 0, 0, 0, 0]) };
+        return None;
+    }
+    Some(base)
+}
+
+/// The FIDEDUPERANGE buffer, held by one call from its copy to its
+/// write-back. Dropping it, on every exit including an unwind, frees the
+/// buffer; a call that finds it held never takes it, so it cannot free
+/// another's hold.
+struct HeldOperandBuffer(&'static OperandBuffer);
+
+impl HeldOperandBuffer {
+    /// Holds the buffer for this thread, or None when there is no buffer or
+    /// another call holds it.
+    fn take() -> Option<Self> {
+        let buffer = OPERAND_BUFFER.load(Ordering::Acquire);
+        if buffer.is_null() {
+            return None;
+        }
+        // SAFETY: published once at install and never unmapped in this image.
+        let buffer = unsafe { &*buffer };
+        // SAFETY: gettid has no arguments and no effect.
+        let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+        let tid = if tid > 0 { tid as i32 } else { -1 };
+        buffer
+            .holder
+            .compare_exchange(0, tid, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(Self(buffer))
+    }
+
+    /// The copy and the saved `dest_fd` values. Only the holder reaches them.
+    fn parts(
+        &mut self,
+    ) -> (
+        &mut [u8; DEDUPE_BUFFER_BYTES],
+        &mut [i64; DEDUPE_MAX_ENTRIES],
+    ) {
+        // SAFETY: `holder` names this hold, so no other reference exists.
+        unsafe { (&mut *self.0.data.get(), &mut *self.0.originals.get()) }
+    }
+}
+
+impl Drop for HeldOperandBuffer {
+    fn drop(&mut self) {
+        self.0.holder.store(0, Ordering::Release);
+    }
+}
+
+/// The operand copies [`dispatch_with_descriptor_operand_copy`] makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DescriptorOperand {
+    CloneRange,
+    Dedupe,
+    KcmpFile,
+    KcmpEpoll,
+}
+
+fn descriptor_operand(event: &SyscallEvent) -> Option<DescriptorOperand> {
+    match event.number {
+        libc::SYS_ioctl => match event.args[1] as u32 {
+            FICLONERANGE => Some(DescriptorOperand::CloneRange),
+            FIDEDUPERANGE => Some(DescriptorOperand::Dedupe),
+            _ => None,
+        },
+        libc::SYS_kcmp => match event.args[2] as u32 {
+            reserved_fds::KCMP_FILE => Some(DescriptorOperand::KcmpFile),
+            reserved_fds::KCMP_EPOLL_TFD => Some(DescriptorOperand::KcmpEpoll),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Runs `dispatch` on `event`, a genuine guest syscall not yet run. Calls that
+/// name descriptors inside memory or by index run with every reserved
+/// descriptor hidden (https://github.com/facebookexperimental/reverie/issues/56):
+///
+/// - FICLONERANGE's 32-byte operand and KCMP_EPOLL_TFD's 12-byte slot are
+///   copied into this frame ([`copy_from_guest`], with the guest's
+///   protection-key rights). A reserved `src_fd` or `efd` in the copy becomes
+///   a closed number, and the call's pointer names the copy.
+/// - FIDEDUPERANGE is copied in two reads, as Linux reads it
+///   (fs/ioctl.c:415-453): its `dest_count`, then the header and that many
+///   entries into the process's buffer. That count is pinned into the copy,
+///   and reserved `dest_fd`s among those entries become -1. After a
+///   successful call the guest's own `dest_fd`s go back into the copy, which
+///   is written to the guest ([`write_to_guest`]). A request larger than the
+///   buffer, or one that finds it held or absent, is forwarded with a header
+///   whose count no page holds, for Linux's own ENOMEM.
+/// - kcmp's KCMP_FILE and KCMP_EPOLL_TFD indices that are reserved here
+///   become a closed number, whatever task they name.
+/// - A copy that fails forwards [`REFUSED_USER_POINTER`] in place of the
+///   operand, so Linux answers EFAULT where it first reads it.
+///
+/// Linux runs every check of its own, in its own order, on what it is given.
+/// The guest's own arguments are put back after `dispatch`. The Tool sees
+/// the copy, a closed number or the refused pointer during `dispatch`. The
+/// copies live in this frame or in the held buffer, so the call must be
+/// issued before `dispatch` returns.
+///
+/// # Safety
+///
+/// As [`protect_runtime_descriptors`]: `event` is a genuine guest syscall of
+/// this thread, not yet run. `dispatch` runs it at most once, before this
+/// returns, and keeps no pointer from its arguments.
+pub unsafe fn dispatch_with_descriptor_operand_copy(
+    event: &mut SyscallEvent,
+    dispatch: impl FnOnce(&mut SyscallEvent),
+) {
+    let Some(operand) = descriptor_operand(event) else {
+        return dispatch(event);
+    };
+    let (protected, count) = protected_descriptors(true);
+    let reserved = &protected[..count];
+    if reserved.is_empty() {
+        return dispatch(event);
+    }
+    let guest_args = event.args;
+    let guest_pkru = event.guest_pkru;
+    // SAFETY: getpid has no arguments and no effect.
+    let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
+    // A pid this call cannot use fails only the copies, which then forward
+    // the refused pointer; kcmp's indices need none.
+    let read = |address: u64, buffer: &mut [u8]| {
+        if pid <= 0 {
+            return Err(-i64::from(libc::EFAULT));
+        }
+        copy_from_guest(pid as u64, address, buffer, guest_pkru)
+    };
+    match operand {
+        DescriptorOperand::KcmpFile => {
+            if let Some(args) = reserved_fds::kcmp_hidden_indices(&event.args, reserved) {
+                event.args = args;
+            }
+            dispatch(event);
+        }
+        DescriptorOperand::KcmpEpoll => {
+            if let Some(args) = reserved_fds::kcmp_hidden_indices(&event.args, reserved) {
+                event.args = args;
+            }
+            let mut slot = [0u8; reserved_fds::KCMP_EPOLL_SLOT_SIZE];
+            event.args[4] = match read(guest_args[4], &mut slot) {
+                Ok(()) => {
+                    reserved_fds::kcmp_slot_hide_reserved(&mut slot, reserved);
+                    slot.as_ptr() as u64
+                }
+                Err(_) => REFUSED_USER_POINTER,
+            };
+            dispatch(event);
+        }
+        DescriptorOperand::CloneRange => {
+            let mut range = [0u8; reserved_fds::FILE_CLONE_RANGE_SIZE];
+            event.args[2] = match read(guest_args[2], &mut range) {
+                Ok(()) => {
+                    reserved_fds::clone_range_hide_reserved(&mut range, reserved);
+                    range.as_ptr() as u64
+                }
+                Err(_) => REFUSED_USER_POINTER,
+            };
+            dispatch(event);
+        }
+        DescriptorOperand::Dedupe => {
+            let capacity = crate::arch::page_size()
+                .ok()
+                .and_then(|size| usize::try_from(size).ok())
+                .map_or(DEDUPE_FALLBACK_CAPACITY, |size| {
+                    size.min(DEDUPE_BUFFER_BYTES)
+                });
+            dedupe_with_copy(
+                event,
+                reserved,
+                capacity,
+                HeldOperandBuffer::take,
+                read,
+                |address, bytes| write_to_guest(address, bytes, guest_pkru),
+                dispatch,
+            );
+        }
+    }
+    event.args = guest_args;
+}
+
+/// FIDEDUPERANGE through the runtime's copy, with its reads, its buffer and
+/// its write-back passed in: production passes [`copy_from_guest`],
+/// [`HeldOperandBuffer::take`] and [`write_to_guest`]; tests pass readers
+/// that change the guest's struct between the two reads.
+fn dedupe_with_copy(
+    event: &mut SyscallEvent,
+    reserved: &[u64],
+    capacity: usize,
+    take: impl FnOnce() -> Option<HeldOperandBuffer>,
+    mut read: impl FnMut(u64, &mut [u8]) -> Result<(), i64>,
+    write: impl FnOnce(u64, &[u8]) -> bool,
+    dispatch: impl FnOnce(&mut SyscallEvent),
+) {
+    let address = event.args[2];
+    // 1. The count, read once: Linux's `get_user` (fs/ioctl.c:423-426).
+    let mut count = [0u8; 2];
+    if read(
+        address.wrapping_add(reserved_fds::DEDUPE_COUNT_OFFSET as u64),
+        &mut count,
+    )
+    .is_err()
+    {
+        event.args[2] = REFUSED_USER_POINTER;
+        return dispatch(event);
+    }
+    let count = u16::from_ne_bytes(count);
+    // 2. The plan, and the buffer for a request that fits. A request that does
+    // not fit, or finds the buffer held or absent, forwards a header whose
+    // count no page holds: Linux's own ENOMEM (:428-432).
+    let mut oversize = [0u8; reserved_fds::DEDUPE_HEADER_SIZE];
+    oversize[reserved_fds::DEDUPE_COUNT_OFFSET..reserved_fds::DEDUPE_COUNT_OFFSET + 2]
+        .copy_from_slice(&reserved_fds::DEDUPE_OVERSIZE_COUNT.to_ne_bytes());
+    let held = match reserved_fds::dedupe_plan(count, capacity) {
+        reserved_fds::DedupePlan::Copy { size } => take().map(|held| (held, size)),
+        reserved_fds::DedupePlan::OversizeHeader => None,
+    };
+    let Some((mut held, size)) = held else {
+        event.args[2] = oversize.as_ptr() as u64;
+        return dispatch(event);
+    };
+    let (data, originals) = held.parts();
+    let copy = &mut data[..size];
+    // 3. The header and `count` entries, into zeroed bytes.
+    copy.fill(0);
+    if read(address, copy).is_err() {
+        event.args[2] = REFUSED_USER_POINTER;
+        return dispatch(event);
+    }
+    // 4. Pin the count and hide reserved destinations.
+    if reserved_fds::dedupe_hide_reserved(copy, count, reserved, originals).is_none() {
+        // Unreachable for a planned size; fail closed as an oversize request.
+        event.args[2] = oversize.as_ptr() as u64;
+        return dispatch(event);
+    }
+    // 5. Dispatch on the copy; on success the guest's `dest_fd`s go back and
+    // `size` bytes are written to the guest, as Linux writes back (:443-448).
+    event.args[2] = copy.as_ptr() as u64;
+    dispatch(event);
+    if event.result == 0 {
+        let restored = reserved_fds::dedupe_restore(copy, count, originals).is_some();
+        if !restored || !write(address, copy) {
+            event.result = -i64::from(libc::EFAULT);
+        }
+    }
+    // `held` drops here, freeing the buffer.
 }
 
 /// Same runtime descriptor protections plus the mapped owner's actual sealed
@@ -4857,6 +5273,1676 @@ pub(crate) mod tests {
             take_refused_signal_controls(),
             RefusedSignalControls::default()
         );
+    }
+
+    /// How a supervisor ([`calls_held`]) answers one call it holds.
+    #[derive(Clone, Copy, Debug)]
+    enum HeldAnswer {
+        /// The call runs (`SECCOMP_USER_NOTIF_FLAG_CONTINUE`).
+        Continue,
+        /// The call returns this value without running: nothing is copied,
+        /// compared or changed.
+        Fake(i64),
+        /// The call fails with this errno without running.
+        Errno(i32),
+    }
+
+    /// Installs a seccomp filter that holds every syscall `number` for a
+    /// supervisor (`SECCOMP_RET_USER_NOTIF`) and returns the listener, or a
+    /// negative errno.
+    fn notify_on(number: i64) -> i32 {
+        let load = (libc::BPF_LD | libc::BPF_W | libc::BPF_ABS) as u16;
+        let jump_if_equal = (libc::BPF_JMP | libc::BPF_JEQ | libc::BPF_K) as u16;
+        let ret = (libc::BPF_RET | libc::BPF_K) as u16;
+        let step = |code: u16, jf: u8, k: u32| libc::sock_filter { code, jt: 0, jf, k };
+        let mut instructions = [
+            step(load, 0, 0),
+            step(jump_if_equal, 1, number as u32),
+            step(ret, 0, libc::SECCOMP_RET_USER_NOTIF),
+            step(ret, 0, libc::SECCOMP_RET_ALLOW),
+        ];
+        let program = libc::sock_fprog {
+            len: instructions.len() as u16,
+            filter: instructions.as_mut_ptr(),
+        };
+        let no_new_privileges = unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [libc::PR_SET_NO_NEW_PRIVS as u64, 1, 0, 0, 0, 0],
+            )
+        };
+        if no_new_privileges != 0 {
+            return no_new_privileges as i32;
+        }
+        unsafe {
+            raw_syscall6(
+                libc::SYS_seccomp,
+                [
+                    libc::SECCOMP_SET_MODE_FILTER as u64,
+                    libc::SECCOMP_FILTER_FLAG_NEW_LISTENER,
+                    (&raw const program) as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ) as i32
+        }
+    }
+
+    /// Runs `before` and then `guest` in a forked process which, between the
+    /// two, installs a filter that holds its every syscall `number` for this
+    /// process ([`notify_on`]). The k-th held call (counting from 0) gets
+    /// `answer(k, its arguments)`. Requires the process to finish without
+    /// panicking, and returns each held call's arguments, in order. Fails once
+    /// [`WORK_LIMIT`] has passed, `before` and the handshake included; the
+    /// child is killed and reaped on every failure ([`OwnedChild`]), as with
+    /// [`closes_held`].
+    fn calls_held<T>(
+        number: i64,
+        mut answer: impl FnMut(usize, &[u64; 6]) -> HeldAnswer,
+        before: impl FnOnce() -> T,
+        guest: impl FnOnce(T),
+    ) -> Vec<[u64; 6]> {
+        let deadline = std::time::Instant::now() + WORK_LIMIT;
+        let remaining_ms = || {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(!left.is_zero(), "the guest never finished");
+            left.as_millis().clamp(1, 50) as libc::c_int
+        };
+        let mut pipe = [-1; 2];
+        assert_eq!(unsafe { libc::pipe2(pipe.as_mut_ptr(), 0) }, 0);
+        let forked = unsafe { libc::fork() };
+        assert!(forked >= 0);
+        if forked == 0 {
+            // A backstop for a supervisor that dies without unwinding.
+            unsafe { libc::alarm(60) };
+            unsafe { libc::close(pipe[0]) };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let state = before();
+                let listener = notify_on(number);
+                let written = unsafe { libc::write(pipe[1], (&raw const listener).cast(), 4) };
+                assert!(listener >= 0 && written == 4, "listener: {listener}");
+                unsafe { libc::close(pipe[1]) };
+                guest(state);
+            }));
+            unsafe { libc::_exit(if result.is_ok() { 0 } else { 125 }) };
+        }
+        let mut child = OwnedChild(forked);
+        unsafe { libc::close(pipe[1]) };
+        // The handshake: the child's listener number, or end of file if the
+        // child ended before sending it.
+        let mut ready = libc::pollfd {
+            fd: pipe[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        while unsafe { libc::poll(&mut ready, 1, remaining_ms()) } <= 0 {}
+        let mut remote_listener = -1_i32;
+        let read = unsafe { libc::read(pipe[0], (&raw mut remote_listener).cast(), 4) };
+        unsafe { libc::close(pipe[0]) };
+        assert_eq!(read, 4, "the child ended before its handshake");
+        let pidfd = unsafe { raw_syscall6(libc::SYS_pidfd_open, [forked as u64, 0, 0, 0, 0, 0]) };
+        assert!(pidfd >= 0, "pidfd_open: {pidfd}");
+        let listener = unsafe {
+            raw_syscall6(
+                libc::SYS_pidfd_getfd,
+                [pidfd as u64, remote_listener as u64, 0, 0, 0, 0],
+            )
+        };
+        unsafe { libc::close(pidfd as libc::c_int) };
+        assert!(listener >= 0, "pidfd_getfd: {listener}");
+        let listener = listener as libc::c_int;
+        let mut held = Vec::new();
+        let status = loop {
+            if let Some(status) = child.try_reap() {
+                break status;
+            }
+            let mut ready = libc::pollfd {
+                fd: listener,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut ready, 1, remaining_ms()) } <= 0 {
+                continue;
+            }
+            let mut notification: libc::seccomp_notif = unsafe { core::mem::zeroed() };
+            let received =
+                unsafe { libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_RECV, &mut notification) };
+            if received != 0 {
+                continue;
+            }
+            assert_eq!(i64::from(notification.data.nr), number);
+            let args = notification.data.args;
+            let (val, error, flags) = match answer(held.len(), &args) {
+                HeldAnswer::Continue => (0, 0, libc::SECCOMP_USER_NOTIF_FLAG_CONTINUE as u32),
+                HeldAnswer::Fake(value) => (value, 0, 0),
+                HeldAnswer::Errno(code) => (0, -code, 0),
+            };
+            held.push(args);
+            let response = libc::seccomp_notif_resp {
+                id: notification.id,
+                val,
+                error,
+                flags,
+            };
+            let sent = unsafe { libc::ioctl(listener, libc::SECCOMP_IOCTL_NOTIF_SEND, &response) };
+            assert_eq!(
+                sent,
+                0,
+                "notification reply: {}",
+                io::Error::last_os_error()
+            );
+        };
+        unsafe { libc::close(listener) };
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "guest status {status:#x}"
+        );
+        held
+    }
+
+    /// Makes a panic in this forked, single-threaded child print straight to
+    /// descriptor 2. libtest captures a test's output inside the test
+    /// process, and a forked child's copy of that capture never reaches it,
+    /// so without this a child's assertion message (a REFUSED one included)
+    /// is lost and only its exit status is reported.
+    fn child_panics_to_stderr() {
+        std::panic::set_hook(Box::new(|info| {
+            let message = format!("child {}: {info}\n", std::process::id());
+            unsafe { libc::write(2, message.as_ptr().cast(), message.len()) };
+        }));
+    }
+
+    /// The result of a syscall that fails with `code`.
+    fn errno(code: i32) -> i64 {
+        -i64::from(code)
+    }
+
+    /// Runs a guest syscall as `runtime_seam::process_tool_syscall_with`
+    /// runs it: the runtime's control and descriptor protections first, then
+    /// both copy wrappers around `dispatch`, which stands for the Tool's
+    /// forward. Returns how many times `dispatch` ran: the raw-gate count.
+    fn through_seam(call: &mut SyscallEvent, dispatch: impl FnOnce(&mut SyscallEvent)) -> usize {
+        if protect_runtime_control(call) {
+            return 0;
+        }
+        if unsafe { protect_runtime_descriptors_before_tool(call) } {
+            return 0;
+        }
+        let mut ran = 0;
+        unsafe {
+            dispatch_with_descriptor_operand_copy(call, |call| {
+                dispatch_with_scm_rights_copy(call, |call| {
+                    ran += 1;
+                    dispatch(call);
+                })
+            })
+        };
+        ran
+    }
+
+    /// The Tool's forward in these cells: the call itself, as it stands.
+    fn forward(call: &mut SyscallEvent) {
+        call.result = unsafe { raw_syscall6(call.number, call.args) };
+    }
+
+    /// Runs a guest syscall through [`through_seam`] with a forward that
+    /// first runs `act` on the call as the Tool sees it (to record what the
+    /// kernel is about to read, or to write guest memory after the check, as
+    /// another writer could), then issues it. Requires one forward and the
+    /// guest's own arguments put back; returns the result.
+    fn guest_call(number: i64, args: [u64; 6], act: impl FnOnce(&SyscallEvent)) -> i64 {
+        let mut call = event(number, args);
+        let ran = through_seam(&mut call, |call| {
+            act(call);
+            forward(call);
+        });
+        assert_eq!(ran, 1, "the call is forwarded once");
+        assert_eq!(call.args, args, "the guest's own arguments are put back");
+        call.result
+    }
+
+    /// `struct file_clone_range` (include/uapi/linux/fs.h).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct CloneRange {
+        src_fd: i64,
+        src_offset: u64,
+        src_length: u64,
+        dest_offset: u64,
+    }
+
+    /// `struct file_dedupe_range_info` (include/uapi/linux/fs.h).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct DedupeInfo {
+        dest_fd: i64,
+        dest_offset: u64,
+        bytes_deduped: u64,
+        status: i32,
+        reserved: u32,
+    }
+
+    /// `struct file_dedupe_range` with one destination.
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct DedupeOne {
+        src_offset: u64,
+        src_length: u64,
+        dest_count: u16,
+        reserved1: u16,
+        reserved2: u32,
+        info: DedupeInfo,
+    }
+
+    /// `struct kcmp_epoll_slot` (include/uapi/linux/kcmp.h).
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct EpollSlot {
+        efd: u32,
+        tfd: u32,
+        toff: u32,
+    }
+
+    const _: () = assert!(size_of::<CloneRange>() == reserved_fds::FILE_CLONE_RANGE_SIZE);
+    const _: () = assert!(
+        size_of::<DedupeOne>() == reserved_fds::DEDUPE_HEADER_SIZE + reserved_fds::DEDUPE_INFO_SIZE
+    );
+    const _: () = assert!(size_of::<EpollSlot>() == reserved_fds::KCMP_EPOLL_SLOT_SIZE);
+
+    /// A descriptor number above every possible `max_fds` (fs/file.c:100-101),
+    /// so never open: the cells' C.
+    const NEVER_OPEN: u64 = 0x7FFF_FFF0;
+    /// kcmp's `KCMP_FILES`: compare two tasks' descriptor tables.
+    const KCMP_FILES: u32 = 2;
+    /// The bytes the dedupe cells compare: one block on btrfs and XFS.
+    const DEDUPE_BYTES: usize = 4096;
+    /// The seed of the dedupe cells' equal content.
+    const DEDUPE_SEED: u8 = 0x31;
+    /// btrfs's and XFS's statfs magic numbers (include/uapi/linux/magic.h).
+    const BTRFS_SUPER_MAGIC: i64 = 0x9123_683E;
+    const XFS_SUPER_MAGIC: i64 = 0x5846_5342;
+
+    /// `len` bytes that differ, byte for byte, from those of any other `seed`.
+    fn pattern(len: usize, seed: u8) -> Vec<u8> {
+        (0..len)
+            .map(|index| (index as u8).wrapping_mul(31).wrapping_add(seed))
+            .collect()
+    }
+
+    /// `value`'s bytes, for the plain `repr(C)` structs above, which have no
+    /// padding.
+    fn bytes_of<T>(value: &T) -> &[u8] {
+        unsafe {
+            core::slice::from_raw_parts(core::ptr::from_ref(value).cast::<u8>(), size_of::<T>())
+        }
+    }
+
+    /// Writes all of `contents` at the start of the file open at `fd`.
+    fn write_all(fd: libc::c_int, contents: &[u8]) {
+        let mut done = 0;
+        while done < contents.len() {
+            let rest = &contents[done..];
+            let at = done as libc::off_t;
+            let written = unsafe { libc::pwrite(fd, rest.as_ptr().cast(), rest.len(), at) };
+            assert!(written > 0, "pwrite: {}", io::Error::last_os_error());
+            done += written as usize;
+        }
+    }
+
+    /// The whole content of the file open at `fd`.
+    fn contents_of(fd: libc::c_int) -> Vec<u8> {
+        let mut status: libc::stat = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::fstat(fd, &mut status) }, 0, "fstat {fd}");
+        let mut bytes = vec![0_u8; status.st_size as usize];
+        let mut done = 0;
+        while done < bytes.len() {
+            let at = done as libc::off_t;
+            let rest = &mut bytes[done..];
+            let read = unsafe { libc::pread(fd, rest.as_mut_ptr().cast(), rest.len(), at) };
+            assert!(read > 0, "pread: {}", io::Error::last_os_error());
+            done += read as usize;
+        }
+        bytes
+    }
+
+    /// A memfd holding `contents`: a regular file on shmem, whose file
+    /// operations have no `remap_file_range` (mm/shmem.c), so Linux answers
+    /// a dedupe from it with EOPNOTSUPP (fs/remap_range.c:518-519), after
+    /// every earlier check.
+    fn memfd(contents: &[u8]) -> libc::c_int {
+        let fd = unsafe { libc::memfd_create(c"reverie-protect".as_ptr(), 0) };
+        assert!(fd >= 0, "memfd_create: {}", io::Error::last_os_error());
+        write_all(fd, contents);
+        fd
+    }
+
+    /// A memfd holding `contents`, placed and recorded as the runtime's own.
+    fn runtime_memfd(contents: &[u8]) -> libc::c_int {
+        let fd = place_runtime_fd(memfd(contents)).unwrap();
+        record_runtime_fd(fd).unwrap();
+        fd
+    }
+
+    /// This thread's id.
+    fn gettid() -> i32 {
+        unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) as i32 }
+    }
+
+    /// This process's pid, as a kcmp argument.
+    fn own_pid() -> u64 {
+        current_pid() as u64
+    }
+
+    /// This process's FIDEDUPERANGE buffer, which these cells take with the
+    /// legacy backing when install has not taken one, and which is free.
+    fn operand_buffer() -> &'static OperandBuffer {
+        initialize_operand_buffer(StackBacking::Legacy);
+        let buffer = OPERAND_BUFFER.load(Ordering::Acquire);
+        assert!(!buffer.is_null(), "the operand buffer could not be taken");
+        let buffer = unsafe { &*buffer };
+        assert_eq!(holder(buffer), 0, "the operand buffer is free");
+        buffer
+    }
+
+    /// The thread holding `buffer`, or 0.
+    fn holder(buffer: &OperandBuffer) -> i32 {
+        buffer.holder.load(Ordering::Acquire)
+    }
+
+    /// Where the buffer's copy starts: the pointer a dedupe on it dispatches.
+    fn buffer_data(buffer: &OperandBuffer) -> u64 {
+        buffer.data.get() as u64
+    }
+
+    /// ioctl(fd, FICLONERANGE, at)'s arguments.
+    fn clone_args(fd: libc::c_int, at: *const CloneRange) -> [u64; 6] {
+        [fd as u64, u64::from(FICLONERANGE), at as u64, 0, 0, 0]
+    }
+
+    /// ioctl(fd, FIDEDUPERANGE, at)'s arguments.
+    fn dedupe_args(fd: libc::c_int, at: *const DedupeOne) -> [u64; 6] {
+        [fd as u64, u64::from(FIDEDUPERANGE), at as u64, 0, 0, 0]
+    }
+
+    /// kcmp(pid, pid, kind, idx1, idx2)'s arguments: for KCMP_EPOLL_TFD,
+    /// `idx2` is the slot's address.
+    fn kcmp_args(pid: u64, kind: u32, idx1: u64, idx2: u64) -> [u64; 6] {
+        [pid, pid, u64::from(kind), idx1, idx2, 0]
+    }
+
+    /// kcmp(self, self, KCMP_EPOLL_TFD, target, slot)'s arguments.
+    fn epoll_args(target: libc::c_int, slot: *const EpollSlot) -> [u64; 6] {
+        let epoll = reserved_fds::KCMP_EPOLL_TFD;
+        kcmp_args(own_pid(), epoll, target as u64, slot as u64)
+    }
+
+    /// Refuses unless this host has kcmp (CONFIG_KCMP): a raw comparison of
+    /// a descriptor with itself must answer 0 (kernel/kcmp.c:170-180).
+    fn require_kcmp() {
+        let fd = open_eventfd();
+        let args = kcmp_args(own_pid(), reserved_fds::KCMP_FILE, fd as u64, fd as u64);
+        let compared = unsafe { raw_syscall6(libc::SYS_kcmp, args) };
+        unsafe { libc::close(fd) };
+        assert_ne!(
+            compared,
+            errno(libc::ENOSYS),
+            "REFUSED: this host has no kcmp (CONFIG_KCMP)"
+        );
+        assert_eq!(
+            compared,
+            0,
+            "REFUSED: kcmp of a descriptor with itself: {compared}"
+        );
+    }
+
+    /// An epoll whose interest list holds `target`, under its own number.
+    fn epoll_holding(target: libc::c_int) -> libc::c_int {
+        let epoll = unsafe { libc::epoll_create1(0) };
+        assert!(epoll >= 0, "epoll_create1: {}", io::Error::last_os_error());
+        let mut interest = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: 0,
+        };
+        let added = unsafe { libc::epoll_ctl(epoll, libc::EPOLL_CTL_ADD, target, &mut interest) };
+        assert_eq!(added, 0, "epoll_ctl: {}", io::Error::last_os_error());
+        epoll
+    }
+
+    /// A forked child that only waits to be killed, holding its own copies
+    /// of this process's descriptors, real descriptors of its own. Killed and
+    /// reaped when dropped.
+    fn idle_child() -> OwnedChild {
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe { libc::alarm(60) };
+            loop {
+                unsafe { libc::pause() };
+            }
+        }
+        OwnedChild(pid)
+    }
+
+    /// Installs a filter under which every process_vm_writev of this
+    /// process's own memory, which is every runtime copy, returns ERRNO with
+    /// `data` instead of running (0 reads as a copy of nothing).
+    fn refuse_runtime_copies(data: u32) {
+        let pid = current_pid() as u32;
+        install_filter(
+            libc::SYS_process_vm_writev,
+            0,
+            pid,
+            libc::SECCOMP_RET_ERRNO | data,
+        );
+    }
+
+    /// Refuses in a build whose panics abort: there catch_unwind cannot show
+    /// what an unwind through the dedupe buffer's guard leaves.
+    fn require_unwinding() {
+        if !cfg!(panic = "unwind") {
+            panic!("REFUSED: this cell needs panics that unwind; this build aborts on panic");
+        }
+    }
+
+    /// The directory named by `variable`, resolved, and never under /tmp.
+    /// Unset or unusable refuses: these cells never pass without their input.
+    fn required_dir(variable: &str) -> std::path::PathBuf {
+        let Some(value) = std::env::var_os(variable) else {
+            panic!("REFUSED: {variable} is not set");
+        };
+        let dir = std::fs::canonicalize(value)
+            .unwrap_or_else(|error| panic!("REFUSED: {variable} cannot be resolved: {error}"));
+        assert!(dir.is_dir(), "REFUSED: {variable} is not a directory");
+        assert!(!dir.starts_with("/tmp"), "REFUSED: {variable} is in /tmp");
+        dir
+    }
+
+    /// `REVERIE_TEST_REFLINK_DIR`: a directory on btrfs or XFS, whose files
+    /// can share extents (FICLONERANGE, FIDEDUPERANGE), by its statfs f_type.
+    fn reflink_dir() -> std::path::PathBuf {
+        let dir = required_dir("REVERIE_TEST_REFLINK_DIR");
+        let kind = statfs_type(&dir);
+        assert!(
+            kind == BTRFS_SUPER_MAGIC || kind == XFS_SUPER_MAGIC,
+            "REFUSED: REVERIE_TEST_REFLINK_DIR is on statfs f_type {kind:#x}, not btrfs or XFS"
+        );
+        dir
+    }
+
+    /// `REVERIE_TEST_SECOND_FS_DIR`: a directory on another file system than
+    /// `reflink`, by st_dev and statfs f_fsid. A btrfs subvolume has its own
+    /// of both on the same superblock; [`require_other_superblock`] asks
+    /// Linux itself.
+    fn second_fs_dir(reflink: &std::path::Path) -> std::path::PathBuf {
+        use std::os::unix::fs::MetadataExt;
+        let dir = required_dir("REVERIE_TEST_SECOND_FS_DIR");
+        let device = |path: &std::path::Path| std::fs::metadata(path).unwrap().dev();
+        assert_ne!(
+            device(&dir),
+            device(reflink),
+            "REFUSED: REVERIE_TEST_SECOND_FS_DIR has the st_dev of REVERIE_TEST_REFLINK_DIR"
+        );
+        assert_ne!(
+            fsid(&dir),
+            fsid(reflink),
+            "REFUSED: REVERIE_TEST_SECOND_FS_DIR has the f_fsid of REVERIE_TEST_REFLINK_DIR"
+        );
+        dir
+    }
+
+    /// `dir`'s statfs f_type, whose width differs between targets.
+    #[allow(clippy::unnecessary_cast)]
+    fn statfs_type(dir: &std::path::Path) -> i64 {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).unwrap();
+        let mut status: libc::statfs = unsafe { core::mem::zeroed() };
+        let queried = unsafe { libc::statfs(path.as_ptr(), &mut status) };
+        let error = io::Error::last_os_error();
+        assert_eq!(queried, 0, "REFUSED: statfs: {error}");
+        status.f_type as i64
+    }
+
+    /// `dir`'s statfs f_fsid, as statvfs reports it.
+    fn fsid(dir: &std::path::Path) -> libc::c_ulong {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).unwrap();
+        let mut status: libc::statvfs = unsafe { core::mem::zeroed() };
+        let queried = unsafe { libc::statvfs(path.as_ptr(), &mut status) };
+        let error = io::Error::last_os_error();
+        assert_eq!(queried, 0, "REFUSED: statvfs: {error}");
+        status.f_fsid
+    }
+
+    /// Refuses unless `other` is on another superblock than `dir`: a
+    /// FICLONERANGE between files on the two answers EXDEV, from Linux's own
+    /// comparison of the two inodes' superblocks (fs/remap_range.c:384-385),
+    /// which a btrfs subvolume of the same file system does not pass.
+    fn require_other_superblock(dir: &std::path::Path, other: &std::path::Path) {
+        let destination = file_in(dir, "superblock-probe", &[], false);
+        let content = pattern(DEDUPE_BYTES, 0);
+        let source = file_in(other, "superblock-probe", &content, false);
+        let range = CloneRange {
+            src_fd: source.into(),
+            ..Default::default()
+        };
+        let args = clone_args(destination, &raw const range);
+        let cloned = unsafe { raw_syscall6(libc::SYS_ioctl, args) };
+        unsafe { libc::close(source) };
+        unsafe { libc::close(destination) };
+        assert_eq!(
+            cloned,
+            errno(libc::EXDEV),
+            "REFUSED: REVERIE_TEST_SECOND_FS_DIR is on the reflink directory's superblock"
+        );
+    }
+
+    /// A file this test creates in `dir` holding `contents`, opened read-only
+    /// or for reading and writing, and unlinked before it is returned, so
+    /// nothing is left behind. A directory it cannot create a file in
+    /// refuses.
+    fn file_in(
+        dir: &std::path::Path,
+        label: &str,
+        contents: &[u8],
+        read_only: bool,
+    ) -> libc::c_int {
+        use std::os::fd::IntoRawFd;
+        use std::os::unix::fs::FileExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        static CREATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let serial = CREATED.fetch_add(1, Ordering::Relaxed);
+        let name = format!("reverie-protect-{}-{serial}-{label}", std::process::id());
+        let path = dir.join(name);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap_or_else(|error| panic!("REFUSED: cannot create a test file: {error}"));
+        let written = file.write_all_at(contents, 0);
+        let reopened = read_only.then(|| std::fs::File::open(&path));
+        let removed = std::fs::remove_file(&path);
+        written.expect("write the test file");
+        removed.expect("unlink the test file");
+        match reopened {
+            Some(reader) => reader.expect("reopen read-only").into_raw_fd(),
+            None => file.into_raw_fd(),
+        }
+    }
+
+    /// Two files in `dir` with the same 4,096 bytes: a dedupe's source and a
+    /// destination Linux can share them with.
+    fn equal_pair(dir: &std::path::Path) -> (libc::c_int, libc::c_int) {
+        let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+        let source = file_in(dir, "dedupe-src", &content, false);
+        let destination = file_in(dir, "dedupe-dst", &content, false);
+        (source, destination)
+    }
+
+    /// A `struct file_dedupe_range` asking to dedupe a source's first 4,096
+    /// bytes into `dest_fd` at offset 0.
+    fn dedupe_request(dest_fd: i64) -> DedupeOne {
+        DedupeOne {
+            src_length: DEDUPE_BYTES as u64,
+            dest_count: 1,
+            info: DedupeInfo {
+                dest_fd,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Cell K4 FC0, and K1's dedupe: a real FIDEDUPERANGE of two equal files
+    /// in `dir` through the copy, naming no reserved descriptor. The kernel
+    /// is given the process's buffer holding the guest's own request; Linux
+    /// answers 0 with entry 0 {G, 0, bytes_deduped 4096, status 0}
+    /// (fs/remap_range.c:538-559) and that is written back. Leaves the
+    /// request, with Linux's results, in the buffer, and returns the files.
+    fn real_dedupe(dir: &std::path::Path, buffer: &OperandBuffer) -> (libc::c_int, libc::c_int) {
+        let (source, destination) = equal_pair(dir);
+        let mut request = dedupe_request(destination.into());
+        let asked = request;
+        let guest = &raw mut request;
+        let mut seen = None;
+        let result = guest_call(libc::SYS_ioctl, dedupe_args(source, guest), |call| {
+            let copy = unsafe { (call.args[2] as *const DedupeOne).read_unaligned() };
+            seen = Some((call.args[2], copy));
+        });
+        assert_eq!(result, 0);
+        let answered = DedupeInfo {
+            dest_fd: destination.into(),
+            bytes_deduped: DEDUPE_BYTES as u64,
+            ..Default::default()
+        };
+        assert_eq!(request.info, answered, "Linux's entry 0");
+        let header = (request.src_offset, request.src_length, request.dest_count);
+        assert_eq!(header, (0, asked.src_length, 1));
+        let (pointer, copy) = seen.unwrap();
+        assert_eq!(pointer, buffer_data(buffer), "given the buffer");
+        assert_eq!(copy, asked, "holding the guest's own request");
+        (source, destination)
+    }
+
+    /// Cell K1 (real-descriptor controls, files). With a reserved descriptor
+    /// in the process, a FICLONERANGE between two files on the reflink file
+    /// system answers 0 and the destination then equals the source; the
+    /// kernel is given a copy of the guest's operand, unchanged, as it names
+    /// no reserved descriptor. A dedupe of two equal 4,096-byte files answers
+    /// status 0 with bytes_deduped 4096 ([`real_dedupe`]).
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_clone_and_a_dedupe_of_guest_files_run_on_the_copy() {
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            let buffer = operand_buffer();
+            let content = pattern(65_536, 7);
+            let source = file_in(&dir, "k1-src", &content, false);
+            let destination = file_in(&dir, "k1-dst", &[], false);
+            let range = CloneRange {
+                src_fd: source.into(),
+                src_length: content.len() as u64,
+                ..Default::default()
+            };
+            let guest = (&raw const range) as u64;
+            let args = clone_args(destination, &raw const range);
+            let mut seen = None;
+            let result = guest_call(libc::SYS_ioctl, args, |call| {
+                let copy = unsafe { (call.args[2] as *const CloneRange).read_unaligned() };
+                seen = Some((call.args[2], copy));
+            });
+            assert_eq!(result, 0);
+            let cloned = contents_of(destination);
+            assert!(cloned == content, "dst holds the source");
+            let (pointer, copy) = seen.unwrap();
+            assert_ne!(pointer, guest, "the kernel was given a copy");
+            assert_eq!(copy, range, "nothing in it is reserved");
+            real_dedupe(&dir, buffer);
+        });
+    }
+
+    /// Cell K1 (real-descriptor control, kcmp). With a reserved descriptor
+    /// in the process, kcmp(self, self, KCMP_FILE, G, G) of a guest
+    /// descriptor answers 0, and the kernel is given the guest's own indices.
+    #[test]
+    fn a_guest_kcmp_of_its_own_descriptor_compares_it() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            require_kcmp();
+            let _counter = runtime_counter();
+            let guest = open_eventfd() as u64;
+            let args = kcmp_args(own_pid(), reserved_fds::KCMP_FILE, guest, guest);
+            let mut seen = None;
+            let result = guest_call(libc::SYS_kcmp, args, |call| seen = Some(call.args));
+            assert_eq!(result, 0);
+            assert_eq!(seen, Some(args), "nothing substituted");
+        });
+    }
+
+    /// Cell K2 (check-to-act: FICLONERANGE src_fd, FIDEDUPERANGE dest_fd).
+    /// The guest's field names C, a number never open, which the copy keeps.
+    /// While the call is being forwarded, another writer makes the guest's
+    /// field name O, a regular file on another superblock. The kernel reads
+    /// the copy: FICLONERANGE answers EBADF (fs/ioctl.c:237-238) and the
+    /// dedupe entry gets status -9 (fs/remap_range.c:539-542), where O would
+    /// have given EXDEV (:384-385) and status -18 (:466-468).
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn the_kernel_reads_the_operand_copy_not_the_rewritten_guest_struct() {
+        let dir = reflink_dir();
+        let other = second_fs_dir(&dir);
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            require_other_superblock(&dir, &other);
+            let _counter = runtime_counter();
+            operand_buffer();
+            let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+            let elsewhere = file_in(&other, "k2-other", &content, false);
+            let destination = file_in(&dir, "k2-dst", &[], false);
+            let mut range = CloneRange {
+                src_fd: NEVER_OPEN as i64,
+                ..Default::default()
+            };
+            let guest = &raw mut range;
+            let mut seen = None;
+            let result = guest_call(libc::SYS_ioctl, clone_args(destination, guest), |call| {
+                let copy = unsafe { (call.args[2] as *const CloneRange).read_unaligned() };
+                seen = Some(copy);
+                unsafe { (*guest).src_fd = elsewhere.into() };
+            });
+            assert_eq!(result, errno(libc::EBADF), "clone: read the copy");
+            let copy = seen.unwrap();
+            assert_eq!(copy.src_fd, NEVER_OPEN as i64, "the copy kept C");
+            assert_eq!(range.src_fd, i64::from(elsewhere), "rewritten");
+            let source = file_in(&dir, "k2-src", &content, false);
+            let mut request = dedupe_request(NEVER_OPEN as i64);
+            let guest = &raw mut request;
+            let mut seen = None;
+            let result = guest_call(libc::SYS_ioctl, dedupe_args(source, guest), |call| {
+                let copy = unsafe { (call.args[2] as *const DedupeOne).read_unaligned() };
+                seen = Some(copy);
+                unsafe { (*guest).info.dest_fd = elsewhere.into() };
+            });
+            assert_eq!(request.info.status, -libc::EBADF, "dedupe: read the copy");
+            assert_eq!(result, 0);
+            let copy = seen.unwrap();
+            assert_eq!(copy.info.dest_fd, NEVER_OPEN as i64, "the copy kept C");
+        });
+    }
+
+    /// Cell K2 (check-to-act: KCMP_EPOLL_TFD efd). The guest's slot names C,
+    /// which the copy keeps; while the call is being forwarded, another
+    /// writer makes it name a guest epoll that holds the compared file. The
+    /// kernel reads the copy and answers EBADF (kernel/kcmp.c:113-115);
+    /// Linux answers the rewritten slot with 0.
+    #[test]
+    fn the_kernel_reads_the_epoll_slot_copy_not_the_rewritten_guest_slot() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            require_kcmp();
+            let _counter = runtime_counter();
+            let target = open_eventfd();
+            let epoll = epoll_holding(target);
+            let mut slot = EpollSlot {
+                efd: NEVER_OPEN as u32,
+                tfd: target as u32,
+                toff: 0,
+            };
+            let asked = slot;
+            let guest = &raw mut slot;
+            let args = epoll_args(target, guest);
+            let mut seen = None;
+            let result = guest_call(libc::SYS_kcmp, args, |call| {
+                let copy = unsafe { (call.args[4] as *const EpollSlot).read_unaligned() };
+                seen = Some((call.args[4], copy));
+                unsafe { (*guest).efd = epoll as u32 };
+            });
+            assert_eq!(result, errno(libc::EBADF), "the kernel read the copy");
+            let (pointer, copy) = seen.unwrap();
+            assert_ne!(pointer, guest as u64, "it was given a copy");
+            assert_eq!(copy, asked, "holding the slot as checked");
+            let linux = unsafe { raw_syscall6(libc::SYS_kcmp, args) };
+            assert_eq!(linux, 0, "Linux's answer for the rewritten slot");
+        });
+    }
+
+    /// Cell K3 (fail-closed: FICLONERANGE, and the dedupe's step 1). A filter
+    /// answers every process_vm_writev with ERRNO (data 0, a copy of
+    /// nothing, then EPERM), so no copy succeeds. A FICLONERANGE whose
+    /// source is a reserved memfd and whose destination is on the reflink
+    /// file system answers EFAULT: the kernel was given the refused pointer,
+    /// whose read fails (fs/ioctl.c:255), never the guest's struct, which
+    /// gives EXDEV. A dedupe whose count read fails answers EFAULT at Linux's
+    /// own count read (fs/ioctl.c:423-426), and nothing is written back. Each
+    /// filter runs in a child of its own.
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_failed_operand_copy_forwards_the_refused_pointer() {
+        let dir = reflink_dir();
+        for data in [0, libc::EPERM as u32] {
+            let dir = dir.clone();
+            in_child_with_soft_nofile(2048, move || {
+                child_panics_to_stderr();
+                operand_buffer();
+                let reserved = runtime_memfd(&pattern(DEDUPE_BYTES, 5));
+                let destination = file_in(&dir, "k3-dst", &[], false);
+                let (source, target) = equal_pair(&dir);
+                let content = contents_of(target);
+                refuse_runtime_copies(data);
+                let range = CloneRange {
+                    src_fd: reserved.into(),
+                    src_length: DEDUPE_BYTES as u64,
+                    ..Default::default()
+                };
+                let args = clone_args(destination, &raw const range);
+                let result = guest_call(libc::SYS_ioctl, args, |_| {});
+                assert_eq!(result, errno(libc::EFAULT), "clone, data {data}");
+                assert!(contents_of(destination).is_empty(), "nothing was cloned");
+                let mut request = dedupe_request(target.into());
+                let asked = request;
+                let args = dedupe_args(source, &raw mut request);
+                let result = guest_call(libc::SYS_ioctl, args, |_| {});
+                assert_eq!(result, errno(libc::EFAULT), "dedupe, data {data}");
+                assert_eq!(request, asked, "nothing was written back");
+                assert!(contents_of(target) == content, "destination unchanged");
+            });
+        }
+    }
+
+    /// Cell K3 (fail-closed: the epoll slot). Under the same filter, a
+    /// KCMP_EPOLL_TFD whose slot names a guest epoll holding the compared
+    /// file answers EFAULT, from Linux's read of the slot
+    /// (kernel/kcmp.c:106-107): the kernel was given the refused pointer.
+    /// Linux answers the guest's own slot with 0.
+    #[test]
+    fn a_failed_epoll_slot_copy_forwards_the_refused_pointer() {
+        for data in [0, libc::EPERM as u32] {
+            in_child_with_soft_nofile(2048, move || {
+                child_panics_to_stderr();
+                require_kcmp();
+                let _counter = runtime_counter();
+                let target = open_eventfd();
+                let slot = EpollSlot {
+                    efd: epoll_holding(target) as u32,
+                    tfd: target as u32,
+                    toff: 0,
+                };
+                let args = epoll_args(target, &raw const slot);
+                refuse_runtime_copies(data);
+                let result = guest_call(libc::SYS_kcmp, args, |_| {});
+                assert_eq!(result, errno(libc::EFAULT), "data {data}");
+                let linux = unsafe { raw_syscall6(libc::SYS_kcmp, args) };
+                assert_eq!(linux, 0, "Linux's answer for the guest's slot");
+            });
+        }
+    }
+
+    /// Cell K3 (dedupe step 3, (i): filter-chosen). A supervisor runs the
+    /// first process_vm_writev, the count read, and answers the second, the
+    /// full copy, with EPERM. The dedupe answers EFAULT: the kernel was given
+    /// the refused pointer, whose count read fails (fs/ioctl.c:423-426), and
+    /// nothing is written back.
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_dedupe_whose_full_copy_is_refused_answers_efault() {
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let answers = [HeldAnswer::Continue, HeldAnswer::Errno(libc::EPERM)];
+            let held = calls_held(
+                libc::SYS_process_vm_writev,
+                |index, _| answers[index],
+                || {
+                    let _counter = runtime_counter();
+                    operand_buffer();
+                    equal_pair(&dir)
+                },
+                |(source, target)| {
+                    let content = contents_of(target);
+                    let mut request = dedupe_request(target.into());
+                    let asked = request;
+                    let args = dedupe_args(source, &raw mut request);
+                    let result = guest_call(libc::SYS_ioctl, args, |_| {});
+                    assert_eq!(result, errno(libc::EFAULT));
+                    assert_eq!(request, asked, "nothing was written back");
+                    assert!(contents_of(target) == content, "destination unchanged");
+                },
+            );
+            assert_eq!(held.len(), 2, "the count read, then the refused copy");
+        });
+    }
+
+    /// Cell K3 (dedupe step 3, (ii): a genuine fault, not a filter). The
+    /// guest's 24-byte header ends a readable page and its entry begins a
+    /// page nobody can read, so the count read succeeds and the full copy
+    /// faults. The dedupe answers EFAULT, which is also Linux's own answer
+    /// for that struct, from its memdup_user (fs/ioctl.c:434-438), and
+    /// nothing is written back. This pins the refused-pointer path against
+    /// Linux's own answer and does not tell it from a forward of the guest's
+    /// pointer. memfds stand in for the files: Linux faults before it looks
+    /// at them.
+    #[test]
+    fn a_dedupe_whose_entry_faults_answers_efault_as_linux_does() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            operand_buffer();
+            let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+            let source = memfd(&content);
+            let target = memfd(&content);
+            let pages = unsafe {
+                libc::mmap(
+                    core::ptr::null_mut(),
+                    8192,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            assert_ne!(pages, libc::MAP_FAILED);
+            let request = dedupe_request(target.into());
+            let header_at = 4096 - reserved_fds::DEDUPE_HEADER_SIZE;
+            let header = unsafe { pages.cast::<u8>().add(header_at).cast::<DedupeOne>() };
+            unsafe { header.write_unaligned(request) };
+            let entry = unsafe { pages.cast::<u8>().add(4096) };
+            assert_eq!(
+                unsafe { libc::mprotect(entry.cast(), 4096, libc::PROT_NONE) },
+                0
+            );
+            let args = dedupe_args(source, header);
+            let result = guest_call(libc::SYS_ioctl, args, |_| {});
+            assert_eq!(result, errno(libc::EFAULT));
+            let linux = unsafe { raw_syscall6(libc::SYS_ioctl, args) };
+            assert_eq!(result, linux, "Linux's own answer for the struct");
+            assert_eq!(
+                unsafe { libc::mprotect(entry.cast(), 4096, libc::PROT_READ) },
+                0
+            );
+            let after = unsafe { header.read_unaligned() };
+            assert_eq!(after, request, "nothing was written back");
+            assert!(contents_of(target) == content, "destination unchanged");
+        });
+    }
+
+    /// Cell K4 FC1 (a supervisor fabricates the FICLONERANGE copy). Every
+    /// process_vm_writev reports its full count without copying, so the
+    /// kernel is given the copy's zero-filled 32 bytes: src_fd 0, offsets 0,
+    /// length 0. Descriptor 0 is Z, a 65,536-byte file opened read-only on
+    /// the reflink file system, and the guest's struct names another file,
+    /// Y. The call answers 0 (a zero length clones to the source's end,
+    /// fs/remap_range.c:300-309, and is a whole success, fs/ioctl.c:243-246),
+    /// and the destination then holds all of Z.
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_fabricated_clone_range_copy_clones_descriptor_zero_whole() {
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let z = pattern(65_536, 8);
+            let y = pattern(DEDUPE_BYTES, 9);
+            let held = calls_held(
+                libc::SYS_process_vm_writev,
+                |_, _| HeldAnswer::Fake(reserved_fds::FILE_CLONE_RANGE_SIZE as i64),
+                || {
+                    let _counter = runtime_counter();
+                    let zero = file_in(&dir, "fc1-z", &z, true);
+                    assert_eq!(unsafe { libc::dup2(zero, 0) }, 0);
+                    unsafe { libc::close(zero) };
+                    let destination = file_in(&dir, "fc1-dst", &[], false);
+                    (destination, file_in(&dir, "fc1-y", &y, false))
+                },
+                |(destination, other)| {
+                    let range = CloneRange {
+                        src_fd: other.into(),
+                        ..Default::default()
+                    };
+                    let args = clone_args(destination, &raw const range);
+                    let mut seen = None;
+                    let result = guest_call(libc::SYS_ioctl, args, |call| {
+                        let copy = unsafe { (call.args[2] as *const [u8; 32]).read_unaligned() };
+                        seen = Some((call.args[2], copy));
+                    });
+                    let cloned = contents_of(destination);
+                    assert!(cloned == z, "dst holds Z: {} bytes", cloned.len());
+                    assert_eq!(result, 0);
+                    let (pointer, copy) = seen.unwrap();
+                    assert_eq!(copy, [0; 32], "the copy is zero-filled");
+                    assert_ne!(pointer, args[2], "and the kernel was given it");
+                },
+            );
+            assert_eq!(held.len(), 1, "one copy, fabricated");
+        });
+    }
+
+    /// Cell K4 FC0 (the real-copy control, and FC2's and FC3's setup):
+    /// [`real_dedupe`].
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_real_dedupe_through_the_copy_gets_linux_s_result() {
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            real_dedupe(&dir, operand_buffer());
+        });
+    }
+
+    /// Cell K4 FC2 (FC0, then a supervisor fabricates every copy), in a child
+    /// of its own. The fabricated count read leaves a count of 0, so the
+    /// kernel is given a zero header of 24 + 32 × 0 bytes and answers 0, both
+    /// loops over the entries running zero times (fs/remap_range.c:533, 538).
+    /// The runtime writes those 24 zero bytes back: the guest's bytes 0..24
+    /// become zero, its bytes 24..56 and G are unchanged.
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_fabricated_dedupe_count_dispatches_an_empty_request() {
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let answers = [HeldAnswer::Fake(2), HeldAnswer::Fake(24)];
+            let held = calls_held(
+                libc::SYS_process_vm_writev,
+                |index, _| answers[index],
+                || {
+                    let _counter = runtime_counter();
+                    real_dedupe(&dir, operand_buffer())
+                },
+                |(source, target)| {
+                    let content = contents_of(target);
+                    let mut request = dedupe_request(target.into());
+                    let asked = request;
+                    let args = dedupe_args(source, &raw mut request);
+                    let mut seen = None;
+                    let result = guest_call(libc::SYS_ioctl, args, |call| {
+                        let header = unsafe { (call.args[2] as *const [u8; 24]).read_unaligned() };
+                        seen = Some(header);
+                    });
+                    assert_eq!(seen, Some([0; 24]), "zero: count 0, so 24 bytes");
+                    assert_eq!(result, 0);
+                    let header = (request.src_offset, request.src_length, request.dest_count);
+                    assert_eq!(header, (0, 0, 0), "guest bytes 0..24 are zero");
+                    assert_eq!((request.reserved1, request.reserved2), (0, 0));
+                    assert_eq!(request.info, asked.info, "bytes 24..56 are unchanged");
+                    assert!(contents_of(target) == content, "G is unchanged");
+                },
+            );
+            assert_eq!(held.len(), 2, "both copies fabricated");
+        });
+    }
+
+    /// Cell K4 FC3 (FC0, then the count read runs and the full copy is
+    /// fabricated), in a child of its own, so the buffer holds exactly FC0's
+    /// request and results. Descriptor 0 is W, a file on the second file
+    /// system opened for writing, and the guest's struct is {0, 4096, 1,
+    /// [G2, 0]}, G2 holding the source's bytes. The count read gives 1 and
+    /// the fabricated copy leaves the zero-filled buffer: the kernel is given
+    /// count 1 (so 56 bytes), offsets 0 and an entry all zero, naming
+    /// descriptor 0. Linux answers 0 with that entry's status -18, W being on
+    /// another superblock (fs/remap_range.c:466-468), and the runtime writes
+    /// back header {0, 0, 1, 0, 0} and entry {0, 0, 0, -18, 0}: no byte of
+    /// FC0's request. (-18 is unmeasured: a different first measurement goes
+    /// back for review and is never re-fitted.)
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn a_fabricated_full_dedupe_copy_never_carries_an_earlier_request() {
+        let dir = reflink_dir();
+        let other = second_fs_dir(&dir);
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            require_other_superblock(&dir, &other);
+            let full = reserved_fds::DEDUPE_HEADER_SIZE + reserved_fds::DEDUPE_INFO_SIZE;
+            let answers = [HeldAnswer::Continue, HeldAnswer::Fake(full as i64)];
+            let held = calls_held(
+                libc::SYS_process_vm_writev,
+                |index, _| answers[index],
+                || {
+                    let _counter = runtime_counter();
+                    let (source, _) = real_dedupe(&dir, operand_buffer());
+                    let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+                    let same = file_in(&dir, "fc3-g2", &content, false);
+                    let elsewhere = file_in(&other, "fc3-w", &content, false);
+                    assert_eq!(unsafe { libc::dup2(elsewhere, 0) }, 0);
+                    unsafe { libc::close(elsewhere) };
+                    (source, same)
+                },
+                |(source, same)| {
+                    let content = contents_of(same);
+                    let mut request = dedupe_request(same.into());
+                    let args = dedupe_args(source, &raw mut request);
+                    let mut seen = None;
+                    let result = guest_call(libc::SYS_ioctl, args, |call| {
+                        let copy = unsafe { (call.args[2] as *const DedupeOne).read_unaligned() };
+                        seen = Some(copy);
+                    });
+                    let copy = seen.unwrap();
+                    let zero = DedupeInfo::default();
+                    assert_eq!(copy.info, zero, "dispatched entry 0 all zero");
+                    let header = (copy.src_offset, copy.src_length, copy.dest_count);
+                    assert_eq!(header, (0, 0, 1), "count 1, so 56 bytes; offsets 0");
+                    assert_eq!((copy.reserved1, copy.reserved2), (0, 0));
+                    assert_eq!(result, 0);
+                    let answered = DedupeOne {
+                        dest_count: 1,
+                        info: DedupeInfo {
+                            status: -libc::EXDEV,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
+                    assert_eq!(request, answered, "written back");
+                    assert!(contents_of(same) == content, "G2 is unchanged");
+                },
+            );
+            assert_eq!(held.len(), 2, "the real count read, the fabricated copy");
+        });
+    }
+
+    /// Cell K5 (a supervisor answers kcmp). A supervisor answers every
+    /// KCMP_FILES comparison with 1, as if the tables differed, and lets
+    /// every other kcmp run. kcmp(self, self, KCMP_FILE, R, G) still answers
+    /// EBADF: the reserved index becomes a closed number before the call, so
+    /// no answer of the supervisor's decides it, and Linux finds no file at
+    /// that number (kernel/kcmp.c:170-180).
+    #[test]
+    fn a_supervisor_cannot_answer_kcmp_for_a_reserved_index() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            require_kcmp();
+            let held = calls_held(
+                libc::SYS_kcmp,
+                |_, args| match args[2] as u32 {
+                    KCMP_FILES => HeldAnswer::Fake(1),
+                    _ => HeldAnswer::Continue,
+                },
+                runtime_counter,
+                |reserved| {
+                    let guest = open_eventfd() as u64;
+                    let file = reserved_fds::KCMP_FILE;
+                    let args = kcmp_args(own_pid(), file, reserved as u64, guest);
+                    let result = guest_call(libc::SYS_kcmp, args, |_| {});
+                    assert_eq!(result, errno(libc::EBADF));
+                },
+            );
+            let closed = u64::from(reserved_fds::CLOSED_DESCRIPTOR);
+            assert_eq!(held.len(), 1, "{held:?}");
+            assert_eq!(held[0][3], closed, "the kernel was given a closed index");
+        });
+    }
+
+    /// Cell K6's body: an idle child holds its own real copy of R, which
+    /// Linux compares with itself (0), and kcmp(child, child, KCMP_FILE, R,
+    /// R) through the seam answers EBADF, the declared over-refusal: an index
+    /// equal to a reserved number of this process becomes a closed number
+    /// whatever task it names. `band` is where R must have been placed.
+    fn kcmp_refuses_another_task_s_reserved_number(band: core::ops::Range<libc::c_int>) {
+        require_kcmp();
+        let reserved = runtime_counter();
+        assert!(band.contains(&reserved), "placed at {reserved}");
+        let child = idle_child();
+        let index = reserved as u64;
+        let args = kcmp_args(child.0 as u64, reserved_fds::KCMP_FILE, index, index);
+        let linux = unsafe { raw_syscall6(libc::SYS_kcmp, args) };
+        assert_eq!(linux, 0, "Linux compares it with itself");
+        let result = guest_call(libc::SYS_kcmp, args, |_| {});
+        assert_eq!(result, errno(libc::EBADF), "the declared over-refusal");
+        drop(child);
+    }
+
+    /// Cell K6 (over-refusal), with R at or above the runtime floor.
+    #[test]
+    fn kcmp_refuses_a_reserved_number_in_another_task() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            kcmp_refuses_another_task_s_reserved_number(RUNTIME_FD_MIN..2048);
+        });
+    }
+
+    /// Cell K6 (over-refusal, low band): with the soft RLIMIT_NOFILE at 16,
+    /// 1025 is refused and the fallback band starts at 16 - 8 = 8, so R is
+    /// in 8..15. Numbers 8 to 15 inherited from the test process are closed
+    /// first, so that the band has room.
+    #[test]
+    fn kcmp_refuses_a_reserved_number_in_another_task_in_the_low_band() {
+        in_child_with_soft_nofile(16, || {
+            child_panics_to_stderr();
+            let freed = unsafe { raw_syscall6(libc::SYS_close_range, [8, 15, 0, 0, 0, 0]) };
+            assert_eq!(freed, 0);
+            kcmp_refuses_another_task_s_reserved_number(8..16);
+        });
+    }
+
+    /// Cell K7 (the refused pointer). Linux refuses REFUSED_USER_POINTER as
+    /// an operand: FICLONERANGE's copy_from_user (fs/ioctl.c:255) and
+    /// FIDEDUPERANGE's read of its count (fs/ioctl.c:423) answer EFAULT on a
+    /// regular file (a memfd: no file system is needed). Here on x86-64;
+    /// the same test is arm64's.
+    #[test]
+    fn the_refused_pointer_is_efault_for_clone_and_dedupe() {
+        in_child(|| {
+            child_panics_to_stderr();
+            let file = memfd(&pattern(DEDUPE_BYTES, 3));
+            let pointer = REFUSED_USER_POINTER;
+            for command in [FICLONERANGE, FIDEDUPERANGE] {
+                let args = [file as u64, command.into(), pointer, 0, 0, 0];
+                let result = unsafe { raw_syscall6(libc::SYS_ioctl, args) };
+                assert_eq!(result, errno(libc::EFAULT), "{command:#x}");
+            }
+        });
+    }
+
+    /// io_uring_setup(1, params)'s arguments, with `params` a zeroed
+    /// `struct io_uring_params` (120 bytes).
+    fn io_uring_setup_args(params: &mut [u64; 15]) -> [u64; 6] {
+        [1, params.as_mut_ptr() as u64, 0, 0, 0, 0]
+    }
+
+    /// Cell K8's three guest io_uring calls: setup,
+    /// enter(C, 0, 0, 0, NULL, 0) and register(C, 0, NULL, 0). C is never
+    /// open, and is not -1, which register takes as its blind-opcode path
+    /// (io_uring/register.c:1020-1021).
+    fn io_uring_calls(params: &mut [u64; 15]) -> [(i64, [u64; 6]); 3] {
+        let closed = [NEVER_OPEN, 0, 0, 0, 0, 0];
+        [
+            (libc::SYS_io_uring_setup, io_uring_setup_args(params)),
+            (libc::SYS_io_uring_enter, closed),
+            (libc::SYS_io_uring_register, closed),
+        ]
+    }
+
+    /// Cell K8 (io_uring, empty protected set). Every guest io_uring_setup,
+    /// io_uring_enter and io_uring_register answers ENOSYS on the Tool seam,
+    /// as on a kernel without io_uring (kernel/sys_ni.c:51-53), and the
+    /// raw-gate count is 0. The refusals are one count per process: three,
+    /// taken once; a Tool-origin call adds nothing; the fork and signal
+    /// records stay empty. A forked child after the parent's three reports
+    /// 0, then 1 after one refusal of its own, and the parent's three stay
+    /// its own.
+    #[test]
+    fn every_guest_io_uring_call_answers_enosys_and_is_counted_per_process() {
+        in_child(|| {
+            child_panics_to_stderr();
+            let (_, protected) = protected_descriptors(true);
+            assert_eq!(protected, 0, "REFUSED: needs no reserved descriptor");
+            let _ = take_refused_io_uring();
+            let _ = take_refused_process_creations();
+            let _ = take_refused_signal_controls();
+            let refuse_all = || {
+                let mut params = [0_u64; 15];
+                for (number, args) in io_uring_calls(&mut params) {
+                    let mut call = event(number, args);
+                    let ran = through_seam(&mut call, forward);
+                    assert_eq!(ran, 0, "{number}: nothing runs");
+                    assert_eq!(call.result, errno(libc::ENOSYS), "{number}");
+                }
+            };
+            refuse_all();
+            assert_eq!(take_refused_io_uring(), 3);
+            assert_eq!(take_refused_io_uring(), 0, "taken once");
+            // The Tool's own setup reaches its execution leaf, whatever the
+            // host answers there, and is never counted.
+            let mut params = [0_u64; 15];
+            let mut tool = event(libc::SYS_io_uring_setup, io_uring_setup_args(&mut params));
+            let mut executed = 0;
+            unsafe {
+                crate::guest::trap_dispatch::forward_nested_tool_syscall_with(
+                    &mut tool,
+                    |_| {},
+                    |call| {
+                        executed += 1;
+                        forward(call);
+                    },
+                )
+            };
+            assert_eq!(executed, 1, "a Tool-origin setup is not refused");
+            if tool.result >= 0 {
+                unsafe { libc::close(tool.result as libc::c_int) };
+            }
+            assert_eq!(take_refused_io_uring(), 0, "Tool calls are not counted");
+            assert_eq!(
+                take_refused_process_creations(),
+                RefusedProcessCreations::default()
+            );
+            assert_eq!(
+                take_refused_signal_controls(),
+                RefusedSignalControls::default()
+            );
+            refuse_all();
+            in_child(|| {
+                assert_eq!(take_refused_io_uring(), 0, "never its parent's");
+                let mut params = [0_u64; 15];
+                let args = io_uring_setup_args(&mut params);
+                let mut call = event(libc::SYS_io_uring_setup, args);
+                assert_eq!(through_seam(&mut call, forward), 0);
+                assert_eq!(call.result, errno(libc::ENOSYS));
+                assert_eq!(take_refused_io_uring(), 1, "its own refusal");
+            });
+            assert_eq!(take_refused_io_uring(), 3, "the parent's stay its own");
+        });
+    }
+
+    /// Cell K8 (the Tool-origin control). A setup the Tool makes itself,
+    /// through the nested Tool-call route, is not refused and gets a native
+    /// ring, and is not counted. Refuses on a host whose own io_uring_setup
+    /// fails.
+    #[test]
+    fn a_tool_io_uring_setup_gets_a_native_ring() {
+        in_child(|| {
+            child_panics_to_stderr();
+            let mut params = [0_u64; 15];
+            let args = io_uring_setup_args(&mut params);
+            let native = unsafe { raw_syscall6(libc::SYS_io_uring_setup, args) };
+            assert!(native >= 0, "REFUSED: native io_uring_setup: {native}");
+            unsafe { libc::close(native as libc::c_int) };
+            let _ = take_refused_io_uring();
+            let mut params = [0_u64; 15];
+            let mut tool = event(libc::SYS_io_uring_setup, io_uring_setup_args(&mut params));
+            unsafe {
+                crate::guest::trap_dispatch::forward_nested_tool_syscall_with(
+                    &mut tool,
+                    |_| {},
+                    forward,
+                )
+            };
+            assert!(tool.result >= 0, "the Tool's ring: {}", tool.result);
+            unsafe { libc::close(tool.result as libc::c_int) };
+            assert_eq!(take_refused_io_uring(), 0);
+        });
+    }
+
+    /// Cell K9 (x32). The x32 numbers of io_uring's three calls (with
+    /// __X32_SYSCALL_BIT, arch/x86/entry/syscall_64.c:76) answer ENOSYS on
+    /// the Tool seam, and nothing runs.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn x32_io_uring_calls_answer_enosys_on_the_tool_seam() {
+        in_child(|| {
+            child_panics_to_stderr();
+            for number in 0x4000_01a9..=0x4000_01ab_i64 {
+                let mut call = event(number, [NEVER_OPEN, 0, 0, 0, 0, 0]);
+                let ran = through_seam(&mut call, forward);
+                assert_eq!(ran, 0, "{number:#x}: nothing runs");
+                assert_eq!(call.result, errno(libc::ENOSYS), "{number:#x}");
+            }
+        });
+    }
+
+    /// The Tool's physical forward of a guest call: refused with what
+    /// `restorer::mapping_change_result` answers, as host.rs refuses it, or
+    /// run.
+    #[cfg(target_arch = "x86_64")]
+    fn guarded_forward(call: &mut SyscallEvent) {
+        match crate::guest::restorer::mapping_change_result(call.number, call.args) {
+            Some(refused) => call.result = refused,
+            None => forward(call),
+        }
+    }
+
+    /// Cell K10's four guest mapping changes, each over one page of the
+    /// FIDEDUPERANGE buffer at `base`, so that each is valid alone: a
+    /// MAP_FIXED mmap over page 0, a munmap of page 1, an in-place mremap of
+    /// page 2 and an mprotect of page 3, each through [`through_seam`] with
+    /// [`guarded_forward`]. Returns each page and its call's result.
+    #[cfg(target_arch = "x86_64")]
+    fn guest_remaps(base: u64) -> [(u64, i64); 4] {
+        let page = |index: u64| base + index * 4096;
+        let rw = (libc::PROT_READ | libc::PROT_WRITE) as u64;
+        let fixed = (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as u64;
+        let calls = [
+            (libc::SYS_mmap, [page(0), 4096, rw, fixed, u64::MAX, 0]),
+            (libc::SYS_munmap, [page(1), 4096, 0, 0, 0, 0]),
+            (libc::SYS_mremap, [page(2), 4096, 4096, 0, 0, 0]),
+            (libc::SYS_mprotect, [page(3), 4096, rw, 0, 0, 0]),
+        ];
+        calls.map(|(number, args)| {
+            let mut call = event(number, args);
+            assert_eq!(through_seam(&mut call, guarded_forward), 1);
+            (args[0], call.result)
+        })
+    }
+
+    /// Cell K10 (the buffer under the mapping guard; owner published, 4 KiB
+    /// pages). With a ToolRegion owner published, install takes the
+    /// FIDEDUPERANGE buffer as a lease of the reservation, and a guest
+    /// MAP_FIXED mmap, munmap, mremap and mprotect over it each answer EPERM
+    /// (restorer.rs `owner_overlaps`, `mapping_change_result`); a sentinel
+    /// byte on each page is unchanged.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_published_owner_refuses_guest_remaps_of_the_dedupe_buffer() {
+        in_child(|| {
+            child_panics_to_stderr();
+            let inherited = OPERAND_BUFFER.load(Ordering::Acquire);
+            assert!(inherited.is_null(), "REFUSED: a buffer exists");
+            let region = crate::guest::tool_region::ToolRegion::reserve()
+                .unwrap_or_else(|error| panic!("REFUSED: no ToolRegion owner here: {error}"));
+            assert!(crate::guest::tool_region::published_owner().is_some());
+            initialize_operand_buffer(StackBacking::ToolRegion(region));
+            let base = OPERAND_BUFFER.load(Ordering::Acquire) as u64;
+            assert_ne!(base, 0, "a buffer was taken");
+            for index in 0..4 {
+                let sentinel = (base + index * 4096 + 8) as *mut u8;
+                unsafe { sentinel.write_volatile(0xA5 ^ index as u8) };
+            }
+            let results = guest_remaps(base).map(|(_, result)| result);
+            let refused = [errno(libc::EPERM); 4];
+            assert_eq!(results, refused, "mmap, munmap, mremap, mprotect");
+            for index in 0..4 {
+                let sentinel = (base + index * 4096 + 8) as *const u8;
+                let byte = unsafe { sentinel.read_volatile() };
+                assert_eq!(byte, 0xA5 ^ index as u8, "page {index}");
+            }
+            let start = crate::guest::tool_region::BASE as u64;
+            let end = crate::guest::tool_region::END as u64;
+            assert!((start..end).contains(&base), "a lease of the reservation");
+        });
+    }
+
+    /// Cell K10 (the declared unguarded case). With no owner published,
+    /// install takes the buffer as guarded anonymous memory, and the same
+    /// four guest mapping changes are forwarded and succeed: a pin of the
+    /// declared limit, not a protection claim.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn without_an_owner_guest_remaps_of_the_dedupe_buffer_go_ahead() {
+        in_child(|| {
+            child_panics_to_stderr();
+            let owner = crate::guest::tool_region::published_owner();
+            assert!(owner.is_none(), "REFUSED: an owner is published");
+            let inherited = OPERAND_BUFFER.load(Ordering::Acquire);
+            assert!(inherited.is_null(), "REFUSED: a buffer exists");
+            initialize_operand_buffer(StackBacking::Legacy);
+            let base = OPERAND_BUFFER.load(Ordering::Acquire) as u64;
+            assert_ne!(base, 0, "a buffer was taken");
+            let start = crate::guest::tool_region::BASE as u64;
+            let end = crate::guest::tool_region::END as u64;
+            assert!(!(start..end).contains(&base), "not in a reservation");
+            let remaps = guest_remaps(base);
+            let forwarded = [remaps[0].0 as i64, 0, remaps[2].0 as i64, 0];
+            let results = remaps.map(|(_, result)| result);
+            assert_eq!(results, forwarded, "mmap, munmap, mremap, mprotect");
+        });
+    }
+
+    /// Runs a guest FIDEDUPERANGE with `args` through the seam with a
+    /// dispatch that records the buffer's holder and panics, catches the
+    /// unwind, and returns the holder the dispatch saw.
+    fn unwind_inside_dedupe(buffer: &OperandBuffer, args: [u64; 6]) -> i32 {
+        let seen = core::cell::Cell::new(0);
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut call = event(libc::SYS_ioctl, args);
+            through_seam(&mut call, |_| {
+                seen.set(holder(buffer));
+                panic!("deliberate: a dispatch unwinds while it holds the buffer");
+            });
+        }));
+        assert!(unwound.is_err(), "the panic unwound to catch_unwind");
+        seen.get()
+    }
+
+    /// Cell K11 (the drop guard, unwinding build). A dispatch that panics
+    /// after the dedupe path took the buffer unwinds through the guard, which
+    /// frees it: afterwards the holder is clear, and the next dedupe takes
+    /// the buffer again and reaches Linux's own checks on the copy
+    /// (EOPNOTSUPP for a memfd source), not the held buffer's ENOMEM. A build
+    /// whose panics abort refuses. The next dedupe's status 0 with real files
+    /// is the reflink cell below.
+    #[test]
+    fn an_unwound_dispatch_frees_the_dedupe_buffer() {
+        require_unwinding();
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            let buffer = operand_buffer();
+            let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+            let source = memfd(&content);
+            let mut request = dedupe_request(memfd(&content).into());
+            let args = dedupe_args(source, &raw mut request);
+            let tid = gettid();
+            let held = unwind_inside_dedupe(buffer, args);
+            assert_eq!(held, tid, "the guard was taken first");
+            assert_eq!(holder(buffer), 0, "the unwind freed it");
+            let mut seen = None;
+            let result = guest_call(libc::SYS_ioctl, args, |call| {
+                seen = Some((holder(buffer), call.args[2]));
+            });
+            assert_eq!(result, errno(libc::EOPNOTSUPP), "the copy reached Linux");
+            assert_eq!(seen, Some((tid, buffer_data(buffer))), "held buffer");
+            assert_eq!(holder(buffer), 0);
+        });
+    }
+
+    /// Cell K11 (the drop guard, unwinding build, real files): after the
+    /// same unwind, a real dedupe of two equal files on the reflink file
+    /// system answers status 0 ([`real_dedupe`]).
+    #[test]
+    #[ignore = "requires REVERIE_TEST_REFLINK_DIR on btrfs or XFS and REVERIE_TEST_SECOND_FS_DIR on another filesystem; explicit supported-host selection"]
+    fn an_unwound_dispatch_leaves_the_next_real_dedupe_working() {
+        require_unwinding();
+        let dir = reflink_dir();
+        in_child_with_soft_nofile(2048, move || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            let buffer = operand_buffer();
+            let (source, target) = equal_pair(&dir);
+            let mut request = dedupe_request(target.into());
+            let held = unwind_inside_dedupe(buffer, dedupe_args(source, &raw mut request));
+            assert_eq!(held, gettid(), "the guard was taken first");
+            assert_eq!(holder(buffer), 0, "the unwind freed it");
+            real_dedupe(&dir, buffer);
+        });
+    }
+
+    /// Cell K12 (busy: the test holds the buffer). A dedupe that finds the
+    /// buffer held leaves it untouched and is still dispatched, on the
+    /// 24-byte header holding dest_count 0xFFFF, for which Linux answers
+    /// ENOMEM itself (fs/ioctl.c:429-432), here on a valid regular file; the
+    /// buffer is still held by the test.
+    #[test]
+    fn a_held_dedupe_buffer_is_untouched_and_the_call_answers_enomem() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            let _counter = runtime_counter();
+            let buffer = operand_buffer();
+            let content = pattern(DEDUPE_BYTES, DEDUPE_SEED);
+            let source = memfd(&content);
+            let mut request = dedupe_request(memfd(&content).into());
+            let guest = (&raw mut request) as u64;
+            let mut held = HeldOperandBuffer::take().expect("the buffer is free");
+            let snapshot = {
+                let (data, originals) = held.parts();
+                for (index, byte) in data.iter_mut().enumerate() {
+                    *byte = index as u8 ^ 0x5A;
+                }
+                originals.fill(-7);
+                (data.to_vec(), originals.to_vec())
+            };
+            let args = dedupe_args(source, &raw mut request);
+            let mut seen = None;
+            let result = guest_call(libc::SYS_ioctl, args, |call| {
+                let header = unsafe { (call.args[2] as *const [u8; 24]).read_unaligned() };
+                seen = Some((call.args[2], header));
+            });
+            let (data, originals) = held.parts();
+            assert!(data[..] == snapshot.0[..], "the held copy is untouched");
+            assert!(originals[..] == snapshot.1[..], "held originals untouched");
+            let (pointer, header) = seen.unwrap();
+            let mut oversize = [0_u8; 24];
+            let count = reserved_fds::DEDUPE_COUNT_OFFSET;
+            let marker = reserved_fds::DEDUPE_OVERSIZE_COUNT.to_ne_bytes();
+            oversize[count..count + 2].copy_from_slice(&marker);
+            assert_eq!(header, oversize, "a header holding dest_count 0xFFFF");
+            let start = buffer_data(buffer);
+            let in_buffer = (start..start + DEDUPE_BUFFER_BYTES as u64).contains(&pointer);
+            assert!(pointer != guest && !in_buffer, "the 24-byte stack header");
+            assert_eq!(result, errno(libc::ENOMEM));
+            assert_eq!(holder(buffer), gettid(), "still held by the test");
+            drop(held);
+        });
+    }
+
+    /// Cell K13 (no helper syscall). A guest kcmp naming a reserved index
+    /// runs exactly one syscall: the forward's raw gate sees one call, the
+    /// kcmp itself, and a supervisor holding every kcmp of the process sees
+    /// that one alone, with the closed number in place of the index.
+    #[test]
+    fn a_guest_kcmp_runs_exactly_one_syscall() {
+        in_child_with_soft_nofile(2048, || {
+            child_panics_to_stderr();
+            require_kcmp();
+            let held = calls_held(
+                libc::SYS_kcmp,
+                |_, _| HeldAnswer::Continue,
+                runtime_counter,
+                |reserved| {
+                    let guest = open_eventfd() as u64;
+                    let file = reserved_fds::KCMP_FILE;
+                    let args = kcmp_args(own_pid(), file, reserved as u64, guest);
+                    let mut call = event(libc::SYS_kcmp, args);
+                    let mut gated = Vec::new();
+                    let ran = through_seam(&mut call, |call| {
+                        gated.push(call.number);
+                        forward(call);
+                    });
+                    assert_eq!(ran, 1, "one raw-gate call");
+                    assert_eq!(gated, [libc::SYS_kcmp]);
+                    assert_eq!(call.result, errno(libc::EBADF));
+                },
+            );
+            let closed = u64::from(reserved_fds::CLOSED_DESCRIPTOR);
+            assert_eq!(held.len(), 1, "the kernel saw one kcmp: {held:?}");
+            assert_eq!(held[0][3], closed);
+        });
+    }
+
+    /// Cell U6, wrapper form (the count is read once). Through
+    /// [`dedupe_with_copy`] with a reader that answers the 2-byte count read
+    /// with 1 and the full read with a header claiming 100 entries, the
+    /// count dispatched is 1, the full read and the write-back are 56 bytes
+    /// (the header and one entry), and entry 0, which names a reserved
+    /// descriptor, is examined and hidden, then restored for the write-back.
+    #[test]
+    fn the_dedupe_count_is_read_once_through_the_wrapper() {
+        in_child(|| {
+            child_panics_to_stderr();
+            operand_buffer();
+            let reserved = 1030_u64;
+            let address = 0x1000_0000_u64;
+            let claim = DedupeOne {
+                src_length: DEDUPE_BYTES as u64,
+                dest_count: 100,
+                info: DedupeInfo {
+                    dest_fd: reserved as i64,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut reads = Vec::new();
+            let mut dispatched = None;
+            let mut written = None;
+            let args = [3, u64::from(FIDEDUPERANGE), address, 0, 0, 0];
+            let mut call = event(libc::SYS_ioctl, args);
+            dedupe_with_copy(
+                &mut call,
+                &[reserved],
+                4096,
+                HeldOperandBuffer::take,
+                |at, bytes| {
+                    reads.push((at, bytes.len()));
+                    if bytes.len() == 2 {
+                        bytes.copy_from_slice(&1_u16.to_ne_bytes());
+                    } else {
+                        let claimed = bytes_of(&claim);
+                        let length = bytes.len().min(claimed.len());
+                        bytes[..length].copy_from_slice(&claimed[..length]);
+                    }
+                    Ok(())
+                },
+                |at, bytes| {
+                    written = Some((at, bytes.to_vec()));
+                    true
+                },
+                |call| {
+                    let copy = unsafe { (call.args[2] as *const DedupeOne).read_unaligned() };
+                    dispatched = Some(copy);
+                    call.result = 0;
+                },
+            );
+            let copy = dispatched.expect("the call was dispatched");
+            assert_eq!(copy.dest_count, 1, "the count read once");
+            let count_at = address + reserved_fds::DEDUPE_COUNT_OFFSET as u64;
+            let full = reserved_fds::DEDUPE_HEADER_SIZE + reserved_fds::DEDUPE_INFO_SIZE;
+            assert_eq!(reads, [(count_at, 2), (address, full)], "size 56");
+            assert_eq!(copy.info.dest_fd, -1, "entry 0 was examined and hidden");
+            let (at, back) = written.expect("written back");
+            assert_eq!((at, back.len()), (address, full));
+            let back = unsafe { back.as_ptr().cast::<DedupeOne>().read_unaligned() };
+            assert_eq!((back.dest_count, back.info.dest_fd), (1, reserved as i64));
+        });
     }
 }
 

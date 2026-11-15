@@ -1191,8 +1191,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
         "reverie-inguest/src/guest/continuation.rs",
-        46459,
-        "96f958b6b9f785c24fcfa06a825a2778988c207b8312b7c1440b0856fe2314a2",
+        46717,
+        "0fa6ba2c1043a4378847cfa5895227530dc497b49075208102df4383dc07811d",
     ),
     (
         "reverie-inguest/src/guest/instruction.rs",
@@ -1231,8 +1231,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-inguest/src/guest/tool_install.rs",
-        29482,
-        "17686c4cf863478c8bb2d11c06f40cb61bea8394e34aec34ddfbf59d2274f639",
+        29830,
+        "2707c8131612bdd3d5d52889b807eba5f787a88744e6106531e5ad2f95f88c39",
     ),
     (
         "reverie-inguest/src/signal.rs",
@@ -1421,8 +1421,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-syscalls/src/reserved_fds.rs",
-        35776,
-        "900fc2ce567f49bf34e198718ae544b5d088dd59e8279732df40e012cf79b09d",
+        53127,
+        "19c59403a7081f1ee442830326e634f3f245ce25d99469c90302d556315f1e5c",
     ),
     (
         "reverie-liteinst/Cargo.toml",
@@ -1501,8 +1501,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-liteinst/src/tool_host.rs",
-        85990,
-        "a6115c160ec28cd2959509c96ab2e64606c8ab26317066d0afbdb5cdd96999d9",
+        86342,
+        "de661d0a8f51ebc06e9f9aca581aaceb03f564ec5e223a25b3ee25453c4982eb",
     ),
     (
         "reverie/Cargo.toml",
@@ -39229,6 +39229,26 @@ mod tests {
             35776,
             "900fc2ce567f49bf34e198718ae544b5d088dd59e8279732df40e012cf79b09d",
         ),
+        (
+            "reverie-syscalls/src/reserved_fds.rs",
+            53127,
+            "19c59403a7081f1ee442830326e634f3f245ce25d99469c90302d556315f1e5c",
+        ),
+        (
+            "reverie-inguest/src/guest/continuation.rs",
+            46717,
+            "0fa6ba2c1043a4378847cfa5895227530dc497b49075208102df4383dc07811d",
+        ),
+        (
+            "reverie-inguest/src/guest/tool_install.rs",
+            29830,
+            "2707c8131612bdd3d5d52889b807eba5f787a88744e6106531e5ad2f95f88c39",
+        ),
+        (
+            "reverie-liteinst/src/tool_host.rs",
+            86342,
+            "de661d0a8f51ebc06e9f9aca581aaceb03f564ec5e223a25b3ee25453c4982eb",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -39270,6 +39290,10 @@ mod tests {
         (
             111,
             "126c62638765639c16d813903bae4db59cf11a26fb57faff544cb71dec083f00",
+        ),
+        (
+            115,
+            "5b04984374bc6540673706ebb7f58200761cada7bf5eb2d77e6a09021f839954",
         ),
     ];
 
@@ -40550,6 +40574,26 @@ mod tests {
                 "reverie-syscalls/src/reserved_fds.rs",
                 26923,
                 "4de43d7e4b4883226c02ade760f43d29cbb155f5b7d5dd076845f6b6a16cc7cf",
+            ),
+            (
+                "reverie-syscalls/src/reserved_fds.rs",
+                35776,
+                "900fc2ce567f49bf34e198718ae544b5d088dd59e8279732df40e012cf79b09d",
+            ),
+            (
+                "reverie-inguest/src/guest/continuation.rs",
+                46459,
+                "96f958b6b9f785c24fcfa06a825a2778988c207b8312b7c1440b0856fe2314a2",
+            ),
+            (
+                "reverie-inguest/src/guest/tool_install.rs",
+                29482,
+                "17686c4cf863478c8bb2d11c06f40cb61bea8394e34aec34ddfbf59d2274f639",
+            ),
+            (
+                "reverie-liteinst/src/tool_host.rs",
+                85990,
+                "a6115c160ec28cd2959509c96ab2e64606c8ab26317066d0afbdb5cdd96999d9",
             ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.
