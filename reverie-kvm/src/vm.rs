@@ -370,8 +370,11 @@ impl UserTrap {
             backend.vcpu.set_sregs(&self.special_registers)?;
         }
         backend.vcpu.set_regs(&self.halted_registers)?;
+        let mut xsave = kvm_xsave::default();
+        xsave.region.copy_from_slice(&self.xsave.region);
+        backend.canonicalize_xsave_copy(&mut xsave);
         unsafe {
-            backend.vcpu.set_xsave(self.xsave.as_ref())?;
+            backend.vcpu.set_xsave(&xsave)?;
         }
         Ok(())
     }
@@ -383,8 +386,11 @@ impl UserTrap {
             registers.rsp = stack;
         }
         self.resume_user(backend, registers)?;
+        let mut xsave = kvm_xsave::default();
+        xsave.region.copy_from_slice(&self.xsave.region);
+        backend.canonicalize_xsave_copy(&mut xsave);
         unsafe {
-            backend.vcpu.set_xsave(self.xsave.as_ref())?;
+            backend.vcpu.set_xsave(&xsave)?;
         }
         Ok(())
     }
@@ -2633,6 +2639,25 @@ impl KvmBackend {
         BackendStatsRequest::new(self.exit_collector.is_some())
     }
 
+    /// Enables always-set + INIT XSAVE canonicalization for this backend
+    /// (prototype, off by default). Call once before entering the guest;
+    /// fork/thread children inherit it. See `xsave_canonical`.
+    pub fn set_xsave_canonicalization(&mut self, enabled: bool) {
+        self.vcpu.set_xsave_canonicalization(enabled);
+    }
+
+    pub fn xsave_canonicalization(&self) -> bool {
+        self.vcpu.xsave_canonicalization()
+    }
+
+    /// Canonicalize a copy about to be passed to `KVM_SET_XSAVE`, when
+    /// enabled. The source image is left unchanged by callers that keep it.
+    fn canonicalize_xsave_copy(&self, xsave: &mut kvm_xsave) {
+        if self.vcpu.xsave_canonicalization() {
+            crate::xsave_canonical::canonicalize_kvm_xsave(xsave);
+        }
+    }
+
     /// Records one vCPU exit in the shared process-tree collector, when enabled.
     ///
     /// This is an associated function over a disjoint field so callers can use
@@ -3203,10 +3228,12 @@ impl KvmBackend {
         memory.set_failure_context(self.tool_failure.clone());
         memory.set_operation_origin(self.memory.entry_origin().operation);
         hide_tool_scratch_pages(&memory)?;
+        let mut xsave = self.vcpu.get_xsave()?;
+        self.canonicalize_xsave_copy(&mut xsave);
         Ok(KvmProcessSnapshot {
             memory,
             registers: self.vcpu.get_regs()?,
-            xsave: self.vcpu.get_xsave()?,
+            xsave,
             stdin: self.clone_reserved_stdin()?,
         })
     }
@@ -3551,7 +3578,8 @@ impl KvmBackend {
             #[cfg(test)]
             tests::entry_action_tests::observe("parent_capture");
             let registers = backend.vcpu.get_regs()?;
-            let xsave = backend.vcpu.get_xsave()?;
+            let mut xsave = backend.vcpu.get_xsave()?;
+            backend.canonicalize_xsave_copy(&mut xsave);
             let mut frame = vec![0; FRAME_SIZE];
             access.read_raw(backend.syscall_frame_address, &mut frame)?;
             Ok((registers, xsave, frame))
@@ -3811,6 +3839,7 @@ impl KvmBackend {
             child_executor.bind_address_space(&child.memory);
         }
         child.exit_collector = self.exit_collector.clone();
+        child.set_xsave_canonicalization(self.xsave_canonicalization());
         if !shared_file_snapshot {
             write_tid_best_effort(&mut child.memory, child_tid, child_pid);
         }
@@ -4171,6 +4200,7 @@ impl KvmBackend {
                         .map(|failure| failure.for_thread(Pid::from_raw(child_tid))),
                 );
                 child.exit_collector = self.exit_collector.clone();
+                child.set_xsave_canonicalization(self.xsave_canonicalization());
                 child
                     .memory
                     .write_raw(child.syscall_frame_address, &parent_syscall_frame)?;
@@ -5025,6 +5055,7 @@ impl KvmBackend {
                 child.thread_ownership = self.thread_ownership;
                 child.set_tool_failure(self.tool_failure.clone());
                 child.exit_collector = self.exit_collector.clone();
+                child.set_xsave_canonicalization(self.xsave_canonicalization());
                 child
                     .memory
                     .write_raw(child.syscall_frame_address, &parent_syscall_frame)?;
@@ -6300,7 +6331,9 @@ impl KvmBackend {
         // top of this one saves that initial state.
         // SAFETY: the fixed KVM CPUID policy limits the vCPU's XSAVE state to
         // the x87, SSE and YMM components, which kvm_xsave holds.
-        unsafe { self.vcpu.set_xsave(&XsaveImage::initialized_kvm())? };
+        let mut initial = XsaveImage::initialized_kvm();
+        self.canonicalize_xsave_copy(&mut initial);
+        unsafe { self.vcpu.set_xsave(&initial)? };
         // The mask the handler runs under, which the next selection at this
         // return sees, and the disarm of an SS_AUTODISARM stack after every
         // delivery, which a frame on top sees.
@@ -6522,7 +6555,7 @@ impl KvmBackend {
             return Ok(None);
         }
         let fpstate = frame.ucontext.mcontext.fpstate;
-        let xsave = if fpstate == 0 {
+        let mut xsave = if fpstate == 0 {
             XsaveImage::initialized_kvm()
         } else {
             let mut prefix = [0; LEGACY_FPSTATE_SIZE];
@@ -6576,6 +6609,7 @@ impl KvmBackend {
         );
         let mut restored = current;
         frame.ucontext.mcontext.restore_kvm(&mut restored);
+        self.canonicalize_xsave_copy(&mut xsave);
         // SAFETY: the fixed KVM CPUID policy exposes exactly the feature subset
         // accepted by XsaveImage::restore_from_signal above.
         unsafe { self.vcpu.set_xsave(&xsave)? };

@@ -206,6 +206,13 @@ pub(crate) struct CountedVcpu {
     step_set: std::sync::atomic::AtomicBool,
     /// The last entry ran a single step.
     stepped: bool,
+    /// Always-set + INIT XSAVE canonicalization (prototype, off by
+    /// default): when on, guest fpstate is canonicalized lazily before
+    /// an entry that follows an actual entry, so host save/restore
+    /// between entries cannot leave vendor-tracked XINUSE bits for the
+    /// next guest instructions to observe.
+    xsave_canonicalization: bool,
+    xsave_needs_canonicalization: bool,
     #[cfg(test)]
     run_probe: Option<std::sync::Arc<RunProbe>>,
 }
@@ -271,9 +278,42 @@ impl CountedVcpu {
             next_step_mode: StepMode::Off,
             step_set: std::sync::atomic::AtomicBool::new(false),
             stepped: false,
+            xsave_canonicalization: false,
+            xsave_needs_canonicalization: false,
             #[cfg(test)]
             run_probe: None,
         })
+    }
+
+    pub(crate) fn set_xsave_canonicalization(&mut self, enabled: bool) {
+        self.xsave_canonicalization = enabled;
+        self.xsave_needs_canonicalization = enabled;
+    }
+
+    pub(crate) fn xsave_canonicalization(&self) -> bool {
+        self.xsave_canonicalization
+    }
+
+    /// Canonicalize guest fpstate before an entry when a previous entry
+    /// may have left host save/restore tracking in it. No guest code runs
+    /// between the previous exit and here, and no `VcpuExit` borrow is
+    /// live yet, so the GET/SET pair is safe at this point.
+    fn canonicalize_xsave_before_entry(&mut self) -> Result<()> {
+        if !self.xsave_canonicalization || !self.xsave_needs_canonicalization {
+            return Ok(());
+        }
+        let mut xsave = self.fd.get_xsave().map_err(Error::Kvm)?;
+        if crate::xsave_canonical::canonicalize_kvm_xsave(&mut xsave) {
+            // SAFETY: xsave came from this vCPU's KVM_GET_XSAVE and only
+            // its 832-byte standard-format prefix was rewritten.
+            unsafe { self.fd.set_xsave(&xsave).map_err(Error::Kvm)?; }
+            // A register write away from a step's start drops its trap
+            // flag, exactly as a raw Deref write records.
+            self.step_set
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.xsave_needs_canonicalization = false;
+        Ok(())
     }
 
     #[cfg(test)]
@@ -618,6 +658,7 @@ impl CountedVcpu {
         // The synced copy describes the previous exit only until this entry.
         self.synced_exit
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.canonicalize_xsave_before_entry()?;
         // Only a counted entry steps: a timer needs the clock. Guest
         // debugging touches no guest memory, so it is set before admission.
         let mode = std::mem::take(&mut self.next_step_mode);
@@ -652,6 +693,7 @@ impl CountedVcpu {
             if let Some(probe) = &self.run_probe {
                 probe.prepare.increment(&probe.untracked_runs);
             }
+            self.xsave_needs_canonicalization = self.xsave_canonicalization;
             let run = entry.run_vcpu(&mut self.fd).map_err(Error::Kvm);
             let exit = finish_entry(run, entry);
             if exit.is_ok() && self.sync_regs {
@@ -672,6 +714,7 @@ impl CountedVcpu {
         if let Some(probe) = &self.run_probe {
             probe.prepare.increment(&probe.tracked_runs);
         }
+        self.xsave_needs_canonicalization = self.xsave_canonicalization;
         let result = entry.run_vcpu(&mut self.fd);
         // VcpuExit borrows only fd. Always finish the separate clock interval,
         // including EINTR and other KVM errors, before exposing that exit.

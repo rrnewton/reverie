@@ -37,6 +37,7 @@ mod step_filter;
 mod timestamp;
 mod tools;
 mod vm;
+mod xsave_canonical;
 
 #[cfg(test)]
 #[path = "entry_cleanup_tests.rs"]
