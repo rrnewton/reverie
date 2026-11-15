@@ -2084,15 +2084,23 @@ where
 /// syscall.
 ///
 /// Ordering contract: no runtime step before `new_process` (so `Tool::new`)
-/// reads the RCB clock, calls a guest libc wrapper, or runs guest code. Two
-/// pieces of Tool code do run first: the drop of the inherited `ThreadState`
-/// (the abandoned parent lease below) and, when the Tool injected the fork
-/// from its syscall handler, the drop of that handler's parked future
-/// (`drive_syscall` returns `ForkChild` and drops it before this runs). A
-/// Tool must keep both free of clock reads (`Guest::read_clock`,
-/// `clock::read_guest_rcb_clock`) and of guest libc calls. The child's
-/// first clock read then comes after `new_process`: from Tool code that
-/// runs later in this function, or else, normally, from the
+/// reads the RCB clock, calls a guest libc wrapper, or runs guest code. The
+/// Tool code that runs first includes the drop of the inherited
+/// `ThreadState` (the abandoned parent lease below) and, when the Tool
+/// injected the fork from its syscall handler, the rest of the handler poll
+/// in which that inject parked (for example another `join!` or `select!`
+/// branch) and then the drop of the parked future (`drive_syscall` returns
+/// `ForkChild` and drops it before this runs). If that poll completes the
+/// handler instead, `reverie::classify_callback` returns `Ready` and drops the
+/// staged fork-child fact: the child's syscall returns the handler's value,
+/// this function never runs, and the child gets no `Tool::new` at all. A
+/// Tool must therefore do no other work in that poll and must not complete
+/// there, and must keep all of this code free of clock reads (any `clock`
+/// entry point, for example `Guest::read_clock` or
+/// `clock::read_guest_rcb_clock`) and of guest libc calls, which can reach
+/// the clock through a site the guest already had patched. The child's first
+/// clock read then comes after `new_process`: from Tool code that runs later
+/// in this function, or else, normally, from the
 /// `leave_rcb_handler` that closes the forking syscall's own entry
 /// (`installed_tool::dispatch_saved_syscall`), before the child runs any
 /// guest code. That read closes every recorded descriptor whose recording
