@@ -2079,6 +2079,22 @@ where
     }
 }
 
+/// The fork child's side of a plain fork, run on the child's thread
+/// right after the raw fork returns, inside the forking callback.
+///
+/// Ordering contract: the child's Tool is constructed (`new_process`, so
+/// `Tool::new`) before anything in this child reads the RCB clock. No step
+/// before `new_process` reads the clock, calls a guest libc wrapper, or
+/// runs guest code; the first clock read comes later, from a guest
+/// syscall or instruction event or a Tool's `read_clock`, and it closes
+/// every descriptor the parent recorded (`clock.rs` `rcb_clock`, `protect.rs`
+/// `close_inherited_runtime_fds`). A Tool that keeps its own descriptors in
+/// the runtime's record (`protect::place_runtime_fd_and`) can therefore,
+/// as the first act of `Tool::new`, reopen the inherited copies through
+/// the trusted gate (`trap::raw_syscall6`, which never reaches a patched
+/// site) and place the new copies under the child's pid. Keep any new step
+/// added before `new_process` free of clock reads and guest libc calls, or
+/// such a Tool loses those descriptors in every fork child.
 fn finish_fork_child<T: Tool + 'static, R: HostRuntime>(
     host: &ToolHost<T, R>,
     parent_lease: thread_lease::Lease<'_, T::ThreadState>,
