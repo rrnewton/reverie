@@ -2204,6 +2204,9 @@ pub struct KvmBackend {
     /// back to the parent (`release_vfork_parent`), or dropped with this
     /// backend, so every end of the child releases the parent once.
     vfork_release: Option<futures::channel::oneshot::Sender<()>>,
+    /// This backend's VM in the host-fork registry (`host_fork`), so that a
+    /// forked copy of the process can rebuild it.
+    _host_fork: crate::host_fork::Registration,
 }
 
 /// RFLAGS' trap flag.
@@ -2564,6 +2567,25 @@ impl KvmBackend {
                 Err(error) => return Err(error),
             }
         };
+        let mut vcpu = vcpu;
+        let host_fork = crate::host_fork::register(
+            &kvm,
+            vm.as_raw_fd(),
+            kvm_userspace_memory_region {
+                slot: 0,
+                guest_phys_addr: memory.guest_base(),
+                memory_size: memory.len() as u64,
+                userspace_addr: memory.host_address(),
+                flags: 0,
+            },
+            kvm_enable_cap {
+                cap: Cap::ExitHypercall as u32,
+                args: [1_u64 << VMCALL_SYSCALL_TRANSPORT, 0, 0, 0],
+                ..Default::default()
+            },
+            &mut vcpu,
+            0,
+        );
         Ok(Self {
             vcpu: crate::clock::CountedVcpu::new(vcpu, memory.clone(), sync_regs)?,
             vm,
@@ -2603,6 +2625,7 @@ impl KvmBackend {
             trampoline_return: None,
             stepped_fault: Default::default(),
             vfork_release: None,
+            _host_fork: host_fork,
         })
     }
 

@@ -2993,6 +2993,12 @@ impl RunAdmission {
         let reaper = self.reaper.take().expect("KVM run admission finished");
         let reaping = self.reaping.take().expect("KVM run admission finished");
         if reaper.release() {
+            if reverie_kvm_core::host_fork::is_forked_child() {
+                // A forked copy of the run has no reaper thread: fork copied
+                // only the caller. Its handle names the parent's thread.
+                std::mem::forget(reaping);
+                return;
+            }
             // The reaper runs no embedder code, and this released its last
             // handle with nothing adopted, so this join is bounded.
             let _ = reaping.join();

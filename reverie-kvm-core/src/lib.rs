@@ -35,6 +35,7 @@ pub mod entry;
 pub mod error;
 pub mod error_ext;
 pub mod failure;
+pub mod host_fork;
 pub mod host_limits;
 pub mod layout;
 pub mod memory;

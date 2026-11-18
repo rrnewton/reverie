@@ -204,6 +204,8 @@ pub(crate) struct CountedVcpu {
     /// `KVM_SET_GUEST_DEBUG` again. No instruction that loads RFLAGS is
     /// stepped (see `step_filter.rs`).
     step_set: std::sync::atomic::AtomicBool,
+    /// The host-fork generation `step_mode` was cached under.
+    host_fork_generation: u64,
     /// The last entry ran a single step.
     stepped: bool,
     #[cfg(test)]
@@ -270,6 +272,7 @@ impl CountedVcpu {
             step_mode: StepMode::Off,
             next_step_mode: StepMode::Off,
             step_set: std::sync::atomic::AtomicBool::new(false),
+            host_fork_generation: crate::host_fork::generation(),
             stepped: false,
             #[cfg(test)]
             run_probe: None,
@@ -618,6 +621,15 @@ impl CountedVcpu {
         // The synced copy describes the previous exit only until this entry.
         self.synced_exit
             .store(false, std::sync::atomic::Ordering::Relaxed);
+        // A host fork rebuilt this vCPU (`host_fork`): its guest debugging is
+        // KVM's default again, so the setting cached for the old one is void.
+        let generation = crate::host_fork::generation();
+        if generation != self.host_fork_generation {
+            self.host_fork_generation = generation;
+            self.step_mode = StepMode::Off;
+            self.step_set
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
         // Only a counted entry steps: a timer needs the clock. Guest
         // debugging touches no guest memory, so it is set before admission.
         let mode = std::mem::take(&mut self.next_step_mode);
