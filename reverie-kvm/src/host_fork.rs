@@ -39,6 +39,7 @@ use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::RawFd;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
@@ -796,8 +797,24 @@ const GUEST_MEMORY_NAME: &str = "reverie-kvm-guest-memory";
 /// guest should remove it from the guest's.
 pub const PRIVATE_ARENAS_ENV: &str = "REVERIE_KVM_FORK_PRIVATE_ARENAS";
 
+/// [`set_private_arenas`]'s choice: 0 for none (the environment decides), 1
+/// for copy-on-write, 2 for an eager copy.
+static PRIVATE_ARENAS: AtomicU8 = AtomicU8::new(0);
+
+/// Chooses how [`repair_in_child`], from now on in this process, gives the
+/// copy its guest memory: copy-on-write (`true`) or an eager copy (`false`).
+/// It overrides [`PRIVATE_ARENAS_ENV`], so that the embedding program can
+/// choose per copy; a copy calls it before it repairs.
+pub fn set_private_arenas(copy_on_write: bool) {
+    PRIVATE_ARENAS.store(if copy_on_write { 1 } else { 2 }, Ordering::Relaxed);
+}
+
 fn private_arenas() -> bool {
-    std::env::var_os(PRIVATE_ARENAS_ENV).is_none_or(|value| value != "0")
+    match PRIVATE_ARENAS.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => std::env::var_os(PRIVATE_ARENAS_ENV).is_none_or(|value| value != "0"),
+    }
 }
 
 /// Whether no byte of the memfd is mapped twice: then each mapping can become
