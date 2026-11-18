@@ -393,6 +393,11 @@ pub struct RepairReport {
     pub memfd_bytes: u64,
     pub mappings: usize,
     pub memfd_us: u64,
+    /// Guest-memory memfds mapped copy-on-write instead of copied
+    /// (`REVERIE_KVM_FORK_PRIVATE_ARENAS`), and the bytes of their data
+    /// extents.
+    pub private_arenas: usize,
+    pub private_arena_bytes: u64,
     pub vms: usize,
     pub msrs_restored: usize,
     pub msrs_refused: usize,
@@ -429,6 +434,14 @@ impl StepClock {
             None => report.vm_steps_us.push((name, us)),
         }
     }
+}
+
+/// What a copy's guest memory did while the copy ran, for its measurements:
+/// the memfds it still maps copy-on-write, and those it gave a memfd of its
+/// own because something reached their bytes through a descriptor.
+pub fn exit_report() -> String {
+    let (left, materialized, bytes) = reverie_kvm_core::host_fork::private_memfd_counts();
+    format!("private_memfds_left={left} materialized={materialized} materialized_bytes={bytes}")
 }
 
 /// Rebuilds, in a forked child, every registered VM and vCPU and every memfd.
@@ -773,12 +786,197 @@ fn new_memfd(name: &str) -> Result<RawFd, String> {
     ))
 }
 
+/// The memfd name guest-memory backings are created with.
+const GUEST_MEMORY_NAME: &str = "reverie-kvm-guest-memory";
+
+/// The environment variable that selects copy-on-write guest memory for a
+/// host-fork copy (PROTOTYPE): `1` maps each eligible guest-memory memfd
+/// copy-on-write instead of copying it. A program that passes its own
+/// environment to its guest should remove it from the guest's.
+pub const PRIVATE_ARENAS_ENV: &str = "REVERIE_KVM_FORK_PRIVATE_ARENAS";
+
+fn private_arenas() -> bool {
+    std::env::var_os(PRIVATE_ARENAS_ENV).is_some_and(|value| value == "1")
+}
+
+/// Whether no byte of the memfd is mapped twice: then each mapping can become
+/// a private copy-on-write mapping without splitting a view that two
+/// mappings must share.
+fn mappings_disjoint(mappings: &[SharedMapping]) -> bool {
+    let mut ranges: Vec<(u64, u64)> = mappings
+        .iter()
+        .map(|m| (m.offset, m.offset + (m.end - m.start) as u64))
+        .collect();
+    ranges.sort_unstable();
+    ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0)
+}
+
+/// Re-maps every mapping of a guest-memory memfd as a private copy-on-write
+/// mapping of the same file, which the template no longer writes, and
+/// records it ([`reverie_kvm_core::host_fork::register_private_memfd`]):
+/// guest memory then reaches its descriptor only after the copy has a memfd
+/// of its own with its bytes ([`reverie_kvm_core::host_fork::materialize_private_memfd`]).
+/// The descriptors are reopened read-only meanwhile, so that a write through
+/// one that bypassed that step fails rather than reaching the template and
+/// every other copy.
+fn map_copy_on_write(inode: &MemfdInode, report: &mut RepairReport) -> Result<(), String> {
+    let source = inode.fds[0];
+    // SAFETY: fstat of a descriptor into a zeroed buffer.
+    let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    if unsafe { libc::fstat(source, &mut stat) } < 0 {
+        return Err(format!(
+            "child: fstat {}: {}",
+            inode.name,
+            std::io::Error::last_os_error()
+        ));
+    }
+    for mapping in &inode.mappings {
+        // The file's data extents become private views of the file; its holes,
+        // which the template never touched, become private anonymous memory:
+        // a copy's first store there then costs one anonymous page, where a
+        // private view of a hole would first allocate a page in the shared
+        // file and then copy it.
+        let length = (mapping.end - mapping.start) as u64;
+        let mut pieces: Vec<(u64, u64, bool)> = Vec::new();
+        let mut cursor = mapping.offset;
+        let end = mapping.offset + length;
+        while cursor < end {
+            // SAFETY: lseek on a live descriptor.
+            let data = unsafe { libc::lseek(source, cursor as libc::off_t, libc::SEEK_DATA) };
+            let data = if data < 0 {
+                end
+            } else {
+                (data as u64).min(end)
+            };
+            if data > cursor {
+                pieces.push((cursor, data, false));
+            }
+            if data >= end {
+                break;
+            }
+            // SAFETY: as above.
+            let hole = unsafe { libc::lseek(source, data as libc::off_t, libc::SEEK_HOLE) };
+            let hole = if hole < 0 {
+                end
+            } else {
+                (hole as u64).min(end)
+            };
+            pieces.push((data, hole, true));
+            cursor = hole;
+        }
+        for (from, to, data) in pieces {
+            let address = mapping.start + (from - mapping.offset) as usize;
+            let size = (to - from) as usize;
+            // SAFETY: replaces part of this process's own shared mapping of the
+            // memfd, at the same address, with a private view of the same file
+            // range or with zero-filled private memory.
+            let mapped = unsafe {
+                if data {
+                    libc::mmap(
+                        address as *mut libc::c_void,
+                        size,
+                        mapping.prot,
+                        libc::MAP_PRIVATE | libc::MAP_FIXED | libc::MAP_NORESERVE,
+                        source,
+                        from as libc::off_t,
+                    )
+                } else {
+                    libc::mmap(
+                        address as *mut libc::c_void,
+                        size,
+                        mapping.prot,
+                        libc::MAP_PRIVATE
+                            | libc::MAP_ANONYMOUS
+                            | libc::MAP_FIXED
+                            | libc::MAP_NORESERVE,
+                        -1,
+                        0,
+                    )
+                }
+            };
+            if mapped as usize != address {
+                return Err(format!(
+                    "child: private re-mapping of {} at {address:#x}: {}",
+                    inode.name,
+                    std::io::Error::last_os_error()
+                ));
+            }
+            if data {
+                report.private_arena_bytes += size as u64;
+            } else {
+                // The memfd these pages replace got huge pages where the host
+                // gives shared memory huge pages; anonymous memory gets them
+                // only when asked (MEASURED: without this, a copy that then
+                // touched 1 GiB took 908-979 ms against 622-745 ms copied
+                // eagerly). Advice only: a refusal changes no byte.
+                // SAFETY: advice on the range just mapped.
+                unsafe { libc::madvise(address as *mut libc::c_void, size, libc::MADV_HUGEPAGE) };
+            }
+        }
+        report.mappings += 1;
+    }
+    let path = format!("/proc/self/fd/{source}\0");
+    // SAFETY: a NUL-terminated path; a new read-only descriptor.
+    let read_only = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if read_only < 0 {
+        return Err(format!(
+            "child: reopening {} read-only: {}",
+            inode.name,
+            std::io::Error::last_os_error()
+        ));
+    }
+    for &fd in &inode.fds {
+        dup_onto(read_only, fd)?;
+    }
+    // SAFETY: the duplicates keep the description open.
+    unsafe { libc::close(read_only) };
+    reverie_kvm_core::host_fork::register_private_memfd(
+        stat.st_dev,
+        stat.st_ino,
+        &inode.name,
+        inode
+            .mappings
+            .iter()
+            .map(|m| reverie_kvm_core::host_fork::PrivateMapping {
+                start: m.start,
+                end: m.end,
+                offset: m.offset,
+                prot: m.prot,
+            })
+            .collect(),
+    );
+    report.private_arenas += 1;
+    Ok(())
+}
+
 /// Gives every memfd of this process a private copy behind the same
 /// descriptor numbers, and re-maps every shared mapping of it at the same
 /// address with the same protection. A memfd with no descriptor left is
 /// copied from its mappings.
 fn privatize_memfds(report: &mut RepairReport) -> Result<(), String> {
+    let copy_on_write = private_arenas();
     for (_, inode) in memfd_inodes()? {
+        // A copy of a copy inherits the parent copy's private mappings, which
+        // fork() already made copy-on-write, and its record of them: copying
+        // such a memfd through its descriptor would give it the template's
+        // bytes rather than this copy's.
+        if inode
+            .fds
+            .first()
+            .is_some_and(|&fd| reverie_kvm_core::host_fork::is_private_memfd(fd))
+        {
+            continue;
+        }
+        if copy_on_write
+            && inode.name == GUEST_MEMORY_NAME
+            && !inode.fds.is_empty()
+            && !inode.mappings.is_empty()
+            && mappings_disjoint(&inode.mappings)
+        {
+            map_copy_on_write(&inode, report)?;
+            continue;
+        }
         let new = new_memfd(&inode.name)?;
         if let Some(&source) = inode.fds.first() {
             // SAFETY: fstat of a descriptor into a zeroed buffer.

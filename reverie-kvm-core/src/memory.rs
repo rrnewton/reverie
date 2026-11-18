@@ -232,6 +232,14 @@ struct Backing {
 
 impl Backing {
     fn new(length: usize) -> io::Result<Self> {
+        Self::named(length, c"reverie-kvm-guest-memory")
+    }
+
+    /// A zero-filled backing whose memfd has `name`. Private guest memory and
+    /// shared anonymous memory have different names, so a process that sees
+    /// only the memfds (a host-fork copy's repair) can tell them apart: only
+    /// private memory may become a copy-on-write mapping there.
+    fn named(length: usize, name: &std::ffi::CStr) -> io::Result<Self> {
         if length == 0 || !length.is_multiple_of(PAGE_SIZE) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -240,7 +248,7 @@ impl Backing {
         }
         let file_length = libc::off_t::try_from(length)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "backing exceeds off_t"))?;
-        let fd = create_memory_backing()?;
+        let fd = create_memory_backing(name)?;
         // SAFETY: fd is a live, writable memfd and file_length fits off_t.
         if unsafe { libc::ftruncate(fd.as_raw_fd(), file_length) } != 0 {
             return Err(io::Error::last_os_error());
@@ -257,8 +265,19 @@ impl Backing {
     fn new_shared_anonymous(length: usize) -> io::Result<Self> {
         Ok(Self {
             kind: BackingKind::SharedAnonymous,
-            ..Self::new(length)?
+            ..Self::named(length, c"reverie-kvm-guest-shared-memory")?
         })
+    }
+
+    /// The descriptor, for reaching the bytes through it rather than through
+    /// a mapping. A host-fork copy may map this memfd copy-on-write, and then
+    /// the descriptor shows the template's bytes, not the copy's: the copy
+    /// first gets a memfd of its own with its bytes
+    /// ([`crate::host_fork::materialize_private_memfd`]).
+    fn data_fd(&self) -> io::Result<RawFd> {
+        let fd = self.fd.as_raw_fd();
+        crate::host_fork::materialize_private_memfd(fd)?;
+        Ok(fd)
     }
 }
 
@@ -2153,12 +2172,19 @@ impl GuestMemory {
                 .host_access
                 .lock()
                 .expect("guest memory lock poisoned");
-            sparse_copy(
-                self.mapping.slice.backing.fd.as_raw_fd(),
-                snapshot.mapping.slice.backing.fd.as_raw_fd(),
-                self.len(),
-            )
-            .is_ok()
+            // On an error the copy below reads every byte through the mapping.
+            self.mapping
+                .slice
+                .backing
+                .data_fd()
+                .and_then(|source| {
+                    sparse_copy(
+                        source,
+                        snapshot.mapping.slice.backing.fd.as_raw_fd(),
+                        self.len(),
+                    )
+                })
+                .is_ok()
         };
 
         // SEEK_DATA/SEEK_HOLE and copy_file_range are Linux optimizations, not
@@ -2264,7 +2290,7 @@ impl GuestMemory {
             .lock()
             .expect("guest memory lock poisoned");
         copy_sparse_range(
-            self.mapping.slice.backing.fd.as_raw_fd(),
+            self.mapping.slice.backing.data_fd()?,
             self.mapping.slice.offset + source,
             child.mapping.slice.backing.fd.as_raw_fd(),
             child.mapping.slice.offset + destination,
@@ -2313,7 +2339,7 @@ impl GuestMemory {
             .lock()
             .expect("guest memory lock poisoned");
         copy_sparse_range(
-            installed._slice.backing.fd.as_raw_fd(),
+            installed._slice.backing.data_fd()?,
             installed._slice.offset,
             child.mapping.slice.backing.fd.as_raw_fd(),
             child.mapping.slice.offset + destination,
@@ -4030,6 +4056,12 @@ impl GuestMemory {
             let length: usize = run.iter().map(|chunk| chunk.length).sum();
             #[cfg(test)]
             tests::note_discard_call(length);
+            // A host-fork copy's copy-on-write range reads as zeros once
+            // private anonymous memory replaces it; the file is the
+            // template's and must not be punched.
+            if crate::host_fork::discard_private(address, length).map_err(Error::MemoryMapping)? {
+                continue;
+            }
             // SAFETY: checked_offset proved that every page of the run lies in a
             // live MAP_SHARED memfd view, and the run's chunks are consecutive
             // in host addresses. madvise consumes only its numeric address
@@ -4149,6 +4181,15 @@ impl GuestMemory {
                         slice,
                     });
                 }
+            }
+            // The alias maps each extent through its backing's descriptor,
+            // which must show this process's bytes (`Backing::data_fd`).
+            for extent in &extents {
+                extent
+                    .slice
+                    .backing
+                    .data_fd()
+                    .map_err(Error::MemoryMapping)?;
             }
             if mapping_length == 0 {
                 // The unowned sentinel still retains admission and both locks.
@@ -5151,8 +5192,7 @@ fn write_backing_at(backing: &Backing, start: usize, bytes: &[u8]) -> io::Result
     Ok(())
 }
 
-fn create_memory_backing() -> io::Result<OwnedFd> {
-    let name = c"reverie-kvm-guest-memory";
+fn create_memory_backing(name: &std::ffi::CStr) -> io::Result<OwnedFd> {
     // Guest RAM is never executable in the host mapping. Prefer the flag that
     // also works when the host requires non-executable memfds, but retain
     // compatibility with kernels predating MFD_NOEXEC_SEAL.

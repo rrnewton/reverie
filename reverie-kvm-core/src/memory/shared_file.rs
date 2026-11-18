@@ -1786,13 +1786,15 @@ impl GuestMemory {
         }
         // Exact numeric target belongs to our retained ownership ledger. Only
         // the returned mmap pointer is used for subsequent pointer arithmetic.
+        // The descriptor must show this process's bytes (`Backing::data_fd`).
+        let fd = slice.backing.data_fd()?;
         let result = unsafe {
             libc::mmap(
                 std::ptr::with_exposed_provenance_mut::<libc::c_void>(target),
                 slice.length,
                 protection,
                 libc::MAP_SHARED | libc::MAP_FIXED,
-                slice.backing.fd.as_raw_fd(),
+                fd,
                 slice.offset as libc::off_t,
             )
         };

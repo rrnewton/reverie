@@ -88,8 +88,10 @@ pub(super) fn syncfs_private_memfd_name(path: &[u8]) -> bool {
     // Guest RAM is not exported, but must not become ordinary if imported.
     // The last two are reserved carrier shapes from the preserved PR610
     // implementation. Refusing them does not implement its EBADMSG/auth rules.
-    matches!(name, b"reverie-kvm-proc" | b"reverie-kvm-guest-memory")
-        || name.starts_with(b"reverie-kvm.proc-carrier.v1")
+    matches!(
+        name,
+        b"reverie-kvm-proc" | b"reverie-kvm-guest-memory" | b"reverie-kvm-guest-shared-memory"
+    ) || name.starts_with(b"reverie-kvm.proc-carrier.v1")
         || name.starts_with(b"reverie-kvm.capture-transfer.v1")
 }
 
