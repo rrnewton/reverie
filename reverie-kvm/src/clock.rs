@@ -856,17 +856,20 @@ impl Default for CounterPlacement {
 /// and those never change for a CPU while the host runs. Selecting FollowTask
 /// placement only looks at the current CPU's vendor and the PMU device names,
 /// so it does not by itself show that every CPU the task can run on answers
-/// alike. The cache therefore needs a [`CpuDomain`]: every CPU the kernel lists
-/// as online, each mapped to its own encoding, all equal (and equal to what
-/// this CPU's CPUID answers when the value is first cached). A host where any
-/// online CPU differs, or is unsupported, or whose `/proc/cpuinfo` cannot be
-/// parsed, has no domain and keeps the per-entry lookup.
+/// alike. The cache therefore needs a [`CpuDomain`]: CPUs sampled from
+/// sysfs' online list, each asked its own CPUID identity, mapped to its own
+/// encoding, all equal (and equal to what this CPU's CPUID answers when the
+/// value is first cached). Only CPUs in this process's affinity mask are
+/// sampled — they are the only ones a sampler thread can be pinned to — and
+/// a host where any sampled CPU differs or is unsupported, or that cannot
+/// be sampled, has no domain and keeps the per-entry lookup.
 ///
 /// Each cached entry still checks that the CPU it starts on is in the domain
-/// (`sched_getcpu`, no CPUID). A CPU onlined after the domain was taken is not
-/// in it, so an entry that starts there runs the full lookup, with its refusal,
-/// exactly as before. A cpuset or affinity change can only move the task among
-/// online CPUs, all of which were validated. As before, the event follows its
+/// (`sched_getcpu`, no CPUID). A CPU onlined or admitted to the affinity mask
+/// after the domain was taken is not in it, so an entry that starts there
+/// runs the full lookup, with its refusal, exactly as before. A cpuset or
+/// affinity change can move the task to CPUs outside the domain, never to a
+/// validated-as-equal CPU that was not one. As before, the event follows its
 /// task within one KVM_RUN, so a CPU is judged where an entry begins.
 ///
 /// Nothing guest-controlled is an input: exec, clone, fork, vfork, signal
@@ -916,9 +919,103 @@ struct CpuDomain {
 }
 
 impl CpuDomain {
+    /// A domain from per-CPU identities (number, CPUID vendor, display
+    /// family and model), or None unless there is at least one entry,
+    /// every one maps to a supported encoding, and all the encodings
+    /// are equal.
+    fn from_identities(
+        entries: impl IntoIterator<Item = (usize, [u8; 12], u32, u32)>,
+    ) -> Option<Self> {
+        let mut raw_event = None;
+        let mut cpus = Vec::new();
+        for (cpu, vendor, family, model) in entries {
+            let event = raw_event_for(&vendor, family, model).ok()?;
+            if *raw_event.get_or_insert(event) != event {
+                return None;
+            }
+            let word = cpu / 64;
+            if cpus.len() <= word {
+                cpus.resize(word + 1, 0);
+            }
+            cpus[word] |= 1 << (cpu % 64);
+        }
+        Some(Self {
+            raw_event: raw_event?,
+            cpus,
+        })
+    }
+
+    /// A domain from `/proc/cpuinfo` streamed block by block, restricted
+    /// to `wanted` (ascending) and stopping as soon as every wanted
+    /// CPU's block has been parsed — blocks past the last wanted CPU
+    /// are never read, let alone held in one string. None unless every
+    /// wanted CPU appears with its vendor, family and model. Blocks
+    /// for other CPUs are skipped, as are blocks with no `processor`.
+    fn from_cpuinfo_stream(reader: impl std::io::BufRead, wanted: &[usize]) -> Option<Self> {
+        if wanted.is_empty() {
+            return None;
+        }
+        let mut identities = Vec::with_capacity(wanted.len());
+        let mut seen = 0;
+        let mut cpu: Option<usize> = None;
+        let mut vendor: Option<[u8; 12]> = None;
+        let mut family: Option<u32> = None;
+        let mut model: Option<u32> = None;
+        let mut lines = reader.lines();
+        loop {
+            let line = lines.next();
+            let at_eof = line.is_none();
+            let blank = line
+                .as_ref()
+                .map(|line| line.as_deref().unwrap_or("").trim().is_empty())
+                .unwrap_or(true);
+            if blank {
+                // A block ends (or the file does). Settle it against
+                // the next wanted CPU, in kernel (ascending) order.
+                if let Some(found) = cpu {
+                    if found > wanted[seen] {
+                        // Ascending order: the wanted CPU is absent.
+                        return None;
+                    }
+                    if found == wanted[seen] {
+                        identities.push((found, vendor?, family?, model?));
+                        seen += 1;
+                        if seen == wanted.len() {
+                            return Self::from_identities(identities);
+                        }
+                    }
+                }
+                cpu = None;
+                vendor = None;
+                family = None;
+                model = None;
+                if at_eof {
+                    return None;
+                }
+                continue;
+            }
+            let line = line.expect("a non-EOF line").ok()?;
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            match key.trim() {
+                "processor" => cpu = value.trim().parse().ok(),
+                "vendor_id" => vendor = value.trim().as_bytes().try_into().ok(),
+                "cpu family" => family = value.trim().parse().ok(),
+                "model" => model = value.trim().parse().ok(),
+                _ => {}
+            }
+            // A field that does not parse stays missing and fails the
+            // block at its end if the block is wanted, as in
+            // `from_cpuinfo`.
+        }
+    }
+
     /// A domain from `/proc/cpuinfo` text, or None unless every listed CPU
     /// names its number, vendor, family and model, every one maps to a
-    /// supported encoding, and all the encodings are equal.
+    /// supported encoding, and all the encodings are equal. Kept as the
+    /// fallback when the scoped streaming path cannot run, and as the
+    /// test oracle the streamed domain is checked against on a live host.
     fn from_cpuinfo(text: &str) -> Option<Self> {
         let mut raw_event = None;
         let mut cpus = Vec::new();
@@ -975,13 +1072,89 @@ fn synced_special_registers_usable(special: &kvm_bindings::kvm_sregs) -> bool {
 /// and inherits it, so no child can copy it mid-initialisation.
 fn host_cpu_domain() -> Option<&'static CpuDomain> {
     static DOMAIN: std::sync::OnceLock<Option<CpuDomain>> = std::sync::OnceLock::new();
-    DOMAIN
-        .get_or_init(|| {
-            std::fs::read_to_string("/proc/cpuinfo")
-                .ok()
-                .and_then(|text| CpuDomain::from_cpuinfo(&text))
-        })
-        .as_ref()
+    DOMAIN.get_or_init(domain_from_online_cpus).as_ref()
+}
+
+/// Parses a kernel CPU list (`0-3,7`) as sysfs writes it. Strictly
+/// increasing, as the kernel emits; anything else is not kernel text
+/// this parser should guess at.
+fn parse_cpu_list(text: &str) -> Option<Vec<usize>> {
+    let mut cpus = Vec::new();
+    for part in text.trim().split(',') {
+        let (first, last) = match part.split_once('-') {
+            Some((first, last)) => (first.parse().ok()?, last.parse().ok()?),
+            None => {
+                let cpu: usize = part.parse().ok()?;
+                (cpu, cpu)
+            }
+        };
+        if last < first {
+            return None;
+        }
+        for cpu in first..=last {
+            if cpus.last().is_some_and(|&prev| cpu <= prev) {
+                return None;
+            }
+            cpus.push(cpu);
+        }
+    }
+    if cpus.is_empty() {
+        return None;
+    }
+    Some(cpus)
+}
+
+/// This host's domain, scoped by sysfs and affinity.
+///
+/// The domain used to come from reading all of `/proc/cpuinfo`
+/// (617 KB of kernel-generated text on the 316-CPU development host,
+/// ~3 ms per run). Sysfs carries no per-CPU CPUID identity on x86 —
+/// topology names only package and core IDs, and `/dev/cpu/N/cpuid`
+/// is root-only — and sampling CPUID by pinning a thread to each CPU
+/// in turn measured slower than the parse it would replace (64 ms
+/// single-threaded, 11 ms sharded, against 4.5-6.5 ms at 316 CPUs).
+/// So the identity source stays cpuinfo's fields, but the *scope*
+/// comes from sysfs: the online list (`/sys/devices/system/cpu/online`,
+/// a few bytes) intersected with this process's affinity mask, and
+/// cpuinfo is then streamed only until the last wanted CPU's block
+/// has been parsed. In a CPU-restricted scope (the measured case:
+/// one allowed CPU) that is a handful of blocks instead of the whole
+/// file and its string; unrestricted, it is the old full parse
+/// without the whole-file allocation.
+///
+/// Restricting the domain to the affinity mask is sound for the
+/// cache that consumes it: reuse is already gated on the entry's CPU
+/// being in the domain, an unscoped CPU falls back to the full
+/// per-entry lookup, and an excluded heterogeneous CPU can never be
+/// entered on while the mask excludes it. Any failure on the scoped
+/// path (no sysfs, an affinity refusal, a wanted CPU missing from
+/// cpuinfo) falls back to the original full-text parse, whose own
+/// failure still yields no domain.
+fn domain_from_online_cpus() -> Option<CpuDomain> {
+    let scoped = || -> Option<CpuDomain> {
+        let online =
+            parse_cpu_list(&std::fs::read_to_string("/sys/devices/system/cpu/online").ok()?)?;
+        let allowed = affinity().ok()?;
+        let wanted: Vec<usize> = online
+            .into_iter()
+            .filter(|&cpu| {
+                cpu < libc::CPU_SETSIZE as usize
+                    // SAFETY: `allowed` is a live cpu_set_t from
+                    // sched_getaffinity.
+                    && unsafe { libc::CPU_ISSET(cpu, &allowed) }
+            })
+            .collect();
+        if wanted.is_empty() {
+            return None;
+        }
+        let file = std::fs::File::open("/proc/cpuinfo").ok()?;
+        CpuDomain::from_cpuinfo_stream(std::io::BufReader::new(file), &wanted)
+    };
+    scoped().or_else(|| {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|text| CpuDomain::from_cpuinfo(&text))
+    })
 }
 
 fn current_cpu() -> Option<usize> {
@@ -1329,18 +1502,16 @@ fn host_tid() -> libc::pid_t {
     tid
 }
 
-fn current_raw_event() -> Result<u64> {
-    // CPUID is supported on x86-64. Under PinEachEntry the calling thread is
-    // restricted to one permitted CPU for this entire counted interval; under
-    // FollowTask this answers for the CPU the entry starts on.
+/// This CPU's CPUID vendor and display family and model, exactly as
+/// `/proc/cpuinfo` spells them (the kernel derives those fields from
+/// the same leaves).
+fn cpu_identity() -> ([u8; 12], u32, u32) {
+    // CPUID is supported on x86-64.
     let vendor = std::arch::x86_64::__cpuid(0);
     let mut bytes = [0; 12];
     bytes[..4].copy_from_slice(&vendor.ebx.to_le_bytes());
     bytes[4..8].copy_from_slice(&vendor.edx.to_le_bytes());
     bytes[8..].copy_from_slice(&vendor.ecx.to_le_bytes());
-    if bytes != *b"GenuineIntel" && bytes != *b"AuthenticAMD" {
-        return Err(failure(format!("unsupported CPU vendor {bytes:?}")));
-    }
     let signature = std::arch::x86_64::__cpuid(1).eax;
     let base_family = (signature >> 8) & 0xf;
     let family = base_family
@@ -1355,7 +1526,15 @@ fn current_raw_event() -> Result<u64> {
         } else {
             0
         };
-    raw_event_for(&bytes, family, model)
+    (bytes, family, model)
+}
+
+fn current_raw_event() -> Result<u64> {
+    // Under PinEachEntry the calling thread is restricted to one
+    // permitted CPU for this entire counted interval; under FollowTask
+    // this answers for the CPU the entry starts on.
+    let (vendor, family, model) = cpu_identity();
+    raw_event_for(&vendor, family, model)
 }
 
 /// The raw RCB encoding for a CPU's vendor, display family and display model,
@@ -2947,6 +3126,73 @@ mod tests {
     }
 
     #[test]
+    fn cpu_lists_parse_as_sysfs_writes_them() {
+        assert_eq!(parse_cpu_list("0\n").unwrap(), [0]);
+        assert_eq!(parse_cpu_list("0-3,7\n").unwrap(), [0, 1, 2, 3, 7]);
+        assert_eq!(parse_cpu_list("0-315\n").unwrap().len(), 316);
+        for text in [
+            "", "\n", "3-1", "a", "1,,2", "1-2-3", "2,1", "1,1", "-1", "1-",
+        ] {
+            assert_eq!(parse_cpu_list(text), None, "{text:?}");
+        }
+    }
+
+    /// The scoped streaming parse and the full cpuinfo parser read
+    /// the same facts; on a live host they must agree on the
+    /// encoding, and every scoped CPU must be in the parsed domain.
+    #[test]
+    fn streamed_cpuinfo_domain_takes_only_wanted_blocks() {
+        let text = cpuinfo(&[
+            (0, "AuthenticAMD", 26, 17),
+            (1, "GenuineIntel", 6, 0x55),
+            (2, "AuthenticAMD", 26, 17),
+        ]);
+        let domain = CpuDomain::from_cpuinfo_stream(std::io::Cursor::new(&text), &[0, 2])
+            .expect("homogeneous wanted subset");
+        assert_eq!(
+            domain.raw_event,
+            raw_event_for(b"AuthenticAMD", 26, 17).unwrap()
+        );
+        assert!(domain.contains(0) && domain.contains(2) && !domain.contains(1));
+        // A wanted CPU the text never reaches, and one past the end,
+        // both leave no domain; so does empty wanted.
+        assert_eq!(
+            CpuDomain::from_cpuinfo_stream(std::io::Cursor::new(&text), &[0, 3]),
+            None
+        );
+        assert_eq!(
+            CpuDomain::from_cpuinfo_stream(std::io::Cursor::new(&text), &[]),
+            None
+        );
+        // A malformed block after the last wanted CPU is never read:
+        // the stream stops at the wanted set, so it cannot refuse.
+        let mut malformed_tail = cpuinfo(&[(0, "AuthenticAMD", 26, 17)]);
+        malformed_tail.push_str("processor\t: 9\nvendor_id\t: X\n\n");
+        assert!(
+            CpuDomain::from_cpuinfo_stream(std::io::Cursor::new(&malformed_tail), &[0]).is_some()
+        );
+    }
+
+    #[test]
+    fn streamed_domain_matches_cpuinfo_on_this_host() {
+        let Some(sampled) = domain_from_online_cpus() else {
+            println!("cpu domain stream: no domain on this host; skipping oracle check");
+            return;
+        };
+        let text = std::fs::read_to_string("/proc/cpuinfo").expect("read cpuinfo oracle");
+        let parsed = CpuDomain::from_cpuinfo(&text).expect("cpuinfo domain on a sampled host");
+        assert_eq!(sampled.raw_event, parsed.raw_event);
+        for cpu in 0..libc::CPU_SETSIZE as usize {
+            if sampled.contains(cpu) {
+                assert!(
+                    parsed.contains(cpu),
+                    "sampled cpu {cpu} absent from cpuinfo domain"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn cpuinfo_domains_require_every_cpu_to_agree() {
         let domain = zen5_domain(&[0, 1, 2, 130]);
         assert_eq!(
@@ -3145,7 +3391,7 @@ mod tests {
 
     #[test]
     fn this_hosts_domain_agrees_with_cpuid_on_every_permitted_cpu() {
-        // Runs CPUID and reads /proc/cpuinfo only; no PMU or KVM is needed.
+        // Runs CPUID and reads sysfs only; no PMU or KVM is needed.
         let domain = host_cpu_domain();
         let Ok(here) = current_raw_event() else {
             assert!(domain.is_none(), "an unsupported CPU must leave no domain");
@@ -3154,7 +3400,7 @@ mod tests {
         };
         let Some(domain) = domain else {
             // On an AMD host with one core PMU (FollowTask) and a supported
-            // CPU, a missing domain means the cpuinfo parser regressed and
+            // CPU, a missing domain means the sampler regressed and
             // the cache is silently off: fail rather than pass.
             assert_ne!(
                 CounterPlacement::default(),
