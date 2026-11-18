@@ -23,6 +23,18 @@
 //! fields drop as they would without a sink and destroy the VM on the
 //! dropping thread. Deferral can degrade to synchronous destruction; it
 //! cannot leak a VM, because some close is always the last one.
+//!
+//! The thread reaper here is also safe in a host-fork copy of a run (a
+//! process made by `fork()` from a paused template): `fork()` copies
+//! only the calling thread, so the workers do not exist in the copy,
+//! but their queue does. The reaper records the process its workers
+//! were spawned in and, on first use in a different process, spawns a
+//! fresh pool that keeps draining that queue — each process's closes
+//! drop only its own descriptor references, and the kernel destroy
+//! still runs at whichever close is globally last. If no worker can
+//! spawn in the copy, descriptors close inline instead. Without this,
+//! a copy adopting into the copied queue would wait forever for
+//! workers that are not there.
 
 use std::collections::VecDeque;
 use std::os::fd::FromRawFd;
@@ -90,6 +102,17 @@ struct State {
     adopted: u64,
     destroyed: u64,
     handles: usize,
+    /// Process the live workers were spawned in (0 before any spawn).
+    /// A host-fork copy has a different pid and none of those workers;
+    /// first use there spawns a fresh pool (see the module docs).
+    worker_pid: libc::pid_t,
+    /// No worker could spawn in `worker_pid`; closes run inline there.
+    workers_failed: bool,
+}
+
+fn current_pid() -> libc::pid_t {
+    // SAFETY: getpid takes no arguments and touches no memory.
+    unsafe { libc::getpid() }
 }
 
 #[derive(Default)]
@@ -141,6 +164,30 @@ fn teardown_worker(shared: Arc<Shared>) {
     }
 }
 
+/// Spawns up to [`TEARDOWN_WORKERS`] workers for `shared`, detaching
+/// them: a worker stops on its own once no handle remains and the queue
+/// is empty, so nothing needs their join handles. Returns how many
+/// spawned and the first spawn error, if any.
+fn spawn_workers(shared: &Arc<Shared>) -> (usize, Option<std::io::Error>) {
+    let mut spawned = 0;
+    let mut first_error = None;
+    for _ in 0..TEARDOWN_WORKERS {
+        match crate::failure::spawn_owned(
+            crate::supervisor_thread::builder().name("reverie-kvm-vm-teardown".into()),
+            shared.clone(),
+            teardown_worker,
+        ) {
+            Ok(_handle) => spawned += 1,
+            Err((error, _)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    (spawned, first_error)
+}
+
 /// A [`VmTeardownSink`] that closes adopted VM fds on a small pool of
 /// dedicated threads (`reverie-kvm-vm-teardown`).
 ///
@@ -149,6 +196,12 @@ fn teardown_worker(shared: Arc<Shared>) {
 /// the pool has not reached yet, in the exiting process. Such an embedder
 /// can implement [`VmTeardownSink`] itself and hand the descriptors to a
 /// longer-lived owner.
+///
+/// A host-fork copy of a process holding a reaper may keep using it:
+/// the first adoption or wait in the copy spawns fresh workers there
+/// (the template's workers were not copied), and any bundles the queue
+/// held at the fork are drained by whichever process reaches them. If
+/// no worker can spawn in the copy, its adoptions close inline.
 pub struct VmTeardownReaper {
     shared: Arc<Shared>,
 }
@@ -157,38 +210,82 @@ impl VmTeardownReaper {
     /// Spawns the teardown worker threads.
     pub fn new() -> Result<Self> {
         let shared = Arc::new(Shared::default());
-        shared.lock().handles = 1;
-        let mut spawned = Vec::new();
-        for _ in 0..TEARDOWN_WORKERS {
-            match crate::failure::spawn_owned(
-                crate::supervisor_thread::builder().name("reverie-kvm-vm-teardown".into()),
-                shared.clone(),
-                teardown_worker,
-            ) {
-                Ok(handle) => spawned.push(handle),
-                Err((error, _)) => {
-                    // No handle escapes, so the spawned workers can stop:
-                    // release the construction handle and join them.
-                    {
-                        let mut state = shared.lock();
-                        state.handles = 0;
-                    }
-                    shared.work.notify_all();
-                    for handle in spawned {
-                        let _ = handle.join();
-                    }
-                    return Err(Error::from(error).cleanup("VM teardown worker spawn"));
-                }
+        {
+            let mut state = shared.lock();
+            state.handles = 1;
+            state.worker_pid = current_pid();
+        }
+        let (spawned, error) = spawn_workers(&shared);
+        if let Some(error) = error {
+            // Construction is all-or-nothing. No handle escapes, so any
+            // workers that did spawn stop once they see no handle and an
+            // empty queue.
+            {
+                let mut state = shared.lock();
+                state.handles = 0;
+                state.workers_failed = spawned == 0;
             }
+            shared.work.notify_all();
+            return Err(Error::from(error).cleanup("VM teardown worker spawn"));
         }
         Ok(Self { shared })
+    }
+
+    /// Whether workers are running in this process, spawning them first
+    /// if this is a host-fork copy whose template's workers were not
+    /// copied. A partial pool still counts: one worker drains the queue.
+    fn ensure_workers(&self) -> bool {
+        let pid = current_pid();
+        let mut state = self.shared.lock();
+        if state.worker_pid == pid {
+            return !state.workers_failed;
+        }
+        // First use in a forked copy (or, if a reaper was somehow made
+        // without `new`, in any process): the recorded workers belong
+        // to the other process. The queue and counts carry over as-is.
+        // The state lock is held across the spawn so concurrent first
+        // uses in the copy serialize on this one attempt; the new
+        // workers simply block on the lock until it is released.
+        state.worker_pid = pid;
+        state.workers_failed = false;
+        let (spawned, _error) = spawn_workers(&self.shared);
+        if spawned == 0 {
+            state.workers_failed = true;
+            return false;
+        }
+        true
     }
 
     /// Blocks until every bundle adopted so far has been destroyed.
     /// Bundles adopted concurrently with the wait may or may not be
     /// included; callers that need a quiescent point stop adopting first
     /// (a finished run has no backend left to drop).
+    ///
+    /// In a process where no worker can run, this drains the queue on
+    /// the calling thread instead of waiting for workers that are not
+    /// there.
     pub fn wait_idle(&self) {
+        if !self.ensure_workers() {
+            loop {
+                let bundle = {
+                    let mut state = self.shared.lock();
+                    match state.queue.pop_front() {
+                        Some(bundle) => bundle,
+                        None => {
+                            assert_eq!(
+                                state.adopted, state.destroyed,
+                                "VM teardown queue empty with undestroyed bundles"
+                            );
+                            return;
+                        }
+                    }
+                };
+                drop(bundle.vcpu);
+                drop(bundle.vm);
+                let mut state = self.shared.lock();
+                state.destroyed = state.destroyed.saturating_add(1);
+            }
+        }
         let mut state = self.shared.lock();
         while !(state.queue.is_empty() && state.adopted == state.destroyed) {
             state = self.shared.wait(&self.shared.idle, state);
@@ -225,6 +322,18 @@ impl Drop for VmTeardownReaper {
 
 impl VmTeardownSink for VmTeardownReaper {
     fn adopt_vm(&self, vcpu: OwnedFd, vm: OwnedFd) {
+        if !self.ensure_workers() {
+            // No worker can run in this process (spawn refused, e.g. in
+            // a host-fork copy): close inline, in the sink's order, and
+            // count the bundle so `counts` and `wait_idle` stay truthful.
+            drop(vcpu);
+            drop(vm);
+            let mut state = self.shared.lock();
+            state.adopted = state.adopted.saturating_add(1);
+            state.destroyed = state.destroyed.saturating_add(1);
+            self.shared.idle.notify_all();
+            return;
+        }
         // Kept outside the queue until space is certain, so the wait for
         // space cannot lose the bundle.
         let mut bundle = Some(Bundle { vcpu, vm });
@@ -241,6 +350,7 @@ impl VmTeardownSink for VmTeardownReaper {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "tests may make threads freely")]
 mod tests {
     use std::os::fd::AsRawFd;
 
@@ -356,6 +466,76 @@ mod tests {
             fd_target(vm_fd).is_none_or(|target| !target.contains("kvm-vm")),
             "vm fd still open after the sink closed it"
         );
+    }
+
+    /// A host-fork copy holds the reaper's queue and counts but none of
+    /// its workers (fork copies only the calling thread). Adoption in
+    /// the copy must spawn fresh workers there and close the bundle;
+    /// the parent's reaper and counts are untouched.
+    #[test]
+    fn reaper_restarts_workers_in_forked_child() {
+        let reaper = VmTeardownReaper::new().expect("spawn teardown workers");
+        let (read_a, write_a) = pipe();
+        let (read_b, write_b) = pipe();
+        reaper.adopt_vm(write_a, write_b);
+        reaper.wait_idle();
+        assert_eq!(reaper.counts(), (1, 1));
+        assert!(is_eof(&read_a) && is_eof(&read_b));
+
+        // Adopted only in the child. The parent closes its copies of the
+        // write ends right after the fork, so the child's readers can
+        // reach EOF there; the verdict rides on the child's counts,
+        // which only move when a worker in the child closed a bundle.
+        let (read_c, write_c) = pipe();
+        let (read_d, write_d) = pipe();
+        let mut write_c = Some(write_c);
+        let mut write_d = Some(write_d);
+        // SAFETY: the child touches only the reaper and these pipes,
+        // then _exits without unwinding into the test harness; alarm
+        // bounds a hang (adoption waiting for workers that are not
+        // there) as a killed child, which the parent reports.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            // SAFETY: alarm and _exit take only integer arguments.
+            unsafe { libc::alarm(15) };
+            let write_c = write_c.take().expect("child write end");
+            let write_d = write_d.take().expect("child write end");
+            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reaper.adopt_vm(write_c, write_d);
+                reaper.wait_idle();
+                if reaper.counts() != (2, 2) {
+                    return false;
+                }
+                // EOF also needs the parent's copies closed, which it
+                // does right after the fork; poll briefly for that.
+                for _ in 0..500 {
+                    if is_eof(&read_c) && is_eof(&read_d) {
+                        return true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                false
+            }));
+            // SAFETY: terminate the child immediately with the verdict.
+            unsafe { libc::_exit(if verdict.unwrap_or(false) { 0 } else { 1 }) };
+        }
+        drop(write_c);
+        drop(write_d);
+        let mut status = 0;
+        // SAFETY: wait for the exact child created above.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status),
+            "fork child did not exit normally (status {status:#x}); a hang ends in SIGALRM"
+        );
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "fork child could not restart the reaper workers"
+        );
+        // The child's adoption was its own copy of the counts.
+        assert_eq!(reaper.counts(), (1, 1));
     }
 
     /// The thread reaper as the installed sink: once it reports idle,
