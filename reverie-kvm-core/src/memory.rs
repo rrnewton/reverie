@@ -5341,13 +5341,33 @@ impl Mapping {
         if first.length == length {
             return HostChunks::One([first]);
         }
-        let mut chunks = Vec::with_capacity(length.div_ceil(PAGE_SIZE) + 1);
+        // Coalesce runs of pages backed contiguously by the same
+        // backing: most multi-page copies touch only ordinary pages
+        // of the original arena, which would otherwise extend the
+        // vector (and clone the backing Arc) once per page — a
+        // leading cost of large guest-memory copies once any page of
+        // the arena has been replaced.
+        let mut chunks = Vec::with_capacity((length.div_ceil(PAGE_SIZE) + 1).min(16));
         let mut cursor = offset + first.length;
         chunks.push(first);
         while cursor < end {
             let chunk = chunk_at(cursor);
             cursor += chunk.length;
-            chunks.push(chunk);
+            let previous = chunks.last_mut().expect("first chunk pushed");
+            // Only the direct-memcpy kinds may merge: an ordinary file
+            // chunk is copied per page so a short file reports the
+            // exact prefix and errno of the page that faulted.
+            if matches!(
+                previous.backing.kind,
+                BackingKind::Fixed | BackingKind::SharedAnonymous
+            ) && Arc::ptr_eq(&previous.backing, &chunk.backing)
+                && previous.mapping.as_ptr() as usize + previous.length
+                    == chunk.mapping.as_ptr() as usize
+            {
+                previous.length += chunk.length;
+            } else {
+                chunks.push(chunk);
+            }
         }
         HostChunks::Many(chunks)
     }

@@ -644,6 +644,39 @@ impl State {
     /// `blocked_copiers` or `blocked_closers`, and a subscriber marks the
     /// change future taken, under this same lock before it waits, so every
     /// later change sees it.
+    /// The signal for a copy retirement. A retirement that neither
+    /// drains the last copy nor records a failure changes no predicate
+    /// any waiter rechecks: admission is untouched, `stopped()` stays
+    /// false, and members are unchanged. Completing the change future
+    /// for it would only allocate its replacement channel and wake
+    /// subscribers to recheck unchanged state — measured as a leading
+    /// cost of guest-memory copies, which retire far more often than
+    /// they drain to zero. Blocked copiers and closers still get their
+    /// condvar signal here exactly as in [`Self::changed`], and the
+    /// transitions waiters do act on — last copy out, a failure — take
+    /// the full path.
+    fn changed_for_copy_retire(&mut self, reached_zero: bool, failed_now: bool) -> ChangeSignal {
+        if reached_zero
+            || failed_now
+            || self.failure.is_some()
+            || self.blocked_copiers != 0
+            || self.blocked_closers != 0
+        {
+            return self.changed();
+        }
+        debug_assert!(
+            self.owner_notifications.is_empty() && self.retired_origins.is_empty(),
+            "only a failure queues owner notifications or retired origins"
+        );
+        ChangeSignal {
+            sender: None,
+            failed: None,
+            copies: None,
+            owners: Vec::new(),
+            origins: Vec::new(),
+        }
+    }
+
     fn changed(&mut self) -> ChangeSignal {
         let sender = self.change.rearm_if_taken();
         ChangeSignal {
@@ -1873,7 +1906,8 @@ impl CopyAccess {
                 .state
                 .lock()
                 .unwrap();
-            if std::thread::panicking() {
+            let panicking = std::thread::panicking();
+            if panicking {
                 let origin = if self.lazy {
                     origin()
                 } else {
@@ -1883,7 +1917,8 @@ impl CopyAccess {
             }
             state.copies = state.copies.checked_sub(1).expect("copy retired twice");
             self.retired = true;
-            state.changed()
+            let reached_zero = state.copies == 0;
+            state.changed_for_copy_retire(reached_zero, panicking)
         }
     }
 }
@@ -2809,6 +2844,42 @@ mod tests {
             );
             assert_eq!(observer.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         }
+    }
+
+    /// A copy retirement that is not the last one out completes no
+    /// change future: no waiter's predicate (admission, stopped,
+    /// failure) changed. The last retirement still does.
+    #[test]
+    fn copy_retirement_notifies_only_when_the_last_copy_leaves() {
+        let gate = EntryGate::new();
+        let first = gate.try_copy(None).unwrap().unwrap();
+        let second = gate.try_copy(None).unwrap().unwrap();
+        let waker = noop_waker();
+        let mut changed = pin!(gate.subscribe());
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        drop(first);
+        assert_eq!(gate.test_state().copies, 1);
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending(),
+            "a non-final copy retirement completed the change future"
+        );
+        drop(second);
+        assert_eq!(gate.test_state().copies, 0);
+        assert!(
+            changed
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_ready(),
+            "the final copy retirement did not complete the change future"
+        );
     }
 
     /// The failure subscription a parked callback waits on is not completed
