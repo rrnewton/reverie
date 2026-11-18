@@ -67,6 +67,29 @@ use crate::error::ErrorExt;
 /// unbounded guest memory in undestroyed VMs.
 pub trait VmTeardownSink: Send + Sync {
     fn adopt_vm(&self, vcpu: OwnedFd, vm: OwnedFd);
+
+    /// As [`Self::adopt_vm`], plus a `hold` the sink must drop only
+    /// after both descriptors are closed. The backend passes a clone
+    /// of the VM's guest-memory handle: while the VM is still alive,
+    /// unmapping that memory in the dropping process makes the kernel
+    /// zap the VM's page tables synchronously on the dropping thread,
+    /// putting much of the destroy cost back where deferral was
+    /// supposed to move it from (measured; the race decides whether a
+    /// given drop pays it). Keeping one clone alive past the destroy
+    /// — dropped by whichever thread or process observes the closes
+    /// complete — makes the unmap always follow the destroy.
+    ///
+    /// The default suits a sink that closes both descriptors before
+    /// `adopt_vm` returns: the hold then drops right here, already
+    /// after the closes. An asynchronous sink must override this and
+    /// drop the hold only once its closes have completed; on any
+    /// failure path where the descriptors were not adopted, dropping
+    /// the hold immediately is still correct, because the backend's
+    /// own field drops then run the destroy.
+    fn adopt_vm_with_hold(&self, vcpu: OwnedFd, vm: OwnedFd, hold: Box<dyn std::any::Any + Send>) {
+        self.adopt_vm(vcpu, vm);
+        drop(hold);
+    }
 }
 
 /// A close-on-exec duplicate of `fd`, for handing to a [`VmTeardownSink`].
@@ -94,6 +117,9 @@ const MAX_QUEUED_BUNDLES: usize = 32;
 struct Bundle {
     vcpu: OwnedFd,
     vm: OwnedFd,
+    /// Dropped by the worker after both closes, so the guest memory
+    /// it keeps alive unmaps only once the VM is destroyed.
+    hold: Option<Box<dyn std::any::Any + Send>>,
 }
 
 #[derive(Default)]
@@ -155,9 +181,11 @@ fn teardown_worker(shared: Arc<Shared>) {
         };
         // Field order in the backend: the vCPU fd closes before the VM fd.
         // Dropping an OwnedFd closes it; the VM close runs the kernel
-        // destroy this thread exists to absorb.
+        // destroy this thread exists to absorb. The hold drops last,
+        // after the destroy it was kept alive past.
         drop(bundle.vcpu);
         drop(bundle.vm);
+        drop(bundle.hold);
         let mut state = shared.lock();
         state.destroyed = state.destroyed.saturating_add(1);
         shared.idle.notify_all();
@@ -320,14 +348,15 @@ impl Drop for VmTeardownReaper {
     }
 }
 
-impl VmTeardownSink for VmTeardownReaper {
-    fn adopt_vm(&self, vcpu: OwnedFd, vm: OwnedFd) {
+impl VmTeardownReaper {
+    fn adopt_bundle(&self, bundle: Bundle) {
         if !self.ensure_workers() {
             // No worker can run in this process (spawn refused, e.g. in
             // a host-fork copy): close inline, in the sink's order, and
             // count the bundle so `counts` and `wait_idle` stay truthful.
-            drop(vcpu);
-            drop(vm);
+            drop(bundle.vcpu);
+            drop(bundle.vm);
+            drop(bundle.hold);
             let mut state = self.shared.lock();
             state.adopted = state.adopted.saturating_add(1);
             state.destroyed = state.destroyed.saturating_add(1);
@@ -336,7 +365,7 @@ impl VmTeardownSink for VmTeardownReaper {
         }
         // Kept outside the queue until space is certain, so the wait for
         // space cannot lose the bundle.
-        let mut bundle = Some(Bundle { vcpu, vm });
+        let mut bundle = Some(bundle);
         let mut state = self.shared.lock();
         while state.queue.len() >= MAX_QUEUED_BUNDLES {
             state = self.shared.wait(&self.shared.space, state);
@@ -346,6 +375,24 @@ impl VmTeardownSink for VmTeardownReaper {
             .push_back(bundle.take().expect("bundle taken before adoption"));
         state.adopted = state.adopted.saturating_add(1);
         self.shared.work.notify_one();
+    }
+}
+
+impl VmTeardownSink for VmTeardownReaper {
+    fn adopt_vm(&self, vcpu: OwnedFd, vm: OwnedFd) {
+        self.adopt_bundle(Bundle {
+            vcpu,
+            vm,
+            hold: None,
+        });
+    }
+
+    fn adopt_vm_with_hold(&self, vcpu: OwnedFd, vm: OwnedFd, hold: Box<dyn std::any::Any + Send>) {
+        self.adopt_bundle(Bundle {
+            vcpu,
+            vm,
+            hold: Some(hold),
+        });
     }
 }
 
@@ -416,6 +463,33 @@ mod tests {
         assert_eq!(reaper.counts(), (1, 1));
         assert!(wait_eof(&read_a), "vcpu stand-in still open");
         assert!(wait_eof(&read_b), "vm stand-in still open");
+    }
+
+    /// The hold is dropped with the bundle's destroy: by the time the
+    /// reaper reports idle, a hold given at adoption is gone.
+    #[test]
+    fn hold_drops_with_the_destroy() {
+        struct Flag(std::sync::Arc<std::sync::atomic::AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let reaper = VmTeardownReaper::new().expect("spawn teardown workers");
+        let (_read_a, write_a) = pipe();
+        let (_read_b, write_b) = pipe();
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        reaper.adopt_vm_with_hold(
+            write_a,
+            write_b,
+            Box::new(Flag(std::sync::Arc::clone(&dropped))),
+        );
+        reaper.wait_idle();
+        assert_eq!(reaper.counts(), (1, 1));
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "hold not dropped after the reaper drained"
+        );
     }
 
     #[test]

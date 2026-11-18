@@ -7646,8 +7646,13 @@ impl KvmBackend {
         let Ok(vm) = crate::teardown::dup_cloexec(self.vm.as_raw_fd()) else {
             return;
         };
+        // The memory clone rides along as the hold: dropped by the sink
+        // only after both closes complete, so this process's unmapping
+        // of the guest memory (when the fields below drop their last
+        // other clones) cannot zap a still-live VM on this thread.
+        let hold = Box::new(self.memory.clone());
         let adopted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            sink.adopt_vm(vcpu, vm);
+            sink.adopt_vm_with_hold(vcpu, vm, hold);
         }));
         if adopted.is_err() {
             eprintln!(
