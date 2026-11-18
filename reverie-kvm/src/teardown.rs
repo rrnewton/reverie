@@ -377,6 +377,34 @@ mod tests {
         ready == 1 && poll.revents & libc::POLLHUP != 0
     }
 
+    /// `is_eof` with a deadline, for positive checks: a parallel test
+    /// between fork and exec transiently holds a duplicate of every
+    /// pipe write end in this process, so EOF can lag the closes these
+    /// tests own by that exec window. A genuinely leaked duplicate
+    /// still fails, at the deadline.
+    fn wait_eof(fd: &OwnedFd) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let mut poll = libc::pollfd {
+                fd: fd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let timeout = deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            // SAFETY: `poll` is one valid pollfd for the duration of the call.
+            let ready =
+                unsafe { libc::poll(&mut poll, 1, i32::try_from(timeout).unwrap_or(i32::MAX)) };
+            if ready == 1 && poll.revents & libc::POLLHUP != 0 {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+        }
+    }
+
     #[test]
     fn adopted_descriptors_are_closed_by_wait_idle() {
         let reaper = VmTeardownReaper::new().expect("spawn teardown workers");
@@ -386,8 +414,8 @@ mod tests {
         reaper.adopt_vm(write_a, write_b);
         reaper.wait_idle();
         assert_eq!(reaper.counts(), (1, 1));
-        assert!(is_eof(&read_a), "vcpu stand-in still open");
-        assert!(is_eof(&read_b), "vm stand-in still open");
+        assert!(wait_eof(&read_a), "vcpu stand-in still open");
+        assert!(wait_eof(&read_b), "vm stand-in still open");
     }
 
     #[test]
@@ -404,7 +432,7 @@ mod tests {
         reaper.wait_idle();
         assert_eq!(reaper.counts(), (bundles, bundles));
         for (read_a, read_b) in &readers {
-            assert!(is_eof(read_a) && is_eof(read_b));
+            assert!(wait_eof(read_a) && wait_eof(read_b));
         }
     }
 
@@ -480,7 +508,7 @@ mod tests {
         reaper.adopt_vm(write_a, write_b);
         reaper.wait_idle();
         assert_eq!(reaper.counts(), (1, 1));
-        assert!(is_eof(&read_a) && is_eof(&read_b));
+        assert!(wait_eof(&read_a) && wait_eof(&read_b));
 
         // Adopted only in the child. The parent closes its copies of the
         // write ends right after the fork, so the child's readers can
