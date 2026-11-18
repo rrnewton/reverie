@@ -274,6 +274,13 @@ fn execute_basic_syscall_dispatch(
         reverie::SignalTaskIdentity,
     )>,
 ) -> SyscallAction {
+    // One copy admission for this syscall's guest-memory copies: the
+    // handler's many small reads and writes borrow it instead of each
+    // admitting and retiring (the gate flushes it early if this thread
+    // closes admission itself, and at the next entry boundary at the
+    // latest). A terminal read can block on host input indefinitely,
+    // so no batch is held across one.
+    let _copy_batch = (terminal_read.is_none()).then(|| memory.copy_batch());
     if !mutates_layout(request.number()) {
         return execute_basic_syscall_inner(
             memory,

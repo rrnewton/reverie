@@ -1138,6 +1138,12 @@ impl EntryGate {
         self: &Arc<Self>,
         origin: impl Into<EntryOrigin>,
     ) -> GateResult<Option<CopyAccess>> {
+        if let Some(generation) = self.batch_generation() {
+            return Ok(Some(self.batched_token(
+                generation,
+                Origin::<fn() -> EntryOrigin>::Stored(origin.into()),
+            )));
+        }
         let state = self.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
@@ -1155,6 +1161,9 @@ impl EntryGate {
         self: &Arc<Self>,
         origin: impl FnOnce() -> EntryOrigin,
     ) -> GateResult<Option<CopyAccess>> {
+        if let Some(generation) = self.batch_generation() {
+            return Ok(Some(self.batched_token(generation, Origin::Lazy(origin))));
+        }
         let state = self.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
@@ -1186,6 +1195,9 @@ impl EntryGate {
         self: &Arc<Self>,
         origin: Origin<impl FnOnce() -> EntryOrigin>,
     ) -> GateResult<CopyAccess> {
+        if let Some(generation) = self.batch_generation() {
+            return Ok(self.batched_token(generation, origin));
+        }
         let mut state = self.state.lock().unwrap();
         loop {
             state.check()?;
@@ -1235,7 +1247,159 @@ impl EntryGate {
             lazy,
             generation: state.generation,
             retired: false,
+            batched: false,
         })
+    }
+
+    /// Opens a copy batch on this thread: one real admission that
+    /// this thread's later copies on this gate borrow instead of
+    /// admitting and retiring each. The batch is a host-side scope
+    /// only — every borrowing copy still runs under that one
+    /// admission, so a close waits for the batch exactly as it would
+    /// wait for one long copy, and no copy can be borrowed once a
+    /// failure stands. Open one per synchronous burst of copies (a
+    /// syscall's worth), never across a guest entry or a host wait:
+    /// admission close, entry acknowledgement and entry start all
+    /// flush this thread's batch first, so a leaked batch ends at
+    /// the next such boundary, but a batch held across a blocking
+    /// host operation would delay a sibling's close by that wait.
+    /// Nesting on the same gate shares the admission; batches on
+    /// different gates may be open at once; guards must drop in
+    /// reverse order per gate (the usual stack discipline).
+    ///
+    /// Infallible: if no admission can be taken now (closing, failed,
+    /// or no thread-local state on a thread that is exiting), the
+    /// guard is inactive and copies take their ordinary path, which
+    /// is where such an error belongs.
+    pub(crate) fn copy_batch_lazy(
+        self: &Arc<Self>,
+        origin: impl FnOnce() -> EntryOrigin,
+    ) -> CopyBatch {
+        let me = Arc::as_ptr(self) as usize;
+        let existing = COPY_BATCHES
+            .try_with(|batches| {
+                let mut batches = batches.borrow_mut();
+                batches
+                    .iter_mut()
+                    .find(|entry| entry.gate_ptr == me)
+                    .map(|entry| {
+                        entry.depth += 1;
+                        entry.id
+                    })
+            })
+            .ok()
+            .flatten();
+        if let Some(id) = existing {
+            return CopyBatch {
+                gate: self.clone(),
+                id,
+                active: true,
+            };
+        }
+        // Lazily admitted like an ordinary memory copy; the batch's
+        // end/flush paths retire it through `retire_batch_access`,
+        // which supplies an origin, as an issuer would.
+        let Ok(Some(access)) = self.try_copy_lazy(origin) else {
+            return CopyBatch {
+                gate: self.clone(),
+                id: 0,
+                active: false,
+            };
+        };
+        let id = NEXT_COPY_BATCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let inserted = COPY_BATCHES
+            .try_with(|batches| {
+                batches.borrow_mut().push(ThreadCopyBatch {
+                    gate_ptr: me,
+                    access,
+                    depth: 1,
+                    id,
+                });
+            })
+            .is_ok();
+        CopyBatch {
+            gate: self.clone(),
+            id,
+            active: inserted,
+        }
+    }
+
+    fn end_copy_batch(&self, id: u64) {
+        let retired = COPY_BATCHES
+            .try_with(|batches| {
+                let mut batches = batches.borrow_mut();
+                let position = batches.iter().position(|entry| entry.id == id)?;
+                if batches[position].depth > 1 {
+                    batches[position].depth -= 1;
+                    None
+                } else {
+                    Some(batches.remove(position).access)
+                }
+            })
+            .ok()
+            .flatten();
+        if let Some(access) = retired {
+            retire_batch_access(access);
+        }
+    }
+
+    /// Retires this thread's batch on this gate now, whatever its
+    /// guard's depth: called where an admission held only by this
+    /// thread's batch could wait on itself (gate close) and at entry
+    /// boundaries (acknowledge, enter), so a leaked batch ends there
+    /// at the latest. Guards of a flushed batch drop as no-ops.
+    pub(crate) fn flush_copy_batch(&self) {
+        let me = self as *const Self as usize;
+        let retired = COPY_BATCHES
+            .try_with(|batches| {
+                let mut batches = batches.borrow_mut();
+                let position = batches.iter().position(|entry| entry.gate_ptr == me)?;
+                Some(batches.remove(position).access)
+            })
+            .ok()
+            .flatten();
+        if let Some(access) = retired {
+            retire_batch_access(access);
+        }
+    }
+
+    /// The generation of this thread's live batch for this gate, if
+    /// one is open and no failure stands.
+    fn batch_generation(&self) -> Option<MappingGeneration> {
+        if self.failure_recorded() {
+            return None;
+        }
+        let me = self as *const Self as usize;
+        COPY_BATCHES
+            .try_with(|batches| {
+                batches
+                    .borrow()
+                    .iter()
+                    .find(|entry| entry.gate_ptr == me)
+                    .map(|entry| entry.access.generation)
+            })
+            .ok()
+            .flatten()
+    }
+
+    /// A borrowing copy token against batch generation `generation`.
+    fn batched_token(
+        self: &Arc<Self>,
+        generation: MappingGeneration,
+        origin: Origin<impl FnOnce() -> EntryOrigin>,
+    ) -> CopyAccess {
+        let (origin, lazy) = match origin {
+            Origin::Stored(origin) => (origin, false),
+            Origin::Lazy(_) => (EntryOrigin::default(), true),
+        };
+        CopyAccess {
+            gate: Some(self.clone()),
+            origin,
+            lazy,
+            generation,
+            retired: false,
+            batched: true,
+        }
     }
 
     /// Retain a host pointer after its short-copy admission ends. Closing still
@@ -1312,6 +1476,8 @@ impl EntryGate {
         self: &Arc<Self>,
         mut send: impl FnMut(HostThread) -> std::io::Result<()>,
     ) -> GateResult<CloseAttempt> {
+        // This thread's own batch admission would wait on itself.
+        self.flush_copy_batch();
         let mut state = self.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
@@ -1503,6 +1669,9 @@ impl Participant {
     }
 
     pub fn try_enter(&mut self) -> GateResult<Option<Entry<'_>>> {
+        // A leaked batch ends at the entry boundary at the latest:
+        // no copy batch may be live while the guest runs.
+        self.gate.flush_copy_batch();
         let mut state = self.gate.state.lock().unwrap();
         state.check()?;
         if state.admission != Admission::Open {
@@ -1704,6 +1873,9 @@ impl Entry<'_> {
 
     /// Called only after clock cleanup, withdrawal and signal cleanup.
     pub(crate) fn acknowledge(mut self, cleanup: crate::Result<()>) -> GateResult<()> {
+        // The syscall burst this entry handled is over; its copies'
+        // batch ends with it (a flushed guard later drops as a no-op).
+        self.participant.gate.flush_copy_batch();
         let mut state = self.participant.gate.state.lock().unwrap();
         let member = state.members.get_mut(&self.participant.id).unwrap();
         assert_eq!(member.run, self.run);
@@ -1824,6 +1996,51 @@ impl Drop for RunEntry<'_> {
     }
 }
 
+/// One thread's live copy batch: the real admission every borrowing
+/// copy issued under it runs against.
+struct ThreadCopyBatch {
+    gate_ptr: usize,
+    access: CopyAccess,
+    depth: usize,
+    id: u64,
+}
+
+thread_local! {
+    static COPY_BATCHES: std::cell::RefCell<Vec<ThreadCopyBatch>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+static NEXT_COPY_BATCH_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A copy batch scope opened by [`EntryGate::copy_batch_lazy`]: while
+/// it is live, this thread's copies on its gate borrow its one real
+/// admission instead of admitting and retiring each. Dropping the
+/// guard retires that admission (once, at the outermost guard for the
+/// gate). An inactive guard (no admission could be taken when it was
+/// opened) does nothing. See `copy_batch_lazy` for where a batch may
+/// and may not be held.
+/// Retires a batch's real admission. The access was lazily admitted,
+/// so it must go through an issuer-style retirement (which supplies
+/// the origin a plain drop may not assume) rather than a bare drop.
+/// The dropped `CopyRetirement` delivers the notification.
+fn retire_batch_access(access: CopyAccess) {
+    drop(access.retire_deferred_with(EntryOrigin::default));
+}
+
+pub struct CopyBatch {
+    gate: Arc<EntryGate>,
+    id: u64,
+    active: bool,
+}
+
+impl Drop for CopyBatch {
+    fn drop(&mut self) {
+        if self.active {
+            self.gate.end_copy_batch(self.id);
+        }
+    }
+}
+
 pub struct CopyAccess {
     /// Present until [`Self::retire_deferred_with`] moves it into the
     /// [`CopyRetirement`] it returns, which keeps the gate alive until its
@@ -1838,6 +2055,12 @@ pub struct CopyAccess {
     lazy: bool,
     generation: MappingGeneration,
     retired: bool,
+    /// Borrows a thread-local batch's real admission instead of owning
+    /// one: retiring it decrements no gate count (the batch's real copy
+    /// is the admission), except on unwind, where it fails the gate and
+    /// flushes the batch. Only issued while a `CopyBatch` for this gate
+    /// is live on this thread.
+    batched: bool,
 }
 
 /// A copy's issuing context, either owned by the copy or rebuilt by its
@@ -1898,6 +2121,42 @@ impl CopyAccess {
 
     fn retire(&mut self, origin: impl FnOnce() -> EntryOrigin) -> ChangeSignal {
         assert!(!self.retired, "copy retired twice");
+        if self.batched {
+            self.retired = true;
+            if std::thread::panicking() {
+                // Attribute the unwind like an owning copy would, and
+                // flush the batch: its real admission must not outlive
+                // a failed gate. The flush drops the real copy after
+                // this token returns its signal, outside any gate lock.
+                let origin = if self.lazy {
+                    origin()
+                } else {
+                    self.origin.clone()
+                };
+                let signal = {
+                    let mut state = self
+                        .gate
+                        .as_ref()
+                        .expect("an unretired copy keeps its gate")
+                        .state
+                        .lock()
+                        .unwrap();
+                    state.fail(origin, protocol_failure("host copy unwound"));
+                    state.changed()
+                };
+                if let Some(gate) = self.gate.clone() {
+                    gate.flush_copy_batch();
+                }
+                return signal;
+            }
+            return ChangeSignal {
+                sender: None,
+                failed: None,
+                copies: None,
+                owners: Vec::new(),
+                origins: Vec::new(),
+            };
+        }
         {
             let mut state = self
                 .gate
@@ -2880,6 +3139,60 @@ mod tests {
                 .is_ready(),
             "the final copy retirement did not complete the change future"
         );
+    }
+
+    /// A batch borrows its one admission for every copy on the opening
+    /// thread: gate copy count stays at one across copies and drains
+    /// when the guard drops; nested guards share it.
+    #[test]
+    fn copy_batch_admits_once_for_many_copies() {
+        let gate = EntryGate::new();
+        {
+            let _batch = gate.copy_batch_lazy(EntryOrigin::default);
+            let first = gate.try_copy(None).unwrap().unwrap();
+            let second = gate.copy_blocking(EntryOrigin::default()).unwrap();
+            assert_eq!(gate.test_state().copies, 1, "batched copies admitted again");
+            drop(first);
+            drop(second);
+            assert_eq!(
+                gate.test_state().copies,
+                1,
+                "batched retire drained the batch"
+            );
+            let _nested = gate.copy_batch_lazy(EntryOrigin::default);
+            let third = gate.try_copy(None).unwrap().unwrap();
+            assert_eq!(gate.test_state().copies, 1);
+            drop(third);
+            // Nested guard drops here; the outer admission must stay.
+        }
+        assert_eq!(
+            gate.test_state().copies,
+            0,
+            "batch did not retire at guard drop"
+        );
+    }
+
+    /// Closing the gate from a thread that holds a batch flushes that
+    /// batch first, so the closer does not wait on its own admission.
+    #[test]
+    fn close_flushes_this_threads_copy_batch() {
+        let gate = EntryGate::new();
+        let _batch = gate.copy_batch_lazy(EntryOrigin::default);
+        let copy = gate.try_copy(None).unwrap().unwrap();
+        assert_eq!(gate.test_state().copies, 1);
+        let closing = match gate.try_close().unwrap() {
+            CloseAttempt::Closing(closing) => closing,
+            other => panic!("expected Closing, got {other:?}"),
+        };
+        // The batch admission was flushed by the close attempt; the
+        // borrowing token still retires as a no-op.
+        drop(copy);
+        let closed = closing
+            .finish_blocking(Duration::from_secs(5))
+            .expect("close completes")
+            .expect("close not abandoned");
+        assert_eq!(gate.test_state().copies, 0);
+        drop(closed);
     }
 
     /// The failure subscription a parked callback waits on is not completed

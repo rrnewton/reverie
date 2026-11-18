@@ -27,6 +27,7 @@ use crate::Error;
 use crate::Result;
 use crate::entry::Closed;
 use crate::entry::CopyAccess;
+use crate::entry::CopyBatch;
 use crate::entry::EntryGate;
 use crate::entry::EntryOrigin;
 use crate::entry::MappingGeneration;
@@ -1890,6 +1891,19 @@ impl GuestMemory {
             .copy_blocking_lazy(|| self.entry_origin())
             .map(|copy| MemoryCopyAccess::new(self, copy))
             .map_err(|failure| failure.error())
+    }
+
+    /// Opens a copy batch for this thread on this memory's gate: while
+    /// the guard is live, this thread's memory copies borrow its one
+    /// admission instead of admitting and retiring each (see
+    /// `EntryGate::copy_batch_lazy` for where a batch may and may not
+    /// be held). Infallible: with no admission available the guard is
+    /// inactive and copies take their ordinary path, where the error
+    /// belongs.
+    pub fn copy_batch(&self) -> CopyBatch {
+        self.mapping
+            .entry_gate
+            .copy_batch_lazy(|| self.entry_origin())
     }
 
     fn check_copy_failure(&self) -> Result<()> {
@@ -10335,6 +10349,36 @@ mod one_admission_copy_tests {
         assert_eq!(read, expected);
         assert_eq!(bytes(&combined, 0, 4 * PAGE), bytes(&separate, 0, 4 * PAGE));
         assert_eq!(combined.entry_gate().test_state().copies, 0);
+    }
+
+    /// A copy batch turns a burst of raw reads and writes into one
+    /// gate admission total (the control pays one per operation),
+    /// with identical bytes, and the count drains at guard drop.
+    #[test]
+    fn copy_batch_is_one_admission_for_a_burst() {
+        let batched = fixture();
+        let separate = fixture();
+        let before = admissions(&batched);
+        {
+            let _batch = batched.copy_batch();
+            for i in 0..8u64 {
+                let mut byte = [0u8; 1];
+                batched.read_raw(i * 0x100, &mut byte).unwrap();
+                batched.write_raw(0x2000 + i, &byte).unwrap();
+            }
+            assert_eq!(admissions(&batched), before + 1, "burst admitted per copy");
+            assert_eq!(batched.entry_gate().test_state().copies, 1);
+        }
+        assert_eq!(batched.entry_gate().test_state().copies, 0);
+
+        let before = admissions(&separate);
+        for i in 0..8u64 {
+            let mut byte = [0u8; 1];
+            separate.read_raw(i * 0x100, &mut byte).unwrap();
+            separate.write_raw(0x2000 + i, &byte).unwrap();
+        }
+        assert_eq!(admissions(&separate), before + 16, "control: per-operation");
+        assert_eq!(bytes(&batched, 0, 4 * PAGE), bytes(&separate, 0, 4 * PAGE));
     }
 
     #[test]
