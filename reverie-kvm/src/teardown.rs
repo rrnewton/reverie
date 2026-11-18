@@ -36,6 +36,7 @@
 //! a copy adopting into the copied queue would wait forever for
 //! workers that are not there.
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
@@ -44,6 +45,8 @@ use std::sync::Arc;
 use std::sync::Condvar;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
+use std::sync::Once;
+use std::sync::Weak;
 
 use crate::Error;
 use crate::Result;
@@ -163,12 +166,121 @@ impl Shared {
     }
 }
 
+/// Every live reaper's shared state, for the atfork handlers below.
+/// Weak, so registration never keeps a reaper (or its workers) alive.
+static FORK_REGISTRY: Mutex<Vec<Weak<Shared>>> = Mutex::new(Vec::new());
+static FORK_HANDLERS: Once = Once::new();
+
+/// One queue lock held across a fork, with the `Arc` that keeps its
+/// `Shared` alive. Field order matters: the guard unlocks before the
+/// `Arc` can drop.
+struct HeldForkGuard {
+    _guard: Option<MutexGuard<'static, State>>,
+    _shared: Arc<Shared>,
+}
+
+thread_local! {
+    /// Queue locks taken by `atfork_prepare` on this (forking) thread,
+    /// released by the parent/child handler on the same thread.
+    static FORK_HELD: RefCell<Vec<HeldForkGuard>> = const { RefCell::new(Vec::new()) };
+    static FORK_REGISTRY_HELD: RefCell<Option<MutexGuard<'static, Vec<Weak<Shared>>>>> =
+        const { RefCell::new(None) };
+}
+
+fn lock_registry() -> MutexGuard<'static, Vec<Weak<Shared>>> {
+    FORK_REGISTRY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Locks every live reaper's queue before the fork copies memory, so
+/// no copy can inherit a queue mutex whose owner thread was not
+/// copied: that mutex would stay locked forever in the copy, and its
+/// first adoption would deadlock. Workers parked on a condvar have
+/// released the mutex and need nothing.
+extern "C" fn atfork_prepare() {
+    let mut registry = lock_registry();
+    registry.retain(|shared| shared.strong_count() > 0);
+    let live: Vec<Arc<Shared>> = registry.iter().filter_map(Weak::upgrade).collect();
+    FORK_REGISTRY_HELD.with(|held| *held.borrow_mut() = Some(registry));
+    FORK_HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        for shared in live {
+            if held
+                .iter()
+                .any(|held| std::ptr::eq(Arc::as_ptr(&held._shared), Arc::as_ptr(&shared)))
+            {
+                continue;
+            }
+            // SAFETY: the accompanying `Arc` in the same entry keeps
+            // `shared` alive until after the guard drops.
+            let shared_ref: &'static Shared = unsafe { &*Arc::as_ptr(&shared) };
+            held.push(HeldForkGuard {
+                _guard: Some(shared_ref.lock()),
+                _shared: shared,
+            });
+        }
+    });
+}
+
+fn atfork_release() {
+    FORK_HELD.with(|held| held.borrow_mut().clear());
+    FORK_REGISTRY_HELD.with(|held| {
+        let _ = held.borrow_mut().take();
+    });
+}
+
+extern "C" fn atfork_parent() {
+    atfork_release();
+}
+
+extern "C" fn atfork_child() {
+    // The forking thread is the copied guards' owner here, exactly as
+    // in the parent; releasing is the same operation in both.
+    atfork_release();
+}
+
+/// Registers the atfork handlers (once per process) and this reaper
+/// in their registry. glibc runs the handlers for `libc::fork`, and
+/// they survive into forked copies, whose copied registry still
+/// names their copied shared states.
+fn register_for_atfork(shared: &Arc<Shared>) {
+    FORK_HANDLERS.call_once(|| {
+        // SAFETY: the three handlers are plain functions that only
+        // lock and unlock the mutexes above on the forking thread.
+        unsafe {
+            libc::pthread_atfork(
+                Some(atfork_prepare),
+                Some(atfork_parent),
+                Some(atfork_child),
+            );
+        }
+    });
+    lock_registry().push(Arc::downgrade(shared));
+}
+
+#[cfg(test)]
+type WorkerPopHook = Arc<dyn Fn(*const Shared) + Send + Sync>;
+
+#[cfg(test)]
+static WORKER_POP_HOOK: Mutex<Option<WorkerPopHook>> = Mutex::new(None);
+
 fn teardown_worker(shared: Arc<Shared>) {
     loop {
         let bundle = {
             let mut state = shared.lock();
             loop {
                 if let Some(bundle) = state.queue.pop_front() {
+                    #[cfg(test)]
+                    if let Some(hook) = WORKER_POP_HOOK
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .clone()
+                    {
+                        // Still holding the queue lock: the fork test
+                        // parks the worker here, mid-critical-section.
+                        hook(Arc::as_ptr(&shared));
+                    }
                     shared.space.notify_all();
                     break bundle;
                 }
@@ -243,6 +355,7 @@ impl VmTeardownReaper {
             state.handles = 1;
             state.worker_pid = current_pid();
         }
+        register_for_atfork(&shared);
         let (spawned, error) = spawn_workers(&shared);
         if let Some(error) = error {
             // Construction is all-or-nothing. No handle escapes, so any
@@ -274,6 +387,19 @@ impl VmTeardownReaper {
         // The state lock is held across the spawn so concurrent first
         // uses in the copy serialize on this one attempt; the new
         // workers simply block on the lock until it is released.
+        //
+        // Reconcile bundles a template worker had already popped at
+        // the fork: that thread was not copied, so nobody here will
+        // close them or count them destroyed, and waiting for them
+        // would hang. Their descriptor copies in this process close
+        // at its exit at the latest (and the template's own workers
+        // close the template's copies), so counting them destroyed
+        // here keeps this copy's waits truthful about its own work.
+        let lost = state
+            .adopted
+            .saturating_sub(state.destroyed)
+            .saturating_sub(state.queue.len() as u64);
+        state.destroyed = state.destroyed.saturating_add(lost);
         state.worker_pid = pid;
         state.workers_failed = false;
         let (spawned, _error) = spawn_workers(&self.shared);
@@ -637,6 +763,98 @@ mod tests {
             "fork child could not restart the reaper workers"
         );
         // The child's adoption was its own copy of the counts.
+        assert_eq!(reaper.counts(), (1, 1));
+    }
+
+    /// A fork that lands while a worker holds the queue lock must not
+    /// leave the child's copy of that lock held forever (the worker
+    /// thread was not copied). The hook parks the worker inside the
+    /// pop critical section; the atfork prepare handler has to wait
+    /// it out before the copy is taken, and the child's first
+    /// adoption then has to finish within its alarm bound.
+    #[test]
+    fn fork_while_worker_holds_queue_lock_does_not_deadlock_child() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering;
+
+        let reaper = VmTeardownReaper::new().expect("spawn teardown workers");
+        let entered = Arc::new(AtomicBool::new(false));
+        let once = Arc::new(AtomicBool::new(false));
+        {
+            let entered = Arc::clone(&entered);
+            let once = Arc::clone(&once);
+            let target = Arc::as_ptr(&reaper.shared) as usize;
+            let hook: WorkerPopHook = Arc::new(move |shared| {
+                if shared as usize == target && !once.swap(true, Ordering::SeqCst) {
+                    entered.store(true, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+            });
+            *WORKER_POP_HOOK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(hook);
+        }
+        struct ClearHook;
+        impl Drop for ClearHook {
+            fn drop(&mut self) {
+                *WORKER_POP_HOOK
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            }
+        }
+        let _clear = ClearHook;
+
+        // One bundle for a worker to pop and park on, one adopted
+        // only in the child (as in the restart test above).
+        let (_read_a, write_a) = pipe();
+        let (_read_b, write_b) = pipe();
+        reaper.adopt_vm(write_a, write_b);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !entered.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker never entered the pop critical section"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (read_c, write_c) = pipe();
+        let (read_d, write_d) = pipe();
+        let mut write_c = Some(write_c);
+        let mut write_d = Some(write_d);
+        // SAFETY: as in the restart test — the child touches only the
+        // reaper and these pipes, then _exits; alarm bounds the hang
+        // this test exists to catch (a copied locked queue mutex).
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork: {}", std::io::Error::last_os_error());
+        if pid == 0 {
+            // SAFETY: alarm and _exit take only integer arguments.
+            unsafe { libc::alarm(15) };
+            let write_c = write_c.take().expect("child write end");
+            let write_d = write_d.take().expect("child write end");
+            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                reaper.adopt_vm(write_c, write_d);
+                reaper.wait_idle();
+                reaper.counts() == (2, 2) && wait_eof(&read_c) && wait_eof(&read_d)
+            }));
+            // SAFETY: terminate the child immediately with the verdict.
+            unsafe { libc::_exit(if verdict.unwrap_or(false) { 0 } else { 1 }) };
+        }
+        drop(write_c);
+        drop(write_d);
+        let mut status = 0;
+        // SAFETY: wait for the exact child created above.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status),
+            "fork child did not exit normally (status {status:#x}); a hang ends in SIGALRM"
+        );
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "fork child's first adoption deadlocked or failed"
+        );
+        // The parent's own reaper is unaffected and drains normally.
+        reaper.wait_idle();
         assert_eq!(reaper.counts(), (1, 1));
     }
 
