@@ -269,6 +269,17 @@ fn teardown_worker(shared: Arc<Shared>) {
     loop {
         let bundle = {
             let mut state = shared.lock();
+            // Stamp the process this worker is actually running in. A
+            // thread-restoring host fork (raw clone, no atfork handlers)
+            // resumes this worker in the copy under a new pid; the stamp
+            // tells a racing `ensure_workers` there that a live pool
+            // already exists in this process, so it does not spawn a
+            // second one draining the same queue.
+            let pid = current_pid();
+            if state.worker_pid != pid {
+                state.worker_pid = pid;
+                shared.idle.notify_all();
+            }
             loop {
                 if let Some(bundle) = state.queue.pop_front() {
                     #[cfg(test)]
@@ -299,7 +310,12 @@ fn teardown_worker(shared: Arc<Shared>) {
         drop(bundle.vm);
         drop(bundle.hold);
         let mut state = shared.lock();
-        state.destroyed = state.destroyed.saturating_add(1);
+        // Capped at `adopted`: a fork copy may already have reconciled
+        // this bundle as lost (see `ensure_workers`) before a restored
+        // worker finished closing it here.
+        if state.destroyed < state.adopted {
+            state.destroyed = state.destroyed.saturating_add(1);
+        }
         shared.idle.notify_all();
     }
 }
@@ -378,6 +394,30 @@ impl VmTeardownReaper {
     fn ensure_workers(&self) -> bool {
         let pid = current_pid();
         let mut state = self.shared.lock();
+        if state.worker_pid == pid {
+            return !state.workers_failed;
+        }
+        // A thread-restoring host fork (raw clone, no atfork handlers)
+        // resumes the recorded workers in this process; they just have
+        // not looped since the restore to re-stamp `worker_pid`. Wake
+        // them and briefly give one the chance, so this does not spawn
+        // a second pool draining the same queue alongside the restored
+        // one. The grace is paid once, on first use in a copy whose
+        // workers really are gone (plain fork): there the stamp never
+        // arrives and the spawn below follows.
+        self.shared.work.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2);
+        while state.worker_pid != pid {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let (guard, _timed_out) = self
+                .shared
+                .idle
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = guard;
+        }
         if state.worker_pid == pid {
             return !state.workers_failed;
         }
