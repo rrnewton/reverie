@@ -56,6 +56,7 @@ use kvm_bindings::kvm_xsave;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use kvm_ioctls::VcpuFd;
+use kvm_ioctls::VmFd;
 
 /// MSRs restored first, in this order: CPUID faulting can be enabled in
 /// `MISC_FEATURES_ENABLES` (0x140) only once `PLATFORM_INFO` (0xce) offers it.
@@ -385,7 +386,7 @@ pub fn prepare() -> Result<PrepareReport, String> {
 }
 
 /// What one child's repair did, with its timings in microseconds.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub struct RepairReport {
     pub refilled: usize,
     pub memfds: usize,
@@ -397,6 +398,37 @@ pub struct RepairReport {
     pub msrs_refused: usize,
     pub replays: usize,
     pub vm_us: u64,
+    /// Time per rebuild step, summed over every VM and vCPU, in step order.
+    pub vm_steps_us: Vec<(&'static str, u64)>,
+    /// KVM_CREATE_VM time of each VM, in rebuild order.
+    pub create_vm_us: Vec<u64>,
+}
+
+/// Sums the time of each named step of a VM rebuild.
+struct StepClock {
+    last: std::time::Instant,
+}
+
+impl StepClock {
+    fn start() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+        }
+    }
+
+    fn mark(&mut self, report: &mut RepairReport, name: &'static str) {
+        let now = std::time::Instant::now();
+        let us = now.duration_since(self.last).as_micros() as u64;
+        self.last = now;
+        match report
+            .vm_steps_us
+            .iter_mut()
+            .find(|(step, _)| *step == name)
+        {
+            Some((_, total)) => *total += us,
+            None => report.vm_steps_us.push((name, us)),
+        }
+    }
 }
 
 /// Rebuilds, in a forked child, every registered VM and vCPU and every memfd.
@@ -413,8 +445,15 @@ pub fn repair_in_child() -> Result<RepairReport, String> {
     report.memfd_us = t0.elapsed().as_micros() as u64;
     let t1 = std::time::Instant::now();
     let registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
+    // Every VM is created before any vCPU runs: after the first KVM_RUN in
+    // this process, each later KVM_CREATE_VM waited about 12 ms or 24 ms
+    // (MEASURED on a loaded host), while all of them before it took 0.2 ms.
+    let mut built = Vec::new();
     for vm in registry.iter() {
-        rebuild_vm(vm, &mut report)?;
+        built.push(build_vm(vm, &mut report)?);
+    }
+    for vm in built {
+        finish_vm(vm, &mut report)?;
         report.vms += 1;
     }
     report.vm_us = t1.elapsed().as_micros() as u64;
@@ -422,38 +461,56 @@ pub fn repair_in_child() -> Result<RepairReport, String> {
     Ok(report)
 }
 
-fn rebuild_vm(vm: &VmRecord, report: &mut RepairReport) -> Result<(), String> {
+/// A VM rebuilt in the child with its vCPUs' state set, not yet run.
+struct BuiltVm<'a> {
+    record: &'a VmRecord,
+    vm: VmFd,
+    vcpus: Vec<(&'a VcpuRecord, VcpuFd)>,
+}
+
+fn build_vm<'a>(vm: &'a VmRecord, report: &mut RepairReport) -> Result<BuiltVm<'a>, String> {
     // SAFETY: a live /dev/kvm descriptor, borrowed: ManuallyDrop never closes it.
     let kvm = std::mem::ManuallyDrop::new(unsafe { Kvm::from_raw_fd(vm.kvm_fd) });
+    let mut clock = StepClock::start();
+    let created = std::time::Instant::now();
     let new_vm = kvm
         .create_vm()
         .map_err(|e| format!("child: KVM_CREATE_VM: {e}"))?;
+    report
+        .create_vm_us
+        .push(created.elapsed().as_micros() as u64);
+    clock.mark(report, "create_vm");
     for cap in &vm.caps {
         new_vm
             .enable_cap(cap)
             .map_err(|e| format!("child: KVM_ENABLE_CAP {}: {e}", cap.cap))?;
     }
+    clock.mark(report, "enable_cap");
     for region in &vm.regions {
         // SAFETY: the same host range the parent registered, which the
         // child's copy of the address space keeps mapped.
         unsafe { new_vm.set_user_memory_region(*region) }
             .map_err(|e| format!("child: KVM_SET_USER_MEMORY_REGION: {e}"))?;
     }
+    clock.mark(report, "memslot");
     let mut new_vcpus = Vec::new();
     for record in &vm.vcpus {
         let saved = record
             .saved
             .as_ref()
             .ok_or_else(|| "child: a vCPU was not prepared before the fork".to_string())?;
-        let mut vcpu = new_vm
+        let vcpu = new_vm
             .create_vcpu(record.id)
             .map_err(|e| format!("child: KVM_CREATE_VCPU: {e}"))?;
+        clock.mark(report, "create_vcpu");
         vcpu.set_cpuid2(&saved.cpuid)
             .map_err(|e| format!("child: KVM_SET_CPUID2: {e}"))?;
+        clock.mark(report, "cpuid");
         vcpu.set_sregs(&saved.sregs)
             .map_err(|e| format!("child: KVM_SET_SREGS: {e}"))?;
         vcpu.set_xcrs(&saved.xcrs)
             .map_err(|e| format!("child: KVM_SET_XCRS: {e}"))?;
+        clock.mark(report, "sregs_xcrs");
         let ordered = FIRST_MSRS
             .iter()
             .filter_map(|first| saved.msrs.iter().find(|entry| entry.index == *first))
@@ -473,6 +530,7 @@ fn rebuild_vm(vm: &VmRecord, report: &mut RepairReport) -> Result<(), String> {
                 _ => report.msrs_refused += 1,
             }
         }
+        clock.mark(report, "msrs");
         vcpu.set_regs(&saved.regs)
             .map_err(|e| format!("child: KVM_SET_REGS: {e}"))?;
         // SAFETY: the state came from KVM_GET_XSAVE of a vCPU with the same
@@ -483,17 +541,42 @@ fn rebuild_vm(vm: &VmRecord, report: &mut RepairReport) -> Result<(), String> {
             .map_err(|e| format!("child: KVM_SET_DEBUGREGS: {e}"))?;
         vcpu.set_vcpu_events(&saved.events)
             .map_err(|e| format!("child: KVM_SET_VCPU_EVENTS: {e}"))?;
+        clock.mark(report, "regs_xsave_events");
+        new_vcpus.push((record, vcpu));
+    }
+    Ok(BuiltVm {
+        record: vm,
+        vm: new_vm,
+        vcpus: new_vcpus,
+    })
+}
+
+/// Runs each vCPU's parked hypercall again, gives it the parent's last
+/// exit, and puts the new objects behind the old descriptor numbers.
+fn finish_vm(built: BuiltVm<'_>, report: &mut RepairReport) -> Result<(), String> {
+    let BuiltVm {
+        record: vm,
+        vm: new_vm,
+        vcpus: mut new_vcpus,
+    } = built;
+    let mut clock = StepClock::start();
+    for (record, vcpu) in new_vcpus.iter_mut() {
+        let saved = record
+            .saved
+            .as_ref()
+            .ok_or_else(|| "child: a vCPU was not prepared before the fork".to_string())?;
         if saved.exit_reason == kvm_bindings::KVM_EXIT_HYPERCALL {
-            replay_hypercall(&mut vcpu, saved)?;
+            replay_hypercall(vcpu, saved)?;
             report.replays += 1;
         }
+        clock.mark(report, "replay");
         // The backend reads the parent's view of the last exit: give it that.
         let run = vcpu.get_kvm_run() as *mut kvm_bindings::kvm_run as *mut u8;
         // SAFETY: the new vCPU's own mapping holds a whole kvm_run.
         unsafe {
             std::ptr::copy_nonoverlapping(saved.run_page.as_ptr(), run, saved.run_page.len())
         };
-        new_vcpus.push((record, vcpu));
+        clock.mark(report, "run_page");
     }
     // Put the new objects behind the old numbers and the old kvm_run address.
     dup_onto(new_vm.as_raw_fd(), vm.vm_fd)?;
@@ -522,8 +605,10 @@ fn rebuild_vm(vm: &VmRecord, report: &mut RepairReport) -> Result<(), String> {
     }
     // Dropping the new handles closes their own numbers and unmaps their own
     // kvm_run views; the objects live on behind the old numbers.
+    clock.mark(report, "dup_remap");
     drop(new_vcpus);
     drop(new_vm);
+    clock.mark(report, "close_spare");
     Ok(())
 }
 
