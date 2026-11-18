@@ -393,9 +393,9 @@ pub struct RepairReport {
     pub memfd_bytes: u64,
     pub mappings: usize,
     pub memfd_us: u64,
-    /// Guest-memory memfds mapped copy-on-write instead of copied
-    /// (`REVERIE_KVM_FORK_PRIVATE_ARENAS`), and the bytes of their data
-    /// extents.
+    /// Guest-memory memfds mapped copy-on-write instead of copied (the
+    /// default; `REVERIE_KVM_FORK_PRIVATE_ARENAS=0` copies them), and the
+    /// bytes of their data extents.
     pub private_arenas: usize,
     pub private_arena_bytes: u64,
     pub vms: usize,
@@ -789,14 +789,15 @@ fn new_memfd(name: &str) -> Result<RawFd, String> {
 /// The memfd name guest-memory backings are created with.
 const GUEST_MEMORY_NAME: &str = "reverie-kvm-guest-memory";
 
-/// The environment variable that selects copy-on-write guest memory for a
-/// host-fork copy (PROTOTYPE): `1` maps each eligible guest-memory memfd
-/// copy-on-write instead of copying it. A program that passes its own
-/// environment to its guest should remove it from the guest's.
+/// The environment variable that chooses how a host-fork copy gets its guest
+/// memory (PROTOTYPE). By default each eligible guest-memory memfd is mapped
+/// copy-on-write; `0` copies every memfd eagerly instead, the escape hatch
+/// and the comparison. A program that passes its own environment to its
+/// guest should remove it from the guest's.
 pub const PRIVATE_ARENAS_ENV: &str = "REVERIE_KVM_FORK_PRIVATE_ARENAS";
 
 fn private_arenas() -> bool {
-    std::env::var_os(PRIVATE_ARENAS_ENV).is_some_and(|value| value == "1")
+    std::env::var_os(PRIVATE_ARENAS_ENV).is_none_or(|value| value != "0")
 }
 
 /// Whether no byte of the memfd is mapped twice: then each mapping can become
