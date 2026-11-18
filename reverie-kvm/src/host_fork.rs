@@ -292,7 +292,8 @@ pub struct PrepareReport {
 
 /// Reads every registered vCPU's state, in the parent, before the fork.
 /// Each vCPU must be parked in a syscall hypercall exit (re-created in the
-/// child), or after an interrupted entry or a debug exit (nothing pending).
+/// child), after an interrupted entry or a debug exit, or before its first
+/// entry (nothing pending).
 pub fn prepare() -> Result<PrepareReport, String> {
     let start = std::time::Instant::now();
     let mut registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
@@ -309,9 +310,12 @@ pub fn prepare() -> Result<PrepareReport, String> {
         for vcpu in vm.vcpus.iter_mut() {
             let saved = read_vcpu(vm.kvm_fd, vcpu.fd, vcpu.run_address)?;
             match saved.exit_reason {
+                // KVM_EXIT_UNKNOWN is the zeroed kvm_run of a vCPU that has
+                // not run yet: nothing is pending, as after an interrupt.
                 kvm_bindings::KVM_EXIT_HYPERCALL
                 | kvm_bindings::KVM_EXIT_INTR
-                | kvm_bindings::KVM_EXIT_DEBUG => {}
+                | kvm_bindings::KVM_EXIT_DEBUG
+                | kvm_bindings::KVM_EXIT_UNKNOWN => {}
                 other => {
                     return Err(format!(
                         "vCPU {} is parked in exit reason {other}, whose completion a new \
