@@ -368,8 +368,9 @@ impl HostThread {
 }
 
 thread_local! {
-    /// This thread's serial (`thread_serial`), or 0 before its first use.
-    static THREAD_SERIAL: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// This thread's serial (`thread_serial`), or 0 before its first use,
+    /// with the host-fork generation it was taken in.
+    static THREAD_SERIAL: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 /// The next thread serial (`thread_serial`).
@@ -378,11 +379,17 @@ static NEXT_THREAD_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 /// A number for the calling thread, unique among the threads of this process
 /// and never reused, read without a system call.
 fn thread_serial() -> u64 {
+    // A host-fork copy is a new process: its threads' kernel IDs differ from
+    // the ones a serial was cached with (`crate::host_fork`), so a serial
+    // from before the fork names no thread of this process.
+    let generation = crate::host_fork::generation();
     THREAD_SERIAL.with(|serial| {
-        if serial.get() == 0 {
-            serial.set(NEXT_THREAD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let (taken, value) = serial.get();
+        if value == 0 || taken != generation {
+            let fresh = NEXT_THREAD_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            serial.set((generation, fresh));
         }
-        serial.get()
+        serial.get().1
     })
 }
 

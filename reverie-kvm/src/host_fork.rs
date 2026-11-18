@@ -29,9 +29,10 @@
 //!   The child gives each memfd a private copy behind the same descriptor
 //!   numbers and re-maps every shared mapping of it at the same address.
 //!
-//! What it does not do yet: re-create other host threads (a caller must
-//! refuse a run with more than one live VM), re-open host descriptors of guest
-//! files (the caller does that), or anything for other backends.
+//! What it does not do: re-create the host threads that run the other VMs'
+//! vCPUs (the caller parks and re-creates every thread around the fork),
+//! re-open host descriptors of guest files (the caller does that), or anything
+//! for other backends.
 
 use std::collections::BTreeMap;
 use std::os::fd::AsRawFd;
@@ -119,6 +120,55 @@ struct VmRecord {
 }
 
 static REGISTRY: Mutex<Vec<VmRecord>> = Mutex::new(Vec::new());
+
+/// The parent's perf event pages, which Linux does not copy into a child
+/// (`VM_DONTCOPY`): the child refills each range with a zeroed page, so that
+/// nothing else is mapped there before the counter's owner unmaps it. A
+/// zeroed page reads as "no hardware counter", which sends a reader to the
+/// `read` system call.
+static UNCOPIED: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+
+fn uncopied_ranges() -> Vec<(usize, usize)> {
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return Vec::new();
+    };
+    maps.lines()
+        .filter(|line| line.ends_with("anon_inode:[perf_event]"))
+        .filter_map(|line| {
+            let (start, end) = line.split_whitespace().next()?.split_once('-')?;
+            Some((
+                usize::from_str_radix(start, 16).ok()?,
+                usize::from_str_radix(end, 16).ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Fills, in a child, the ranges [`UNCOPIED`] recorded. Returns how many.
+fn refill_uncopied() -> Result<usize, String> {
+    let ranges = UNCOPIED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for &(start, end) in &ranges {
+        // SAFETY: the range was the parent's perf page, absent from this
+        // copy; MAP_FIXED_NOREPLACE refuses to replace anything mapped since.
+        let mapped = unsafe {
+            libc::mmap(
+                start as *mut libc::c_void,
+                end - start,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED_NOREPLACE,
+                -1,
+                0,
+            )
+        };
+        if mapped as usize != start {
+            return Err(format!(
+                "child: refilling the parent's perf page at {start:#x}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
+    Ok(ranges.len())
+}
 static NEXT_TOKEN: AtomicU64 = AtomicU64::new(1);
 
 /// Keeps a VM in the registry while the backend that owns it lives.
@@ -297,13 +347,10 @@ pub struct PrepareReport {
 pub fn prepare() -> Result<PrepareReport, String> {
     let start = std::time::Instant::now();
     let mut registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    if registry.len() != 1 {
-        return Err(format!(
-            "host-fork copies need exactly one live KVM VM for now (one single-threaded \
-             guest process); this run has {}",
-            registry.len()
-        ));
+    if registry.is_empty() {
+        return Err("no live KVM VM to copy".to_string());
     }
+    *UNCOPIED.lock().unwrap_or_else(|e| e.into_inner()) = uncopied_ranges();
     let mut report = PrepareReport::default();
     for vm in registry.iter_mut() {
         report.vms += 1;
@@ -311,10 +358,13 @@ pub fn prepare() -> Result<PrepareReport, String> {
             let saved = read_vcpu(vm.kvm_fd, vcpu.fd, vcpu.run_address)?;
             match saved.exit_reason {
                 // KVM_EXIT_UNKNOWN is the zeroed kvm_run of a vCPU that has
-                // not run yet: nothing is pending, as after an interrupt.
+                // not run yet, and KVM_EXIT_HLT a vCPU parked at its HLT (the
+                // instruction completed): nothing is pending, as after an
+                // interrupt.
                 kvm_bindings::KVM_EXIT_HYPERCALL
                 | kvm_bindings::KVM_EXIT_INTR
                 | kvm_bindings::KVM_EXIT_DEBUG
+                | kvm_bindings::KVM_EXIT_HLT
                 | kvm_bindings::KVM_EXIT_UNKNOWN => {}
                 other => {
                     return Err(format!(
@@ -337,6 +387,7 @@ pub fn prepare() -> Result<PrepareReport, String> {
 /// What one child's repair did, with its timings in microseconds.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RepairReport {
+    pub refilled: usize,
     pub memfds: usize,
     pub memfd_bytes: u64,
     pub mappings: usize,
@@ -350,8 +401,13 @@ pub struct RepairReport {
 
 /// Rebuilds, in a forked child, every registered VM and vCPU and every memfd.
 pub fn repair_in_child() -> Result<RepairReport, String> {
+    // First, before anything maps memory into the holes fork left.
+    let refilled = refill_uncopied()?;
     reverie_kvm_core::host_fork::mark_forked_child();
-    let mut report = RepairReport::default();
+    let mut report = RepairReport {
+        refilled,
+        ..Default::default()
+    };
     let t0 = std::time::Instant::now();
     privatize_memfds(&mut report)?;
     report.memfd_us = t0.elapsed().as_micros() as u64;

@@ -14,13 +14,22 @@
 //! [`is_forked_child`] first.
 
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 static FORKED_CHILD: AtomicBool = AtomicBool::new(false);
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// Records that this process is a forked copy of a run, before any repair.
 pub fn mark_forked_child() {
     FORKED_CHILD.store(true, Ordering::Relaxed);
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// How many times this process was marked a forked copy: per-thread caches
+/// of kernel thread IDs compare it with the value they were filled under.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
 }
 
 /// Whether [`mark_forked_child`] ran in this process.
