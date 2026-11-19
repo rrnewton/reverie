@@ -24,8 +24,25 @@ pub const SIGNAL_RED_ZONE: u64 = 128;
 pub const SIGNAL_STACK_ALIGNMENT: u64 = 16;
 pub const XSAVE_ALIGNMENT: u64 = 64;
 
-pub const USER_CODE_SELECTOR: u16 = 0x23;
-pub const USER_DATA_SELECTOR: u16 = 0x1b;
+/// Segment selectors a backend presents to its guests. Native Linux
+/// x86-64 user selectors are 0x33/0x2b (asm/segment.h); some virtual
+/// CPUs present 0x23/0x1b. The builder takes them as input either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selectors {
+    pub cs: u16,
+    pub gs: u16,
+    pub fs: u16,
+    pub ss: u16,
+}
+
+impl Selectors {
+    pub const NATIVE: Self = Self {
+        cs: 0x33,
+        gs: 0,
+        fs: 0,
+        ss: 0x2b,
+    };
+}
 pub const SIGNAL_UCONTEXT_FLAGS: u64 = 0x1 | 0x2 | 0x4;
 
 const FP_XSTATE_MAGIC1: u32 = 0x4650_5853;
@@ -63,21 +80,53 @@ const XSTATE_RESERVED_END: usize = 576;
 pub struct XstateDesc {
     pub features: u64,
     pub size: usize,
+    /// The presented MXCSR feature mask (canonical, part of the CPU
+    /// description — never read from the host at frame time).
+    pub mxcsr_mask: u32,
+}
+
+/// Smallest standard-format extent holding each feature component.
+fn min_extent(features: u64) -> usize {
+    if features & XFEATURE_YMM != 0 {
+        832
+    } else {
+        XSTATE_RESERVED_END
+    }
 }
 
 impl XstateDesc {
-    /// The fixed x87/SSE/YMM shape the KVM backend presents today.
+    /// The fixed x87/SSE/YMM shape presented by the KVM backend today.
     pub const X87_SSE_YMM: Self = Self {
         features: SUPPORTED_XFEATURES,
         size: 832,
+        mxcsr_mask: 0,
     };
 
     /// Signal-frame image size: the xstate plus FP_XSTATE_MAGIC2.
     pub fn signal_size(self) -> usize {
         self.size + 4
     }
+
+    /// One validated descriptor contract, checked at every entry point:
+    /// baseline x87|SSE present, no unsupported features, size covers
+    /// every present component's standard extent, and the signal size is
+    /// representable in the frame's u32 metadata.
+    pub fn validate(self) -> Result<(), FrameError> {
+        if self.features & !SUPPORTED_XFEATURES != 0
+            || self.features & (XFEATURE_X87 | XFEATURE_SSE) != (XFEATURE_X87 | XFEATURE_SSE)
+            || self.size < min_extent(self.features)
+            || self.size.checked_add(4).is_none()
+            || self.signal_size() > u32::MAX as usize
+        {
+            return Err(FrameError::InvalidXsaveFeatures);
+        }
+        Ok(())
+    }
     pub fn is_supported(self) -> bool {
-        self.features & !SUPPORTED_XFEATURES == 0 && self.size >= XSTATE_RESERVED_END
+        self.validate().is_ok()
+    }
+    fn effective_mxcsr_mask(self) -> u32 {
+        feature_mask(self.mxcsr_mask)
     }
 }
 
@@ -177,13 +226,13 @@ pub struct Sigcontext {
 }
 
 impl Sigcontext {
-    pub fn new(regs: Regs, fpstate: u64, oldmask: u64) -> Self {
+    pub fn new(regs: Regs, fpstate: u64, oldmask: u64, selectors: Selectors) -> Self {
         Self {
             regs,
-            cs: USER_CODE_SELECTOR,
-            gs: 0,
-            fs: 0,
-            ss: USER_DATA_SELECTOR,
+            cs: selectors.cs,
+            gs: selectors.gs,
+            fs: selectors.fs,
+            ss: selectors.ss,
             err: 0,
             trapno: 0,
             oldmask,
@@ -264,10 +313,10 @@ impl Sigcontext {
         }
     }
 
-    pub fn validate_for_restore(self) -> Result<(), FrameError> {
-        if self.cs != USER_CODE_SELECTOR
-            || ![USER_DATA_SELECTOR, USER_DATA_SELECTOR & !3].contains(&self.ss)
-        {
+    /// Validate against the caller's presented selectors. Linux accepts
+    /// SS with or without its two RPL bits (signal_64.c).
+    pub fn validate_for_restore(self, expected: Selectors) -> Result<(), FrameError> {
+        if self.cs != expected.cs || ![expected.ss, expected.ss & !3].contains(&self.ss) {
             return Err(FrameError::InvalidSelectors);
         }
         if !is_canonical_user_address(self.regs.rip)
@@ -386,7 +435,11 @@ impl FrameLayout {
             .checked_sub(if reserve_red_zone { SIGNAL_RED_ZONE } else { 0 })
             .ok_or(FrameError::AddressOverflow)?;
         // Pack the XSAVE image from the actual ceiling so an exactly-sized
-        // alternate stack is not rejected by unrequired padding.
+        // alternate stack is not rejected by unrequired padding. NOTE for
+        // oracle comparisons: this (inherited) packing places the 440-byte
+        // prefix directly below the XSAVE image; native Linux's
+        // round_down(sp,16)-8 arithmetic can place it up to 16 bytes
+        // lower. Account for that delta explicitly in any oracle harness.
         let xsave_address = align_down(
             ceiling
                 .checked_sub(desc.signal_size() as u64)
@@ -490,11 +543,13 @@ impl XsaveImage {
     /// (`fpu__clear_user_states`): control 0x37f, MXCSR 0x1f80, zero
     /// registers, XSTATE_BV = x87|SSE. `mxcsr_mask` is the backend-read
     /// hardware mask (0 selects the architectural default).
-    pub fn initialized(desc: XstateDesc, mxcsr_mask: u32) -> Vec<u8> {
+    pub fn initialized(desc: XstateDesc) -> Vec<u8> {
+        desc.validate()
+            .expect("initialized() requires a valid XstateDesc");
         let mut state = vec![0u8; desc.size];
         write_u32(&mut state, 0, 0x037f);
         write_u32(&mut state, 24, 0x1f80);
-        write_u32(&mut state, MXCSR_MASK_OFFSET, mxcsr_mask);
+        write_u32(&mut state, MXCSR_MASK_OFFSET, desc.mxcsr_mask);
         write_u64(&mut state, XSTATE_BV_OFFSET, XFEATURE_X87 | XFEATURE_SSE);
         state
     }
@@ -527,11 +582,8 @@ impl XsaveImage {
     /// the rest). Returns `desc.size` bytes. Some frames Linux accepts
     /// are refused (metadata failures; YMM in fewer bytes than its
     /// standard extent).
-    pub fn restore_from_signal(
-        bytes: &[u8],
-        desc: XstateDesc,
-        mxcsr_mask: u32,
-    ) -> Result<Vec<u8>, FrameError> {
+    pub fn restore_from_signal(bytes: &[u8], desc: XstateDesc) -> Result<Vec<u8>, FrameError> {
+        desc.validate()?;
         if bytes.len() < LEGACY_FPSTATE_SIZE {
             return Err(FrameError::InvalidXsaveMetadata);
         }
@@ -539,17 +591,17 @@ impl XsaveImage {
         if bytes.len() != expected {
             return Err(FrameError::InvalidXsaveMetadata);
         }
-        let mask = feature_mask(mxcsr_mask);
+        let mask = desc.effective_mxcsr_mask();
         if expected == LEGACY_FPSTATE_SIZE || read_u32(bytes, expected - 4) != FP_XSTATE_MAGIC2 {
             // Legacy FXRSTOR, then YMM initialisation.
             if read_u32(bytes, 24) & !mask != 0 {
                 return Err(FrameError::InvalidMxcsr);
             }
-            let mut state = Self::initialized(desc, mxcsr_mask);
+            let mut state = Self::initialized(desc);
             state[..LEGACY_FPSTATE_SIZE].copy_from_slice(&bytes[..LEGACY_FPSTATE_SIZE]);
             state[FP_SW_RESERVED_OFFSET..512].fill(0);
             write_u64(&mut state, XSTATE_BV_OFFSET, XFEATURE_X87 | XFEATURE_SSE);
-            write_u32(&mut state, MXCSR_MASK_OFFSET, mxcsr_mask);
+            write_u32(&mut state, MXCSR_MASK_OFFSET, desc.mxcsr_mask);
             return Ok(state);
         }
         let xstate_size = expected - 4;
@@ -576,7 +628,7 @@ impl XsaveImage {
         if xfeatures & (XFEATURE_SSE | XFEATURE_YMM) != 0 && read_u32(bytes, 24) & !mask != 0 {
             return Err(FrameError::InvalidMxcsr);
         }
-        let mut state = Self::initialized(desc, mxcsr_mask);
+        let mut state = Self::initialized(desc);
         state[..xstate_size].copy_from_slice(&bytes[..xstate_size]);
         state[FP_SW_RESERVED_OFFSET..512].fill(0);
         let present = xstate_bv & xfeatures;
@@ -587,7 +639,7 @@ impl XsaveImage {
             write_u32(&mut state, 24, 0x1f80);
         }
         write_u64(&mut state, XSTATE_BV_OFFSET, present | XFEATURE_SSE);
-        write_u32(&mut state, MXCSR_MASK_OFFSET, mxcsr_mask);
+        write_u32(&mut state, MXCSR_MASK_OFFSET, desc.mxcsr_mask);
         Ok(state)
     }
 }
@@ -611,6 +663,7 @@ mod tests {
                     },
                     0x5000,
                     0,
+                    Selectors::NATIVE,
                 ),
                 sigmask: 0x4,
                 ..Ucontext::default()
@@ -618,7 +671,6 @@ mod tests {
             siginfo: [7u8; SIGINFO_SIZE],
         };
         assert_eq!(RtSigframe::decode(frame.encode()), frame);
-        // Kernel-header-pinned offsets (ucontext 304, sigmask at 296).
         let uc = frame.ucontext.encode();
         assert_eq!(uc.len(), 304);
         assert_eq!(read_u64(&uc, 296), 0x4);
@@ -629,49 +681,102 @@ mod tests {
         assert_eq!(layout.frame_address % 16, 8);
         assert!(layout.frame_address + RT_SIGFRAME_SIZE as u64 <= layout.xsave_address);
         assert!(layout.fits_above(top - 8192));
-        // A larger presented xstate needs strictly more room.
-        let big = XstateDesc {
-            features: desc.features,
-            size: 2700,
-        };
+        let big = XstateDesc { size: 2700, ..desc };
         let layout_big = FrameLayout::below(top, true, big).unwrap();
         assert!(layout_big.frame_address < layout.frame_address);
-    }
-
-    #[test]
-    fn xsave_image_parameterised_by_presented_size() {
-        for size in [832usize, 2700] {
-            let desc = XstateDesc {
-                features: SUPPORTED_XFEATURES,
-                size,
-            };
-            let state = XsaveImage::initialized(desc, 0xffbf);
-            assert_eq!(state.len(), size);
-            let img = XsaveImage::from_standard(&state, desc, false).unwrap();
-            assert_eq!(img.bytes().len(), size + 4);
-            assert_eq!(read_u32(img.bytes(), size), FP_XSTATE_MAGIC2);
-            assert_eq!(
-                XsaveImage::restore_size(img.bytes()[..512].try_into().unwrap(), desc).unwrap(),
-                size + 4
-            );
-            let restored = XsaveImage::restore_from_signal(img.bytes(), desc, 0xffbf).unwrap();
-            assert_eq!(restored.len(), size);
-            assert_eq!(read_u32(&restored, 24), 0x1f80);
-        }
-        // Unsupported feature bits refuse by name.
-        let bad = XstateDesc {
-            features: 1 << 9,
-            size: 832,
+        // Exact boundary: frame_address == base is NOT on the stack.
+        let l2 = FrameLayout {
+            frame_address: 0x10000,
+            xsave_address: 0x11000,
         };
+        assert!(!l2.fits_above(0x10000));
+        assert!(l2.fits_above(0x0fff8));
+        // Overflow refuses, never wraps.
         assert_eq!(
-            XsaveImage::from_standard(&vec![0u8; 832], bad, false),
-            Err(FrameError::InvalidXsaveFeatures)
+            FrameLayout::below(128, true, desc),
+            Err(FrameError::AddressOverflow)
         );
     }
 
     #[test]
-    fn validate_and_fixed_eflags() {
-        let mut sc = Sigcontext::new(
+    fn xstate_descriptor_coherence() {
+        // Qualifying: minimal (no YMM) and full YMM shapes build+restore.
+        for desc in [
+            XstateDesc {
+                features: XFEATURE_X87 | XFEATURE_SSE,
+                size: 576,
+                mxcsr_mask: 0xffbf,
+            },
+            XstateDesc {
+                features: SUPPORTED_XFEATURES,
+                size: 832,
+                mxcsr_mask: 0xffbf,
+            },
+            XstateDesc {
+                features: SUPPORTED_XFEATURES,
+                size: 2700,
+                mxcsr_mask: 0xffbf,
+            },
+        ] {
+            assert!(desc.validate().is_ok(), "{desc:?}");
+            let state = XsaveImage::initialized(desc);
+            assert_eq!(state.len(), desc.size);
+            let img = XsaveImage::from_standard(&state, desc, false).unwrap();
+            assert_eq!(img.bytes().len(), desc.size + 4);
+            let restored = XsaveImage::restore_from_signal(img.bytes(), desc).unwrap();
+            assert_eq!(restored.len(), desc.size);
+            assert_eq!(read_u32(&restored, 24), 0x1f80);
+        }
+        // Violating: YMM claimed in 576 bytes (construction must NOT
+        // succeed now that validate gates every entry point).
+        let bad = XstateDesc {
+            features: SUPPORTED_XFEATURES,
+            size: 576,
+            mxcsr_mask: 0,
+        };
+        assert_eq!(bad.validate(), Err(FrameError::InvalidXsaveFeatures));
+        assert_eq!(
+            XsaveImage::from_standard(&vec![0u8; 576], bad, false),
+            Err(FrameError::InvalidXsaveFeatures)
+        );
+        assert_eq!(
+            XsaveImage::restore_from_signal(&vec![0u8; 600], bad),
+            Err(FrameError::InvalidXsaveFeatures)
+        );
+        // Violating: baseline feature missing; unsupported bit; absurd size.
+        assert!(
+            XstateDesc {
+                features: XFEATURE_X87,
+                size: 832,
+                mxcsr_mask: 0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            XstateDesc {
+                features: SUPPORTED_XFEATURES | (1 << 9),
+                size: 4096,
+                mxcsr_mask: 0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            XstateDesc {
+                features: SUPPORTED_XFEATURES,
+                size: usize::MAX - 2,
+                mxcsr_mask: 0
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn selectors_are_caller_supplied() {
+        // Native Linux context validates against native selectors...
+        let native = Sigcontext::new(
             Regs {
                 rip: 0x401000,
                 rsp: 0x7fff0000,
@@ -679,10 +784,33 @@ mod tests {
             },
             0,
             0,
+            Selectors::NATIVE,
         );
-        assert!(sc.validate_for_restore().is_ok());
-        sc.cs = 0;
-        assert_eq!(sc.validate_for_restore(), Err(FrameError::InvalidSelectors));
+        assert_eq!((native.cs, native.ss), (0x33, 0x2b));
+        assert!(native.validate_for_restore(Selectors::NATIVE).is_ok());
+        // ...and a different presented set (e.g. a virtual CPU's) works too,
+        // while cross-validating against the wrong set refuses.
+        let virt = Selectors {
+            cs: 0x23,
+            gs: 0,
+            fs: 0,
+            ss: 0x1b,
+        };
+        assert_eq!(
+            native.validate_for_restore(virt),
+            Err(FrameError::InvalidSelectors)
+        );
+        let vctx = Sigcontext::new(
+            Regs {
+                rip: 0x401000,
+                rsp: 0x7fff0000,
+                ..Regs::default()
+            },
+            0,
+            0,
+            virt,
+        );
+        assert!(vctx.validate_for_restore(virt).is_ok());
         let sc2 = Sigcontext::new(
             Regs {
                 rflags: u64::MAX,
@@ -690,8 +818,8 @@ mod tests {
             },
             0,
             0,
+            Selectors::NATIVE,
         );
-        let restored = sc2.restored_regs(0);
-        assert_eq!(restored.rflags, FIX_EFLAGS);
+        assert_eq!(sc2.restored_regs(0).rflags, FIX_EFLAGS);
     }
 }
