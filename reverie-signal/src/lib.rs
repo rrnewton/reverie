@@ -925,10 +925,17 @@ impl ProcessDomain {
     /// This lifetime is separate from saved_sigmask (sigsuspend),
     /// which a successful frame consumes at delivery.
     pub fn exit_timedwait(&mut self, task: TaskGen) {
-        if let Some(t) = self.thread_mut(task)
-            && let Some(saved) = t.real_blocked.take()
+        // __set_task_blocked: assignment plus recalc_sigpending, so a
+        // still-pending unblocked signal keeps the notification set.
+        let idx = self.threads.iter().position(|t| t.task == task);
+        if let Some(idx) = idx
+            && let Some(saved) = self.threads[idx].real_blocked.take()
         {
-            t.blocked = saved;
+            self.threads[idx].blocked = saved;
+            let t = &self.threads[idx];
+            let pending =
+                (t.private.peek_mask() | self.shared.peek_mask()) & !t.effective_blocked() != 0;
+            self.threads[idx].sigpending = pending;
         }
     }
 
@@ -975,8 +982,13 @@ impl ProcessDomain {
         {
             let idx0 = self.threads.iter().position(|t| t.task == task)?;
             let t0 = &self.threads[idx0];
+            // Deliverability is judged under the POST-EXIT mask: a
+            // waited signal pending under the temporary wait mask is
+            // blocked again once the wait exits, so it must not trigger
+            // the exit (probe u44).
+            let post_exit_blocked = t0.real_blocked.unwrap_or(t0.blocked) & !UNBLOCKABLE_MASK;
             let deliverable =
-                (t0.private.peek_mask() | self.shared.peek_mask()) & !t0.effective_blocked() != 0;
+                (t0.private.peek_mask() | self.shared.peek_mask()) & !post_exit_blocked != 0;
             if !deliverable {
                 return None;
             }
@@ -2569,6 +2581,78 @@ mod tests {
         assert!(
             !d.thread(tg(100)).unwrap().sigpending,
             "last pending consumed: flag cleared"
+        );
+    }
+
+    #[test]
+    fn timedwait_peek_gate_uses_post_exit_mask() {
+        // u44: waited signal pending under the wait mask must not end
+        // the wait via a next_delivery probe.
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let t = d.thread_mut(tg(100)).unwrap();
+        t.blocked = 0;
+        t.real_blocked = Some(bit(10));
+        d.send_process(SigInfo::user(10, 1, 0), SendSource::UserKill, &mut ledger);
+        assert!(
+            d.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+                .is_none()
+        );
+        let t = d.thread(tg(100)).unwrap();
+        assert_eq!(
+            (t.blocked, t.real_blocked),
+            (0, Some(bit(10))),
+            "wait untouched"
+        );
+        // u45 twin: sigtimedwait({10}) with only 12 pending returns None
+        // and leaves 12 pending.
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.send_process(SigInfo::user(12, 1, 0), SendSource::UserKill, &mut ledger);
+        assert!(
+            d2.dequeue_for_timedwait(tg(100), bit(10), &mut ledger)
+                .is_none()
+        );
+        assert_ne!(d2.shared.peek_mask() & bit(12), 0);
+        // curr_target walk-resume is distinguished in
+        // synchronous_mask_excludes_xcpu_xfsz_and_tif_lifecycle and
+        // receiver_walk_and_curr_target; altstack top is on-stack:
+        let alt = AltStack {
+            base: 0x10000,
+            size: 2048,
+            disabled: false,
+            autodisarm: false,
+        };
+        let mut d3 = ProcessDomain::new(tg(100), 1000, 64);
+        d3.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d3.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d3.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        // SP exactly at the altstack top counts as on-stack (nested).
+        let p3 = d3
+            .next_delivery(tg(100), &env(0x10800, 832, 0), &mut ledger)
+            .unwrap();
+        assert!(matches!(p3.delivery, Delivery::EnterHandler { frame } if frame.on_altstack_now));
+    }
+
+    #[test]
+    fn explicit_timedwait_exit_recalculates_notification() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let t = d.thread_mut(tg(100)).unwrap();
+        t.blocked = bit(10);
+        t.real_blocked = Some(bit(10));
+        t.sigpending = false;
+        d.send_process(SigInfo::user(12, 1, 0), SendSource::UserKill, &mut ledger);
+        d.exit_timedwait(tg(100));
+        let t = d.thread(tg(100)).unwrap();
+        assert_eq!(t.blocked, bit(10));
+        assert!(
+            t.sigpending,
+            "another unblocked signal remains: notification set by recalc"
         );
     }
 

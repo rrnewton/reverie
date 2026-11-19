@@ -89,6 +89,7 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
             "all",
             "-e",
             "all",
+            "--workspace",
         ])
         .current_dir(root)
         .output()
@@ -208,6 +209,28 @@ fn no_incoming_dependency_edges() {
     assert!(
         !s_edges.is_empty(),
         "spaced table alias tree must be refused: {s_edges:?}"
+    );
+    // Non-default member with an inherited alias: only a --workspace
+    // resolution sees experimental/nostd-print-style members.
+    std::fs::write(
+        tmp.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"member-c\", \"experimental/member-b\", \"reverie-signal\"]\ndefault-members = [\"reverie-signal\"]\n[workspace.dependencies]\nsignals = { package = \"reverie-signal\", path = \"reverie-signal\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("experimental/member-b/Cargo.toml"),
+        "[package]\nname = \"member-b\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[dependencies]\nsignals.workspace = true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("member-c/Cargo.toml"),
+        "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let (_d_checked, d_edges) = incoming_edges(&tmp);
+    assert!(
+        d_edges.iter().any(|e| e.contains("member-b")),
+        "non-default inherited-alias member must be caught: {d_edges:?}"
     );
     // Deliberate fail-closed control: a broken workspace refuses.
     std::fs::write(tmp.join("Cargo.toml"), "this is not toml = [").unwrap();

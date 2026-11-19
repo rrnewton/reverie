@@ -1,5 +1,5 @@
 // Reviewer probe suite committed as regression tests: astra-seat-sigdomain
-// expanded probes (37). A failure names a semantic deviation from Linux.
+// expanded probes (39). A failure names a semantic deviation from Linux.
 
 use reverie_signal::frame::{XsaveImage, XstateDesc};
 use reverie_signal::*;
@@ -633,5 +633,51 @@ fn timedwait_keeps_notification_for_other_unblocked_pending() {
     assert!(
         d.thread(task(100)).unwrap().sigpending,
         "remaining unblocked USR2 still needs notification"
+    );
+}
+
+#[test]
+fn delivery_probe_with_only_waited_pending_signal_keeps_wait_live() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    let before = (
+        d.thread(task(100)).unwrap().blocked,
+        d.thread(task(100)).unwrap().real_blocked,
+    );
+    assert!(d.next_delivery(task(100), &env(0x8000), &mut l).is_none());
+    let after = (
+        d.thread(task(100)).unwrap().blocked,
+        d.thread(task(100)).unwrap().real_blocked,
+    );
+    assert_eq!(
+        after, before,
+        "a None delivery probe must not exit a wait merely because its own waited signal is pending"
+    );
+    assert_eq!(
+        d.dequeue_for_timedwait(task(100), bit(10), &mut l)
+            .unwrap()
+            .info
+            .value,
+        42
+    );
+}
+#[test]
+fn explicit_timedwait_exit_recalculates_notification_for_next_shared_send() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    assert!(d.thread(task(100)).unwrap().sigpending);
+    d.exit_timedwait(task(100));
+    assert_eq!(d.thread(task(100)).unwrap().blocked, bit(10));
+    let pending_after_exit = d.thread(task(100)).unwrap().sigpending;
+    d.send_process(info(12, 0, 0), SendSource::UserKill, &mut l);
+    let receiver = d.choose_receiver(12, task(100), &[fact(task(100))]);
+    assert_eq!(
+        (pending_after_exit, receiver),
+        (false, Some(task(100))),
+        "now-blocked private USR1 must not suppress the next shared USR2 receiver"
     );
 }
