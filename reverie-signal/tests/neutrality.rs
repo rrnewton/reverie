@@ -59,6 +59,12 @@ fn scan_tree(dir: &std::path::Path) -> (usize, Vec<String>) {
 /// count, incoming dependent lines). An unresolved graph is an edge:
 /// the guard fails closed.
 fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
+    incoming_edges_scoped(root, false)
+}
+
+/// `scratch` is explicit: only scratch fixture trees may have their
+/// lockfiles reset per resolution; a real workspace never may.
+fn incoming_edges_scoped(root: &std::path::Path, scratch: bool) -> (usize, Vec<String>) {
     let root_text = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
     let members = root_text
         .split("members = [")
@@ -78,7 +84,7 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     // Scratch fixture trees only: their lockfiles pin stale graphs.
     // The real workspace lock is tracked state and never touched.
-    let scratch = root.starts_with(std::env::temp_dir());
+    // (scratch supplied explicitly by the caller)
     if scratch {
         let _ = std::fs::remove_file(root.join("Cargo.lock"));
     }
@@ -146,6 +152,12 @@ fn no_incoming_dependency_edges() {
         .parent()
         .unwrap()
         .to_path_buf();
+    // Even with TMPDIR as an ancestor of the checkout, the real root
+    // is never treated as scratch (explicit ownership, no path guess).
+    // SAFETY: this test process owns its environment.
+    unsafe {
+        std::env::set_var("TMPDIR", root.parent().unwrap());
+    }
     let lock_before = std::fs::read(root.join("Cargo.lock")).unwrap();
     let (checked, edges) = incoming_edges(&root);
     assert_eq!(
@@ -189,7 +201,7 @@ fn no_incoming_dependency_edges() {
         "[package]\nname = \"member-b\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[dependencies]\nreverie-signal = { path = \"../../reverie-signal\" }\n",
     )
     .unwrap();
-    let (c_checked, c_edges) = incoming_edges(&tmp);
+    let (c_checked, c_edges) = incoming_edges_scoped(&tmp, true);
     assert_eq!(c_checked, 3);
     assert!(
         c_edges.len() >= 2,
@@ -210,7 +222,7 @@ fn no_incoming_dependency_edges() {
         "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"member-c\", \"experimental/member-b\", \"reverie-signal\"]\n[workspace.dependencies]\nsignals = { package = \"reverie-signal\", path = \"reverie-signal\" }\n",
     )
     .unwrap();
-    let (_w_checked, w_edges) = incoming_edges(&tmp);
+    let (_w_checked, w_edges) = incoming_edges_scoped(&tmp, true);
     assert!(
         w_edges.iter().any(|e| e.contains("member-c")),
         "member-c must be named, not a vacuous graph failure: {w_edges:?}"
@@ -221,7 +233,7 @@ fn no_incoming_dependency_edges() {
         "[workspace]\nresolver = \"2\"\nmembers = ['member-a', 'experimental/member-b', 'reverie-signal']\n[ workspace.dependencies.signals ]\npackage = \"reverie-signal\"\npath = \"reverie-signal\"\n",
     )
     .unwrap();
-    let (_s_checked, s_edges) = incoming_edges(&tmp);
+    let (_s_checked, s_edges) = incoming_edges_scoped(&tmp, true);
     assert!(
         !s_edges.is_empty(),
         "spaced table alias tree must be refused: {s_edges:?}"
@@ -243,7 +255,7 @@ fn no_incoming_dependency_edges() {
         "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    let (_d_checked, d_edges) = incoming_edges(&tmp);
+    let (_d_checked, d_edges) = incoming_edges_scoped(&tmp, true);
     assert!(
         d_edges.iter().any(|e| e.contains("member-b")),
         "non-default inherited-alias member must be caught: {d_edges:?}"
@@ -266,14 +278,14 @@ fn no_incoming_dependency_edges() {
         "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[target.'cfg(windows)'.dependencies]\nsignals = { workspace = true, optional = true }\n",
     )
     .unwrap();
-    let (_g_checked, g_edges) = incoming_edges(&tmp);
+    let (_g_checked, g_edges) = incoming_edges_scoped(&tmp, true);
     assert!(
         g_edges.iter().any(|e| e.contains("member-c")),
         "alias-only windows edge must be caught by resolution alone: {g_edges:?}"
     );
     // Deliberate fail-closed control: a broken workspace refuses.
     std::fs::write(tmp.join("Cargo.toml"), "this is not toml = [").unwrap();
-    let (_b_checked, b_edges) = incoming_edges(&tmp);
+    let (_b_checked, b_edges) = incoming_edges_scoped(&tmp, true);
     assert!(
         b_edges.iter().any(|e| e.contains("unresolved")),
         "broken tree fails closed: {b_edges:?}"
