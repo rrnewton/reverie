@@ -1,0 +1,16 @@
+[package]
+name = "reverie-signal"
+description = "A pure, backend-neutral model of Linux signal semantics: pending queues, masks, dispositions, receiver selection, restart mapping and frame-entry policy."
+version = "0.5.7"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/facebookexperimental/reverie"
+license = "BSD-2-Clause"
+readme = "README.md"
+homepage = "https://hermetic-infra.org"
+documentation = "https://docs.rs/reverie-signal"
+keywords = ["linux", "instrumentation", "hermit", "signals"]
+categories = ["development-tools::debugging", "os::linux-apis"]
+
+# Pure leaf: no dependencies. State is plain values (Clone), transitions
+# are pure functions over caller-supplied scheduling facts.

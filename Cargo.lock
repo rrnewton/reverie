@@ -1569,6 +1569,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "reverie-signal"
+version = "0.5.7"
+
+[[package]]
 name = "reverie-syscalls"
 version = "0.5.7"
 dependencies = [
