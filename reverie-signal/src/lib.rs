@@ -6,11 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![allow(
-    unexpected_cfgs,
-    reason = "fbcode_build is supplied by the internal Buck build"
-)]
-
 //! A pure model of Linux signal semantics (kernel/signal.c), shared by
 //! every backend. The domain owns masks, pending instances, dispositions,
 //! alternate stacks, `curr_target` and the restart mapping. Callers supply

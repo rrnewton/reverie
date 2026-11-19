@@ -847,11 +847,6 @@ mod tests {
             })
             .collect()
     }
-
-    #[cfg_attr(
-        fbcode_build,
-        ignore = "fbsource-disabled: compiles a C ABI probe with cc at test time; internal pins come from the Buck-declared fixtures"
-    )]
     #[test]
     fn kernel_headers_independently_pin_signal_frame_layout() {
         let kernel = run_c_abi_probe("kernel");

@@ -6,11 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![allow(
-    unexpected_cfgs,
-    reason = "fbcode_build is supplied by the internal Buck build"
-)]
-
 //! Executable neutrality proof: this crate is exercised stand-alone by a
 //! strace-style observer that only records what the domain decides, and
 //! its sources are scanned for consumer/engine vocabulary. The scan is
@@ -81,8 +76,17 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
     // targets, all edge kinds — optional and target-specific incoming
     // dependencies are visible to Cargo even when disabled here.
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let _ = std::fs::remove_file(root.join("Cargo.lock"));
-    let out = std::process::Command::new(cargo)
+    // Scratch fixture trees only: their lockfiles pin stale graphs.
+    // The real workspace lock is tracked state and never touched.
+    let scratch = root.starts_with(std::env::temp_dir());
+    if scratch {
+        let _ = std::fs::remove_file(root.join("Cargo.lock"));
+    }
+    let mut cmd = std::process::Command::new(&cargo);
+    if !scratch {
+        cmd.arg("--locked");
+    }
+    let out = cmd
         .args([
             "tree",
             "-i",
@@ -136,17 +140,19 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
     (members, edges)
 }
 
-#[cfg_attr(
-    fbcode_build,
-    ignore = "fbsource-disabled: spawns cargo tree, unavailable in the Buck sandbox; the internal layering-tree target carries the equivalent check"
-)]
 #[test]
 fn no_incoming_dependency_edges() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_path_buf();
+    let lock_before = std::fs::read(root.join("Cargo.lock")).unwrap();
     let (checked, edges) = incoming_edges(&root);
+    assert_eq!(
+        std::fs::read(root.join("Cargo.lock")).unwrap(),
+        lock_before,
+        "the guard must not modify the workspace Cargo.lock"
+    );
     assert!(
         checked > 15,
         "guard must resolve the real workspace, got {checked}"
@@ -275,10 +281,6 @@ fn no_incoming_dependency_edges() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-#[cfg_attr(
-    fbcode_build,
-    ignore = "fbsource-disabled: reads workspace sources by path; Buck sandboxes do not expose them"
-)]
 #[test]
 fn sources_name_no_consumer_or_engine_policy() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
