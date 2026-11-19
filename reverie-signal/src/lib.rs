@@ -897,12 +897,51 @@ impl ProcessDomain {
 
     /// Dequeue for one thread (private queue before shared, as Linux does)
     /// and resolve the delivery under the caller's frame environment.
+    /// The timedwait wait-exit transition: Linux restores
+    /// blocked := real_blocked and clears real_blocked when
+    /// do_sigtimedwait returns — before any handler selection or
+    /// masking, and independent of later frame success.
+    /// This lifetime is separate from saved_sigmask (sigsuspend),
+    /// which a successful frame consumes at delivery.
+    pub fn exit_timedwait(&mut self, task: TaskGen) {
+        if let Some(t) = self.thread_mut(task)
+            && let Some(saved) = t.real_blocked.take()
+        {
+            t.blocked = saved;
+        }
+    }
+
+    /// Dequeue a signal for an rt_sigtimedwait-style wait: selection
+    /// happens under the wait mask, then the wait-exit transition runs.
+    /// Returns the pending instance (its allocation is released).
+    pub fn dequeue_for_timedwait(
+        &mut self,
+        task: TaskGen,
+        wait_set: u64,
+        ledger: &mut Sigpending,
+    ) -> Option<Pending> {
+        let idx = self.threads.iter().position(|t| t.task == task)?;
+        let blocked = self.threads[idx].effective_blocked();
+        let not_waited = !wait_set;
+        let pending = self.threads[idx]
+            .private
+            .dequeue(blocked | not_waited)
+            .or_else(|| self.shared.dequeue(blocked | not_waited))?;
+        if let InstanceKind::Charged(uid) = pending.kind {
+            ledger.release(uid, 1);
+        }
+        self.exit_timedwait(task);
+        Some(pending)
+    }
+
     pub fn next_delivery(
         &mut self,
         task: TaskGen,
         env: &FrameEnv,
         ledger: &mut Sigpending,
     ) -> Option<DeliveryPlan> {
+        // Handler delivery implies any timedwait wait has exited.
+        self.exit_timedwait(task);
         let idx = self.threads.iter().position(|t| t.task == task)?;
         let blocked = self.threads[idx].effective_blocked();
         // dequeue_synchronous_signal: the FIRST qualifying *private*
@@ -1013,7 +1052,7 @@ impl ProcessDomain {
                 let frame = FrameRequest {
                     handler: act.handler,
                     handler_mask,
-                    restore_mask: t.saved_sigmask.or(t.real_blocked).unwrap_or(t.blocked),
+                    restore_mask: t.saved_sigmask.unwrap_or(t.blocked),
                     use_altstack: use_alt,
                     on_altstack_now: on_now && !switch_to_alt,
                     restorer,
@@ -1024,12 +1063,10 @@ impl ProcessDomain {
                 // Delivering consumes saved_sigmask (signal_delivered
                 // clears it): a nested frame saves the *current* mask.
                 self.threads[idx].blocked = handler_mask;
-                // The stored mask (saved_sigmask, or the timedwait
-                // real_blocked) is consumed by this successful frame;
+                // saved_sigmask is consumed by this successful frame;
                 // a ForceSegv path above returns before this point and
-                // preserves both.
+                // preserves it. (real_blocked ended at wait-exit.)
                 self.threads[idx].saved_sigmask = None;
-                self.threads[idx].real_blocked = None;
                 // SS_AUTODISARM: EVERY successful handler delivery
                 // resets an autodisarm altstack until rt_sigreturn,
                 // even one that did not use it (signal.c:3057ff).
@@ -2387,6 +2424,50 @@ mod tests {
             Some(tg(102)),
             "walk resumes at curr_target"
         );
+    }
+
+    #[test]
+    fn timedwait_exit_restores_mask_before_handler_masking() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.actions[11] = handler(SA_RESTORER); // SIGUSR2 = 12
+        let t = d.thread_mut(tg(100)).unwrap();
+        t.blocked = 0; // timedwait wait mask
+        t.real_blocked = Some(bit(10)); // SIGUSR1 blocked originally
+        d.send_thread(
+            tg(100),
+            SigInfo::user(12, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        let Delivery::EnterHandler { frame } = p.delivery else {
+            panic!("{p:?}")
+        };
+        assert_eq!(
+            frame.handler_mask,
+            bit(10) | bit(12),
+            "2560: USR1 stays blocked in handler"
+        );
+        assert_eq!(
+            d.thread(tg(100)).unwrap().real_blocked,
+            None,
+            "wait-exit consumed it"
+        );
+    }
+
+    #[test]
+    fn curr_target_walk_resumes_from_cursor() {
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.threads.push(ThreadState::new(tg(101)));
+        d.threads.push(ThreadState::new(tg(102)));
+        d.curr_target = Some(tg(102));
+        d.thread_mut(tg(100)).unwrap().blocked = bit(10);
+        let f = [fact(tg(100)), fact(tg(101)), fact(tg(102))];
+        // Both 101 and 102 eligible; only a cursor-resuming walk picks 102.
+        assert_eq!(d.choose_receiver(10, tg(100), &f), Some(tg(102)));
     }
 
     #[test]

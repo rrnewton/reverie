@@ -148,6 +148,24 @@ fn no_incoming_dependency_edges() {
         c_edges.len() >= 2,
         "dependent tree must be refused: {c_edges:?}"
     );
+    // Optional (disabled feature) and foreign-target declarations too.
+    std::fs::create_dir_all(tmp.join("member-c/src")).unwrap();
+    std::fs::write(tmp.join("member-c/src/lib.rs"), "").unwrap();
+    std::fs::write(
+        tmp.join("member-c/Cargo.toml"),
+        "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[target.'cfg(windows)'.dependencies]\nreverie-signal = { path = \"../reverie-signal\", optional = true }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"member-c\", \"experimental/member-b\", \"reverie-signal\"]\n",
+    )
+    .unwrap();
+    let (_w_checked, w_edges) = incoming_edges(&tmp);
+    assert!(
+        !w_edges.is_empty(),
+        "optional/windows tree must be refused: {w_edges:?}"
+    );
     // Spaced table header form must not escape either.
     std::fs::write(
         tmp.join("Cargo.toml"),

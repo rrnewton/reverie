@@ -1,5 +1,5 @@
 // Reviewer probe suite committed as regression tests: astra-seat-sigdomain
-// expanded probes (29). A failure names a semantic deviation from Linux.
+// expanded probes (31). A failure names a semantic deviation from Linux.
 
 use reverie_signal::frame::{XsaveImage, XstateDesc};
 use reverie_signal::*;
@@ -489,5 +489,55 @@ fn unsupported_header_xstate_bv_is_refused_independently() {
     assert_eq!(
         XsaveImage::restore_from_signal(&image, d),
         Err(reverie_signal::frame::FrameError::InvalidXsaveFeatures)
+    );
+}
+
+#[test]
+fn timedwait_restores_original_mask_before_handler_mask_construction() {
+    for still_waiting in [false, true] {
+        let mut d = ProcessDomain::new(task(100), 1000, 8);
+        let mut l = Sigpending::new();
+        d.actions[11] = handler(0);
+        if still_waiting {
+            d.thread_mut(task(100)).unwrap().blocked = 0;
+            d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+        } else {
+            d.thread_mut(task(100)).unwrap().blocked = bit(10);
+        }
+        d.send_thread(task(100), info(12, 0, 0), SendSource::UserKill, &mut l);
+        let Delivery::EnterHandler { frame } = d
+            .next_delivery(task(100), &env(0x8000), &mut l)
+            .unwrap()
+            .delivery
+        else {
+            panic!("USR2 must enter handler")
+        };
+        assert_eq!(frame.restore_mask, bit(10));
+        assert_eq!(
+            frame.handler_mask,
+            bit(10) | bit(12),
+            "timedwait restores the original blocked mask before signal_delivered builds the handler mask"
+        );
+        assert_eq!(d.thread(task(100)).unwrap().blocked, bit(10) | bit(12));
+    }
+}
+
+#[test]
+fn receiver_walk_uses_curr_target_when_multiple_threads_qualify() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.threads.push(ThreadState::new(task(101)));
+    d.threads.push(ThreadState::new(task(102)));
+    d.thread_mut(task(100)).unwrap().blocked = bit(10);
+    d.curr_target = Some(task(102));
+    d.send_process(info(10, 0, 0), SendSource::UserKill, &mut l);
+    assert_eq!(
+        d.choose_receiver(
+            10,
+            task(100),
+            &[fact(task(100)), fact(task(101)), fact(task(102))]
+        ),
+        Some(task(102)),
+        "both siblings qualify, so curr_target must decide"
     );
 }
