@@ -1,5 +1,5 @@
 // Reviewer probe suite committed as regression tests: astra-seat-sigdomain
-// expanded probes (31). A failure names a semantic deviation from Linux.
+// expanded probes (37). A failure names a semantic deviation from Linux.
 
 use reverie_signal::frame::{XsaveImage, XstateDesc};
 use reverie_signal::*;
@@ -539,5 +539,99 @@ fn receiver_walk_uses_curr_target_when_multiple_threads_qualify() {
         ),
         Some(task(102)),
         "both siblings qualify, so curr_target must decide"
+    );
+}
+
+#[test]
+fn timedwait_waiting_mask_consumes_requested_signal_and_releases_charge() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    assert_eq!(l.used_by(1000), 1);
+    let p = d
+        .dequeue_for_timedwait(task(100), bit(10), &mut l)
+        .expect("waited signal qualifies");
+    assert_eq!((p.info.signo, p.info.value), (10, 42));
+    assert_eq!(l.used_by(1000), 0);
+    assert_eq!(d.thread(task(100)).unwrap().blocked, bit(10));
+    assert_eq!(d.thread(task(100)).unwrap().real_blocked, None);
+}
+#[test]
+fn timedwait_consumes_requested_signal_while_normally_blocked() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().blocked = bit(10);
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    let p = d.dequeue_for_timedwait(task(100), bit(10), &mut l).expect(
+        "Linux timedwait initially dequeues requested blocked signals before changing the mask",
+    );
+    assert_eq!((p.info.signo, p.info.value), (10, 42));
+    assert_eq!(l.used_by(1000), 0);
+}
+fn assert_timedwait_preserves_unblockable(signo: i32) {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.send_thread(task(100), info(signo, 0, 0), SendSource::UserKill, &mut l);
+    let p = d.dequeue_for_timedwait(task(100), bit(10), &mut l);
+    assert!(
+        p.is_none(),
+        "SIGKILL/SIGSTOP cannot be consumed by a USR1 timedwait: {p:?}"
+    );
+    assert_ne!(
+        d.thread(task(100)).unwrap().private.peek_mask() & bit(signo),
+        0
+    );
+}
+#[test]
+fn timedwait_does_not_consume_sigkill() {
+    assert_timedwait_preserves_unblockable(9);
+}
+#[test]
+fn timedwait_does_not_consume_sigstop() {
+    assert_timedwait_preserves_unblockable(19);
+}
+#[test]
+fn timedwait_drain_recalculates_notification_for_next_shared_send() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    assert!(d.thread(task(100)).unwrap().sigpending);
+    assert!(
+        d.dequeue_for_timedwait(task(100), bit(10), &mut l)
+            .is_some()
+    );
+    let pending_after_drain = d.thread(task(100)).unwrap().sigpending;
+    d.send_process(info(12, 0, 0), SendSource::UserKill, &mut l);
+    let receiver = d.choose_receiver(12, task(100), &[fact(task(100))]);
+    assert_eq!(
+        (pending_after_drain, receiver),
+        (false, Some(task(100))),
+        "last private signal consumed: no stale notification may suppress the fresh shared receiver"
+    );
+}
+
+#[test]
+fn timedwait_keeps_notification_for_other_unblocked_pending() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.thread_mut(task(100)).unwrap().real_blocked = Some(bit(10));
+    d.send_thread(task(100), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    d.send_thread(task(100), info(12, 0, 0), SendSource::UserKill, &mut l);
+    assert_eq!(
+        d.dequeue_for_timedwait(task(100), bit(10), &mut l)
+            .unwrap()
+            .info
+            .signo,
+        10
+    );
+    assert_ne!(
+        d.thread(task(100)).unwrap().private.peek_mask() & bit(12),
+        0
+    );
+    assert!(
+        d.thread(task(100)).unwrap().sigpending,
+        "remaining unblocked USR2 still needs notification"
     );
 }

@@ -72,6 +72,9 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
                 .count()
         })
         .unwrap_or(0);
+    // One resolver pass across every configuration: all features, all
+    // targets, all edge kinds — optional and target-specific incoming
+    // dependencies are visible to Cargo even when disabled here.
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let out = std::process::Command::new(cargo)
         .args([
@@ -81,6 +84,11 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
             "--prefix",
             "none",
             "--offline",
+            "--all-features",
+            "--target",
+            "all",
+            "-e",
+            "all",
         ])
         .current_dir(root)
         .output()
@@ -89,13 +97,35 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
         return (members, vec!["unresolved workspace graph".to_owned()]);
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    // First line is the package itself; every later line is a dependent.
-    let edges: Vec<String> = text
+    let mut edges: Vec<String> = text
         .lines()
         .skip(1)
-        .filter(|l| !l.trim().is_empty())
+        .filter(|l| !l.trim().is_empty() && !l.contains(" feature "))
         .map(|l| format!("dependent: {}", l.trim()))
         .collect();
+    // Declared-but-unresolvable configurations still count: any member
+    // manifest naming the package is a declared incoming edge.
+    if let Some(list) = root_text.split("members = [").nth(1) {
+        for member in list
+            .split(']')
+            .next()
+            .unwrap()
+            .split(',')
+            .map(|x| x.trim().trim_matches(|c| c == '"' || c == '\''))
+            .filter(|x| !x.is_empty() && *x != "reverie-signal")
+        {
+            let manifest = root.join(member).join("Cargo.toml");
+            match std::fs::read_to_string(&manifest) {
+                Ok(text) if text.contains("reverie-signal") => {
+                    edges.push(format!("declared: {member}"));
+                }
+                Ok(_) => {}
+                Err(_) => edges.push(format!("unresolved member {member}")),
+            }
+        }
+    }
+    edges.sort();
+    edges.dedup();
     (members, edges)
 }
 
@@ -156,15 +186,17 @@ fn no_incoming_dependency_edges() {
         "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[target.'cfg(windows)'.dependencies]\nreverie-signal = { path = \"../reverie-signal\", optional = true }\n",
     )
     .unwrap();
+    // Valid workspace: the alias declaration stays, so refusal must
+    // come from resolution, not a manifest load failure.
     std::fs::write(
         tmp.join("Cargo.toml"),
-        "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"member-c\", \"experimental/member-b\", \"reverie-signal\"]\n",
+        "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"member-c\", \"experimental/member-b\", \"reverie-signal\"]\n[workspace.dependencies]\nsignals = { package = \"reverie-signal\", path = \"reverie-signal\" }\n",
     )
     .unwrap();
     let (_w_checked, w_edges) = incoming_edges(&tmp);
     assert!(
-        !w_edges.is_empty(),
-        "optional/windows tree must be refused: {w_edges:?}"
+        w_edges.iter().any(|e| e.contains("member-c")),
+        "member-c must be named, not a vacuous graph failure: {w_edges:?}"
     );
     // Spaced table header form must not escape either.
     std::fs::write(
@@ -176,6 +208,13 @@ fn no_incoming_dependency_edges() {
     assert!(
         !s_edges.is_empty(),
         "spaced table alias tree must be refused: {s_edges:?}"
+    );
+    // Deliberate fail-closed control: a broken workspace refuses.
+    std::fs::write(tmp.join("Cargo.toml"), "this is not toml = [").unwrap();
+    let (_b_checked, b_edges) = incoming_edges(&tmp);
+    assert!(
+        b_edges.iter().any(|e| e.contains("unresolved")),
+        "broken tree fails closed: {b_edges:?}"
     );
     let _ = std::fs::remove_dir_all(&tmp);
 }

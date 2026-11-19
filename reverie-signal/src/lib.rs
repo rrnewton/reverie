@@ -280,6 +280,27 @@ impl SignalQueue {
         released
     }
 
+    /// Dequeue for an rt_sigtimedwait-style wait: among entries whose
+    /// signo is in `wait_set` (SIGKILL/SIGSTOP stripped by the caller),
+    /// next_signal order. The thread's blocked mask plays no part.
+    pub fn dequeue_waited(&mut self, wait_set: u64) -> Option<Pending> {
+        let mut best: Option<usize> = None;
+        for (i, p) in self.entries.iter().enumerate() {
+            if is_unblockable(p.info.signo) || wait_set & bit(p.info.signo) == 0 {
+                continue;
+            }
+            best = Some(match best {
+                None => i,
+                Some(b) => {
+                    let cur = &self.entries[b];
+                    let key = |x: &Pending| (!is_synchronous(x.info.signo), x.info.signo, x.id);
+                    if key(p) < key(cur) { i } else { b }
+                }
+            });
+        }
+        best.and_then(|i| self.entries.remove(i))
+    }
+
     /// First (FIFO) entry matching `pred` and not blocked.
     pub fn dequeue_first(
         &mut self,
@@ -921,16 +942,23 @@ impl ProcessDomain {
         ledger: &mut Sigpending,
     ) -> Option<Pending> {
         let idx = self.threads.iter().position(|t| t.task == task)?;
-        let blocked = self.threads[idx].effective_blocked();
-        let not_waited = !wait_set;
+        // do_sigtimedwait strips SIGKILL/SIGSTOP from the set and
+        // dequeues under its complement, ignoring tsk->blocked.
+        let waited = wait_set & !UNBLOCKABLE_MASK;
         let pending = self.threads[idx]
             .private
-            .dequeue(blocked | not_waited)
-            .or_else(|| self.shared.dequeue(blocked | not_waited))?;
+            .dequeue_waited(waited)
+            .or_else(|| self.shared.dequeue_waited(waited))?;
         if let InstanceKind::Charged(uid) = pending.kind {
             ledger.release(uid, 1);
         }
         self.exit_timedwait(task);
+        // recalc_sigpending after the dequeue: no unblocked work left
+        // means the notification flag drops with the wait.
+        let idx = self.threads.iter().position(|t| t.task == task).unwrap();
+        if !has_unblocked_pending(&self.threads[idx], &self.shared) {
+            self.threads[idx].sigpending = false;
+        }
         Some(pending)
     }
 
@@ -940,7 +968,19 @@ impl ProcessDomain {
         env: &FrameEnv,
         ledger: &mut Sigpending,
     ) -> Option<DeliveryPlan> {
-        // Handler delivery implies any timedwait wait has exited.
+        // A timedwait wait exits exactly when a delivery is produced:
+        // peek first (probing ends nothing), then run the wait-exit
+        // transition so masking uses the restored mask. Consumers may
+        // also run exit_timedwait explicitly; it is idempotent.
+        {
+            let idx0 = self.threads.iter().position(|t| t.task == task)?;
+            let t0 = &self.threads[idx0];
+            let deliverable =
+                (t0.private.peek_mask() | self.shared.peek_mask()) & !t0.effective_blocked() != 0;
+            if !deliverable {
+                return None;
+            }
+        }
         self.exit_timedwait(task);
         let idx = self.threads.iter().position(|t| t.task == task)?;
         let blocked = self.threads[idx].effective_blocked();
@@ -2440,6 +2480,7 @@ mod tests {
             SendSource::UserKill,
             &mut ledger,
         );
+        d.exit_timedwait(tg(100)); // consumer runs the wait-exit transition
         let p = d
             .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
             .unwrap();
@@ -2468,6 +2509,67 @@ mod tests {
         let f = [fact(tg(100)), fact(tg(101)), fact(tg(102))];
         // Both 101 and 102 eligible; only a cursor-resuming walk picks 102.
         assert_eq!(d.choose_receiver(10, tg(100), &f), Some(tg(102)));
+    }
+
+    #[test]
+    fn timedwait_dequeue_semantics_and_probe_purity() {
+        // u40: block-then-wait returns the signal (blocked is ignored).
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.thread_mut(tg(100)).unwrap().blocked = bit(40);
+        d.send_process(SigInfo::user(40, 1, 0), SendSource::UserKill, &mut ledger);
+        let used_before = ledger.used_by(1000);
+        let got = d
+            .dequeue_for_timedwait(tg(100), bit(40), &mut ledger)
+            .unwrap();
+        assert_eq!(got.info.signo, 40);
+        assert_eq!(ledger.used_by(1000), used_before - 1, "charge released");
+        // u42: sigtimedwait never returns SIGKILL.
+        d.send_process(
+            SigInfo::user(SIGKILL, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert!(
+            d.dequeue_for_timedwait(tg(100), bit(SIGKILL), &mut ledger)
+                .is_none()
+        );
+        // u43: probing with next_delivery does not end a live wait.
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        let t = d2.thread_mut(tg(100)).unwrap();
+        t.blocked = 0;
+        t.real_blocked = Some(0x200);
+        assert!(
+            d2.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+                .is_none()
+        );
+        let t = d2.thread(tg(100)).unwrap();
+        assert_eq!(
+            (t.blocked, t.real_blocked),
+            (0, Some(0x200)),
+            "wait untouched by probe"
+        );
+    }
+
+    #[test]
+    fn timedwait_dequeue_recalcs_sigpending() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(40, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert!(d.thread(tg(100)).unwrap().sigpending);
+        let got = d
+            .dequeue_for_timedwait(tg(100), bit(40), &mut ledger)
+            .unwrap();
+        assert_eq!(got.info.signo, 40);
+        assert!(
+            !d.thread(tg(100)).unwrap().sigpending,
+            "last pending consumed: flag cleared"
+        );
     }
 
     #[test]
