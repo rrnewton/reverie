@@ -145,42 +145,75 @@ pub fn launch_dispositions() -> Option<u64> {
     (RECORD.load(Ordering::Acquire) == RECORDED).then(|| IGNORED.load(Ordering::Relaxed))
 }
 
+/// The calling thread's own status. The thread-group leader's
+/// (`/proc/self/status`) shows no signal sets once the leader has exited
+/// while other threads run: Linux prints them only while it can take the
+/// leader's signal lock (`lock_task_sighand` in `task_sig`).
+const THREAD_STATUS: &str = "/proc/thread-self/status";
+
 /// The signals the calling process ignores now, as a set like
 /// [`launch_dispositions`]'s: what a program it executed now would start
-/// with ignored. It makes only raw system calls.
-pub fn ignored_now() -> u64 {
-    let mut ignored = 0;
-    for signal in 1..=LAST_SIGNAL {
-        let mut old = KernelSigaction::with_handler(libc::SIG_DFL);
-        // SAFETY: no new action; `old` is a valid `struct sigaction`.
-        let read = unsafe { rt_sigaction(signal, core::ptr::null(), &mut old) };
-        if read.is_ok() && old.handler == libc::SIG_IGN {
-            ignored |= bit(signal);
-        }
+/// with ignored. It reads the calling thread's status once. Linux prints its
+/// `SigIgn` set from every one of the process's dispositions in one pass,
+/// holding the lock that `sigaction` takes to change one (`task_sig` and
+/// `collect_sigign_sigcatch`, fs/proc/array.c), so the set is the
+/// dispositions at one moment, whatever another thread changes meanwhile.
+/// Reading each signal's action in turn would not be. A status that cannot
+/// be read, or that has no such set, is an error, never an empty set.
+pub fn ignored_now() -> std::io::Result<u64> {
+    let status = std::fs::read(THREAD_STATUS)?;
+    ignored_set(&status).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{THREAD_STATUS} has no single SigIgn line of sixteen hexadecimal digits"),
+        )
+    })
+}
+
+/// The set on the one `SigIgn` line of `status`: sixteen lowercase
+/// hexadecimal digits, as Linux prints a set of its 64 signals
+/// (`render_sigset_t`). `status` is bytes, not text: the `Name` line holds
+/// the thread's name, which may be any bytes.
+fn ignored_set(status: &[u8]) -> Option<u64> {
+    let mut lines = status
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| line.strip_prefix(b"SigIgn:\t"));
+    let digits = lines.next()?;
+    if lines.next().is_some() || digits.len() != 16 {
+        return None;
     }
-    ignored
+    digits.iter().try_fold(0u64, |set, &digit| {
+        let value = match digit {
+            b'0'..=b'9' => digit - b'0',
+            b'a'..=b'f' => digit - b'a' + 10,
+            _ => return None,
+        };
+        Some(set << 4 | u64::from(value))
+    })
 }
 
 /// The signals a program launched without an input starts with ignored: the
 /// calling process's set now ([`ignored_now`]) with SIGPIPE at its default,
 /// which a `Command` launch resets because the Rust runtime ignored it, as
 /// `std::process` does. An emulating backend starts a program it is given no
-/// input for with this set, so every backend agrees.
-pub fn ignored_without_input() -> u64 {
-    ignored_now() & !bit(libc::SIGPIPE)
+/// input for with this set, so every backend agrees. It fails as
+/// [`ignored_now`] fails.
+pub fn ignored_without_input() -> std::io::Result<u64> {
+    Ok(ignored_now()? & !bit(libc::SIGPIPE))
 }
 
 /// Gives the calling process the dispositions a launched program starts with
 /// (`Command::ignored_signals`): each signal in `ignored` ignored, and every
 /// other at its default. SIGKILL and SIGSTOP cannot be changed and are left
-/// alone.
+/// alone. A launcher that forks and executes a program itself, rather than
+/// through a `Command`, calls this in its child to take the same input.
 ///
 /// # Safety
 ///
 /// Call this in a child between fork and `execve`, before it runs anything
 /// that relies on a handler: it replaces every handler. It allocates nothing,
 /// takes no lock and makes only raw system calls.
-pub(crate) unsafe fn apply_in_child(ignored: u64) -> Result<(), Errno> {
+pub unsafe fn apply_in_child(ignored: u64) -> Result<(), Errno> {
     for signal in 1..=LAST_SIGNAL {
         if signal == libc::SIGKILL || signal == libc::SIGSTOP {
             continue;
@@ -325,8 +358,8 @@ mod tests {
 
         let inherited = crate::Command::new("/bin/grep");
         assert_eq!(inherited.get_ignored_signals(), None);
-        assert_eq!(ignored_without_input(), bit(libc::SIGUSR1));
-        assert_eq!(launched_sigign(inherited), ignored_without_input());
+        assert_eq!(ignored_without_input().unwrap(), bit(libc::SIGUSR1));
+        assert_eq!(launched_sigign(inherited), ignored_without_input().unwrap());
 
         let mut given = crate::Command::new("/bin/grep");
         given.ignored_signals(LAUNCHER);
@@ -360,16 +393,74 @@ mod tests {
             return;
         }
         let launched = bit(libc::SIGHUP) | bit(libc::SIGPIPE);
-        assert_eq!(ignored_now(), launched);
+        assert_eq!(ignored_now().unwrap(), launched);
         let ignore = KernelSigaction::with_handler(libc::SIG_IGN);
         let mut glibc_33 = KernelSigaction::with_handler(libc::SIG_DFL);
         // SAFETY: valid actions.
         unsafe { rt_sigaction(33, &ignore, &mut glibc_33) }.unwrap();
         // SAFETY: a valid action; no old action.
         unsafe { rt_sigaction(libc::SIGUSR1, &ignore, core::ptr::null_mut()) }.unwrap();
-        assert_eq!(ignored_now(), launched | bit(33) | bit(libc::SIGUSR1));
+        assert_eq!(
+            ignored_now().unwrap(),
+            launched | bit(33) | bit(libc::SIGUSR1)
+        );
         // SAFETY: the action the kernel returned. glibc's set*id calls rely on
         // its handler for 33.
         unsafe { rt_sigaction(33, &glibc_33, core::ptr::null_mut()) }.unwrap();
+    }
+
+    /// A status as Linux prints one, with `name` on its `Name` line and
+    /// `ignored` on its `SigIgn` line.
+    fn status(name: &[u8], ignored: &[u8]) -> Vec<u8> {
+        [
+            b"Name:\t".as_slice(),
+            name,
+            b"\nUmask:\t0022\nState:\tR (running)\nSigBlk:\t0000000000000000\nSigIgn:\t",
+            ignored,
+            b"\nSigCgt:\t0000000180000000\nCapInh:\t0000000000000000\n",
+        ]
+        .concat()
+    }
+
+    /// The set is read from the `SigIgn` line's bytes, whatever bytes the
+    /// thread's name is: Linux lets a thread name itself with any bytes but
+    /// NUL (`PR_SET_NAME`) and escapes only a newline and a backslash in it.
+    #[test]
+    fn the_ignored_set_is_read_from_bytes_whatever_the_thread_name() {
+        assert_eq!(
+            ignored_set(&status(b"\x80\xff-call", b"0000000180001001")),
+            Some(bit(1) | bit(13) | bit(32) | bit(33))
+        );
+        assert_eq!(
+            ignored_set(&status(b"main", b"8000000000000000")),
+            Some(bit(64))
+        );
+    }
+
+    /// A status without exactly one `SigIgn` line of sixteen lowercase
+    /// hexadecimal digits has no set, so [`ignored_now`] fails rather than
+    /// answer with an empty one.
+    #[test]
+    fn a_status_without_one_well_formed_set_has_none() {
+        let missing = b"Name:\tmain\nSigCgt:\t0000000000000000\n";
+        assert_eq!(ignored_set(missing), None);
+        let mut repeated = status(b"main", b"0000000000001000");
+        repeated.extend_from_slice(b"SigIgn:\t0000000000001000\n");
+        assert_eq!(ignored_set(&repeated), None);
+        for malformed in [
+            b"000000000000100".as_slice(),
+            b"00000000000010000",
+            b"000000000000100A",
+            b"+00000000000100a",
+            b"000000000000100\t",
+            b"",
+        ] {
+            assert_eq!(
+                ignored_set(&status(b"main", malformed)),
+                None,
+                "{:?}",
+                String::from_utf8_lossy(malformed)
+            );
+        }
     }
 }

@@ -143,20 +143,26 @@ pub enum UnsupportedOperation {
     /// refusal's diagnostic names when the backend makes it. A backend that
     /// refuses one received nothing.
     UnwritableRecordBuffer,
-    /// A stop of the process group that Linux started during a call the
+    /// A stop of the process group that Linux started for a call the
     /// backend ran for the tool, by raising a terminal's job-control signal
     /// (`SIGTTIN` or `SIGTTOU`, with `SI_KERNEL`) whose disposition is the
     /// default, on a backend that cannot deliver that stop. A background
     /// process's read of its controlling terminal raises `SIGTTIN` so, and
-    /// its write with `TOSTOP` set raises `SIGTTOU`; Linux restarts the call
-    /// after the group is continued, and the restarted call raises the signal
-    /// again while the process stays in the background. A backend that
-    /// refuses it dropped that signal, stopped nothing, and fails the call
-    /// with `EIO`, which Linux gives a background read when `SIGTTIN` is
-    /// ignored or blocked, and which no retry repeats, as it would repeat
-    /// `ERESTARTSYS`; the refusal's diagnostic names the signal. A
-    /// terminal's `SIGTSTP` is not one: no call raises it, so a backend can
-    /// hold it for the call's return.
+    /// its write with `TOSTOP` set, or a change of the terminal's settings,
+    /// raises `SIGTTOU`; Linux restarts the call after the group is
+    /// continued, and the restarted call raises the signal again while the
+    /// process stays in the background. A backend that refuses it dropped
+    /// that signal, stopped nothing, and fails the call with `EIO`, which
+    /// Linux gives a background read when `SIGTTIN` is ignored or blocked,
+    /// and which no retry repeats, as it would repeat `ERESTARTSYS`; the
+    /// refusal's diagnostic names the signal, or the fact the backend could
+    /// not read to tell such a stop from another signal. Only a call that can
+    /// raise the signal itself is refused. Linux sends the signal to the whole
+    /// group, so it also reaches calls that cannot raise it, such as another
+    /// member's pipe read; a backend holds the signal for such a call like any
+    /// other signal, and leaves the call's result alone. A terminal's
+    /// `SIGTSTP` is not one: no call raises it, so a backend can hold it for
+    /// the call's return.
     JobControlStop,
 }
 

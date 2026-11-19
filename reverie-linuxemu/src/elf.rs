@@ -1890,8 +1890,8 @@ impl LoadedStaticElf {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review script loading and executable resolution.
-/// Loads `image` as exec'd by the filename `argv[0]`; see
-/// [`load_static_elf_with_execfn`].
+/// Loads `image` as exec'd by the filename `argv[0]`, launched without an
+/// ignored-signal input; see [`load_static_elf_with_execfn`].
 pub fn load_static_elf(
     memory: &mut GuestMemory,
     image: &[u8],
@@ -1899,7 +1899,7 @@ pub fn load_static_elf(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
-    load_static_elf_with_execfn(memory, image, None, argv, envp, cwd)
+    load_static_elf_with_execfn(memory, image, None, argv, envp, cwd, None)
 }
 
 /// Loads `image` as `execve(execfn, argv, envp)` would. `execfn` is the
@@ -1908,6 +1908,13 @@ pub fn load_static_elf(
 /// script keeps it: for a script Linux still records the script's filename
 /// there, not the interpreter's. Given explicitly, it is also the script's
 /// own argument after the interpreter (bprm->interp), whatever `argv[0]` is.
+/// `ignored_signals` is the launch input, as
+/// `reverie::process::Command::ignored_signals` gives one to a program it
+/// executes: the first process starts with exactly those signals ignored
+/// (signal `n` at bit `n - 1`) and every other at its default. Without one,
+/// the load reads the set a program this process launched without an input
+/// would start with (`reverie::process::start_signals::ignored_without_input`),
+/// and fails if it cannot.
 pub fn load_static_elf_with_execfn(
     memory: &mut GuestMemory,
     image: &[u8],
@@ -1915,6 +1922,7 @@ pub fn load_static_elf_with_execfn(
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
+    ignored_signals: Option<u64>,
 ) -> Result<LoadedStaticElf> {
     load_image_of(
         memory,
@@ -1925,6 +1933,7 @@ pub fn load_static_elf_with_execfn(
         argv,
         envp,
         CwdSource::HostPath(cwd),
+        SignalSource::Launch(ignored_signals),
     )
 }
 
@@ -1987,6 +1996,43 @@ impl CwdSource<'_> {
     }
 }
 
+/// Where [`load_executable`] takes the new image's signal dispositions from.
+#[derive(Clone, Copy)]
+enum SignalSource {
+    /// An initial image's launch input (`Some`: exactly those signals
+    /// ignored), or none (`None`: the set a program this process launched
+    /// without an input would start with, read at the load). Only for an
+    /// initial image.
+    Launch(Option<u64>),
+    /// The execing process's: the exec's commit gives them to the new image
+    /// (`LoadedStaticElf::inherit_process_state_locked`), so the load reads
+    /// nothing for them.
+    Exec,
+}
+
+impl SignalSource {
+    /// The new image's first process signal state. An exec's commit replaces
+    /// the empty state an exec's load builds, and a validation load's is
+    /// dropped unseen.
+    fn first_state(self) -> Result<ProcessSignalState> {
+        let ignored = match self {
+            Self::Launch(Some(ignored)) => ignored,
+            Self::Launch(None) => reverie::process::start_signals::ignored_without_input()
+                .map_err(|error| {
+                    std::io::Error::new(
+                        error.kind(),
+                        format!(
+                            "cannot read the signals this process ignores, which a program \
+                             launched without an ignored-signal input starts with ignored: {error}"
+                        ),
+                    )
+                })?,
+            Self::Exec => return Ok(ProcessSignalState::default()),
+        };
+        Ok(ProcessSignalState::launched(ignored))
+    }
+}
+
 /// The `PT_INTERP` path `image` names, checked as [`load_executable`] checks
 /// it (the ELF header and program headers first, then the path), or `None`
 /// for an image with no interpreter.
@@ -2025,6 +2071,7 @@ pub fn load_static_elf_image_of(
         argv,
         envp,
         CwdSource::Task(fs_context),
+        SignalSource::Exec,
     )
 }
 
@@ -2038,6 +2085,7 @@ fn load_image_of(
     argv: &[&str],
     envp: &[&str],
     cwd: CwdSource<'_>,
+    signals: SignalSource,
 ) -> Result<LoadedStaticElf> {
     initialize_regular_create_directory_policy()?;
     // Fix the host core_pattern before the first image runs (`core_dump`).
@@ -2058,6 +2106,7 @@ fn load_image_of(
         0,
         executable_file,
         interpreter_source,
+        signals,
     );
     if result.is_err() {
         memory.clear_user_access();
@@ -2065,7 +2114,8 @@ fn load_image_of(
     result
 }
 
-/// Loads the image read from `file` as exec'd by the filename `argv[0]`; see
+/// Loads the image read from `file` as exec'd by the filename `argv[0]`,
+/// launched without an ignored-signal input; see
 /// [`load_static_elf_file_with_execfn`].
 pub fn load_static_elf_file(
     memory: &mut GuestMemory,
@@ -2074,7 +2124,7 @@ pub fn load_static_elf_file(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
-    load_static_elf_file_with_execfn(memory, file, None, argv, envp, cwd)
+    load_static_elf_file_with_execfn(memory, file, None, argv, envp, cwd, None)
 }
 
 /// Loads the image read from `file`, keeping `file` as the process's
@@ -2088,7 +2138,8 @@ pub fn load_static_elf_file(
 /// the path of `file`. The new task is named as [`initial_thread_name`]
 /// names it, by `execfn` as given, not by the path `file` resolves to; with
 /// no `execfn`, the path of `file` is the filename it is named by, as a
-/// native exec of that file under any `argv[0]` names it.
+/// native exec of that file under any `argv[0]` names it. `ignored_signals`
+/// is the launch input, or none, as [`load_static_elf_with_execfn`] takes it.
 pub fn load_static_elf_file_with_execfn(
     memory: &mut GuestMemory,
     file: File,
@@ -2096,6 +2147,7 @@ pub fn load_static_elf_file_with_execfn(
     argv: &[&str],
     envp: &[&str],
     cwd: &Path,
+    ignored_signals: Option<u64>,
 ) -> Result<LoadedStaticElf> {
     initialize_regular_create_directory_policy()?;
     // Fix the host core_pattern before the first image runs (`core_dump`).
@@ -2125,6 +2177,7 @@ pub fn load_static_elf_file_with_execfn(
         0,
         Some(Arc::new(file)),
         InterpreterSource::HostPath,
+        SignalSource::Launch(ignored_signals),
     );
     let mut loaded = match result {
         Ok(loaded) => loaded,
@@ -2224,6 +2277,7 @@ fn load_executable(
     script_depth: usize,
     executable_file: Option<Arc<File>>,
     interpreter_source: InterpreterSource<'_>,
+    signals: SignalSource,
 ) -> Result<LoadedStaticElf> {
     let argv0 = *argv
         .first()
@@ -2291,6 +2345,7 @@ fn load_executable(
             script_depth + 1,
             interpreter_file,
             interpreter_source,
+            signals,
         );
     }
 
@@ -2599,6 +2654,7 @@ fn load_executable(
         )));
     }
     let capabilities = launcher.guest_capabilities();
+    let process_signals = signals.first_state()?;
 
     memory.set_allocation_cursors(AllocationCursors {
         program_break,
@@ -2671,12 +2727,7 @@ fn load_executable(
             credential_root: launcher.root,
         },
         dumpable: true,
-        // What a program this process launched now without an input would
-        // start with ignored, until a launch input replaces it
-        // (`LoadedStaticElf::start_with_ignored_signals`).
-        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::launched(
-            reverie::process::start_signals::ignored_without_input(),
-        ))),
+        process_signals: std::sync::Arc::new(std::sync::Mutex::new(process_signals)),
         signal_transaction: Default::default(),
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,
@@ -4216,6 +4267,7 @@ mod tests {
             &["/bin/i", "/s/run.sh"],
             &[],
             &std::env::current_dir().unwrap(),
+            None,
         )
         .unwrap();
         let execfn = USER_STACK_TOP - 8 - 10;
@@ -4263,6 +4315,7 @@ mod tests {
             &["display", "a"],
             &[],
             &dir,
+            None,
         )
         .unwrap();
         assert_eq!(read_c_string(&memory, execfn_of(&loaded)), "./outer");
@@ -4400,6 +4453,7 @@ mod tests {
             &[interpreter_name, "./t.sh"],
             &[],
             &dir,
+            None,
         )
         .unwrap();
         assert_eq!(names(&loaded), expect(b"t.sh\0\0\0\0\0\0\0\0\0\0\0\0"));
@@ -4413,6 +4467,7 @@ mod tests {
             &[interpreter_name, script_name],
             &[],
             &dir,
+            None,
         )
         .unwrap();
         assert_eq!(names(&loaded), expect(b"t.sh\0\0\0\0\0\0\0\0\0\0\0\0"));
@@ -4426,6 +4481,7 @@ mod tests {
             &["./t.sh"],
             &[],
             &dir,
+            None,
         )
         .unwrap();
         assert_eq!(names(&loaded), expect(b"t.sh\0\0\0\0\0\0\0\0\0\0\0\0"));
@@ -4460,6 +4516,7 @@ mod tests {
             &[alias_name],
             &[],
             &dir,
+            None,
         )
         .unwrap();
         assert_eq!(names(&loaded), alias_expected);

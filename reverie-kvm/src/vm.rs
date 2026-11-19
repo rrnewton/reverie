@@ -80,8 +80,6 @@ use crate::clock::StepMode;
 use crate::elf::ExecInterpreter;
 use crate::elf::LoadedStaticElf;
 use crate::elf::TaskLifecycleTable;
-use crate::elf::load_static_elf;
-use crate::elf::load_static_elf_file;
 use crate::elf::load_static_elf_file_with_execfn;
 use crate::elf::load_static_elf_image_of;
 use crate::elf::load_static_elf_with_execfn;
@@ -2793,8 +2791,10 @@ impl KvmBackend {
     /// `reverie::process::Command::ignored_signals` gives one to a program it
     /// executes. Without it, the first process starts as a program this
     /// process launched without an input when it loaded the image would
-    /// (`reverie::process::start_signals::ignored_without_input`). Applies to
-    /// the installed image and any later one.
+    /// (`reverie::process::start_signals::ignored_without_input`). Given
+    /// before the image is installed, it is the loader's input, and the load
+    /// reads nothing for it; given after, it replaces the set the installed
+    /// image's load read. An image installed later takes it too.
     pub fn set_ignored_signals(&mut self, ignored: u64) -> Result<()> {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         self.ignored_signals = Some(ignored);
@@ -2928,7 +2928,15 @@ impl KvmBackend {
     ) -> Result<()> {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
-        let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
+        let loaded = load_static_elf_with_execfn(
+            &mut self.memory,
+            image,
+            None,
+            argv,
+            envp,
+            cwd,
+            self.ignored_signals,
+        )?;
         self.install_loaded_static_elf(loaded)
     }
 
@@ -2957,15 +2965,13 @@ impl KvmBackend {
             argv,
             envp,
             cwd,
+            self.ignored_signals,
         )?;
         self.install_loaded_static_elf(loaded)
     }
 
     fn install_loaded_static_elf(&mut self, mut loaded: LoadedStaticElf) -> Result<()> {
         loaded.ids_per_task = self.ids_per_task;
-        if let Some(ignored) = self.ignored_signals {
-            loaded.start_with_ignored_signals(ignored);
-        }
         loaded.pid = self.root_pid;
         loaded.pgid = self.root_pid;
         loaded.tid = self.root_pid;
@@ -3013,7 +3019,15 @@ impl KvmBackend {
     ) -> Result<()> {
         AbandonedRuns::admit(&self.abandoned_runs)?;
         self.vcpu.check_initial_elf_install()?;
-        let loaded = load_static_elf_file(&mut self.memory, file, argv, envp, cwd)?;
+        let loaded = load_static_elf_file_with_execfn(
+            &mut self.memory,
+            file,
+            None,
+            argv,
+            envp,
+            cwd,
+            self.ignored_signals,
+        )?;
         self.install_loaded_static_elf(loaded)
     }
 
@@ -3048,6 +3062,7 @@ impl KvmBackend {
             argv,
             envp,
             cwd,
+            self.ignored_signals,
         )?;
         self.install_loaded_static_elf(loaded)
     }

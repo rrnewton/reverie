@@ -76,6 +76,7 @@ mod sigtrap_state;
 mod stack;
 mod stats;
 mod task;
+mod terminal_call;
 pub mod testing;
 mod timer;
 mod tool_memory;

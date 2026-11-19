@@ -186,6 +186,7 @@ pub struct PreparedExec<'fd> {
     cwd: Option<std::fs::File>,
     ptrace_launch_facts: bool,
     supervisor_seize: bool,
+    ignored_signals: Option<u64>,
     stdio: Option<reverie::process::PreparedStdio>,
     parent_stdio: Option<reverie::process::ParentStdio>,
 }
@@ -207,11 +208,24 @@ impl<'fd> PreparedExec<'fd> {
     }
 
     /// Match the ordinary ptrace child's deterministic address-space setup
-    /// before exec, without changing this parent. Like that child, it leaves
-    /// the signal dispositions as inherited. The default constructor
-    /// preserves its existing inherited behavior.
+    /// before exec, without changing this parent. The signal dispositions are
+    /// not part of it: they are the launch input's when one is given
+    /// ([`Self::with_ignored_signals`]), and otherwise as inherited. The
+    /// default constructor preserves its existing inherited behavior.
     pub fn with_ptrace_launch_facts(mut self) -> Self {
         self.ptrace_launch_facts = true;
+        self
+    }
+
+    /// Start the program with exactly the signals in `ignored` ignored
+    /// (signal `n` at bit `n - 1`) and every other at its default: the launch
+    /// input, as `reverie::process::Command::ignored_signals` gives one to a
+    /// program it executes, applied in the child before it executes
+    /// (`reverie::process::start_signals::apply_in_child`). Without it, the
+    /// program starts with the dispositions the child inherits, an ignored
+    /// signal staying ignored across `execve`.
+    pub fn with_ignored_signals(mut self, ignored: u64) -> Self {
+        self.ignored_signals = Some(ignored);
         self
     }
 
@@ -306,6 +320,7 @@ impl<'fd> PreparedExec<'fd> {
             cwd,
             ptrace_launch_facts: false,
             supervisor_seize: false,
+            ignored_signals: None,
             stdio: None,
             parent_stdio: None,
         })
@@ -445,6 +460,15 @@ impl<'fd> PreparedExec<'fd> {
                 // prebuilt plan owns every staging descriptor. The child never
                 // returns or unwinds, including on partial installation failure.
                 && stdio.install_child().is_err()
+            {
+                exit_child();
+            }
+            if let Some(ignored) = self.ignored_signals
+                // SAFETY: the child is between fork and execve and runs no
+                // handler from here on; the call makes only raw system calls
+                // and allocates nothing. A refusal exits before executing the
+                // requested image.
+                && reverie::process::start_signals::apply_in_child(ignored).is_err()
             {
                 exit_child();
             }

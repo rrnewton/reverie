@@ -165,3 +165,53 @@ fn prepared_stdio_failed_exec_preserves_parent_endpoints_without_writers() {
     assert!(complete_bytes(pipes.stderr.take().unwrap()).is_empty());
     assert!(failure.cleanup().confirmed);
 }
+
+/// The `SigIgn` set in the `/proc` status of process `pid`.
+fn ignored_signals_of(pid: impl std::fmt::Display) -> u64 {
+    let status = std::fs::read(format!("/proc/{pid}/status")).unwrap();
+    let line = status
+        .split(|&byte| byte == b'\n')
+        .find_map(|line| line.strip_prefix(b"SigIgn:\t"))
+        .unwrap();
+    u64::from_str_radix(std::str::from_utf8(line).unwrap(), 16).unwrap()
+}
+
+/// The stopped birth of a launch given an ignored-signal input
+/// (`PreparedExec::with_ignored_signals`) has exactly that set ignored at the
+/// program's first instruction: the child applies it before it executes, and
+/// `execve` keeps an ignored action. The set this process ignores is not
+/// inherited; the Rust runtime ignored SIGPIPE here before `main`. Without an
+/// input, the birth keeps what it inherits, SIGPIPE ignored among it. (Other
+/// tests of this binary may change other dispositions meanwhile, so only
+/// SIGPIPE is compared there.)
+#[test]
+fn a_birth_given_ignored_signals_starts_with_exactly_them() {
+    let sigpipe = 1u64 << (libc::SIGPIPE - 1);
+    assert_ne!(
+        ignored_signals_of("self") & sigpipe,
+        0,
+        "precondition: this process ignores SIGPIPE"
+    );
+    let given = (1u64 << (libc::SIGHUP - 1)) | (1 << (libc::SIGTTIN - 1)) | (1 << (33 - 1));
+    let birth = |input: Option<u64>| {
+        let request = PreparedExec::new(
+            Path::new("/bin/true"),
+            &["ignored-signals-input".into()],
+            &[],
+            None,
+            vec![],
+        )
+        .unwrap();
+        let request = match input {
+            Some(ignored) => request.with_ignored_signals(ignored),
+            None => request,
+        };
+        let stop = ExecStop::spawn(request, CleanupReceipt::default()).unwrap();
+        let ignored = ignored_signals_of(stop.task.pid());
+        assert!(stop.cancel().unwrap().confirmed);
+        ignored
+    };
+    assert_eq!(birth(Some(given)), given);
+    assert_eq!(birth(Some(0)), 0);
+    assert_ne!(birth(None) & sigpipe, 0);
+}
