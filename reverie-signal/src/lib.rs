@@ -334,8 +334,12 @@ pub struct ThreadState {
     pub task: TaskGen,
     pub private: SignalQueue,
     pub blocked: u64,
-    /// Mask before a temporary-mask wait; restored into `uc_sigmask`.
+    /// `real_blocked`: set only by rt_sigtimedwait-family waits;
+    /// sig_ignored retention consults it.
     pub real_blocked: Option<u64>,
+    /// `saved_sigmask`: set by sigsuspend-family waits; restored at
+    /// sigreturn. Retention does NOT consult it.
+    pub saved_sigmask: Option<u64>,
     pub altstack: Option<AltStack>,
     /// Per-thread notification (`TIF_SIGPENDING`): set when a send
     /// targets this thread or receiver selection chooses it; cleared
@@ -350,6 +354,7 @@ impl ThreadState {
             private: SignalQueue::new(),
             blocked: 0,
             real_blocked: None,
+            saved_sigmask: None,
             altstack: None,
             sigpending: false,
         }
@@ -450,6 +455,10 @@ pub enum WaitResolution {
     RestartAbs {
         deadline_ns: u64,
     },
+    /// RESTARTBLOCK with no deadline (poll with infinite timeout):
+    /// restart through restart_syscall. Distinct from Restart and
+    /// never an invented EINTR.
+    RestartSyscall,
     ContinueWait,
 }
 
@@ -465,10 +474,11 @@ pub fn map_restart(
     if !has_handler {
         return match code {
             RestartCode::Intr => WaitResolution::Eintr,
-            // No recorded deadline: nothing faithful to resume at.
+            // No deadline (e.g. poll with infinite timeout): still a
+            // restart through restart_syscall, never an invented EINTR.
             RestartCode::RestartRestartBlock => match restart_deadline_ns {
                 Some(d) => WaitResolution::RestartAbs { deadline_ns: d },
-                None => WaitResolution::Eintr,
+                None => WaitResolution::RestartSyscall,
             },
             _ => WaitResolution::Restart,
         };
@@ -589,9 +599,7 @@ impl ProcessDomain {
         let _ = by;
         // do_sigaction flushes for SIG_IGN and for default-ignored
         // SIG_DFL alike, in the shared queue and EVERY private queue.
-        let ignored = act.kind == DispositionKind::Ignore
-            || act.kind == DispositionKind::Default
-                && default_action(signo) == DefaultAction::Ignore;
+        let ignored = self.disposition_ignored(signo);
         if ignored {
             let mut released = self.shared.flush_mask(bit(signo));
             for t in &mut self.threads {
@@ -653,13 +661,8 @@ impl ProcessDomain {
         limit: usize,
     ) -> QueueResult {
         let signo = info.signo;
-        if !is_realtime(signo)
-            && let Some(id) = queue.find(signo)
-        {
-            return QueueResult::Coalesced(id);
-        }
-        // Absorb an unallocated fallback of the same signo.
-        let has_fallback = queue.find_fallback_mut(signo).is_some();
+        // Timer identity precedes ordinary coalescing: each timer's
+        // preallocated record is distinct, standard signal or not.
         if let SendSource::TimerPrealloc(timer_id) = source {
             // One record per timer: re-expiry bumps si_overrun in place.
             if let Some(p) = queue
@@ -670,8 +673,22 @@ impl ProcessDomain {
                 p.info.overrun = p.info.overrun.saturating_add(1);
                 return QueueResult::Queued(p.id);
             }
+            // A fallback bit for this signo is absorbed into the timer
+            // record: one delivery, not two (collect_signal).
+            if let Some(p) = queue.find_fallback_mut(signo) {
+                p.info = info;
+                p.kind = InstanceKind::TimerPrealloc(timer_id);
+                return QueueResult::Queued(p.id);
+            }
             return QueueResult::Queued(queue.push(info, InstanceKind::TimerPrealloc(timer_id)));
         }
+        if !is_realtime(signo)
+            && let Some(id) = queue.find(signo)
+        {
+            return QueueResult::Coalesced(id);
+        }
+        // Absorb an unallocated fallback of the same signo.
+        let has_fallback = queue.find_fallback_mut(signo).is_some();
         if signo == SIGKILL {
             if has_fallback {
                 let p = queue.find_fallback_mut(signo).unwrap();
@@ -979,7 +996,11 @@ impl ProcessDomain {
                 };
                 let restorer = (act.flags & SA_RESTORER != 0).then_some(act.restorer);
                 if act.flags & SA_RESETHAND != 0 {
-                    self.actions[(signo - 1) as usize] = SigAction::default();
+                    // Only sa_handler resets (signal.c:2941); flags, mask
+                    // and restorer survive.
+                    let a = &mut self.actions[(signo - 1) as usize];
+                    a.kind = DispositionKind::Default;
+                    a.handler = 0;
                 }
                 if restorer.is_none() || !fits {
                     return Delivery::ForceSegv;
@@ -987,12 +1008,15 @@ impl ProcessDomain {
                 let frame = FrameRequest {
                     handler: act.handler,
                     handler_mask,
-                    restore_mask: t.real_blocked.unwrap_or(t.blocked),
+                    restore_mask: t.saved_sigmask.or(t.real_blocked).unwrap_or(t.blocked),
                     use_altstack: use_alt,
                     on_altstack_now: on_now && !switch_to_alt,
                     restorer,
                     xstate_size: env.xstate.size(),
                 };
+                // The handler runs with handler_mask blocked: a second
+                // queued copy cannot enter until sigreturn restores.
+                self.threads[idx].blocked = handler_mask;
                 // SS_AUTODISARM: EVERY successful handler delivery
                 // resets an autodisarm altstack until rt_sigreturn,
                 // even one that did not use it (signal.c:3057ff).
@@ -1004,6 +1028,11 @@ impl ProcessDomain {
                 Delivery::EnterHandler { frame }
             }
             _ => {
+                // Retained only because blocked: pending-delivery ignore
+                // classification (incl. default SIGCONT) discards here.
+                if self.disposition_ignored(signo) {
+                    return Delivery::Discard;
+                }
                 let action = default_action(signo);
                 if action == DefaultAction::Ignore {
                     Delivery::Discard
@@ -1355,6 +1384,10 @@ mod tests {
         assert_eq!(
             map_restart(RestartCode::RestartRestartBlock, false, false, Some(5_000)),
             WaitResolution::RestartAbs { deadline_ns: 5_000 }
+        );
+        assert_eq!(
+            map_restart(RestartCode::RestartRestartBlock, false, false, None),
+            WaitResolution::RestartSyscall
         );
         assert_eq!(
             map_restart(RestartCode::RestartSys, true, false, None),
@@ -2028,13 +2061,20 @@ mod tests {
             DispositionKind::Default,
             "RESETHAND consumed"
         );
-        // Second send takes the default action (terminate, one thread).
+        // Second send waits while the handler mask is applied...
         d.send_thread(
             tg(100),
             SigInfo::user(10, 1, 0),
             SendSource::UserKill,
             &mut ledger,
         );
+        assert!(
+            d.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+                .is_none()
+        );
+        // ...sigreturn restores frame.restore_mask, then the reset
+        // disposition takes the default action (terminate, one thread).
+        d.thread_mut(tg(100)).unwrap().blocked = frame.restore_mask;
         let p2 = d
             .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
             .unwrap();

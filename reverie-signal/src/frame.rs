@@ -138,7 +138,8 @@ impl XstateDesc {
         // MXCSR_MASK is a 16-bit architectural field; a nonzero presented
         // mask must admit Linux's initial MXCSR (0x1f80) or the initial
         // state could never be restored. 0 means the default mask.
-        if self.mxcsr_mask & !0x0000_ffff != 0
+        // Bits above 17 are reserved; bit 17 (AMD MM) is presentable.
+        if self.mxcsr_mask & !0x0003_ffff != 0
             || self.mxcsr_mask != 0 && 0x1f80 & !self.mxcsr_mask != 0
         {
             return Err(FrameError::InvalidMxcsr);
@@ -551,6 +552,9 @@ impl XsaveImage {
             XSTATE_BV_OFFSET,
             (xstate_bv | XFEATURE_X87 | XFEATURE_SSE) & desc.features,
         );
+        // Canonical zero beyond the presented components: host bytes
+        // past the presented extent never reach the guest frame.
+        bytes[min_extent(desc.features)..desc.size].fill(0);
         // Canonicalize MXCSR_MASK from the presented description so
         // identical presented state builds identical frame bytes.
         write_u32(&mut bytes, MXCSR_MASK_OFFSET, desc.mxcsr_mask);
