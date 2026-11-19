@@ -1008,7 +1008,7 @@ impl ProcessDomain {
                 let frame = FrameRequest {
                     handler: act.handler,
                     handler_mask,
-                    restore_mask: t.saved_sigmask.or(t.real_blocked).unwrap_or(t.blocked),
+                    restore_mask: t.saved_sigmask.unwrap_or(t.blocked),
                     use_altstack: use_alt,
                     on_altstack_now: on_now && !switch_to_alt,
                     restorer,
@@ -1016,7 +1016,10 @@ impl ProcessDomain {
                 };
                 // The handler runs with handler_mask blocked: a second
                 // queued copy cannot enter until sigreturn restores.
+                // Delivering consumes saved_sigmask (signal_delivered
+                // clears it): a nested frame saves the *current* mask.
                 self.threads[idx].blocked = handler_mask;
+                self.threads[idx].saved_sigmask = None;
                 // SS_AUTODISARM: EVERY successful handler delivery
                 // resets an autodisarm altstack until rt_sigreturn,
                 // even one that did not use it (signal.c:3057ff).
@@ -2128,6 +2131,51 @@ mod tests {
         d.thread_mut(tg(100)).unwrap().blocked = bit(17);
         let out2 = d.send_process(SigInfo::user(17, 1, 0), SendSource::UserKill, &mut ledger);
         assert!(matches!(out2.queue, QueueResult::Queued(_)));
+    }
+
+    #[test]
+    fn nested_frames_consume_saved_sigmask_once() {
+        // signal_delivered clears saved_sigmask: frame 1 restores the
+        // pre-wait mask; frame 2 (nested) saves the outer handler mask.
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let mut act = handler(SA_RESTORER);
+        act.mask = bit(12);
+        d.actions[9] = act;
+        let t = d.thread_mut(tg(100)).unwrap();
+        t.blocked = 0; // sigsuspend temporary mask
+        t.saved_sigmask = Some(bit(13));
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p1 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        let Delivery::EnterHandler { frame: f1 } = p1.delivery else {
+            panic!("{p1:?}")
+        };
+        assert_eq!(f1.restore_mask, bit(13));
+        assert_eq!(d.thread(tg(100)).unwrap().saved_sigmask, None);
+        // Unblock signo in the outer handler (as a handler may), deliver nested.
+        d.thread_mut(tg(100)).unwrap().blocked &= !bit(10);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p2 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        let Delivery::EnterHandler { frame: f2 } = p2.delivery else {
+            panic!("{p2:?}")
+        };
+        // Current mask after unblocking signo is bit(12) (from sa_mask);
+        // a stale pre-wait save would wrongly repeat bit(13).
+        assert_eq!(f2.restore_mask, bit(12));
     }
 
     #[test]

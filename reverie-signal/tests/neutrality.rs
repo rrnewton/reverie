@@ -69,7 +69,7 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
         .unwrap()
         .split(',')
         .filter_map(|s| {
-            let s = s.trim().trim_matches('"');
+            let s = s.trim().trim_matches(|c| c == '"' || c == '\'');
             (!s.is_empty()).then(|| s.to_owned())
         })
         .collect();
@@ -81,6 +81,26 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
                 && let Some(name) = line.split('=').next()
             {
                 aliases.push(name.trim().to_owned());
+            }
+        }
+    }
+    // Table-form aliases: [workspace.dependencies.<name>] ... package =
+    {
+        let mut current: Option<String> = None;
+        for line in root_text.lines() {
+            let t = line.trim();
+            if let Some(h) = t.strip_prefix("[workspace.dependencies.") {
+                current = Some(h.trim_end_matches(']').trim().to_owned());
+                continue;
+            }
+            if t.starts_with('[') {
+                current = None;
+            }
+            if let Some(name) = &current
+                && t.contains("reverie-signal")
+                && !aliases.contains(name)
+            {
+                aliases.push(name.clone());
             }
         }
     }
