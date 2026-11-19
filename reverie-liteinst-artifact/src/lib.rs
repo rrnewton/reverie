@@ -1719,8 +1719,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/guest.rs",
-        110256,
-        "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
+        111517,
+        "863fafa38640ddab2f44fbd9197581442b721f27739efaa5b486033e922814e0",
     ),
     (
         "reverie/src/pidfd_self.rs",
@@ -40288,6 +40288,11 @@ mod tests {
             734,
             "01cf75ae8eaebafe2458537472a03959efe3b136684207b106a9c027d7472b5c",
         ),
+        (
+            "reverie/src/guest.rs",
+            111517,
+            "863fafa38640ddab2f44fbd9197581442b721f27739efaa5b486033e922814e0",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -40345,6 +40350,10 @@ mod tests {
         (
             121,
             "2cb42dd3fd114e352660affdbd1abda4fbe7a782fdd175c6297c1c61301ca023",
+        ),
+        (
+            122,
+            "66bc33c41a0d15f0241a45476134ee76845ba9c20a035353b5c317585bcfdb51",
         ),
     ];
 
@@ -42556,6 +42565,11 @@ mod tests {
                 "Cargo.toml",
                 706,
                 "c16e991c5e8ba091ada2475358a4f5e4fc17c5b8aa9f82d7877ec3a7cac3d50b",
+            ),
+            (
+                "reverie/src/guest.rs",
+                110256,
+                "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
             ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.
