@@ -152,12 +152,8 @@ fn no_incoming_dependency_edges() {
         .parent()
         .unwrap()
         .to_path_buf();
-    // Even with TMPDIR as an ancestor of the checkout, the real root
-    // is never treated as scratch (explicit ownership, no path guess).
-    // SAFETY: this test process owns its environment.
-    unsafe {
-        std::env::set_var("TMPDIR", root.parent().unwrap());
-    }
+    // Scratch ownership is explicit, so TMPDIR placement cannot
+    // affect the real root; the lock assertion below pins that.
     let lock_before = std::fs::read(root.join("Cargo.lock")).unwrap();
     let (checked, edges) = incoming_edges(&root);
     assert_eq!(
