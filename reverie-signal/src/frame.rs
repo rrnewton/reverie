@@ -78,11 +78,11 @@ const XSTATE_RESERVED_END: usize = 576;
 /// bytes. This comes from the presented CPU description, never the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XstateDesc {
-    pub features: u64,
-    pub size: usize,
+    features: u64,
+    size: usize,
     /// The presented MXCSR feature mask (canonical, part of the CPU
     /// description — never read from the host at frame time).
-    pub mxcsr_mask: u32,
+    mxcsr_mask: u32,
 }
 
 /// Smallest standard-format extent holding each feature component.
@@ -99,11 +99,34 @@ impl XstateDesc {
     pub const X87_SSE_YMM: Self = Self {
         features: SUPPORTED_XFEATURES,
         size: 832,
-        mxcsr_mask: 0,
+        // All MXCSR bits incl. DAZ: the presented CPU contract. A zero
+        // mask would silently refuse DAZ-setting frames on restore.
+        mxcsr_mask: 0xffff,
     };
+
+    /// The only construction path: invalid descriptors are unrepresentable.
+    pub fn new(features: u64, size: usize, mxcsr_mask: u32) -> Result<Self, FrameError> {
+        let desc = Self {
+            features,
+            size,
+            mxcsr_mask,
+        };
+        desc.validate()?;
+        Ok(desc)
+    }
+    pub fn features(self) -> u64 {
+        self.features
+    }
+    pub fn size(self) -> usize {
+        self.size
+    }
+    pub fn mxcsr_mask(self) -> u32 {
+        self.mxcsr_mask
+    }
 
     /// Signal-frame image size: the xstate plus FP_XSTATE_MAGIC2.
     pub fn signal_size(self) -> usize {
+        // new() bounded size so this cannot wrap.
         self.size + 4
     }
 
@@ -177,10 +200,6 @@ fn read_u64(bytes: &[u8], off: usize) -> u64 {
 }
 fn align_down(v: u64, align: u64) -> u64 {
     v & !(align - 1)
-}
-fn align_down_with_remainder(v: u64, align: u64, rem: u64) -> Option<u64> {
-    let base = v.checked_sub(rem)?;
-    Some(align_down(base, align) + rem)
 }
 fn is_canonical_user_address(addr: u64) -> bool {
     addr < (1u64 << 47)
@@ -435,24 +454,22 @@ impl FrameLayout {
             .checked_sub(if reserve_red_zone { SIGNAL_RED_ZONE } else { 0 })
             .ok_or(FrameError::AddressOverflow)?;
         // Pack the XSAVE image from the actual ceiling so an exactly-sized
-        // alternate stack is not rejected by unrequired padding. NOTE for
-        // oracle comparisons: this (inherited) packing places the 440-byte
-        // prefix directly below the XSAVE image; native Linux's
-        // round_down(sp,16)-8 arithmetic can place it up to 16 bytes
-        // lower. Account for that delta explicitly in any oracle harness.
+        // alternate stack is not rejected by unrequired padding.
         let xsave_address = align_down(
             ceiling
                 .checked_sub(desc.signal_size() as u64)
                 .ok_or(FrameError::AddressOverflow)?,
             XSAVE_ALIGNMENT,
         );
-        let frame_address = align_down_with_remainder(
+        // Linux placement (get_sigframe): the frame top is
+        // round_down(xsave - sizeof(frame), 16) - 8.
+        let frame_address = align_down(
             xsave_address
                 .checked_sub(RT_SIGFRAME_SIZE as u64)
                 .ok_or(FrameError::AddressOverflow)?,
             SIGNAL_STACK_ALIGNMENT,
-            8,
         )
+        .checked_sub(8)
         .ok_or(FrameError::AddressOverflow)?;
         Ok(Self {
             frame_address,
@@ -520,11 +537,15 @@ impl XsaveImage {
                 bytes[XSTATE_RESERVED_END..desc.size].fill(0);
             }
         }
+        // Never claim components outside the presented feature set.
         write_u64(
             &mut bytes,
             XSTATE_BV_OFFSET,
-            xstate_bv | XFEATURE_X87 | XFEATURE_SSE,
+            (xstate_bv | XFEATURE_X87 | XFEATURE_SSE) & desc.features,
         );
+        // Canonicalize MXCSR_MASK from the presented description so
+        // identical presented state builds identical frame bytes.
+        write_u32(&mut bytes, MXCSR_MASK_OFFSET, desc.mxcsr_mask);
         write_u32(&mut bytes, FP_SW_RESERVED_OFFSET, FP_XSTATE_MAGIC1);
         write_u32(
             &mut bytes,
@@ -648,9 +669,13 @@ impl XsaveImage {
 mod tests {
     use super::*;
 
+    fn desc(size: usize) -> XstateDesc {
+        XstateDesc::new(SUPPORTED_XFEATURES, size, 0xffbf).unwrap()
+    }
+
     #[test]
     fn frame_round_trip_and_layout() {
-        let desc = XstateDesc::X87_SSE_YMM;
+        let d = XstateDesc::X87_SSE_YMM;
         let frame = RtSigframe {
             pretcode: 0x7f00,
             ucontext: Ucontext {
@@ -676,106 +701,202 @@ mod tests {
         assert_eq!(read_u64(&uc, 296), 0x4);
 
         let top = 0x7fff_0000u64;
-        let layout = FrameLayout::below(top, true, desc).unwrap();
+        let layout = FrameLayout::below(top, true, d).unwrap();
         assert_eq!(layout.xsave_address % XSAVE_ALIGNMENT, 0);
         assert_eq!(layout.frame_address % 16, 8);
         assert!(layout.frame_address + RT_SIGFRAME_SIZE as u64 <= layout.xsave_address);
         assert!(layout.fits_above(top - 8192));
-        let big = XstateDesc { size: 2700, ..desc };
-        let layout_big = FrameLayout::below(top, true, big).unwrap();
+        let layout_big = FrameLayout::below(top, true, desc(2700)).unwrap();
         assert!(layout_big.frame_address < layout.frame_address);
-        // Exact boundary: frame_address == base is NOT on the stack.
         let l2 = FrameLayout {
             frame_address: 0x10000,
             xsave_address: 0x11000,
         };
         assert!(!l2.fits_above(0x10000));
         assert!(l2.fits_above(0x0fff8));
-        // Overflow refuses, never wraps.
         assert_eq!(
-            FrameLayout::below(128, true, desc),
+            FrameLayout::below(128, true, d),
             Err(FrameError::AddressOverflow)
         );
+        // Boundary regression (seat arithmetic): nested SP 0x10590 on
+        // [0x10000, +2048) must land below the base under Linux placement.
+        let nested = FrameLayout::below(0x10590, true, d).unwrap();
+        assert_eq!(nested.frame_address, 0xfff8);
+        assert!(!nested.fits_above(0x10000));
     }
 
     #[test]
     fn xstate_descriptor_coherence() {
-        // Qualifying: minimal (no YMM) and full YMM shapes build+restore.
-        for desc in [
-            XstateDesc {
-                features: XFEATURE_X87 | XFEATURE_SSE,
-                size: 576,
-                mxcsr_mask: 0xffbf,
-            },
-            XstateDesc {
-                features: SUPPORTED_XFEATURES,
-                size: 832,
-                mxcsr_mask: 0xffbf,
-            },
-            XstateDesc {
-                features: SUPPORTED_XFEATURES,
-                size: 2700,
-                mxcsr_mask: 0xffbf,
-            },
+        for d in [
+            XstateDesc::new(XFEATURE_X87 | XFEATURE_SSE, 576, 0xffbf).unwrap(),
+            desc(832),
+            desc(2700),
         ] {
-            assert!(desc.validate().is_ok(), "{desc:?}");
-            let state = XsaveImage::initialized(desc);
-            assert_eq!(state.len(), desc.size);
-            let img = XsaveImage::from_standard(&state, desc, false).unwrap();
-            assert_eq!(img.bytes().len(), desc.size + 4);
-            let restored = XsaveImage::restore_from_signal(img.bytes(), desc).unwrap();
-            assert_eq!(restored.len(), desc.size);
+            let mut state = XsaveImage::initialized(d);
+            // Noninitial YMM contents must survive build + restore.
+            if d.size() >= 832 {
+                state[600..608].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+                state[700..704].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+            }
+            let img = XsaveImage::from_standard(&state, d, false).unwrap();
+            assert_eq!(img.bytes().len(), d.size() + 4);
+            // Restored guards (were dropped once; keep them explicit):
+            assert_eq!(
+                read_u32(img.bytes(), d.size()),
+                FP_XSTATE_MAGIC2,
+                "MAGIC2 at desc.size"
+            );
+            assert_eq!(
+                XsaveImage::restore_size(img.bytes()[..512].try_into().unwrap(), d).unwrap(),
+                d.size() + 4,
+                "restore_size advertises the full signal size"
+            );
+            let restored = XsaveImage::restore_from_signal(img.bytes(), d).unwrap();
+            assert_eq!(restored.len(), d.size());
             assert_eq!(read_u32(&restored, 24), 0x1f80);
+            if d.size() >= 832 {
+                assert_eq!(
+                    &restored[600..608],
+                    &0x1122_3344_5566_7788u64.to_le_bytes(),
+                    "YMM preserved"
+                );
+                assert_eq!(&restored[700..704], &0xdead_beefu32.to_le_bytes());
+            }
         }
-        // Violating: YMM claimed in 576 bytes (construction must NOT
-        // succeed now that validate gates every entry point).
-        let bad = XstateDesc {
-            features: SUPPORTED_XFEATURES,
-            size: 576,
-            mxcsr_mask: 0,
-        };
-        assert_eq!(bad.validate(), Err(FrameError::InvalidXsaveFeatures));
+        // Invalid descriptors are unrepresentable via new().
         assert_eq!(
-            XsaveImage::from_standard(&vec![0u8; 576], bad, false),
+            XstateDesc::new(SUPPORTED_XFEATURES, 576, 0),
             Err(FrameError::InvalidXsaveFeatures)
         );
+        assert!(XstateDesc::new(XFEATURE_X87, 832, 0).is_err());
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES | (1 << 9), 4096, 0).is_err());
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, usize::MAX - 2, 0).is_err());
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, 0, 0).is_err());
+    }
+
+    #[test]
+    fn mxcsr_canonicalised_from_descriptor() {
+        let d = XstateDesc::new(SUPPORTED_XFEATURES, 832, 0xffbf).unwrap();
+        let mut a = XsaveImage::initialized(d);
+        let mut b = a.clone();
+        write_u32(&mut a, MXCSR_MASK_OFFSET, 0xffbf);
+        write_u32(&mut b, MXCSR_MASK_OFFSET, 0xffff);
+        let ia = XsaveImage::from_standard(&a, d, false).unwrap();
+        let ib = XsaveImage::from_standard(&b, d, false).unwrap();
         assert_eq!(
-            XsaveImage::restore_from_signal(&vec![0u8; 600], bad),
-            Err(FrameError::InvalidXsaveFeatures)
+            ia.bytes(),
+            ib.bytes(),
+            "same presented state -> identical frame bytes"
         );
-        // Violating: baseline feature missing; unsupported bit; absurd size.
+    }
+
+    fn run_c_abi_probe(name: &str) -> std::collections::BTreeMap<String, usize> {
+        // Ported from the KVM backend's LinuxEmu tests with the lift.
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(format!("signal_abi_{name}.c"));
+        let binary =
+            std::env::temp_dir().join(format!("reverie-signal-abi-{name}-{}", std::process::id()));
+        let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+        let compile = std::process::Command::new(compiler)
+            .args(["-std=c11", "-Wall", "-Werror"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .expect("launch C compiler for signal ABI probe");
         assert!(
-            XstateDesc {
-                features: XFEATURE_X87,
-                size: 832,
-                mxcsr_mask: 0
-            }
-            .validate()
-            .is_err()
+            compile.status.success(),
+            "C probe failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
         );
-        assert!(
-            XstateDesc {
-                features: SUPPORTED_XFEATURES | (1 << 9),
-                size: 4096,
-                mxcsr_mask: 0
-            }
-            .validate()
-            .is_err()
+        let out = std::process::Command::new(&binary)
+            .output()
+            .expect("run C probe");
+        let _ = std::fs::remove_file(&binary);
+        assert!(out.status.success());
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(|l| {
+                let (k, v) = l.split_once('=').unwrap();
+                (k.to_owned(), v.parse::<usize>().unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn kernel_headers_independently_pin_signal_frame_layout() {
+        let kernel = run_c_abi_probe("kernel");
+        assert_eq!(kernel["sigcontext_size"], SIGCONTEXT_SIZE);
+        assert_eq!(kernel["sigcontext_rdi"], 64);
+        assert_eq!(kernel["sigcontext_rsp"], 120);
+        assert_eq!(kernel["sigcontext_rip"], 128);
+        assert_eq!(kernel["sigcontext_cs"], 144);
+        assert_eq!(kernel["sigcontext_fpstate"], 184);
+        assert_eq!(kernel["ucontext_size"], UCONTEXT_SIZE);
+        assert_eq!(kernel["ucontext_mcontext"], 40);
+        assert_eq!(kernel["ucontext_sigmask"], 296);
+        assert_eq!(kernel["rt_sigframe_size"], RT_SIGFRAME_SIZE);
+        assert_eq!(kernel["rt_sigframe_siginfo"], 312);
+        assert_eq!(kernel["xstate_header"], XSTATE_BV_OFFSET);
+        assert_eq!(kernel["xstate_ymmh"], 576);
+        assert_eq!(kernel["xstate_size"], 832);
+    }
+
+    #[test]
+    fn xsave_bv_never_exceeds_presented_features() {
+        let d = XstateDesc::new(XFEATURE_X87 | XFEATURE_SSE, 576, 0xffbf).unwrap();
+        let mut state = XsaveImage::initialized(d);
+        write_u64(&mut state, XSTATE_BV_OFFSET, XFEATURE_YMM | (1 << 9));
+        let img = XsaveImage::from_standard(&state, d, false).unwrap();
+        let bv = read_u64(img.bytes(), XSTATE_BV_OFFSET);
+        assert_eq!(bv & !d.features(), 0);
+        assert_eq!(
+            bv & (XFEATURE_X87 | XFEATURE_SSE),
+            XFEATURE_X87 | XFEATURE_SSE
         );
-        assert!(
-            XstateDesc {
-                features: SUPPORTED_XFEATURES,
-                size: usize::MAX - 2,
-                mxcsr_mask: 0
-            }
-            .validate()
-            .is_err()
+    }
+
+    #[test]
+    fn daz_frame_restores_under_presented_mask() {
+        let d = XstateDesc::X87_SSE_YMM;
+        let mut state = XsaveImage::initialized(d);
+        write_u32(&mut state, 24, 0x1f80 | 0x40); // MXCSR with DAZ set
+        let img = XsaveImage::from_standard(&state, d, false).unwrap();
+        let restored = XsaveImage::restore_from_signal(img.bytes(), d).unwrap();
+        assert_eq!(read_u32(&restored, 24) & 0x40, 0x40);
+    }
+
+    #[test]
+    fn initial_components_initialized_on_compacted_sources() {
+        // Compacted save with SSE initial but stale MXCSR bytes: the
+        // frame must carry architectural initial values (LinuxEmu case).
+        let d = desc(832);
+        let mut state = vec![0xAAu8; 832];
+        write_u64(&mut state, XSTATE_BV_OFFSET, XFEATURE_YMM); // x87+SSE initial
+        let img = XsaveImage::from_standard(&state, d, true).unwrap();
+        assert_eq!(read_u32(img.bytes(), 0), 0x37f);
+        assert_eq!(read_u32(img.bytes(), 24), 0x1f80);
+        assert!(img.bytes()[XMM_OFFSET..XMM_END].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn legacy_frame_without_magic2_restores() {
+        let d = desc(832);
+        let mut legacy = vec![0u8; LEGACY_FPSTATE_SIZE];
+        write_u32(&mut legacy, 0, 0x37f);
+        write_u32(&mut legacy, 24, 0x1f80);
+        let restored = XsaveImage::restore_from_signal(&legacy, d).unwrap();
+        assert_eq!(restored.len(), 832);
+        assert_eq!(
+            read_u64(&restored, XSTATE_BV_OFFSET),
+            XFEATURE_X87 | XFEATURE_SSE
         );
     }
 
     #[test]
     fn selectors_are_caller_supplied() {
-        // Native Linux context validates against native selectors...
         let native = Sigcontext::new(
             Regs {
                 rip: 0x401000,
@@ -788,8 +909,6 @@ mod tests {
         );
         assert_eq!((native.cs, native.ss), (0x33, 0x2b));
         assert!(native.validate_for_restore(Selectors::NATIVE).is_ok());
-        // ...and a different presented set (e.g. a virtual CPU's) works too,
-        // while cross-validating against the wrong set refuses.
         let virt = Selectors {
             cs: 0x23,
             gs: 0,
