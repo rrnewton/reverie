@@ -38,10 +38,9 @@ struct Prepared {
     env: CStringArray,
     uid_map: Vec<u8>,
     gid_map: Vec<u8>,
-    /// The signals the program starts with ignored
-    /// (`start_signals::ignored_at_launch`), taken here so that a process that
-    /// did not record at start records in itself, not in each child.
-    start_ignored: u64,
+    /// The signals the program starts with ignored, if the caller gave them
+    /// (`Command::ignored_signals`).
+    start_ignored: Option<u64>,
 }
 
 impl Command {
@@ -109,7 +108,7 @@ impl Command {
             env: self.container.env.array(),
             uid_map: make_id_map(&self.container.uid_map),
             gid_map: make_id_map(&self.container.gid_map),
-            start_ignored: crate::start_signals::ignored_at_launch(),
+            start_ignored: self.ignored_signals,
         }
     }
 
@@ -233,21 +232,23 @@ impl Command {
     ///
     /// Only returns if an error occurs, thus it is only possible for it to
     /// return an error.
-    fn do_exec(&mut self, context: &ChildContext, env: &CStringArray, start_ignored: u64) -> Error {
+    fn do_exec(
+        &mut self,
+        context: &ChildContext,
+        env: &CStringArray,
+        start_ignored: Option<u64>,
+    ) -> Error {
         // Refuse before child setup can publish an irreversible filter.
         if self.terminal_execve.is_some() && !self.program.to_bytes().starts_with(b"/") {
             return Error::new(Errno::EINVAL, Context::Exec);
         }
-        // The program starts with the launcher's dispositions, whatever this
-        // process has changed since it started (`start_signals`). Only this
-        // path executes a program; a `Container::run` child keeps running
-        // the caller's code and keeps its handlers.
-        // SAFETY: between clone and execve, before any setup that relies on a
-        // handler.
-        if let Err(errno) = unsafe { crate::start_signals::apply_in_child(start_ignored) } {
-            return Error::new(errno, Context::ResetSignals);
-        }
-        if let Err(err) = self.container.setup(context, &mut self.pre_exec) {
+        // Only this path executes a program, so only it takes the launch
+        // input; a `Container::run` child keeps running the caller's code and
+        // keeps its handlers.
+        if let Err(err) = self
+            .container
+            .setup(context, &mut self.pre_exec, start_ignored)
+        {
             return err;
         }
         if let Some(entry) = self.terminal_execve {

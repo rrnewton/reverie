@@ -1391,6 +1391,15 @@ pub struct LoadedStaticElf {
 }
 
 impl LoadedStaticElf {
+    /// Starts the image's first process with exactly the signals in `ignored`
+    /// ignored (signal `n` at bit `n - 1`) and every other at its default:
+    /// a launch input, as `reverie::process::Command::ignored_signals` gives
+    /// one to a program it executes.
+    pub fn start_with_ignored_signals(&mut self, ignored: u64) {
+        self.process_signals =
+            std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::launched(ignored)));
+    }
+
     // R2 compatibility accessors: the single read path for descriptor facts
     // while entry consolidation proceeds. Frozen consumers (signal, proc)
     // may keep field access; migrated callers use these so the storage can
@@ -2662,11 +2671,11 @@ fn load_executable(
             credential_root: launcher.root,
         },
         dumpable: true,
-        // The table every launched program starts with, on every backend: the
-        // launcher's ignored signals, except SIGPIPE, plus SIGTTIN and SIGTTOU
-        // (`reverie::process::start_signals` says why).
+        // What a program this process launched now without an input would
+        // start with ignored, until a launch input replaces it
+        // (`LoadedStaticElf::start_with_ignored_signals`).
         process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::launched(
-            reverie::process::start_signals::ignored_at_launch(),
+            reverie::process::start_signals::ignored_without_input(),
         ))),
         signal_transaction: Default::default(),
         thread_signals: SharedThreadSignalState::default(),

@@ -636,7 +636,7 @@ impl Container {
             if let Some(error) = failure {
                 return Err(error);
             }
-            self.setup_before_filter(context, &mut [])
+            self.setup_before_filter(context, &mut [], None)
                 .map_err(StartupError::Setup)?;
             let mut child_context = ChildParentResourceStartContext {
                 socket: &socket,

@@ -112,6 +112,9 @@ pub struct Command {
     /// The process ID the child is to get, if the caller chose one
     /// ([`Command::pid`]).
     pid: Option<Pid>,
+    /// The signals the program starts with ignored, every other at its
+    /// default, if the caller gave them ([`Command::ignored_signals`]).
+    ignored_signals: Option<u64>,
 }
 
 impl Command {
@@ -208,6 +211,7 @@ impl Command {
             terminal_execve,
             container,
             pid,
+            ignored_signals,
         } = self;
 
         assert!(
@@ -246,6 +250,19 @@ impl Command {
             use std::os::unix::process::CommandExt;
 
             result.arg0(OsStr::from_bytes(args.get(0).to_bytes()));
+
+            // The standard command clears the signal mask and resets SIGPIPE
+            // before its callbacks, as `Container::setup` does, and the launch
+            // input then replaces every disposition before the caller's own.
+            if let Some(ignored) = ignored_signals {
+                // SAFETY: the callback makes only raw rt_sigaction calls,
+                // between fork and exec.
+                unsafe {
+                    result.pre_exec(move || {
+                        start_signals::apply_in_child(ignored).map_err(Into::into)
+                    });
+                }
+            }
 
             for mut f in pre_exec {
                 unsafe {

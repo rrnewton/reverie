@@ -3886,14 +3886,15 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     safeptrace::traceme_and_stop()?;
 
     // The tracee keeps the dispositions it starts with. A program it executes
-    // gets the table every launched program starts with
-    // (`reverie::process::start_signals`), applied before this callback runs;
-    // a forked guest gets that table's job-control exception from
-    // `set_up_forked_guest`. Either way SIGTTIN and SIGTTOU are ignored. A
-    // Tool that holds a terminal's job-control signal until the interrupted
-    // call returns (a task keeps it in its single pending-signal slot) never
-    // sees the call return: the restarted call raises the signal again
-    // forever.
+    // starts with its launch input (`Command::ignored_signals`), applied
+    // before this callback runs, or else with the launching process's own,
+    // SIGPIPE at its default; a forked guest keeps its caller's
+    // (`set_up_forked_guest`). A terminal's job-control signal that Linux
+    // raises during a call, at its default disposition, is refused by name
+    // (`reverie::UnsupportedOperation::JobControlStop`) rather than held: a
+    // Tool that held it until the interrupted call returned (a task keeps it
+    // in its single pending-signal slot) would never see the call return, as
+    // the restarted call raises the signal again forever.
     Ok(())
 }
 
@@ -4644,12 +4645,8 @@ fn set_up_forked_guest(
         std::mem::forget(write1);
         std::mem::forget(write2);
     }
-    // A forked guest runs the caller's code and never executes a program, so
-    // the table every launched program starts with does not reach it. It
-    // still needs that table's job-control exception, for the reason
-    // `reverie::process::start_signals` gives.
-    reverie::process::start_signals::ignore_job_control_signals()
-        .map_err(|errno| ("ignore the terminal's job-control signals", errno))?;
+    // A forked guest runs the caller's code and keeps the caller's signal
+    // dispositions: it executes no program, so no launch input reaches it.
     init_tracee(intercept_rdtsc).map_err(|errno| ("prepare itself for tracing", errno))?;
     seccomp_filter
         .load()
@@ -9359,13 +9356,12 @@ mod tests {
     }
 
     /// A forked guest runs its caller's code and never executes a program, so
-    /// the table every launched program starts with
-    /// (`reverie::process::start_signals`) never reaches it. It still starts
-    /// with SIGTTIN and SIGTTOU ignored, that table's job-control exception
-    /// (`set_up_forked_guest`), although its caller has both at the default.
-    /// The guest exits 10 plus the first signal it finds not ignored.
+    /// no launch input reaches it: it keeps its caller's dispositions
+    /// (`set_up_forked_guest`). With its caller's SIGTTIN and SIGTTOU at the
+    /// default, so are the guest's: the tracer ignores neither for it. The
+    /// guest exits 10 plus the first signal it finds not at its default.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_forked_guest_starts_with_the_job_control_signals_ignored() {
+    async fn a_forked_guest_keeps_its_callers_job_control_dispositions() {
         for signal in [libc::SIGTTIN, libc::SIGTTOU] {
             // SAFETY: the default action installs no handler.
             assert_ne!(
@@ -9387,7 +9383,7 @@ mod tests {
                         std::mem::size_of::<u64>(),
                     )
                 };
-                if read != 0 || old[0] != libc::SIG_IGN as u64 {
+                if read != 0 || old[0] != libc::SIG_DFL as u64 {
                     // SAFETY: ends the guest at once.
                     unsafe { libc::_exit(10 + signal) };
                 }

@@ -2169,6 +2169,10 @@ pub struct KvmBackend {
     pub(crate) root_pid: i32,
     /// Task IDs each new guest task spends (`set_ids_per_task`).
     pub(crate) ids_per_task: i32,
+    /// The signals the first guest process starts with ignored
+    /// (`set_ignored_signals`); `None` keeps the set a launch without an input
+    /// starts with, read when the image is loaded.
+    pub(crate) ignored_signals: Option<u64>,
     // One optional collector is shared by every fork and thread backend in the
     // guest tree. `None` is the allocation-free, update-free default.
     pub(crate) exit_collector: Option<Arc<KvmExitCollector>>,
@@ -2619,6 +2623,7 @@ impl KvmBackend {
             native_exit_broker: None,
             root_pid: 1,
             ids_per_task: reverie::task_ids::LINUX_IDS_PER_TASK,
+            ignored_signals: None,
             exit_collector: None,
             abandoned_runs: Arc::default(),
             pending_segment: None,
@@ -2782,6 +2787,23 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Starts the first guest process with exactly the signals in `ignored`
+    /// ignored and every other at its default: the launch input, a 64-bit set
+    /// with signal `n` at bit `n - 1`, as
+    /// `reverie::process::Command::ignored_signals` gives one to a program it
+    /// executes. Without it, the first process starts as a program this
+    /// process launched without an input when it loaded the image would
+    /// (`reverie::process::start_signals::ignored_without_input`). Applies to
+    /// the installed image and any later one.
+    pub fn set_ignored_signals(&mut self, ignored: u64) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        self.ignored_signals = Some(ignored);
+        if let Some(loaded) = self.static_elf.as_mut() {
+            loaded.start_with_ignored_signals(ignored);
+        }
+        Ok(())
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-238): Review configurable KVM root process identity.
     pub fn set_root_pid(&mut self, pid: i32) -> Result<()> {
@@ -2941,6 +2963,9 @@ impl KvmBackend {
 
     fn install_loaded_static_elf(&mut self, mut loaded: LoadedStaticElf) -> Result<()> {
         loaded.ids_per_task = self.ids_per_task;
+        if let Some(ignored) = self.ignored_signals {
+            loaded.start_with_ignored_signals(ignored);
+        }
         loaded.pid = self.root_pid;
         loaded.pgid = self.root_pid;
         loaded.tid = self.root_pid;

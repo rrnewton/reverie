@@ -2414,6 +2414,63 @@ fn is_sent_sigtrap(task: &Stopped) -> Result<bool, TraceError> {
         && (info.si_code < 0 || (info.si_code == libc::SI_USER && unsafe { info.si_pid() } != 0)))
 }
 
+/// The refusal of the stop Linux started at `stopped` by raising `sig` during
+/// an injection (`reverie::UnsupportedOperation::JobControlStop`): `SIGTTIN`
+/// or `SIGTTOU` that the kernel raised (`SI_KERNEL`, as a terminal's job
+/// control sends them to a process group, `__tty_check_change`), whose
+/// disposition the thread leaves at the default. Reverie cannot deliver that
+/// stop: held for the resume, the signal would come after Linux restarted the
+/// call, and the restarted call raises it again while the process stays in the
+/// background, each new signal replacing the held one. The refused call fails
+/// with EIO, which Linux gives a background read when SIGTTIN is ignored or
+/// blocked, rather than ERESTARTSYS, so that no retry
+/// (`Guest::inject_with_retry`) runs it again. `None` for any other signal,
+/// for one a process sent, for one the thread catches or ignores, and where
+/// the stop's siginfo or the thread's status cannot be read. `SIGTSTP` is
+/// not refused, although a terminal's suspend character raises it with
+/// `SI_KERNEL` too: no call raises it, so the restarted call does not raise it
+/// again, and it is held for the resume like any other signal.
+fn job_control_stop_refusal(
+    stopped: &Stopped,
+    sig: AnySignal,
+) -> Option<reverie::UnsupportedRefusal> {
+    let diagnostic = match sig.raw() {
+        libc::SIGTTIN => {
+            "Linux raised SIGTTIN, at its default disposition, during the call (a background \
+             process's read of its controlling terminal), and the ptrace backend cannot stop \
+             the process group for it; job-control stops are not supported"
+        }
+        libc::SIGTTOU => {
+            "Linux raised SIGTTOU, at its default disposition, during the call (a background \
+             process's write to its controlling terminal with TOSTOP set, or a change of the \
+             terminal's settings), and the ptrace backend cannot stop the process group for \
+             it; job-control stops are not supported"
+        }
+        _ => return None,
+    };
+    if thread_may_be_seccomp_filtered() {
+        return None;
+    }
+    if stopped.getsiginfo().ok()?.si_code != libc::SI_KERNEL {
+        return None;
+    }
+    let status = std::fs::read_to_string(format!("/proc/{}/status", stopped.pid())).ok()?;
+    let (ignored, caught) =
+        crate::sigtrap_state::parse_signal_disposition(&status, 1 << (sig.raw() - 1))?;
+    (!ignored && !caught).then(|| {
+        reverie::UnsupportedRefusal::new(
+            reverie::UnsupportedOperation::JobControlStop,
+            Errno::EIO,
+            diagnostic,
+        )
+    })
+}
+
+/// Puts `errno`, as a syscall's failure, in `regs`' return register.
+fn set_errno(regs: &mut libc::user_regs_struct, errno: Errno) {
+    *regs.ret_mut() = (-(errno.into_raw()) as i64) as u64;
+}
+
 /// The number of seccomp filters on thread `tid` (procfs `Seccomp_filters`),
 /// or `None` if it cannot be read.
 /// Whether thread group `pid` has a thread other than `tid` that has not
@@ -5127,6 +5184,12 @@ pub struct TracedTask<L: Tool> {
     /// instance held can be a later signal of the same number.
     pending_signal_reported: bool,
 
+    /// The latest injection's refusal, which `Guest::take_unsupported_refusal`
+    /// takes: a job-control stop it could not deliver
+    /// (`job_control_stop_refusal`). Every injection starts without one
+    /// (`untraced_syscall_with`).
+    unsupported_refusal: Option<reverie::UnsupportedRefusal>,
+
     /// Whether an injected syscall's single step ended at a held signal
     /// (`step_private_syscall`) before collecting its step SIGTRAP, which the
     /// kernel therefore still has queued. The next SIGTRAP stop carrying that
@@ -5633,6 +5696,7 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
+            unsupported_refusal: None,
             reported_signal: None,
             replacement_signal_info: None,
             signal_approval: None,
@@ -5764,6 +5828,7 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
+            unsupported_refusal: None,
             reported_signal: None,
             replacement_signal_info: None,
             signal_approval: None,
@@ -5915,6 +5980,7 @@ impl<L: Tool> TracedTask<L> {
             pending_signal: None,
             pending_signal_taken: None,
             pending_signal_reported: false,
+            unsupported_refusal: None,
             reported_signal: None,
             replacement_signal_info: None,
             signal_approval: None,
@@ -13107,6 +13173,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             task.pid(),
             nr
         );
+        // Every injection replaces the record (`Guest::take_unsupported_refusal`).
+        self.unsupported_refusal = None;
         // A SIGTRAP a timer sequence took out of the queue is queued again
         // before the injected call runs, so that it sees the thread's
         // signals as they were. A seccomp stop queued it already
@@ -17357,6 +17425,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         rewrite: bool,
         input: Option<&NativeCallContext>,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        // Every injection replaces the record (`Guest::take_unsupported_refusal`),
+        // as `untraced_syscall_with` does.
+        self.unsupported_refusal = None;
         let oldregs = task.getregs()?;
         let run_regs = if rewrite {
             let mut regs = oldregs;
@@ -17511,8 +17582,21 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Holds `sig`, which stopped a private-page step at its signal-delivery
     /// stop `stopped`, in `pending_signal` for delivery when the guest resumes
     /// at its syscall site, and records what it was taken with
-    /// (`pending_signal_taken`, see `status_to_result`).
-    fn hold_pending_signal(&mut self, stopped: &Stopped, sig: AnySignal) {
+    /// (`pending_signal_taken`, see `status_to_result`). A job-control stop
+    /// Reverie cannot deliver is dropped instead and recorded as the
+    /// injection's refusal (`job_control_stop_refusal`); its errno, which is
+    /// then the injection's result, is returned.
+    fn hold_pending_signal(&mut self, stopped: &Stopped, sig: AnySignal) -> Option<Errno> {
+        if let Some(refusal) = job_control_stop_refusal(stopped, sig) {
+            tracing::warn!(
+                "[scheduler/tool] (pid = {}) {}",
+                stopped.pid(),
+                refusal.diagnostic
+            );
+            let errno = refusal.errno;
+            self.unsupported_refusal = Some(refusal);
+            return Some(errno);
+        }
         if let Some(held) = self.pending_signal {
             // TaskGraph reverie_pending_signal_single_slot.
             tracing::warn!(
@@ -17530,6 +17614,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // with it. (A real-time signal can queue several instances; the count
         // stays by number for those.)
         self.pending_signal_reported = self.take_reported_requeue(sig);
+        None
     }
 
     /// The end of `status_to_result` for a private-page injection whose stop
@@ -17721,19 +17806,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // SIGTRAP is not held: the main loop does not deliver one
                     // (`handle_sigtrap`). One a thread sent is held, and the
                     // held-signal resume (`report_held_signal`) delivers it.
-                    if sig != Signal::SIGTRAP || is_sent_sigtrap(&stopped)? {
-                        self.hold_pending_signal(&stopped, sig);
-                    }
+                    // A job-control stop refused instead of held fails the
+                    // call with the refusal's errno, so that no retry runs it
+                    // again (`job_control_stop_refusal`).
+                    let refused = if sig != Signal::SIGTRAP || is_sent_sigtrap(&stopped)? {
+                        self.hold_pending_signal(&stopped, sig)
+                    } else {
+                        None
+                    };
+                    let result = Err(refused.unwrap_or(Errno::ERESTARTSYS));
                     self.last_injection_ran = false;
-                    self.native_result_at_stop(
-                        &stopped,
-                        input,
-                        Err(Errno::ERESTARTSYS),
-                        false,
-                        seccomp_trapped,
-                    )?;
-                    self.input_result(input, &Err(Errno::ERESTARTSYS), false, seccomp_trapped)?;
-                    Ok(Err(Errno::ERESTARTSYS))
+                    self.native_result_at_stop(&stopped, input, result, false, seccomp_trapped)?;
+                    self.input_result(input, &result, false, seccomp_trapped)?;
+                    Ok(result)
                 }
                 event if let Some(sig) = event.signal() => {
                     let mut regs = stopped.getregs()?;
@@ -17757,17 +17842,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                             PrivateStep::NotRun => {
                                 // Any signal, including an external SIGTRAP,
                                 // stopped the step before the syscall ran.
-                                *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                                let refused = self.hold_pending_signal(&stopped, sig);
+                                set_errno(&mut regs, refused.unwrap_or(Errno::ERESTARTSYS));
                                 self.last_injection_ran = false;
-                                self.hold_pending_signal(&stopped, sig);
                             }
                             PrivateStep::Ran => {}
                             PrivateStep::Held => {
                                 // The syscall ran; `step_private_syscall` held
                                 // a signal it could not requeue after a
                                 // mask-swapping syscall. RAX holds the
-                                // syscall's outcome and is kept.
-                                self.hold_pending_signal(&stopped, sig);
+                                // syscall's outcome and is kept, unless the
+                                // signal was a refused job-control stop.
+                                if let Some(errno) = self.hold_pending_signal(&stopped, sig) {
+                                    set_errno(&mut regs, errno);
+                                }
                             }
                             PrivateStep::Unexpected => {
                                 // The private-page step stopped outside the
@@ -17784,12 +17872,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                         // syscall. That syscall already ran and RAX holds its
                         // outcome (usually -ERESTARTNOHAND, which the kernel
                         // resolves when the held signal is delivered);
-                        // overwriting it would execute the syscall twice.
+                        // overwriting it would execute the syscall twice. A
+                        // refused job-control stop fails the call with the
+                        // refusal's errno instead, which no retry repeats.
                         if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
-                            *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
+                            set_errno(&mut regs, Errno::ERESTARTSYS);
                             self.last_injection_ran = false;
                         }
-                        self.hold_pending_signal(&stopped, sig);
+                        if let Some(errno) = self.hold_pending_signal(&stopped, sig) {
+                            set_errno(&mut regs, errno);
+                        }
                     } else if regs.ip() as usize == cp::PRIVATE_PAGE_OFFSET {
                         // A SIGTRAP the guest or another process sent stopped
                         // the step before the `syscall` ran, and
@@ -19651,6 +19743,12 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn injected_syscalls(&self) -> Option<u64> {
         Some(self.injected_syscalls)
+    }
+
+    /// The latest injection's refusal: a job-control stop the backend could
+    /// not deliver (`job_control_stop_refusal`).
+    fn take_unsupported_refusal(&mut self) -> Option<reverie::UnsupportedRefusal> {
+        self.unsupported_refusal.take()
     }
 
     /// The thread's own `/proc/<tid>/fdinfo/<fd>`, read by the tracer while

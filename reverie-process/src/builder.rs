@@ -68,6 +68,7 @@ impl Command {
             terminal_execve: None,
             container: Container::new(),
             pid: None,
+            ignored_signals: None,
         }
     }
 
@@ -441,6 +442,34 @@ impl Command {
     /// The process ID asked for with [`Command::pid`], if any.
     pub fn get_pid(&self) -> Option<Pid> {
         self.pid
+    }
+
+    /// Starts the program with exactly the signals in `ignored` ignored, and
+    /// every other signal at its default, whatever the launching process's own
+    /// dispositions are when it launches. `ignored` is a 64-bit set with signal
+    /// `n` at bit `n - 1`; SIGKILL and SIGSTOP cannot be ignored and are left
+    /// alone. The signal mask starts empty either way.
+    ///
+    /// Without it, the program inherits what the launching process ignores
+    /// when it launches, except SIGPIPE, which starts at its default, as
+    /// [`std::process::Command`] leaves it
+    /// ([`crate::start_signals::ignored_without_input`]).
+    /// [`crate::start_signals::launch_dispositions`] is the set the launching
+    /// process's own launcher left it, for a caller that wants its programs to
+    /// start as that launcher would have started them.
+    ///
+    /// The input applies to a program [`Command::spawn`] executes, and to one a
+    /// command converted with [`Command::try_into_std`] executes. A backend
+    /// that emulates a program's signal dispositions reads it with
+    /// [`Command::get_ignored_signals`].
+    pub fn ignored_signals(&mut self, ignored: u64) -> &mut Self {
+        self.ignored_signals = Some(ignored);
+        self
+    }
+
+    /// The set given with [`Command::ignored_signals`], if any.
+    pub fn get_ignored_signals(&self) -> Option<u64> {
+        self.ignored_signals
     }
 
     /// Schedules a closure to be run just before the `exec` function is invoked.

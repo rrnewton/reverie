@@ -206,9 +206,10 @@ impl<'fd> PreparedExec<'fd> {
         self.parent_stdio.take()
     }
 
-    /// Match the ordinary ptrace child's deterministic address-space and
-    /// terminal job-control setup before exec, without changing this parent.
-    /// The default constructor preserves its existing inherited behavior.
+    /// Match the ordinary ptrace child's deterministic address-space setup
+    /// before exec, without changing this parent. Like that child, it leaves
+    /// the signal dispositions as inherited. The default constructor
+    /// preserves its existing inherited behavior.
     pub fn with_ptrace_launch_facts(mut self) -> Self {
         self.ptrace_launch_facts = true;
         self
@@ -419,22 +420,6 @@ impl<'fd> PreparedExec<'fd> {
                     ) != PER_LINUX_NO_RANDOMIZE as i64
                 {
                     exit_child();
-                }
-                // Kernel sigaction layout (handler, flags, restorer,
-                // mask: the same four words on x86-64 and aarch64),
-                // matching the ordinary SIG_IGN/SA_RESTART/empty-mask
-                // request for both signals.
-                // No handler executes: exec retains SIG_IGN, clearing action
-                // flags/restorer/mask. No libc restorer address is transplanted.
-                let ignored = [libc::SIG_IGN as u64, libc::SA_RESTART as u64, 0_u64, 0_u64];
-                for signal in [libc::SIGTTIN, libc::SIGTTOU] {
-                    if syscall6(
-                        libc::SYS_rt_sigaction as u64,
-                        [signal as u64, ignored.as_ptr() as u64, 0, 8, 0, 0],
-                    ) < 0
-                    {
-                        exit_child();
-                    }
                 }
             }
             if let Some(cwd) = &self.cwd

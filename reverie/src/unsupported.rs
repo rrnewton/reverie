@@ -143,6 +143,21 @@ pub enum UnsupportedOperation {
     /// refusal's diagnostic names when the backend makes it. A backend that
     /// refuses one received nothing.
     UnwritableRecordBuffer,
+    /// A stop of the process group that Linux started during a call the
+    /// backend ran for the tool, by raising a terminal's job-control signal
+    /// (`SIGTTIN` or `SIGTTOU`, with `SI_KERNEL`) whose disposition is the
+    /// default, on a backend that cannot deliver that stop. A background
+    /// process's read of its controlling terminal raises `SIGTTIN` so, and
+    /// its write with `TOSTOP` set raises `SIGTTOU`; Linux restarts the call
+    /// after the group is continued, and the restarted call raises the signal
+    /// again while the process stays in the background. A backend that
+    /// refuses it dropped that signal, stopped nothing, and fails the call
+    /// with `EIO`, which Linux gives a background read when `SIGTTIN` is
+    /// ignored or blocked, and which no retry repeats, as it would repeat
+    /// `ERESTARTSYS`; the refusal's diagnostic names the signal. A
+    /// terminal's `SIGTSTP` is not one: no call raises it, so a backend can
+    /// hold it for the call's return.
+    JobControlStop,
 }
 
 /// A backend's refusal of an injected syscall, or of a `Guest` operation,

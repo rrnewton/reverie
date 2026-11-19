@@ -6,53 +6,32 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! The signal dispositions a launched program starts with.
+//! The signal dispositions a launching process's own launcher left it.
 //!
 //! A program inherits the dispositions its launcher left it: across `execve`
 //! an ignored signal stays ignored, and every other signal returns to its
-//! default. The process that launches programs changes its own dispositions
-//! as it runs. Rust's runtime ignores SIGPIPE before `main`, and glibc installs
-//! its handler for signal 33 when the process creates its first thread (and
-//! for signal 32 at its first thread cancellation). A child forked later would
+//! default. A process that launches others changes its own dispositions as it
+//! runs. Rust's runtime ignores SIGPIPE before `main`, and glibc installs its
+//! handler for signal 33 when the process creates its first thread (and for
+//! signal 32 at its first thread cancellation). A child forked later would
 //! therefore start with whatever state that race with its fork had left.
 //!
-//! So a program that launches others records its launcher's dispositions once,
-//! before any thread exists: its executable lists
-//! [`record_launch_dispositions`] in its preinit array, which the dynamic
-//! loader runs before every constructor. A library must not record. It may be
-//! loaded into another program, such as a preload in a guest, and the record's
-//! queries would then be that program's own system calls. A process that did
-//! not record at start records at its first launch. Every launched program is
-//! given the table before it executes, and a backend that emulates a program's
-//! dispositions starts from the same table ([`ignored_at_launch`]).
+//! This module is only the mechanism for a launching program that wants its
+//! programs to start as its own launcher left it. The program records those
+//! dispositions once, at its start, with [`record_launch_dispositions`] in its
+//! executable's preinit array. It then gives the recorded set
+//! ([`launch_dispositions`]) to each launch as an explicit input,
+//! `Command::ignored_signals`, and an emulating backend takes the same input.
+//! Which set a launch starts from is its caller's choice.
 //!
-//! The table has three named exceptions:
-//!
-//! - SIGPIPE always starts at its default. Whether a program dies on a broken
-//!   pipe must not depend on who launched the launcher, and a launcher's
-//!   ignored SIGPIPE is usually its runtime's default rather than anyone's
-//!   intent.
-//! - SIGTTIN and SIGTTOU always start ignored. On a background read of its
-//!   controlling terminal, or a background write with `TOSTOP` set, Linux
-//!   sends the process group SIGTTIN or SIGTTOU and restarts the call. A Tool
-//!   that holds such a signal until the interrupted call returns never sees
-//!   it return: the restarted call raises the signal again, and the program
-//!   spins forever.
-//!
-//!   Measured on 2026-11-18 under ptrace. A program opened a pseudoterminal,
-//!   made it a session's controlling terminal, and had a child in a
-//!   background process group read from it. The tracer logged "SIGTTIN
-//!   replaces held SIGTTIN in the single pending-signal slot" 457,921 times,
-//!   until the run was killed at its output cap.
-//!
-//!   With the signal ignored, Linux fails the read with EIO and lets the
-//!   write through, so the program goes on. Every backend starts from this
-//!   table. A backend that delivers a held job-control signal as a stop can
-//!   drop the exception. A traced process that never executes a program, so
-//!   that the table never reaches it, ignores the two signals through
-//!   [`ignore_job_control_signals`].
+//! The dynamic loader runs the preinit array before any thread exists and
+//! before every initializer and constructor, with one exception: the
+//! initializer of an object marked `DF_1_INITFIRST` runs first (glibc's
+//! `_dl_init`, elf/dl-init.c). glibc before 2.34 marked libpthread so, and its
+//! initializer installed the handlers for signals 32 and 33. On such a system
+//! a launcher's ignored 32 and 33 are not seen.
 
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
@@ -110,13 +89,24 @@ unsafe fn rt_sigaction(
     Errno::result(result).map(drop)
 }
 
-/// The signals the launcher left ignored, once [`RECORDED`] is set.
-static IGNORED: AtomicU64 = AtomicU64::new(0);
-static RECORDED: AtomicBool = AtomicBool::new(false);
+/// [`RECORD`] before the first [`record_launch_dispositions`] call.
+const UNRECORDED: u8 = 0;
+/// [`RECORD`] while the first call reads the dispositions.
+const RECORDING: u8 = 1;
+/// [`RECORD`] once [`IGNORED`] holds the record.
+const RECORDED: u8 = 2;
 
-/// Records the signals this process's launcher left ignored, as the table
-/// every program it launches starts from. A program that launches others has
-/// its executable call this before any thread exists, from its preinit array:
+/// Whether the record has been taken ([`UNRECORDED`], [`RECORDING`] or
+/// [`RECORDED`]).
+static RECORD: AtomicU8 = AtomicU8::new(UNRECORDED);
+/// The signals the launcher left ignored, once [`RECORD`] is [`RECORDED`].
+static IGNORED: AtomicU64 = AtomicU64::new(0);
+
+/// Records the signals this process's launcher left ignored, once. Only the
+/// first call records; a later one records nothing, so the record is the
+/// dispositions at the first call, whatever the process changed after it. A
+/// launching program has its executable call this before any thread exists,
+/// from its preinit array:
 ///
 /// ```ignore
 /// #[used]
@@ -129,6 +119,12 @@ static RECORDED: AtomicBool = AtomicBool::new(false);
 /// program cannot record by mistake. This makes only raw system calls, so it
 /// can run before the C library and the Rust runtime have started.
 pub extern "C" fn record_launch_dispositions() {
+    if RECORD
+        .compare_exchange(UNRECORDED, RECORDING, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
     let mut ignored = 0;
     for signal in 1..=LAST_SIGNAL {
         let mut old = KernelSigaction::with_handler(libc::SIG_DFL);
@@ -139,41 +135,45 @@ pub extern "C" fn record_launch_dispositions() {
         }
     }
     IGNORED.store(ignored, Ordering::Relaxed);
-    RECORDED.store(true, Ordering::Release);
+    RECORD.store(RECORDED, Ordering::Release);
 }
 
-/// The signals a launched program starts with ignored, as a 64-bit set with
-/// signal `n` at bit `n - 1`: those this process's launcher left ignored
-/// ([`record_launch_dispositions`]), without SIGPIPE and with SIGTTIN and
-/// SIGTTOU (the module's named exceptions). Every other signal starts at its
-/// default. A process that did not record at start records on its first call.
-pub fn ignored_at_launch() -> u64 {
-    if !RECORDED.load(Ordering::Acquire) {
-        record_launch_dispositions();
+/// The signals this process's launcher left ignored, as a 64-bit set with
+/// signal `n` at bit `n - 1`, as [`record_launch_dispositions`] recorded
+/// them; `None` when this process has not recorded.
+pub fn launch_dispositions() -> Option<u64> {
+    (RECORD.load(Ordering::Acquire) == RECORDED).then(|| IGNORED.load(Ordering::Relaxed))
+}
+
+/// The signals the calling process ignores now, as a set like
+/// [`launch_dispositions`]'s: what a program it executed now would start
+/// with ignored. It makes only raw system calls.
+pub fn ignored_now() -> u64 {
+    let mut ignored = 0;
+    for signal in 1..=LAST_SIGNAL {
+        let mut old = KernelSigaction::with_handler(libc::SIG_DFL);
+        // SAFETY: no new action; `old` is a valid `struct sigaction`.
+        let read = unsafe { rt_sigaction(signal, core::ptr::null(), &mut old) };
+        if read.is_ok() && old.handler == libc::SIG_IGN {
+            ignored |= bit(signal);
+        }
     }
-    let launcher = IGNORED.load(Ordering::Relaxed);
-    (launcher & !bit(libc::SIGPIPE)) | bit(libc::SIGTTIN) | bit(libc::SIGTTOU)
+    ignored
 }
 
-/// Ignores SIGTTIN and SIGTTOU in the calling process, the table's job-control
-/// exception, for a traced process that keeps running its launcher's code
-/// instead of executing a program, which the table never reaches. Every other
-/// disposition stays as the process inherited it. It allocates nothing, takes
-/// no lock and makes only raw system calls, so it can run between fork and
-/// the traced code.
-pub fn ignore_job_control_signals() -> Result<(), Errno> {
-    for signal in [libc::SIGTTIN, libc::SIGTTOU] {
-        let action = KernelSigaction::with_handler(libc::SIG_IGN);
-        // SAFETY: `action` is a valid `struct sigaction`; no old action.
-        unsafe { rt_sigaction(signal, &action, core::ptr::null_mut()) }?;
-    }
-    Ok(())
+/// The signals a program launched without an input starts with ignored: the
+/// calling process's set now ([`ignored_now`]) with SIGPIPE at its default,
+/// which a `Command` launch resets because the Rust runtime ignored it, as
+/// `std::process` does. An emulating backend starts a program it is given no
+/// input for with this set, so every backend agrees.
+pub fn ignored_without_input() -> u64 {
+    ignored_now() & !bit(libc::SIGPIPE)
 }
 
-/// Gives the calling process the dispositions a launched program starts with:
-/// each signal in `ignored`, which the parent took from [`ignored_at_launch`]
-/// before the fork, ignored, and every other at its default. SIGKILL and
-/// SIGSTOP cannot be changed and are left alone.
+/// Gives the calling process the dispositions a launched program starts with
+/// (`Command::ignored_signals`): each signal in `ignored` ignored, and every
+/// other at its default. SIGKILL and SIGSTOP cannot be changed and are left
+/// alone.
 ///
 /// # Safety
 ///
@@ -206,8 +206,8 @@ mod tests {
     /// What the launcher of the test's isolated copy leaves ignored.
     const LAUNCHER: u64 = bit(libc::SIGPIPE) | bit(libc::SIGUSR2) | bit(33);
 
-    /// This test binary records at start, as the executable of a program
-    /// that launches others does.
+    /// This test binary records at start, as the executable of a launching
+    /// program does.
     #[used]
     #[unsafe(link_section = ".preinit_array")]
     static RECORD_LAUNCH_DISPOSITIONS: extern "C" fn() = record_launch_dispositions;
@@ -234,18 +234,58 @@ mod tests {
 
     extern "C" fn never_runs(_: libc::c_int) {}
 
+    /// The `SigIgn` set `/bin/grep` reports when `command` launches it.
+    fn launched_sigign(mut command: crate::Command) -> u64 {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let mut child = command
+            .args(["SigIgn", "/proc/self/status"])
+            .stdout(output.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        assert_eq!(child.wait_blocking().unwrap(), crate::ExitStatus::Exited(0));
+        reported_sigign(&output)
+    }
+
+    /// The `SigIgn` set `/bin/grep` reports when `command`, converted with
+    /// [`crate::Command::try_into_std`], is launched by the standard library.
+    fn std_launched_sigign(mut command: crate::Command) -> u64 {
+        let output = tempfile::NamedTempFile::new().unwrap();
+        command
+            .args(["SigIgn", "/proc/self/status"])
+            .stdout(output.reopen().unwrap());
+        let status = command.try_into_std().unwrap().status().unwrap();
+        assert!(status.success(), "/bin/grep: {status}");
+        reported_sigign(&output)
+    }
+
+    /// The set in the `SigIgn` line `/bin/grep` wrote to `output`.
+    fn reported_sigign(output: &tempfile::NamedTempFile) -> u64 {
+        let line = std::fs::read_to_string(output.path()).unwrap();
+        line.trim()
+            .strip_prefix("SigIgn:")
+            .map(str::trim)
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .unwrap_or_else(|| panic!("no SigIgn line: {line:?}"))
+    }
+
     /// A copy of this test binary starts with [`LAUNCHER`] ignored, and its
-    /// preinit array records that table. The copy then changes its own
-    /// dispositions, as a launcher does while it runs. It installs a handler
-    /// for signal 33, as glibc's first `pthread_create` does, and one for
-    /// SIGUSR2, and it ignores SIGUSR1. Only after that does it ask for the
-    /// table, so a table read at first use instead of at start would be the
-    /// changed one. A program it launches still starts with the recorded
-    /// table, without SIGPIPE and with SIGTTIN and SIGTTOU.
+    /// preinit array records that set. The copy then changes its own
+    /// dispositions, as a launching program does while it runs: it installs a
+    /// handler for signal 33, as glibc's first `pthread_create` does, and one
+    /// for SIGUSR2, and it ignores SIGUSR1. A second record changes nothing.
+    /// The record is still [`LAUNCHER`], SIGPIPE included. A program launched
+    /// with it as its input starts with exactly that set ignored; one launched
+    /// without an input starts as the launching process's own dispositions and
+    /// the launch's reset leave it (SIGPIPE at its default). The input holds
+    /// too when the standard library launches the command, converted with
+    /// [`crate::Command::try_into_std`]. Without one, the standard library may
+    /// launch through `posix_spawn`, and glibc's spawn child ignores glibc's
+    /// internal signals 32 and 33 before it executes the program (glibc 2.34,
+    /// measured), so that case is glibc's and is not checked here.
     #[test]
-    fn a_launched_program_starts_with_its_launchers_recorded_table() {
-        let name =
-            "start_signals::tests::a_launched_program_starts_with_its_launchers_recorded_table";
+    fn a_launch_given_the_record_starts_with_exactly_the_launchers_set() {
+        let name = "start_signals::tests::\
+                    a_launch_given_the_record_starts_with_exactly_the_launchers_set";
         if std::env::var_os(crate::ISOLATED_TEST_MARKER).is_none() {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
             command
@@ -275,22 +315,61 @@ mod tests {
             // SAFETY: a valid action; no old action.
             unsafe { rt_sigaction(signal, &action, core::ptr::null_mut()) }.unwrap();
         }
-        let expected = bit(libc::SIGUSR2) | bit(33) | bit(libc::SIGTTIN) | bit(libc::SIGTTOU);
-        assert_eq!(ignored_at_launch(), expected);
+        record_launch_dispositions();
+        assert_eq!(launch_dispositions(), Some(LAUNCHER));
 
-        let output = tempfile::NamedTempFile::new().unwrap();
-        let mut child = crate::Command::new("/bin/grep")
-            .args(["SigIgn", "/proc/self/status"])
-            .stdout(output.reopen().unwrap())
-            .spawn()
-            .unwrap();
-        assert_eq!(child.wait_blocking().unwrap(), crate::ExitStatus::Exited(0));
-        let line = std::fs::read_to_string(output.path()).unwrap();
-        let shown = line
-            .trim()
-            .strip_prefix("SigIgn:")
-            .map(str::trim)
-            .and_then(|hex| u64::from_str_radix(hex, 16).ok());
-        assert_eq!(shown, Some(expected), "{line}");
+        let mut given = crate::Command::new("/bin/grep");
+        given.ignored_signals(LAUNCHER);
+        assert_eq!(given.get_ignored_signals(), Some(LAUNCHER));
+        assert_eq!(launched_sigign(given), LAUNCHER);
+
+        let inherited = crate::Command::new("/bin/grep");
+        assert_eq!(inherited.get_ignored_signals(), None);
+        assert_eq!(ignored_without_input(), bit(libc::SIGUSR1));
+        assert_eq!(launched_sigign(inherited), ignored_without_input());
+
+        let mut given = crate::Command::new("/bin/grep");
+        given.ignored_signals(LAUNCHER);
+        assert_eq!(std_launched_sigign(given), LAUNCHER, "through std");
+    }
+
+    /// The calling process's ignored set is what a program it executed would
+    /// start with ignored: the copy's launcher left SIGHUP ignored, and the
+    /// Rust runtime ignored SIGPIPE before `main`. A signal the process ignores
+    /// later is in the set, signal 33 included, which glibc's `sigaction`
+    /// refuses to change.
+    #[test]
+    fn the_ignored_set_now_is_the_calling_process_set() {
+        let name = "start_signals::tests::the_ignored_set_now_is_the_calling_process_set";
+        if std::env::var_os(crate::ISOLATED_TEST_MARKER).is_none() {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([name, "--exact", "--test-threads=1", "--nocapture"])
+                .env(crate::ISOLATED_TEST_MARKER, name)
+                .stdin(std::process::Stdio::null());
+            // SAFETY: the callback makes only raw rt_sigaction calls.
+            unsafe { command.pre_exec(|| leave_only(bit(libc::SIGHUP))) };
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed"),
+                "the isolated copy failed ({}):\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+        let launched = bit(libc::SIGHUP) | bit(libc::SIGPIPE);
+        assert_eq!(ignored_now(), launched);
+        let ignore = KernelSigaction::with_handler(libc::SIG_IGN);
+        let mut glibc_33 = KernelSigaction::with_handler(libc::SIG_DFL);
+        // SAFETY: valid actions.
+        unsafe { rt_sigaction(33, &ignore, &mut glibc_33) }.unwrap();
+        // SAFETY: a valid action; no old action.
+        unsafe { rt_sigaction(libc::SIGUSR1, &ignore, core::ptr::null_mut()) }.unwrap();
+        assert_eq!(ignored_now(), launched | bit(33) | bit(libc::SIGUSR1));
+        // SAFETY: the action the kernel returned. glibc's set*id calls rely on
+        // its handler for 33.
+        unsafe { rt_sigaction(33, &glibc_33, core::ptr::null_mut()) }.unwrap();
     }
 }

@@ -665,12 +665,18 @@ impl Container {
     /// context of the child process (which has a copy-on-write view of the
     /// parent's virtual memory). Thus, the parent's version isn't actually
     /// modified.
+    ///
+    /// `start_ignored` is a program's launch input
+    /// (`Command::ignored_signals`): the signals it starts with ignored, every
+    /// other at its default. `None` keeps the dispositions this process has,
+    /// with SIGPIPE at its default.
     pub(super) fn setup(
         &mut self,
         context: &ChildContext,
         pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
+        start_ignored: Option<u64>,
     ) -> Result<(), Error> {
-        self.setup_before_filter(context, pre_exec)?;
+        self.setup_before_filter(context, pre_exec, start_ignored)?;
         self.setup_filter(context)
     }
 
@@ -678,6 +684,7 @@ impl Container {
         &mut self,
         context: &ChildContext,
         pre_exec: &mut [Box<dyn FnMut() -> Result<(), Errno> + Send + Sync>],
+        start_ignored: Option<u64>,
     ) -> Result<(), Error> {
         // NOTE: This function MUST NOT allocate or deallocate any memory! Doing
         // so can cause random, difficult to diagnose deadlocks.
@@ -706,6 +713,13 @@ impl Container {
         }
 
         unsafe { reset_signal_handling() }.context(Context::ResetSignals)?;
+        if let Some(ignored) = start_ignored {
+            // The launch input replaces every disposition, SIGPIPE's
+            // included, before the caller's callbacks run.
+            // SAFETY: in the child, before anything that relies on a handler.
+            unsafe { crate::start_signals::apply_in_child(ignored) }
+                .context(Context::ResetSignals)?;
+        }
 
         // Set up UID and GID maps.
         if !context.uid_map.is_empty() {
@@ -893,7 +907,7 @@ impl Container {
 
         let result = clone_with_stack(
             || {
-                let value = self.setup(&context, &mut []).map(|()| f());
+                let value = self.setup(&context, &mut [], None).map(|()| f());
 
                 let mut writer = std::io::BufWriter::new(Fd::new(writer_fd));
 
@@ -1168,7 +1182,7 @@ impl Container {
             deadline,
         };
         let startup = (|| {
-            self.setup_before_filter(context, &mut [])
+            self.setup_before_filter(context, &mut [], None)
                 .map_err(StartupError::Setup)?;
             let mut child_context = ChildStartContext {
                 deadline,
@@ -1410,7 +1424,7 @@ impl Container {
                 // Only the child writer is transferred into an owning wrapper.
                 // Close the inherited reader before setup or workload effects.
                 unsafe { libc::close(reader_fd) };
-                let (value, deferred) = match self.setup(&context, &mut []) {
+                let (value, deferred) = match self.setup(&context, &mut [], None) {
                     Ok(()) => {
                         let (value, deferred) = run();
                         (Ok(value), Some(deferred))
@@ -1499,7 +1513,7 @@ impl Container {
 
         let result = clone_with_stack(
             || {
-                let (value, deferred) = match self.setup(&context, &mut []) {
+                let (value, deferred) = match self.setup(&context, &mut [], None) {
                     Ok(()) => {
                         let (value, deferred) = f();
                         (Ok(value), Some(deferred))
