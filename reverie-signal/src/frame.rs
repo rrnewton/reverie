@@ -135,6 +135,14 @@ impl XstateDesc {
     /// every present component's standard extent, and the signal size is
     /// representable in the frame's u32 metadata.
     pub fn validate(self) -> Result<(), FrameError> {
+        // MXCSR_MASK is a 16-bit architectural field; a nonzero presented
+        // mask must admit Linux's initial MXCSR (0x1f80) or the initial
+        // state could never be restored. 0 means the default mask.
+        if self.mxcsr_mask & !0x0000_ffff != 0
+            || self.mxcsr_mask != 0 && 0x1f80 & !self.mxcsr_mask != 0
+        {
+            return Err(FrameError::InvalidMxcsr);
+        }
         if self.features & !SUPPORTED_XFEATURES != 0
             || self.features & (XFEATURE_X87 | XFEATURE_SSE) != (XFEATURE_X87 | XFEATURE_SSE)
             || self.size < min_extent(self.features)
@@ -737,6 +745,10 @@ mod tests {
             if d.size() >= 832 {
                 state[600..608].copy_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
                 state[700..704].copy_from_slice(&0xdead_beefu32.to_le_bytes());
+                // Live YMM state: XSTATE_BV bit 2 set, so restore must
+                // preserve (not initialise) the upper halves.
+                let bv = read_u64(&state, XSTATE_BV_OFFSET) | XFEATURE_YMM;
+                write_u64(&mut state, XSTATE_BV_OFFSET, bv);
             }
             let img = XsaveImage::from_standard(&state, d, false).unwrap();
             assert_eq!(img.bytes().len(), d.size() + 4);
@@ -892,6 +904,66 @@ mod tests {
         assert_eq!(
             read_u64(&restored, XSTATE_BV_OFFSET),
             XFEATURE_X87 | XFEATURE_SSE
+        );
+    }
+
+    #[test]
+    fn invalid_frames_refused_by_name() {
+        let d = desc(832);
+        let good = XsaveImage::from_standard(&XsaveImage::initialized(d), d, false).unwrap();
+        // Corrupt MAGIC1.
+        let mut bad = good.bytes().to_vec();
+        bad[FP_SW_RESERVED_OFFSET] ^= 0xff;
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bad, d),
+            Err(FrameError::InvalidXsaveMetadata)
+        );
+        // Truncated image.
+        assert_eq!(
+            XsaveImage::restore_from_signal(&good.bytes()[..600], d),
+            Err(FrameError::InvalidXsaveMetadata)
+        );
+        // Nonzero reserved header bytes.
+        let mut bad2 = good.bytes().to_vec();
+        bad2[XSTATE_RESERVED_OFFSET] = 1;
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bad2, d),
+            Err(FrameError::InvalidXsaveReserved)
+        );
+        // MXCSR bit outside the presented mask.
+        let mut bad3 = good.bytes().to_vec();
+        write_u32(&mut bad3, 24, 0x1f80 | (1 << 17));
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bad3, d),
+            Err(FrameError::InvalidMxcsr)
+        );
+        // Frame claiming a feature outside the presentation.
+        let small = XstateDesc::new(XFEATURE_X87 | XFEATURE_SSE, 576, 0xffbf).unwrap();
+        assert_eq!(
+            XsaveImage::restore_from_signal(good.bytes(), small),
+            Err(FrameError::InvalidXsaveMetadata)
+        );
+        // Impossible MXCSR masks refused at construction.
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 1).is_err());
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 1 << 20).is_err());
+        assert!(
+            XstateDesc::new(SUPPORTED_XFEATURES, 832, 0).is_ok(),
+            "0 = architectural default"
+        );
+        // Non-canonical restore addresses refused.
+        let sc = Sigcontext::new(
+            Regs {
+                rip: u64::MAX,
+                rsp: 0x7fff0000,
+                ..Regs::default()
+            },
+            0,
+            0,
+            Selectors::NATIVE,
+        );
+        assert_eq!(
+            sc.validate_for_restore(Selectors::NATIVE),
+            Err(FrameError::InvalidAddress)
         );
     }
 

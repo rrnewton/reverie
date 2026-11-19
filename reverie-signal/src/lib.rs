@@ -78,6 +78,8 @@ pub struct SigInfo {
     pub pid: i32,
     pub uid: u32,
     pub addr: u64,
+    /// `si_overrun` for POSIX timer records; 0 otherwise.
+    pub overrun: i32,
 }
 
 impl SigInfo {
@@ -89,6 +91,7 @@ impl SigInfo {
             pid,
             uid,
             addr: 0,
+            overrun: 0,
         }
     }
 }
@@ -129,14 +132,29 @@ pub struct AltStack {
     pub autodisarm: bool,
 }
 
+/// How a pending instance is accounted. These are four distinct Linux
+/// things and must never be conflated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstanceKind {
+    /// Holds one sigqueue allocation charged to this receiver UID
+    /// (`q->ucounts`), freed to that same owner however it leaves.
+    Charged(u32),
+    /// A pending bit with no sigqueue record (allocation-failure
+    /// fallback); a later allocation is absorbed into it.
+    FallbackBit,
+    /// A POSIX timer's preallocated record, by timer id. Repeated
+    /// expiry raises `si_overrun` on this one record.
+    TimerPrealloc(u64),
+    /// SIGKILL: delivered without any allocation.
+    UnchargedKill,
+}
+
 /// One pending instance; `id` is unique within its queue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pending {
     pub id: u64,
     pub info: SigInfo,
-    /// The receiver UID this instance's allocation was charged to
-    /// (`q->ucounts`), freed to that same owner however it leaves.
-    pub charged_uid: Option<u32>,
+    pub kind: InstanceKind,
 }
 
 /// A keyed reference to one pending instance on one task generation.
@@ -190,9 +208,10 @@ pub enum SendSource {
     ThreadKill,
     /// sigqueue/message (SI_QUEUE/SI_MESGQ < 0).
     SigQueue,
-    /// POSIX timer expiry (SI_TIMER): the sigqueue record is
-    /// preallocated at timer_create, so delivery never allocates.
-    TimerPrealloc,
+    /// POSIX timer expiry (SI_TIMER) for this timer id: the sigqueue
+    /// record is preallocated at timer_create, so delivery never
+    /// allocates; repeated expiry raises si_overrun on it.
+    TimerPrealloc(u64),
     /// Ordinary kernel siginfo (si_code > 0, e.g. child-exit CLD_*).
     KernelOrdinary,
     /// SEND_SIG_PRIV: the kernel's special input, distinct from the above.
@@ -228,23 +247,20 @@ impl SignalQueue {
 
     /// Append one instance. Coalescing, flushing and allocation
     /// accounting are the domain's (they span queues and users).
-    pub fn push(&mut self, info: SigInfo, charged_uid: Option<u32>) -> u64 {
+    pub fn push(&mut self, info: SigInfo, kind: InstanceKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.entries.push_back(Pending {
-            id,
-            info,
-            charged_uid,
-        });
+        self.entries.push_back(Pending { id, info, kind });
         id
     }
 
     /// The unallocated fallback instance of `signo`, if any (a pending
-    /// bit without a sigqueue record).
-    pub fn find_uncharged_mut(&mut self, signo: i32) -> Option<&mut Pending> {
+    /// bit without a sigqueue record). Preallocated timer records are
+    /// real records and never match.
+    pub fn find_fallback_mut(&mut self, signo: i32) -> Option<&mut Pending> {
         self.entries
             .iter_mut()
-            .find(|p| p.info.signo == signo && p.charged_uid.is_none())
+            .find(|p| p.info.signo == signo && p.kind == InstanceKind::FallbackBit)
     }
 
     /// Drop every instance whose signo is in `mask`; returns the count of
@@ -253,7 +269,7 @@ impl SignalQueue {
         let mut released = Vec::new();
         self.entries.retain(|p| {
             if mask & bit(p.info.signo) != 0 {
-                if let Some(uid) = p.charged_uid {
+                if let InstanceKind::Charged(uid) = p.kind {
                     released.push(uid);
                 }
                 false
@@ -262,6 +278,18 @@ impl SignalQueue {
             }
         });
         released
+    }
+
+    /// First (FIFO) entry matching `pred` and not blocked.
+    pub fn dequeue_first(
+        &mut self,
+        blocked: u64,
+        pred: impl Fn(&Pending) -> bool,
+    ) -> Option<Pending> {
+        let i = self.entries.iter().position(|p| {
+            (is_unblockable(p.info.signo) || blocked & bit(p.info.signo) == 0) && pred(p)
+        })?;
+        self.entries.remove(i)
     }
 
     /// `next_signal` order: synchronous signals first, then lowest
@@ -277,17 +305,11 @@ impl SignalQueue {
                 None => i,
                 Some(b) => {
                     let cur = &self.entries[b];
-                    // dequeue_synchronous_signal first: a synchronous
-                    // signal with a positive (kernel) si_code beats all;
-                    // then next_signal's synchronous class, number, FIFO.
-                    let key = |x: &Pending| {
-                        (
-                            !(x.info.code > 0 && is_synchronous(x.info.signo)),
-                            !is_synchronous(x.info.signo),
-                            x.info.signo,
-                            x.id,
-                        )
-                    };
+                    // next_signal order within one queue: synchronous
+                    // class, then lowest number, then FIFO. The
+                    // positive-code synchronous pass is private-only and
+                    // lives in the domain (dequeue_first), never here.
+                    let key = |x: &Pending| (!is_synchronous(x.info.signo), x.info.signo, x.id);
                     if key(p) < key(cur) { i } else { b }
                 }
             });
@@ -443,8 +465,10 @@ pub fn map_restart(
     if !has_handler {
         return match code {
             RestartCode::Intr => WaitResolution::Eintr,
-            RestartCode::RestartRestartBlock => WaitResolution::RestartAbs {
-                deadline_ns: restart_deadline_ns.unwrap_or(0),
+            // No recorded deadline: nothing faithful to resume at.
+            RestartCode::RestartRestartBlock => match restart_deadline_ns {
+                Some(d) => WaitResolution::RestartAbs { deadline_ns: d },
+                None => WaitResolution::Eintr,
             },
             _ => WaitResolution::Restart,
         };
@@ -635,17 +659,26 @@ impl ProcessDomain {
             return QueueResult::Coalesced(id);
         }
         // Absorb an unallocated fallback of the same signo.
-        let has_fallback = queue.find_uncharged_mut(signo).is_some();
-        if matches!(source, SendSource::TimerPrealloc) {
-            return QueueResult::Queued(queue.push(info, None));
+        let has_fallback = queue.find_fallback_mut(signo).is_some();
+        if let SendSource::TimerPrealloc(timer_id) = source {
+            // One record per timer: re-expiry bumps si_overrun in place.
+            if let Some(p) = queue
+                .entries
+                .iter_mut()
+                .find(|p| p.kind == InstanceKind::TimerPrealloc(timer_id))
+            {
+                p.info.overrun = p.info.overrun.saturating_add(1);
+                return QueueResult::Queued(p.id);
+            }
+            return QueueResult::Queued(queue.push(info, InstanceKind::TimerPrealloc(timer_id)));
         }
         if signo == SIGKILL {
             if has_fallback {
-                let p = queue.find_uncharged_mut(signo).unwrap();
+                let p = queue.find_fallback_mut(signo).unwrap();
                 p.info = info;
                 return QueueResult::Queued(p.id);
             }
-            return QueueResult::Queued(queue.push(info, None));
+            return QueueResult::Queued(queue.push(info, InstanceKind::UnchargedKill));
         }
         let overrides = !is_realtime(signo)
             && matches!(
@@ -658,12 +691,12 @@ impl ProcessDomain {
                 ledger.alloc_over_limit(uid);
             }
             if has_fallback {
-                let p = queue.find_uncharged_mut(signo).unwrap();
+                let p = queue.find_fallback_mut(signo).unwrap();
                 p.info = info;
-                p.charged_uid = Some(uid);
+                p.kind = InstanceKind::Charged(uid);
                 return QueueResult::Queued(p.id);
             }
-            return QueueResult::Queued(queue.push(info, Some(uid)));
+            return QueueResult::Queued(queue.push(info, InstanceKind::Charged(uid)));
         }
         match source {
             SendSource::UserKill | SendSource::KernelSpecial => match queue.find(signo) {
@@ -676,14 +709,15 @@ impl ProcessDomain {
                         pid: 0,
                         uid: 0,
                         addr: 0,
+                        overrun: 0,
                     },
-                    None,
+                    InstanceKind::FallbackBit,
                 )),
             },
             SendSource::ThreadKill
             | SendSource::SigQueue
             | SendSource::KernelOrdinary
-            | SendSource::TimerPrealloc => {
+            | SendSource::TimerPrealloc(_) => {
                 if is_realtime(signo) {
                     QueueResult::Overflow
                 } else {
@@ -699,8 +733,9 @@ impl ProcessDomain {
                                 pid: 0,
                                 uid: 0,
                                 addr: 0,
+                                overrun: 0,
                             },
-                            None,
+                            InstanceKind::FallbackBit,
                         )),
                     }
                 }
@@ -708,11 +743,20 @@ impl ProcessDomain {
         }
     }
 
+    /// Pending-delivery ignore classification: explicit SIG_IGN, or
+    /// SIG_DFL with a kernel-ignore default (SIG_KERNEL_IGNORE_MASK:
+    /// CHLD, CONT, URG, WINCH — SIGCONT's default *action* is Continue,
+    /// but for retention it classifies as ignore).
     fn disposition_ignored(&self, signo: i32) -> bool {
         let act = self.actions[(signo - 1) as usize];
         act.kind == DispositionKind::Ignore
-            || act.kind == DispositionKind::Default
-                && default_action(signo) == DefaultAction::Ignore
+            || act.kind == DispositionKind::Default && matches!(signo, 17 | 18 | 23 | 28)
+    }
+
+    /// sig_ignored retention: blocked in the live OR the saved mask
+    /// retains the signal (signal.c:106ff).
+    fn retained_for(t: &ThreadState, signo: i32) -> bool {
+        (t.blocked | t.real_blocked.unwrap_or(0)) & bit(signo) != 0
     }
 
     /// Queue a process-directed send on the shared queue.
@@ -722,20 +766,24 @@ impl ProcessDomain {
         source: SendSource,
         ledger: &mut Sigpending,
     ) -> SendOutcome {
-        // sig_ignored at generation: discarded unless some thread blocks
-        // it (a blocked ignored signal is retained, prepare_signal).
-        if self.disposition_ignored(info.signo)
-            && self
-                .threads
-                .iter()
-                .all(|t| t.effective_blocked() & bit(info.signo) == 0)
-        {
+        // Generation effects first (prepare_signal): cancellation and
+        // SIGCONT continuation happen even for ignored dispositions;
+        // retention is decided afterwards.
+        self.prepare_flush(info.signo, ledger);
+        let continued = info.signo == SIGCONT;
+        // sig_ignored tests the suggested (named) target — here the
+        // leader — before receiver selection, not every thread.
+        let leader_retains = self
+            .threads
+            .first()
+            .map(|t| Self::retained_for(t, info.signo))
+            .unwrap_or(false);
+        if self.disposition_ignored(info.signo) && !leader_retains {
             return SendOutcome {
                 queue: QueueResult::DiscardedIgnored,
-                continued: false,
+                continued,
             };
         }
-        self.prepare_flush(info.signo, ledger);
         SendOutcome {
             queue: Self::send_into(
                 &mut self.shared,
@@ -745,9 +793,7 @@ impl ProcessDomain {
                 self.uid,
                 self.sigpending_limit,
             ),
-            // SIGCONT resumes stopped threads at generation, even when
-            // blocked or ignored (POSIX 2.4.1; kernel/signal.c:871ff).
-            continued: info.signo == SIGCONT,
+            continued,
         }
     }
 
@@ -761,20 +807,30 @@ impl ProcessDomain {
     ) -> Option<SendOutcome> {
         // Resolve the target before any preparation: a stale generation
         // must not flush live signals (do_send_specific resolves first).
-        let blocked_there = self.thread(task)?.effective_blocked() & bit(info.signo) != 0;
-        if self.disposition_ignored(info.signo) && !blocked_there {
+        let target = self.thread(task)?;
+        let retained = Self::retained_for(target, info.signo);
+        let unblocked = target.effective_blocked() & bit(info.signo) == 0;
+        // Generation effects (flush + continuation) precede retention.
+        self.prepare_flush(info.signo, ledger);
+        let continued = info.signo == SIGCONT;
+        if self.disposition_ignored(info.signo) && !retained {
             return Some(SendOutcome {
                 queue: QueueResult::DiscardedIgnored,
-                continued: false,
+                continued,
             });
         }
-        self.prepare_flush(info.signo, ledger);
         let (uid, limit) = (self.uid, self.sigpending_limit);
         let t = self.thread_mut(task)?;
-        t.sigpending = true; // set_tsk_thread_flag(TIF_SIGPENDING)
+        let result = Self::send_into(&mut t.private, info, source, ledger, uid, limit);
+        // Notification only when something queued AND the signal is
+        // unblocked there: allocation failure returns before wake-up,
+        // and a blocked private send sets no TIF_SIGPENDING.
+        if matches!(result, QueueResult::Queued(_) | QueueResult::Coalesced(_)) && unblocked {
+            t.sigpending = true;
+        }
         Some(SendOutcome {
-            queue: Self::send_into(&mut t.private, info, source, ledger, uid, limit),
-            continued: info.signo == SIGCONT,
+            queue: result,
+            continued,
         })
     }
 
@@ -827,13 +883,23 @@ impl ProcessDomain {
     ) -> Option<DeliveryPlan> {
         let idx = self.threads.iter().position(|t| t.task == task)?;
         let blocked = self.threads[idx].effective_blocked();
-        let (pending, queue_kind) = match self.threads[idx].private.dequeue(blocked) {
-            Some(p) => (p, QueueKind::Private),
-            None => (self.shared.dequeue(blocked)?, QueueKind::Shared),
-        };
+        // dequeue_synchronous_signal: the FIRST qualifying *private*
+        // entry (FIFO) with a positive si_code, before ordinary
+        // next_signal selection. Never applies to the shared queue.
+        let (pending, queue_kind) = self.threads[idx]
+            .private
+            .dequeue_first(blocked, |p| p.info.code > 0 && is_synchronous(p.info.signo))
+            .map(|p| (p, QueueKind::Private))
+            .or_else(|| {
+                self.threads[idx]
+                    .private
+                    .dequeue(blocked)
+                    .map(|p| (p, QueueKind::Private))
+            })
+            .or_else(|| self.shared.dequeue(blocked).map(|p| (p, QueueKind::Shared)))?;
         // Dequeuing frees the allocation to its original owner.
-        if let Some(charged) = pending.charged_uid {
-            ledger.release(charged, 1);
+        if let InstanceKind::Charged(uid) = pending.kind {
+            ledger.release(uid, 1);
         }
         let signo = pending.info.signo;
         let instance = PendingRef {
@@ -871,19 +937,26 @@ impl ProcessDomain {
                     handler_mask |= bit(signo);
                 }
                 handler_mask &= !UNBLOCKABLE_MASK;
-                // A downward stack is (base, base+size]: SP == top is on
-                // it, SP == base is not (__on_sig_stack).
-                let on_now = t
-                    .altstack
-                    .map(|a| {
-                        !a.disabled
-                            && env.sp_now > a.base
-                            && env.sp_now <= a.base.saturating_add(a.size)
-                    })
-                    .unwrap_or(false);
+                // __on_sig_stack: (base, base+size], and always false for
+                // an SS_AUTODISARM stack (sched/signal.h:583ff).
+                let on_sig_stack = |sp: u64| {
+                    t.altstack
+                        .map(|a| {
+                            !a.disabled
+                                && !a.autodisarm
+                                && sp > a.base
+                                && sp <= a.base.saturating_add(a.size)
+                        })
+                        .unwrap_or(false)
+                };
+                let on_now = on_sig_stack(env.sp_now);
+                // get_sigframe subtracts the red zone before testing
+                // whether to switch: near the base that tips a nested
+                // frame into a fresh switch to the stack top.
+                let adj_sp = env.sp_now.saturating_sub(frame::SIGNAL_RED_ZONE);
                 let switch_to_alt = matches!(t.altstack, Some(a) if !a.disabled)
                     && act.flags & SA_ONSTACK != 0
-                    && !on_now;
+                    && !on_sig_stack(adj_sp);
                 let use_alt = switch_to_alt || on_now;
                 // Fit is frame::FrameLayout against the active stack's
                 // remaining extent (get_sigframe): fresh altstack switch
@@ -916,7 +989,7 @@ impl ProcessDomain {
                     handler_mask,
                     restore_mask: t.real_blocked.unwrap_or(t.blocked),
                     use_altstack: use_alt,
-                    on_altstack_now: on_now,
+                    on_altstack_now: on_now && !switch_to_alt,
                     restorer,
                     xstate_size: env.xstate.size(),
                 };
@@ -1025,6 +1098,7 @@ mod tests {
             pid: 1,
             uid,
             addr: 0,
+            overrun: 0,
         };
         assert!(matches!(
             a.send_process(rt(1000), SendSource::SigQueue, &mut ledger)
@@ -1091,6 +1165,7 @@ mod tests {
             pid: 42,
             uid: 7,
             addr: 0,
+            overrun: 0,
         };
         let out = d.send_process(info, SendSource::UserKill, &mut ledger);
         assert!(matches!(out.queue, QueueResult::Queued(_)));
@@ -1347,6 +1422,7 @@ mod tests {
             pid: 9,
             uid: 7,
             addr: 0,
+            overrun: 0,
         };
         // RT sigqueue + thread-kill refuse (EAGAIN).
         assert_eq!(
@@ -1371,6 +1447,7 @@ mod tests {
             pid: 9,
             uid: 7,
             addr: 0,
+            overrun: 0,
         };
         assert!(matches!(
             d.send_process(std_q, SendSource::SigQueue, &mut ledger)
@@ -1392,6 +1469,7 @@ mod tests {
             pid: 0,
             uid: 0,
             addr: 0,
+            overrun: 0,
         };
         // Ordinary positive-code kernel siginfo does NOT override.
         assert_eq!(
@@ -1408,6 +1486,7 @@ mod tests {
             pid: 0,
             uid: 0,
             addr: 0,
+            overrun: 0,
         };
         assert!(matches!(
             d.send_process(priv_rt, SendSource::KernelSpecial, &mut ledger)
@@ -1440,6 +1519,7 @@ mod tests {
             pid: 1,
             uid: 111,
             addr: 0,
+            overrun: 0,
         };
         let from_b = SigInfo {
             signo: 40,
@@ -1448,6 +1528,7 @@ mod tests {
             pid: 2,
             uid: 222,
             addr: 0,
+            overrun: 0,
         };
         assert!(matches!(
             e.send_process(from_a, SendSource::SigQueue, &mut ledger2)
@@ -1549,6 +1630,7 @@ mod tests {
             pid: 1,
             uid: 0,
             addr: 0,
+            overrun: 0,
         };
         d.send_process(rt0, SendSource::UserKill, &mut ledger);
         d.sigpending_limit = 1;
@@ -1559,6 +1641,7 @@ mod tests {
             pid: 1,
             uid: 0,
             addr: 0,
+            overrun: 0,
         };
         d.send_process(rt8, SendSource::SigQueue, &mut ledger);
         d.thread_mut(tg(100)).unwrap().blocked = 0;
@@ -1661,6 +1744,350 @@ mod tests {
             d.next_delivery(tg(101), &env(0x8000, 832, 0), &mut ledger)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn failed_and_blocked_sends_do_not_notify() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 0); // limit 0: RT fails
+        let out = d
+            .send_thread(
+                tg(100),
+                SigInfo::user(40, 1, 0),
+                SendSource::SigQueue,
+                &mut ledger,
+            )
+            .unwrap();
+        assert_eq!(out.queue, QueueResult::Overflow);
+        assert!(
+            !d.thread(tg(100)).unwrap().sigpending,
+            "failed send notifies nobody"
+        );
+        d.sigpending_limit = 64;
+        // Fresh shared send still selects the nonrunning receiver.
+        d.send_process(SigInfo::user(10, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(
+            d.choose_receiver(10, tg(100), &[fact(tg(100))]),
+            Some(tg(100))
+        );
+        // Blocked private send queues without notifying.
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.thread_mut(tg(100)).unwrap().blocked = bit(12);
+        d2.send_thread(
+            tg(100),
+            SigInfo::user(12, 1, 0),
+            SendSource::ThreadKill,
+            &mut ledger,
+        );
+        assert!(!d2.thread(tg(100)).unwrap().sigpending);
+        d2.send_process(SigInfo::user(10, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(
+            d2.choose_receiver(10, tg(100), &[fact(tg(100))]),
+            Some(tg(100))
+        );
+    }
+
+    #[test]
+    fn ignored_cont_and_stop_still_run_generation_effects() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.set_action(
+            SIGCONT,
+            SigAction {
+                kind: DispositionKind::Ignore,
+                ..SigAction::default()
+            },
+            tg(100),
+            &mut ledger,
+        );
+        d.send_process(SigInfo::user(20, 1, 0), SendSource::UserKill, &mut ledger); // pending stop
+        let out = d.send_process(
+            SigInfo::user(SIGCONT, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert!(out.continued, "ignored SIGCONT still continues");
+        assert_eq!(out.queue, QueueResult::DiscardedIgnored);
+        assert_eq!(
+            d.shared.peek_mask() & bit(20),
+            0,
+            "ignored SIGCONT still flushes stops"
+        );
+        // Ignored stop cancels a pending SIGCONT.
+        d.set_action(
+            20,
+            SigAction {
+                kind: DispositionKind::Ignore,
+                ..SigAction::default()
+            },
+            tg(100),
+            &mut ledger,
+        );
+        d.thread_mut(tg(100)).unwrap().blocked = bit(SIGCONT); // retain CONT
+        d.send_process(
+            SigInfo::user(SIGCONT, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert_ne!(d.shared.peek_mask() & bit(SIGCONT), 0);
+        let stop = d.send_process(SigInfo::user(20, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(stop.queue, QueueResult::DiscardedIgnored);
+        assert_eq!(
+            d.shared.peek_mask() & bit(SIGCONT),
+            0,
+            "ignored stop still cancels CONT"
+        );
+    }
+
+    #[test]
+    fn synchronous_private_fifo_and_shared_scope() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let segv = SigInfo {
+            signo: 11,
+            code: 1,
+            value: 0,
+            pid: 0,
+            uid: 0,
+            addr: 0xdead,
+            overrun: 0,
+        };
+        let ill = SigInfo {
+            signo: 4,
+            code: 2,
+            value: 0,
+            pid: 0,
+            uid: 0,
+            addr: 0,
+            overrun: 0,
+        };
+        d.send_thread(tg(100), segv, SendSource::KernelOrdinary, &mut ledger);
+        d.send_thread(tg(100), ill, SendSource::KernelOrdinary, &mut ledger);
+        let first = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(
+            first.instance.signo, 11,
+            "first qualifying private entry (FIFO), not lowest"
+        );
+        // Shared positive-code SIGSEGV does NOT get the synchronous pass:
+        // ordinary next_signal order picks SIGILL(4) first there.
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.send_process(
+            SigInfo {
+                signo: 11,
+                code: 1,
+                value: 0,
+                pid: 0,
+                uid: 0,
+                addr: 0,
+                overrun: 0,
+            },
+            SendSource::KernelOrdinary,
+            &mut ledger,
+        );
+        d2.send_process(SigInfo::user(4, 1, 0), SendSource::UserKill, &mut ledger);
+        let f2 = d2
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(f2.instance.signo, 4);
+        assert_eq!(f2.instance.queue, QueueKind::Shared);
+    }
+
+    #[test]
+    fn autodisarm_switches_and_disarms_on_any_delivery() {
+        let mut ledger = Sigpending::new();
+        let alt = AltStack {
+            base: 0x10000,
+            size: 2048,
+            disabled: false,
+            autodisarm: true,
+        };
+        // Geometrically on-stack + autodisarm: switch to top and fit.
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p = d
+            .next_delivery(tg(100), &env(0x10590, 832, 0), &mut ledger)
+            .unwrap();
+        assert!(
+            matches!(p.delivery, Delivery::EnterHandler { .. }),
+            "autodisarm switches to top: {p:?}"
+        );
+        assert!(
+            d.thread(tg(100)).unwrap().altstack.unwrap().disabled,
+            "delivery disarmed it"
+        );
+        // Red-zone boundary: sp 128 above base switches (adjusted SP).
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d2.thread_mut(tg(100)).unwrap().altstack = Some(AltStack {
+            autodisarm: false,
+            ..alt
+        });
+        d2.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p2 = d2
+            .next_delivery(tg(100), &env(0x10080, 832, 0), &mut ledger)
+            .unwrap();
+        assert!(
+            matches!(p2.delivery, Delivery::EnterHandler { frame } if frame.use_altstack && !frame.on_altstack_now)
+        );
+        // Non-SA_ONSTACK delivery also disarms.
+        let mut d3 = ProcessDomain::new(tg(100), 1000, 64);
+        d3.actions[9] = handler(SA_RESTORER);
+        d3.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d3.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p3 = d3
+            .next_delivery(tg(100), &env(0x7fff0000, 832, 0), &mut ledger)
+            .unwrap();
+        assert!(matches!(p3.delivery, Delivery::EnterHandler { .. }));
+        assert!(d3.thread(tg(100)).unwrap().altstack.unwrap().disabled);
+    }
+
+    #[test]
+    fn synchronous_mask_excludes_xcpu_xfsz_and_tif_lifecycle() {
+        assert!(!is_synchronous(24) && !is_synchronous(25));
+        assert!(is_synchronous(11) && is_synchronous(4));
+        // Walk choice sets notification; delivery with nothing left clears it.
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.send_process(SigInfo::user(24, 1, 0), SendSource::UserKill, &mut ledger);
+        d.send_process(SigInfo::user(10, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(
+            d.choose_receiver(10, tg(100), &[fact(tg(100))]),
+            Some(tg(100))
+        );
+        assert!(d.thread(tg(100)).unwrap().sigpending);
+        let p1 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(p1.instance.signo, 10, "SIGXCPU must not beat lower SIGUSR1");
+        let _ = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert!(
+            !d.thread(tg(100)).unwrap().sigpending,
+            "recalc clears when drained"
+        );
+        // Standard thread-kill at the limit: fallback, never an override.
+        let mut ledger0 = Sigpending::new();
+        let mut e = ProcessDomain::new(tg(300), 2000, 0);
+        let out = e.send_process(
+            SigInfo::user(12, 9, 7),
+            SendSource::ThreadKill,
+            &mut ledger0,
+        );
+        assert!(matches!(out.queue, QueueResult::Queued(_)));
+        assert_eq!(ledger0.used_by(2000), 0);
+        let got = e
+            .next_delivery(tg(300), &env(0x8000, 832, 0), &mut ledger0)
+            .unwrap();
+        assert_eq!((got.info.pid, got.info.uid), (0, 0), "synthesized siginfo");
+    }
+
+    #[test]
+    fn handler_mask_union_and_resethand_one_shot() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let mut act = handler(SA_RESTORER | SA_RESETHAND);
+        act.mask = bit(12);
+        d.actions[9] = act;
+        d.thread_mut(tg(100)).unwrap().blocked = bit(17);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        let Delivery::EnterHandler { frame } = p.delivery else {
+            panic!("{p:?}")
+        };
+        assert_eq!(frame.handler_mask, bit(17) | bit(12) | bit(10));
+        assert_eq!(frame.restore_mask, bit(17));
+        assert_eq!(
+            d.actions[9].kind,
+            DispositionKind::Default,
+            "RESETHAND consumed"
+        );
+        // Second send takes the default action (terminate, one thread).
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let p2 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(
+            p2.delivery,
+            Delivery::ApplyDefault {
+                action: DefaultAction::Terminate
+            }
+        );
+    }
+
+    #[test]
+    fn timer_repeated_expiry_raises_overrun_on_one_record() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.thread_mut(tg(100)).unwrap().blocked = bit(40);
+        let t = SigInfo {
+            signo: 40,
+            code: -2,
+            value: 5,
+            pid: 0,
+            uid: 0,
+            addr: 0,
+            overrun: 0,
+        };
+        d.send_process(t, SendSource::TimerPrealloc(3), &mut ledger);
+        d.send_process(t, SendSource::TimerPrealloc(3), &mut ledger);
+        d.send_process(t, SendSource::TimerPrealloc(3), &mut ledger);
+        d.thread_mut(tg(100)).unwrap().blocked = 0;
+        let p = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(p.info.overrun, 2);
+        assert_eq!(p.info.value, 5);
+        assert!(
+            d.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn process_discard_checks_suggested_target_only() {
+        // Leader unblocked (discard) even though a sibling blocks;
+        // leader blocked retains.
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.threads.push(ThreadState::new(tg(101)));
+        d.thread_mut(tg(101)).unwrap().blocked = bit(17);
+        let out = d.send_process(SigInfo::user(17, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(out.queue, QueueResult::DiscardedIgnored);
+        d.thread_mut(tg(100)).unwrap().blocked = bit(17);
+        let out2 = d.send_process(SigInfo::user(17, 1, 0), SendSource::UserKill, &mut ledger);
+        assert!(matches!(out2.queue, QueueResult::Queued(_)));
     }
 
     #[test]

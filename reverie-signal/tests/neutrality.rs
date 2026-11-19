@@ -53,33 +53,102 @@ fn scan_tree(dir: &std::path::Path) -> (usize, Vec<String>) {
     (scanned, hits)
 }
 
+/// Resolve the workspace graph from the root manifest's member list
+/// (including nested members) and return incoming edges on this crate:
+/// direct path/name dependencies and root workspace aliases consumed
+/// via `alias.workspace = true`.
+fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
+    let root_text = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    // Members: quoted strings inside the members array.
+    let members: Vec<String> = root_text
+        .split("members = [")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split(',')
+        .filter_map(|s| {
+            let s = s.trim().trim_matches('"');
+            (!s.is_empty()).then(|| s.to_owned())
+        })
+        .collect();
+    // Root aliases mapping to this package.
+    let mut aliases: Vec<String> = Vec::new();
+    if let Some(deps) = root_text.split("[workspace.dependencies]").nth(1) {
+        for line in deps.lines() {
+            if line.contains("reverie-signal")
+                && let Some(name) = line.split('=').next()
+            {
+                aliases.push(name.trim().to_owned());
+            }
+        }
+    }
+    let mut edges = Vec::new();
+    for m in &aliases {
+        edges.push(format!("root workspace alias {m}"));
+    }
+    let mut checked = 0usize;
+    for member in &members {
+        if member == "reverie-signal" {
+            continue;
+        }
+        let manifest = root.join(member).join("Cargo.toml");
+        let Ok(text) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        checked += 1;
+        if text.contains("reverie-signal") {
+            edges.push(format!("{member} names reverie-signal"));
+        }
+        for a in &aliases {
+            if text.contains(&format!("{a}.workspace")) || text.contains(&format!("{a} =")) {
+                edges.push(format!("{member} consumes alias {a}"));
+            }
+        }
+    }
+    (checked, edges)
+}
+
 #[test]
 fn no_incoming_dependency_edges() {
-    // Non-use guard: no sibling crate may depend on this package.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .to_path_buf();
-    let mut checked = 0usize;
-    for entry in std::fs::read_dir(&root).unwrap() {
-        let manifest = entry.unwrap().path().join("Cargo.toml");
-        if manifest.is_file() {
-            let text = std::fs::read_to_string(&manifest).unwrap();
-            if text.contains("name = \"reverie-signal\"") {
-                continue; // this crate itself
-            }
-            checked += 1;
-            assert!(
-                !text.contains("reverie-signal"),
-                "{} gained an incoming edge on reverie-signal",
-                manifest.display()
-            );
-        }
-    }
+    let (checked, edges) = incoming_edges(&root);
     assert!(
-        checked > 5,
-        "guard must inspect real sibling manifests, got {checked}"
+        checked > 15,
+        "guard must resolve the real workspace, got {checked}"
     );
+    assert_eq!(edges, Vec::<String>::new(), "incoming edges appeared");
+    // Negative control: the same guard refuses a dependent tree.
+    let tmp = std::env::temp_dir().join(format!("reverie-signal-deptree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("member-a")).unwrap();
+    std::fs::create_dir_all(tmp.join("experimental/member-b")).unwrap();
+    std::fs::write(
+        tmp.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"member-a\", \"experimental/member-b\", \"reverie-signal\"]\n[workspace.dependencies]\nsignals = { package = \"reverie-signal\", path = \"reverie-signal\" }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("member-a/Cargo.toml"),
+        "[package]\nname = \"member-a\"\n[dependencies]\nsignals.workspace = true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("experimental/member-b/Cargo.toml"),
+        "[package]\nname = \"member-b\"\n[dependencies]\nreverie-signal = { path = \"../../reverie-signal\" }\n",
+    )
+    .unwrap();
+    let (c_checked, c_edges) = incoming_edges(&tmp);
+    assert_eq!(c_checked, 2);
+    assert!(
+        c_edges.len() >= 3,
+        "dependent tree must be refused: {c_edges:?}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]
@@ -158,6 +227,7 @@ fn strace_style_observer_walks_the_domain_standalone() {
             pid: 7,
             uid: 8,
             addr: 0,
+            overrun: 0,
         };
         observed.push(
             domain
