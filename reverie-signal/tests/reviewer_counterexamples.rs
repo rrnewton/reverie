@@ -1,5 +1,5 @@
 // Reviewer probe suite committed as regression tests: astra-seat-sigdomain
-// counterexamples (22). A failure names a semantic deviation from Linux.
+// expanded probes (29). A failure names a semantic deviation from Linux.
 
 use reverie_signal::frame::{XsaveImage, XstateDesc};
 use reverie_signal::*;
@@ -386,5 +386,108 @@ fn padding_beyond_presented_components_is_canonical_zero() {
         ia.bytes(),
         ib.bytes(),
         "padding outside the presented components cannot change the frame"
+    );
+}
+
+fn nested_restore_mask(saved: Option<u64>) {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.actions[9] = handler(0);
+    d.actions[11] = handler(0);
+    d.thread_mut(task(100)).unwrap().saved_sigmask = saved;
+    d.send_thread(task(100), info(10, 0, 0), SendSource::UserKill, &mut l);
+    let Delivery::EnterHandler { frame: outer } = d
+        .next_delivery(task(100), &env(0x8000), &mut l)
+        .unwrap()
+        .delivery
+    else {
+        panic!("outer handler required")
+    };
+    assert_eq!(outer.restore_mask, saved.unwrap_or(0));
+    assert_eq!(d.thread(task(100)).unwrap().blocked, bit(10));
+    d.send_thread(task(100), info(12, 0, 0), SendSource::UserKill, &mut l);
+    let Delivery::EnterHandler { frame: inner } = d
+        .next_delivery(task(100), &env(0x7000), &mut l)
+        .unwrap()
+        .delivery
+    else {
+        panic!("inner handler required")
+    };
+    assert_eq!(
+        inner.restore_mask,
+        bit(10),
+        "nested return restores the outer handler's live mask"
+    );
+}
+#[test]
+fn nested_handler_without_temporary_mask_restores_outer_mask() {
+    nested_restore_mask(None);
+}
+#[test]
+fn nested_handler_after_sigsuspend_restores_outer_mask() {
+    nested_restore_mask(Some(bit(15)));
+}
+
+#[test]
+fn saved_sigmask_does_not_retain_an_ignored_signal() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.set_action(10, ignored(), task(100), &mut l);
+    d.thread_mut(task(100)).unwrap().saved_sigmask = Some(bit(10));
+    assert_eq!(
+        d.send_thread(task(100), info(10, 0, 0), SendSource::UserKill, &mut l)
+            .unwrap()
+            .queue,
+        QueueResult::DiscardedIgnored
+    );
+}
+#[test]
+fn failed_frame_preserves_sigsuspend_saved_mask() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.actions[9] = handler(0);
+    d.actions[9].flags = 0;
+    d.thread_mut(task(100)).unwrap().saved_sigmask = Some(bit(15));
+    d.send_thread(task(100), info(10, 0, 0), SendSource::UserKill, &mut l);
+    assert_eq!(
+        d.next_delivery(task(100), &env(0x8000), &mut l)
+            .unwrap()
+            .delivery,
+        Delivery::ForceSegv
+    );
+    assert_eq!(d.thread(task(100)).unwrap().saved_sigmask, Some(bit(15)));
+}
+
+#[test]
+fn amd_misaligned_exception_mask_bit17_qualifies() {
+    let d = XstateDesc::new(7, 832, 0x2ffff).expect("AMD MM bit17 is presentable");
+    let mut state = XsaveImage::initialized(d);
+    state[24..28].copy_from_slice(&(0x1f80u32 | (1 << 17)).to_le_bytes());
+    let image = XsaveImage::from_standard(&state, d, false).unwrap();
+    let restored = XsaveImage::restore_from_signal(image.bytes(), d).unwrap();
+    assert_eq!(
+        u32::from_le_bytes(restored[24..28].try_into().unwrap()),
+        0x1f80 | (1 << 17)
+    );
+}
+#[test]
+fn reserved_mxcsr_mask_bit16_is_refused() {
+    assert!(
+        XstateDesc::new(7, 832, 0x1ffff).is_err(),
+        "AMD APM vol1 Fig4-2: bit16 is Reserved MBZ, unlike MM bit17"
+    );
+}
+
+#[test]
+fn unsupported_header_xstate_bv_is_refused_independently() {
+    let d = XstateDesc::X87_SSE_YMM;
+    let mut image = XsaveImage::from_standard(&XsaveImage::initialized(d), d, false)
+        .unwrap()
+        .bytes()
+        .to_vec();
+    image[512..520].copy_from_slice(&(3u64 | (1 << 9)).to_le_bytes());
+    assert_eq!(
+        XsaveImage::restore_from_signal(&image, d),
+        Err(reverie_signal::frame::FrameError::InvalidXsaveFeatures)
     );
 }

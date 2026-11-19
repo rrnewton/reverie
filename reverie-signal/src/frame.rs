@@ -1015,6 +1015,18 @@ mod tests {
             XsaveImage::restore_from_signal(&outside, big),
             Err(FrameError::InvalidXsaveFeatures)
         );
+        // Header XSTATE_BV corrupted independently (software features clean).
+        let mut badbv =
+            XsaveImage::from_standard(&XsaveImage::initialized(desc(832)), desc(832), false)
+                .unwrap()
+                .bytes()
+                .to_vec();
+        let bv9 = read_u64(&badbv, XSTATE_BV_OFFSET) | (1 << 9);
+        write_u64(&mut badbv, XSTATE_BV_OFFSET, bv9);
+        assert_eq!(
+            XsaveImage::restore_from_signal(&badbv, desc(832)),
+            Err(FrameError::InvalidXsaveFeatures)
+        );
         // Header-size refusal distinct from feature refusal.
         assert_eq!(
             XsaveImage::restore_from_signal(&outside[..600], big),

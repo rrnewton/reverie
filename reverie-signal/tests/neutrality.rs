@@ -148,6 +148,17 @@ fn no_incoming_dependency_edges() {
         c_edges.len() >= 2,
         "dependent tree must be refused: {c_edges:?}"
     );
+    // Spaced table header form must not escape either.
+    std::fs::write(
+        tmp.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = ['member-a', 'experimental/member-b', 'reverie-signal']\n[ workspace.dependencies.signals ]\npackage = \"reverie-signal\"\npath = \"reverie-signal\"\n",
+    )
+    .unwrap();
+    let (_s_checked, s_edges) = incoming_edges(&tmp);
+    assert!(
+        !s_edges.is_empty(),
+        "spaced table alias tree must be refused: {s_edges:?}"
+    );
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
