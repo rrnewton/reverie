@@ -554,6 +554,11 @@ impl Sigpending {
 
 /// One process's signal domain: shared dispositions and queue, threads in
 /// creation (thread-list) order, and `curr_target` history.
+///
+/// Provisional, named: periodic-timer ignore/unignore transitions
+/// (posixtimer_sig_ignore) are not modelled yet; send_thread notifies
+/// without consulting job-control stop state (receiver selection is
+/// where stopped targets are excluded). Both are tracked for step 3.
 #[derive(Debug, Clone)]
 pub struct ProcessDomain {
     pub actions: [SigAction; NSIG as usize],
@@ -2176,6 +2181,137 @@ mod tests {
         // Current mask after unblocking signo is bit(12) (from sa_mask);
         // a stale pre-wait save would wrongly repeat bit(13).
         assert_eq!(f2.restore_mask, bit(12));
+    }
+
+    #[test]
+    fn b15_mutant_pins() {
+        // 2. SA_RESETHAND keeps flags/mask/restorer (only handler resets).
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        let mut act = handler(SA_RESTORER | SA_RESETHAND);
+        act.mask = bit(12);
+        d.actions[9] = act;
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        let _ = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        let after = d.actions[9];
+        assert_eq!(after.kind, DispositionKind::Default);
+        assert_eq!(
+            (after.mask, after.flags, after.restorer),
+            (bit(12), SA_RESTORER | SA_RESETHAND, 0x7f0000)
+        );
+        // 3a. Retention does NOT consult saved_sigmask.
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.set_action(
+            10,
+            SigAction {
+                kind: DispositionKind::Ignore,
+                ..SigAction::default()
+            },
+            tg(100),
+            &mut ledger,
+        );
+        d2.thread_mut(tg(100)).unwrap().saved_sigmask = Some(bit(10));
+        assert_eq!(
+            d2.send_thread(
+                tg(100),
+                SigInfo::user(10, 1, 0),
+                SendSource::UserKill,
+                &mut ledger
+            )
+            .unwrap()
+            .queue,
+            QueueResult::DiscardedIgnored
+        );
+        // 3b. Retention DOES consult real_blocked (timedwait mask).
+        d2.thread_mut(tg(100)).unwrap().saved_sigmask = None;
+        d2.thread_mut(tg(100)).unwrap().real_blocked = Some(bit(10));
+        assert!(matches!(
+            d2.send_thread(
+                tg(100),
+                SigInfo::user(10, 1, 0),
+                SendSource::UserKill,
+                &mut ledger
+            )
+            .unwrap()
+            .queue,
+            QueueResult::Queued(_)
+        ));
+        // 7. TIF set on a WALK choice (named ineligible).
+        let mut d3 = ProcessDomain::new(tg(100), 1000, 64);
+        d3.threads.push(ThreadState::new(tg(101)));
+        d3.thread_mut(tg(100)).unwrap().blocked = bit(10);
+        d3.send_process(SigInfo::user(10, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(
+            d3.choose_receiver(10, tg(100), &[fact(tg(100)), fact(tg(101))]),
+            Some(tg(101))
+        );
+        assert!(d3.thread(tg(101)).unwrap().sigpending);
+        assert!(!d3.thread(tg(100)).unwrap().sigpending);
+        // 5+6. Timer absorbs fallback; allocation never absorbs a timer.
+        let mut ledger0 = Sigpending::new();
+        let mut d4 = ProcessDomain::new(tg(100), 1000, 0);
+        d4.thread_mut(tg(100)).unwrap().blocked = bit(40);
+        d4.send_process(SigInfo::user(40, 1, 0), SendSource::UserKill, &mut ledger0); // fallback bit
+        let tinfo = SigInfo {
+            signo: 40,
+            code: -2,
+            value: 8,
+            pid: 0,
+            uid: 0,
+            addr: 0,
+            overrun: 0,
+        };
+        d4.send_process(tinfo, SendSource::TimerPrealloc(9), &mut ledger0); // absorbs bit
+        d4.thread_mut(tg(100)).unwrap().blocked = 0;
+        let p = d4
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger0)
+            .unwrap();
+        assert_eq!(p.info.value, 8);
+        assert!(
+            d4.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger0)
+                .is_none(),
+            "one delivery"
+        );
+        // restart: NOHAND with handler is EINTR.
+        assert_eq!(
+            map_restart(RestartCode::RestartNoHand, true, true, None),
+            WaitResolution::Eintr
+        );
+    }
+
+    #[test]
+    fn standard_signal_timers_keep_distinct_records() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.thread_mut(tg(100)).unwrap().blocked = bit(10);
+        let t = |v: i64| SigInfo {
+            signo: 10,
+            code: -2,
+            value: v,
+            pid: 0,
+            uid: 0,
+            addr: 0,
+            overrun: 0,
+        };
+        d.send_process(t(3), SendSource::TimerPrealloc(3), &mut ledger);
+        d.send_process(t(4), SendSource::TimerPrealloc(4), &mut ledger);
+        d.send_process(t(3), SendSource::TimerPrealloc(3), &mut ledger); // overrun
+        d.thread_mut(tg(100)).unwrap().blocked = 0;
+        let p1 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!((p1.info.value, p1.info.overrun), (3, 1));
+        let p2 = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(p2.info.value, 4);
     }
 
     #[test]

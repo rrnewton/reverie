@@ -138,8 +138,10 @@ impl XstateDesc {
         // MXCSR_MASK is a 16-bit architectural field; a nonzero presented
         // mask must admit Linux's initial MXCSR (0x1f80) or the initial
         // state could never be restored. 0 means the default mask.
-        // Bits above 17 are reserved; bit 17 (AMD MM) is presentable.
-        if self.mxcsr_mask & !0x0003_ffff != 0
+        // MXCSR mask bits: 0..=15 plus AMD MM at 17; bit 16 is
+        // Reserved MBZ and 31:18 are reserved (AMD APM Fig. 4-2), so
+        // the admissible set is exactly 0x0002_ffff.
+        if self.mxcsr_mask & (!0x0002_ffff | (1 << 16)) != 0
             || self.mxcsr_mask != 0 && 0x1f80 & !self.mxcsr_mask != 0
         {
             return Err(FrameError::InvalidMxcsr);
@@ -858,6 +860,19 @@ mod tests {
         assert_eq!(kernel["xstate_header"], XSTATE_BV_OFFSET);
         assert_eq!(kernel["xstate_ymmh"], 576);
         assert_eq!(kernel["xstate_size"], 832);
+        assert_eq!(kernel["kernel_sigset_size"], 8);
+        assert_eq!(kernel["stack_size"], 24);
+        assert_eq!(kernel["sigcontext_r8"], 0);
+        assert_eq!(kernel["sigcontext_eflags"], 136);
+        assert_eq!(kernel["sigcontext_ss"], 150);
+        assert_eq!(kernel["sigcontext_reserved1"], 192);
+        assert_eq!(kernel["ucontext_stack"], 16);
+        assert_eq!(kernel["rt_sigframe_ucontext"], 8);
+        assert_eq!(kernel["xstate_sw_reserved"], FP_SW_RESERVED_OFFSET);
+        let libc = run_c_abi_probe("libc");
+        assert_eq!(libc["libc_ucontext_sigmask"], 296);
+        assert!(libc["libc_ucontext_size"] > UCONTEXT_SIZE);
+        assert!(libc["libc_sigset_size"] > 8);
     }
 
     #[test]
@@ -950,6 +965,9 @@ mod tests {
         // Impossible MXCSR masks refused at construction.
         assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 1).is_err());
         assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 1 << 20).is_err());
+        // Bit 17 (AMD MM) qualifies; bit 16 (Reserved MBZ) refuses.
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 0x2ffff).is_ok());
+        assert!(XstateDesc::new(SUPPORTED_XFEATURES, 832, 0x1ffff).is_err());
         assert!(
             XstateDesc::new(SUPPORTED_XFEATURES, 832, 0).is_ok(),
             "0 = architectural default"
@@ -968,6 +986,92 @@ mod tests {
         assert_eq!(
             sc.validate_for_restore(Selectors::NATIVE),
             Err(FrameError::InvalidAddress)
+        );
+    }
+
+    #[test]
+    fn unpresented_bytes_are_canonical_zero_and_refusals() {
+        // 1. Host bytes past presented components never reach the frame.
+        let big = XstateDesc::new(SUPPORTED_XFEATURES, 2700, 0xffbf).unwrap();
+        let mut dirty = vec![0xAAu8; 2700];
+        dirty[..576].copy_from_slice(&XsaveImage::initialized(big)[..576]);
+        let img = XsaveImage::from_standard(&dirty, big, false).unwrap();
+        assert!(
+            img.bytes()[832..2700].iter().all(|b| *b == 0),
+            "padding canonical zero"
+        );
+        // 10. Software xfeatures outside a large-enough presentation,
+        // with consistent sizes, refuse as InvalidXsaveFeatures.
+        let mut outside = XsaveImage::from_standard(&XsaveImage::initialized(big), big, false)
+            .unwrap()
+            .bytes()
+            .to_vec();
+        write_u64(
+            &mut outside,
+            FP_SW_RESERVED_OFFSET + 8,
+            SUPPORTED_XFEATURES | (1 << 9),
+        );
+        assert_eq!(
+            XsaveImage::restore_from_signal(&outside, big),
+            Err(FrameError::InvalidXsaveFeatures)
+        );
+        // Header-size refusal distinct from feature refusal.
+        assert_eq!(
+            XsaveImage::restore_from_signal(&outside[..600], big),
+            Err(FrameError::InvalidXsaveMetadata)
+        );
+        // FIX_EFLAGS pinned to the architectural literal, not self-derived.
+        let sc = Sigcontext::new(
+            Regs {
+                rflags: u64::MAX,
+                ..Regs::default()
+            },
+            0,
+            0,
+            Selectors::NATIVE,
+        );
+        assert_eq!(sc.restored_regs(0).rflags, 0x50dd5);
+        // XCOMP_BV nonzero refuses.
+        let mut bad =
+            XsaveImage::from_standard(&XsaveImage::initialized(desc(832)), desc(832), false)
+                .unwrap()
+                .bytes()
+                .to_vec();
+        bad[XCOMP_BV_OFFSET] = 1;
+        assert_eq!(
+            XsaveImage::restore_from_signal(&bad, desc(832)),
+            Err(FrameError::InvalidXsaveReserved)
+        );
+        // SS without RPL bits accepted (Linux accepts ss and ss&!3).
+        let mut sc2 = Sigcontext::new(
+            Regs {
+                rip: 0x401000,
+                rsp: 0x7fff0000,
+                ..Regs::default()
+            },
+            0,
+            0,
+            Selectors::NATIVE,
+        );
+        sc2.ss &= !3;
+        assert!(sc2.validate_for_restore(Selectors::NATIVE).is_ok());
+        // Missing restorer is a domain ForceSegv outcome (lib tests pin it);
+        // here: YMM claimed in a frame smaller than the YMM extent refuses.
+        let small = XstateDesc::new(XFEATURE_X87 | XFEATURE_SSE, 576, 0xffbf).unwrap();
+        let mut img576 = XsaveImage::from_standard(&XsaveImage::initialized(small), small, false)
+            .unwrap()
+            .bytes()
+            .to_vec();
+        // Grow the buffer so sizes are self-consistent, then claim YMM.
+        img576.resize(700, 0);
+        write_u32(&mut img576, FP_SW_RESERVED_OFFSET + 4, 700);
+        write_u32(&mut img576, FP_SW_RESERVED_OFFSET + 16, 696);
+        write_u64(&mut img576, FP_SW_RESERVED_OFFSET + 8, SUPPORTED_XFEATURES);
+        write_u32(&mut img576, 696, FP_XSTATE_MAGIC2);
+        let wide = XstateDesc::new(SUPPORTED_XFEATURES, 2700, 0xffbf).unwrap();
+        assert_eq!(
+            XsaveImage::restore_from_signal(&img576, wide),
+            Err(FrameError::InvalidXsaveFeatures)
         );
     }
 
