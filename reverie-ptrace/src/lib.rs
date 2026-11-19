@@ -60,6 +60,9 @@ mod error;
 mod failure;
 mod gdbstub;
 mod injected_syscall;
+mod injection_stop_facts;
+#[cfg(all(test, target_arch = "x86_64"))]
+mod injection_stop_hook_tests;
 mod link_path;
 mod memory_map;
 #[cfg(all(test, target_arch = "x86_64"))]
@@ -76,7 +79,6 @@ mod sigtrap_state;
 mod stack;
 mod stats;
 mod task;
-mod terminal_call;
 pub mod testing;
 mod timer;
 mod tool_memory;

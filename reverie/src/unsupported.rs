@@ -144,25 +144,21 @@ pub enum UnsupportedOperation {
     /// refuses one received nothing.
     UnwritableRecordBuffer,
     /// A stop of the process group that Linux started for a call the
-    /// backend ran for the tool, by raising a terminal's job-control signal
-    /// (`SIGTTIN` or `SIGTTOU`, with `SI_KERNEL`) whose disposition is the
-    /// default, on a backend that cannot deliver that stop. A background
-    /// process's read of its controlling terminal raises `SIGTTIN` so, and
-    /// its write with `TOSTOP` set, or a change of the terminal's settings,
-    /// raises `SIGTTOU`; Linux restarts the call after the group is
+    /// backend injected for the tool, by raising a terminal's job-control
+    /// signal (`SIGTTIN` or `SIGTTOU`, with `SI_KERNEL`) whose disposition is
+    /// the default, where the tool cannot have that stop delivered. A
+    /// background process's read of its controlling terminal raises `SIGTTIN`
+    /// so, and its write with `TOSTOP` set, or a change of the terminal's
+    /// settings, raises `SIGTTOU`; Linux restarts the call after the group is
     /// continued, and the restarted call raises the signal again while the
-    /// process stays in the background. A backend that refuses it dropped
-    /// that signal, stopped nothing, and fails the call with `EIO`, which
-    /// Linux gives a background read when `SIGTTIN` is ignored or blocked,
-    /// and which no retry repeats, as it would repeat `ERESTARTSYS`; the
-    /// refusal's diagnostic names the signal, or the fact the backend could
-    /// not read to tell such a stop from another signal. Only a call that can
-    /// raise the signal itself is refused. Linux sends the signal to the whole
-    /// group, so it also reaches calls that cannot raise it, such as another
-    /// member's pipe read; a backend holds the signal for such a call like any
-    /// other signal, and leaves the call's result alone. A terminal's
-    /// `SIGTSTP` is not one: no call raises it, so a backend can hold it for
-    /// the call's return.
+    /// process stays in the background. No backend decides one: a tool
+    /// returns it from [`Tool::decide_injection_stop`](crate::Tool::decide_injection_stop)
+    /// for a signal that stopped the call before it ran, and the backend
+    /// records it as it records a refusal of its own. The backend dropped
+    /// that signal, stopped nothing, and failed the call with the refusal's
+    /// errno, which no retry repeats, as it would repeat `ERESTARTSYS`. The
+    /// tool's diagnostic names the signal, or the fact it could not read to
+    /// tell such a stop from another signal.
     JobControlStop,
 }
 
@@ -171,7 +167,9 @@ pub enum UnsupportedOperation {
 /// report with the same errno.
 ///
 /// A backend records one when it refuses an operation that it does not
-/// implement, and [`Guest::take_unsupported_refusal`](crate::Guest::take_unsupported_refusal)
+/// implement, or when the tool refuses an injected call that a signal
+/// stopped ([`Tool::decide_injection_stop`](crate::Tool::decide_injection_stop)),
+/// and [`Guest::take_unsupported_refusal`](crate::Guest::take_unsupported_refusal)
 /// reports it to the tool after the injection returns the refusal's errno. A
 /// `Guest` operation that answers with a refusal directly, such as
 /// [`Guest::deliver_signal`](crate::Guest::deliver_signal), returns it
@@ -184,9 +182,9 @@ pub struct UnsupportedRefusal {
     /// The errno the refused injection returned, or the one a refused `Guest`
     /// operation stands for.
     pub errno: Errno,
-    /// The backend's one-line description of the refusal, naming the backend
-    /// or, for a default trait method, the operation, for the tool's
-    /// diagnostics.
+    /// The one-line description of the refusal, for the tool's diagnostics:
+    /// the backend's, naming the backend or, for a default trait method, the
+    /// operation, or the tool's own for a refusal it returned.
     pub diagnostic: &'static str,
 }
 

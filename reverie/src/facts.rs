@@ -439,6 +439,67 @@ impl SignalSets {
     }
 }
 
+/// The file a thread's descriptor is open on, as `fstat(2)` describes it:
+/// its type and permission bits, and the device it is when it is a device
+/// file. See [`InjectionStopFacts::descriptor_file`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DescriptorFile {
+    /// `st_mode`: the file's type (`S_IFMT`) and permission bits.
+    pub mode: u32,
+    /// `st_rdev`: the device a character or block device file is, encoded
+    /// as `stat(2)` encodes a device number (`new_encode_dev` in Linux's
+    /// `include/linux/kdev_t.h`); 0 for any other file.
+    pub rdev: u64,
+}
+
+impl DescriptorFile {
+    /// A file of `mode` that is device `rdev` (see the fields).
+    pub fn new(mode: u32, rdev: u64) -> Self {
+        Self { mode, rdev }
+    }
+}
+
+/// What a backend can read, on demand, about a thread that a signal stopped
+/// before an injected call ran, while the thread stays stopped there: the
+/// facts a tool may ask for to decide that stop
+/// ([`Tool::decide_injection_stop`](crate::Tool::decide_injection_stop)).
+/// Each method reads at the moment it is asked, so a tool reads only what its
+/// decision needs. Every method declines with [`FactError::NotProvided`]
+/// unless the backend reads it, and answers `ESRCH` for a thread that no
+/// longer lives.
+pub trait InjectionStopFacts: Sync {
+    /// The siginfo the signal was delivered with, the kernel's `siginfo_t`
+    /// as its bytes, as [`Guest::signal_info`](crate::Guest::signal_info)
+    /// gives it: `si_code` tells a signal the kernel raised (`SI_KERNEL`)
+    /// from one a process sent. [`FactError::NotProvided`] where the backend
+    /// cannot read it safely.
+    fn signal_info(&self) -> Result<[u8; crate::SIGNAL_INFO_SIZE], FactError> {
+        Err(FactError::NotProvided)
+    }
+
+    /// The thread's signal sets, as [`Guest::signal_sets`](crate::Guest::signal_sets)
+    /// gives them.
+    fn signal_sets(&self) -> Result<SignalSets, FactError> {
+        Err(FactError::NotProvided)
+    }
+
+    /// The device number of the thread's controlling terminal, as its
+    /// `/proc/<pid>/task/<tid>/stat` shows it (`tty_nr`, the seventh field;
+    /// `do_task_stat` in Linux's `fs/proc/array.c`), encoded as `stat(2)`
+    /// encodes a device number, so that it equals a terminal's
+    /// [`DescriptorFile::rdev`]; 0 for a thread with no controlling terminal.
+    fn controlling_terminal(&self) -> Result<u32, FactError> {
+        Err(FactError::NotProvided)
+    }
+
+    /// The file the thread's descriptor `fd` is open on; `EBADF` for a
+    /// descriptor that is not open.
+    fn descriptor_file(&self, _fd: i32) -> Result<DescriptorFile, FactError> {
+        Err(FactError::NotProvided)
+    }
+}
+
 /// One of the links to a file that Linux shows in a thread's `/proc`
 /// directory, `/proc/<pid>/task/<tid>`, and whose `readlink(2)` names the
 /// file: see [`Guest::link_path`](crate::Guest::link_path). The thread's

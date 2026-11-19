@@ -3889,12 +3889,10 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
     // starts with its launch input (`Command::ignored_signals`), applied
     // before this callback runs, or else with the launching process's own,
     // SIGPIPE at its default; a forked guest keeps its caller's
-    // (`set_up_forked_guest`). A terminal's job-control signal that Linux
-    // raises during a call, at its default disposition, is refused by name
-    // (`reverie::UnsupportedOperation::JobControlStop`) rather than held: a
-    // Tool that held it until the interrupted call returned (a task keeps it
-    // in its single pending-signal slot) would never see the call return, as
-    // the restarted call raises the signal again forever.
+    // (`set_up_forked_guest`). A signal that stops a call injected for the
+    // Tool before the call ran is the Tool's to hold or refuse when it is one
+    // the Tool decides (`reverie::Tool::decide_injection_stop`); any other is
+    // held for the guest's resume, in the task's single pending-signal slot.
     Ok(())
 }
 

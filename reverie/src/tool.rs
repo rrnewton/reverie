@@ -15,6 +15,7 @@
 use async_trait::async_trait;
 use reverie_syscalls::RawSyscall;
 use reverie_syscalls::Syscall;
+use reverie_syscalls::SyscallArgs;
 use reverie_syscalls::Sysno;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -635,6 +636,48 @@ pub struct RestartUndecidable {
     pub syscall: Sysno,
     /// The restart code it answered it with.
     pub code: Errno,
+}
+
+/// A call a backend injected for the Tool that a signal stopped before it
+/// ran: the thread is at the signal's delivery stop, and the call has not
+/// run. Facts only, with more to ask for while the thread stays stopped
+/// ([`crate::InjectionStopFacts`]); deciding what the signal is and what
+/// becomes of it is the Tool's. See [`Tool::decide_injection_stop`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct InjectionStop {
+    /// The thread the call was injected into.
+    pub tid: Tid,
+    /// The injected call, its number and its arguments as the backend ran
+    /// it, or `None` when the backend does not know which call it was.
+    pub call: Option<(Sysno, SyscallArgs)>,
+    /// The signal that stopped it, numbered as Linux numbers signals.
+    pub signal: i32,
+}
+
+impl InjectionStop {
+    /// The facts a backend read (see the fields).
+    pub fn new(tid: Tid, call: Option<(Sysno, SyscallArgs)>, signal: i32) -> Self {
+        Self { tid, call, signal }
+    }
+}
+
+/// What a backend does with a signal that stopped an injected call before
+/// it ran ([`Tool::decide_injection_stop`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum InjectionStopOutcome {
+    /// The backend holds the signal for delivery when the guest resumes, as
+    /// it holds any other signal there, and the injection reports that the
+    /// call did not run (`ERESTARTSYS`).
+    Hold,
+    /// The backend drops the signal and changes no other signal state, and
+    /// the injection fails with the refusal's errno instead of reporting
+    /// that the call did not run, so that no retry of the injection runs the
+    /// call again. The backend records the refusal for
+    /// [`Guest::take_unsupported_refusal`](crate::Guest::take_unsupported_refusal),
+    /// as it records one of its own.
+    Refuse(crate::UnsupportedRefusal),
 }
 
 /// A guest thread held at its exit stop while a core-dumping fatal signal
@@ -1466,6 +1509,41 @@ pub trait Tool: Send + Sync + Default {
             syscall: facts.syscall,
             code: facts.code,
         })))
+    }
+
+    /// The signals this Tool decides itself when one stops a call a backend
+    /// injected for it before the call ran ([`Tool::decide_injection_stop`]),
+    /// known from configuration alone: signal `n` at bit `n - 1`. A backend
+    /// reads it once per run. The default is none, so a backend asks nothing
+    /// and holds every such signal, as for any Tool that leaves this empty.
+    fn injection_stop_signals(_config: &<Self::GlobalState as GlobalTool>::Config) -> u64 {
+        0
+    }
+
+    /// Called when a signal in [`Tool::injection_stop_signals`] stops a call
+    /// that a backend injected for this Tool before the call ran (`stop`).
+    /// Held for the guest's resume, as a backend holds any other signal
+    /// there, the signal is delivered after the injection reports that the
+    /// call did not run, and a Tool that retries the call then runs it again
+    /// first. That is the wrong order for a signal the call raises itself
+    /// each time it runs: each retry raises it again, and the call never
+    /// returns. The Tool decides here whether to hold the signal or to refuse
+    /// the call with it, from `stop` and from the facts it asks `facts` for,
+    /// which the backend reads while the thread stays stopped. The backend
+    /// decides nothing itself: it does what the outcome says.
+    ///
+    /// A backend asks only at a stop where the call has not run; after the
+    /// call ran, the signal is held whatever it is, and the call's result
+    /// stands. As for [`Tool::handle_unresolved_restart`], the hook gets a
+    /// handle that can send RPCs and no access to the guest. The default
+    /// holds every signal. Only the ptrace backend calls it.
+    async fn decide_injection_stop<R: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _rpc: &R,
+        _stop: InjectionStop,
+        _facts: &dyn crate::InjectionStopFacts,
+    ) -> InjectionStopOutcome {
+        InjectionStopOutcome::Hold
     }
 
     /// Whether this Tool wants every guest `rt_sigreturn` reported to
