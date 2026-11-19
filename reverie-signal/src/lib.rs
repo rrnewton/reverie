@@ -14,6 +14,8 @@
 
 use std::collections::VecDeque;
 
+pub mod frame;
+
 pub const SIGKILL: i32 = 9;
 pub const SIGSTOP: i32 = 19;
 pub const SIGCONT: i32 = 18;
