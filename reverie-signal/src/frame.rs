@@ -58,7 +58,7 @@ const XSTATE_RESERVED_OFFSET: usize = 528;
 const XSTATE_RESERVED_END: usize = 576;
 
 /// The presented XSAVE shape: feature bits and standard-format size in
-/// bytes. This comes from the virtual CPU description, never the host.
+/// bytes. This comes from the presented CPU description, never the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XstateDesc {
     pub features: u64,

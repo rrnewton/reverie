@@ -9,7 +9,7 @@
 //! A pure model of Linux signal semantics (kernel/signal.c), shared by
 //! every backend. The domain owns masks, pending instances, dispositions,
 //! alternate stacks, `curr_target` and the restart mapping. Callers supply
-//! scheduling facts (turn holder, liveness, virtual stop, delivery point);
+//! scheduling facts (turn holder, liveness, job-control stop, delivery point);
 //! nothing here performs I/O or names a backend or a consumer.
 
 use std::collections::VecDeque;
@@ -134,6 +134,8 @@ pub struct AltStack {
 pub struct Pending {
     pub id: u64,
     pub info: SigInfo,
+    /// Whether this instance holds one `RLIMIT_SIGPENDING` allocation.
+    pub counted: bool,
 }
 
 /// A keyed reference to one pending instance on one task generation.
@@ -180,42 +182,38 @@ impl SignalQueue {
         Self::default()
     }
 
-    /// `__send_signal_locked`'s queue effects, including `prepare_signal`
-    /// stop/continue flushing. `rt_depth` bounds each RT signal's queue
-    /// (domain-counted `RLIMIT_SIGPENDING`).
-    pub fn send(&mut self, info: SigInfo, kind: SendKind, rt_depth: usize) -> QueueResult {
-        let signo = info.signo;
-        if is_stop(signo) {
-            self.entries.retain(|p| p.info.signo != SIGCONT);
-        }
-        if signo == SIGCONT {
-            self.entries.retain(|p| !is_stop(p.info.signo));
-        }
-        if !is_realtime(signo) {
-            if let Some(p) = self.entries.iter().find(|p| p.info.signo == signo) {
-                return QueueResult::Coalesced(p.id);
-            }
-        } else if self
-            .entries
+    /// The pending instance of `signo`, if one is queued here.
+    pub fn find(&self, signo: i32) -> Option<u64> {
+        self.entries
             .iter()
-            .filter(|p| p.info.signo == signo)
-            .count()
-            >= rt_depth
-        {
-            match kind {
-                SendKind::Queue => return QueueResult::Overflow,
-                SendKind::Kill => {
-                    // Deliver one instance with its siginfo lost, as Linux does.
-                    if let Some(p) = self.entries.iter().find(|p| p.info.signo == signo) {
-                        return QueueResult::Coalesced(p.id);
-                    }
-                }
-            }
-        }
+            .find(|p| p.info.signo == signo)
+            .map(|p| p.id)
+    }
+
+    /// Append one instance. Coalescing, flushing and allocation
+    /// accounting are the domain's (they span queues and users).
+    pub fn push(&mut self, info: SigInfo, counted: bool) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.entries.push_back(Pending { id, info });
-        QueueResult::Queued(id)
+        self.entries.push_back(Pending { id, info, counted });
+        id
+    }
+
+    /// Drop every instance whose signo is in `mask`; returns the count of
+    /// dropped instances that held an allocation (`flush_sigqueue_mask`).
+    pub fn flush_mask(&mut self, mask: u64) -> usize {
+        let mut released = 0;
+        self.entries.retain(|p| {
+            if mask & bit(p.info.signo) != 0 {
+                if p.counted {
+                    released += 1;
+                }
+                false
+            } else {
+                true
+            }
+        });
+        released
     }
 
     /// `dequeue_signal` order: lowest signal number, then FIFO. Blocked
@@ -287,7 +285,8 @@ impl ThreadState {
 #[derive(Debug, Clone, Copy)]
 pub struct SchedFact {
     pub task: TaskGen,
-    /// The deterministic `task_curr` (e.g. only the sender runs).
+    /// Currently running on a CPU (`task_curr`); a caller that serializes
+    /// execution reports its one running thread.
     pub running: bool,
     pub exiting: bool,
     /// The guest-visible job-control stop, never a tracer stop.
@@ -298,7 +297,9 @@ fn wants_signal(signo: i32, t: &ThreadState, f: &SchedFact) -> bool {
     if !is_unblockable(signo) && t.effective_blocked() & bit(signo) != 0 {
         return false;
     }
-    if f.exiting || f.stopped {
+    // SIGKILL and SIGCONT wake stopped tasks (TASK_WAKEKILL in
+    // `signal_wake_up`), so a job-control stop never excludes them.
+    if f.exiting || f.stopped && signo != SIGKILL && signo != SIGCONT {
         return false;
     }
     f.running || t.private.is_empty()
@@ -395,7 +396,44 @@ pub enum Delivery {
 pub struct DeliveryPlan {
     pub instance: PendingRef,
     pub receiver: TaskGen,
+    /// The full siginfo of the dequeued instance, `si_value` included.
+    pub info: SigInfo,
     pub delivery: Delivery,
+}
+
+/// `RLIMIT_SIGPENDING` accounting: sigqueue allocations are counted per
+/// real UID across every process of that user (kernel ucounts,
+/// `__sigqueue_alloc`), not per signal number or per queue. One ledger
+/// serves a whole run; each process domain allocates through it.
+#[derive(Debug, Clone, Default)]
+pub struct Sigpending {
+    pub limit: usize,
+    used: std::collections::BTreeMap<u32, usize>,
+}
+
+impl Sigpending {
+    pub fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            used: std::collections::BTreeMap::new(),
+        }
+    }
+    pub fn try_alloc(&mut self, uid: u32) -> bool {
+        let n = self.used.entry(uid).or_insert(0);
+        if *n >= self.limit {
+            return false;
+        }
+        *n += 1;
+        true
+    }
+    pub fn release(&mut self, uid: u32, count: usize) {
+        if let Some(n) = self.used.get_mut(&uid) {
+            *n = n.saturating_sub(count);
+        }
+    }
+    pub fn used_by(&self, uid: u32) -> usize {
+        self.used.get(&uid).copied().unwrap_or(0)
+    }
 }
 
 /// One process's signal domain: shared dispositions and queue, threads in
@@ -406,17 +444,15 @@ pub struct ProcessDomain {
     pub shared: SignalQueue,
     pub threads: Vec<ThreadState>,
     pub curr_target: Option<TaskGen>,
-    pub rt_depth: usize,
 }
 
 impl ProcessDomain {
-    pub fn new(leader: TaskGen, rt_depth: usize) -> Self {
+    pub fn new(leader: TaskGen) -> Self {
         Self {
             actions: [SigAction::default(); NSIG as usize],
             shared: SignalQueue::new(),
             threads: vec![ThreadState::new(leader)],
             curr_target: Some(leader),
-            rt_depth,
         }
     }
 
@@ -437,9 +473,89 @@ impl ProcessDomain {
         self.threads.iter().find(|t| t.task == task)
     }
 
+    /// `prepare_signal`: a stop signal flushes SIGCONT, SIGCONT flushes
+    /// every stop signal — in the shared queue and every private queue
+    /// (`flush_sigqueue_mask` on both, kernel/signal.c). Released
+    /// allocations are returned per sender uid below, at dequeue time
+    /// the ledger only ever decremented by counted instances; flushed
+    /// instances release theirs here.
+    fn prepare_flush(&mut self, signo: i32, ledger: &mut Sigpending) {
+        let mask = if is_stop(signo) {
+            bit(SIGCONT)
+        } else if signo == SIGCONT {
+            bit(19) | bit(20) | bit(21) | bit(22)
+        } else {
+            return;
+        };
+        // Flushed instances may belong to several sender uids; the kernel
+        // frees each sigqueue to its owner's ucount. This model stores the
+        // sender uid in siginfo, so release per instance below.
+        let mut released: Vec<u32> = Vec::new();
+        // temporarily take queues apart via index walk
+        let flush = |q: &mut SignalQueue| {
+            let mut uids = Vec::new();
+            q.entries.retain(|e| {
+                if mask & bit(e.info.signo) != 0 {
+                    if e.counted {
+                        uids.push(e.info.uid);
+                    }
+                    false
+                } else {
+                    true
+                }
+            });
+            uids
+        };
+        released.extend(flush(&mut self.shared));
+        for t in &mut self.threads {
+            released.extend(flush(&mut t.private));
+        }
+        for uid in released {
+            ledger.release(uid, 1);
+        }
+    }
+
+    /// `__send_signal_locked`: flush, coalesce, allocate, queue.
+    /// Allocation is charged to the sender's real UID (`info.uid`).
+    /// On allocation failure a sigqueue-like send is EAGAIN
+    /// (`QueueResult::Overflow`); a `kill`-family send still delivers
+    /// one instance with its siginfo value lost, as Linux does.
+    fn send_into(
+        queue: &mut SignalQueue,
+        info: SigInfo,
+        kind: SendKind,
+        ledger: &mut Sigpending,
+    ) -> QueueResult {
+        if !is_realtime(info.signo)
+            && let Some(id) = queue.find(info.signo)
+        {
+            return QueueResult::Coalesced(id);
+        }
+        if ledger.try_alloc(info.uid) {
+            return QueueResult::Queued(queue.push(info, true));
+        }
+        match kind {
+            SendKind::Queue => QueueResult::Overflow,
+            SendKind::Kill => match queue.find(info.signo) {
+                Some(id) => QueueResult::Coalesced(id),
+                None => {
+                    let mut lost = info;
+                    lost.value = 0;
+                    QueueResult::Queued(queue.push(lost, false))
+                }
+            },
+        }
+    }
+
     /// Queue a process-directed send on the shared queue.
-    pub fn send_process(&mut self, info: SigInfo, kind: SendKind) -> QueueResult {
-        self.shared.send(info, kind, self.rt_depth)
+    pub fn send_process(
+        &mut self,
+        info: SigInfo,
+        kind: SendKind,
+        ledger: &mut Sigpending,
+    ) -> QueueResult {
+        self.prepare_flush(info.signo, ledger);
+        Self::send_into(&mut self.shared, info, kind, ledger)
     }
 
     /// Queue a thread-directed send on the target's private queue.
@@ -448,10 +564,11 @@ impl ProcessDomain {
         task: TaskGen,
         info: SigInfo,
         kind: SendKind,
+        ledger: &mut Sigpending,
     ) -> Option<QueueResult> {
-        let depth = self.rt_depth;
-        self.thread_mut(task)
-            .map(|t| t.private.send(info, kind, depth))
+        self.prepare_flush(info.signo, ledger);
+        let t = self.thread_mut(task)?;
+        Some(Self::send_into(&mut t.private, info, kind, ledger))
     }
 
     /// `complete_signal`: the named target first, then the walk from
@@ -489,13 +606,22 @@ impl ProcessDomain {
 
     /// Dequeue for one thread (private queue before shared, as Linux does)
     /// and resolve the delivery under the caller's frame environment.
-    pub fn next_delivery(&mut self, task: TaskGen, env: &FrameEnv) -> Option<DeliveryPlan> {
+    pub fn next_delivery(
+        &mut self,
+        task: TaskGen,
+        env: &FrameEnv,
+        ledger: &mut Sigpending,
+    ) -> Option<DeliveryPlan> {
         let idx = self.threads.iter().position(|t| t.task == task)?;
         let blocked = self.threads[idx].effective_blocked();
         let pending = self.threads[idx]
             .private
             .dequeue(blocked)
             .or_else(|| self.shared.dequeue(blocked))?;
+        // Dequeuing frees the sigqueue allocation (`__sigqueue_free`).
+        if pending.counted {
+            ledger.release(pending.info.uid, 1);
+        }
         let signo = pending.info.signo;
         let instance = PendingRef {
             task,
@@ -507,6 +633,7 @@ impl ProcessDomain {
         Some(DeliveryPlan {
             instance,
             receiver: task,
+            info: pending.info,
             delivery,
         })
     }
@@ -533,7 +660,13 @@ impl ProcessDomain {
                     && act.flags & SA_ONSTACK != 0
                     && !on_now;
                 let need = env.frame_fixed + env.xstate_size;
-                let fits = if use_alt {
+                // Already on the altstack (nested): the frame grows down
+                // from the current SP (get_sigframe's on-stack path), so
+                // the room is sp - base, not main-stack headroom.
+                let fits = if on_now {
+                    let a = t.altstack.unwrap();
+                    need as u64 <= env.sp_now.saturating_sub(a.base)
+                } else if use_alt {
                     need <= t.altstack.map(|a| a.size as usize).unwrap_or(0)
                 } else {
                     need <= env.main_headroom
@@ -572,7 +705,7 @@ impl ProcessDomain {
 }
 
 /// Registered signal producers (terminal, SIGIO fds, parent-death):
-/// registered before arrivals so deterministic waits know their limits.
+/// registered before arrivals so waits know which signals can end them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProducerSource {
     Terminal,
@@ -593,7 +726,8 @@ impl Producers {
     pub fn disarm(&mut self, source: ProducerSource) {
         self.armed.retain(|(s, _)| *s != source);
     }
-    /// A deterministic wait may end only for a signal no producer can make.
+    /// Whether a wait may be ended for `signo`: only when no armed
+    /// producer can make it.
     pub fn may_end_wait(&self, signo: i32) -> bool {
         !self.armed.iter().any(|(_, s)| *s == signo)
     }
@@ -614,8 +748,7 @@ mod tests {
             stopped: false,
         }
     }
-    fn handler(signo: i32, flags: u32) -> SigAction {
-        let _ = signo;
+    fn handler(flags: u32) -> SigAction {
         SigAction {
             kind: DispositionKind::Handler,
             handler: 0x401000,
@@ -624,36 +757,98 @@ mod tests {
             restorer: 0x7f0000,
         }
     }
-
-    #[test]
-    fn coalescing_rt_and_overflow() {
-        let mut q = SignalQueue::new();
-        let u = SigInfo::user(10, 1, 0);
-        assert!(matches!(
-            q.send(u, SendKind::Kill, 4),
-            QueueResult::Queued(_)
-        ));
-        assert!(matches!(
-            q.send(u, SendKind::Kill, 4),
-            QueueResult::Coalesced(_)
-        ));
-        let rt = SigInfo::user(40, 1, 0);
-        for _ in 0..2 {
-            assert!(matches!(
-                q.send(rt, SendKind::Queue, 2),
-                QueueResult::Queued(_)
-            ));
+    fn env(sp: u64, xs: usize, headroom: usize) -> FrameEnv {
+        FrameEnv {
+            sp_now: sp,
+            xstate_size: xs,
+            frame_fixed: 512,
+            main_headroom: headroom,
         }
-        assert_eq!(q.send(rt, SendKind::Queue, 2), QueueResult::Overflow);
-        assert!(matches!(
-            q.send(rt, SendKind::Kill, 2),
-            QueueResult::Coalesced(_)
-        ));
     }
 
     #[test]
-    fn receiver_walk_and_curr_target() {
-        let mut d = ProcessDomain::new(tg(100), 8);
+    fn sigpending_is_per_real_uid_across_processes() {
+        // RLIMIT_SIGPENDING counts allocations per real UID (ucounts),
+        // shared by every process of that user — not per queue.
+        let mut ledger = Sigpending::new(2);
+        let mut a = ProcessDomain::new(tg(100));
+        let mut b = ProcessDomain::new(tg(200));
+        let rt = |uid| SigInfo {
+            signo: 40,
+            code: -1,
+            value: 7,
+            pid: 1,
+            uid,
+            addr: 0,
+        };
+        assert!(matches!(
+            a.send_process(rt(1000), SendKind::Queue, &mut ledger),
+            QueueResult::Queued(_)
+        ));
+        assert!(matches!(
+            b.send_process(rt(1000), SendKind::Queue, &mut ledger),
+            QueueResult::Queued(_)
+        ));
+        assert_eq!(
+            a.send_process(rt(1000), SendKind::Queue, &mut ledger),
+            QueueResult::Overflow
+        );
+        // Another user is unaffected.
+        assert!(matches!(
+            a.send_process(rt(1001), SendKind::Queue, &mut ledger),
+            QueueResult::Queued(_)
+        ));
+        // Dequeue frees the sender's allocation.
+        let p = b
+            .next_delivery(tg(200), &env(0x8000, 832, 1 << 20), &mut ledger)
+            .unwrap();
+        assert_eq!(p.info.value, 7, "plan carries si_value");
+        assert_eq!(ledger.used_by(1000), 1);
+        // kill-family on exhaustion still delivers once, value lost.
+        assert!(matches!(
+            a.send_process(rt(1000), SendKind::Queue, &mut ledger),
+            QueueResult::Queued(_)
+        ));
+        assert!(matches!(
+            a.send_process(rt(1000), SendKind::Kill, &mut ledger),
+            QueueResult::Coalesced(_)
+        ));
+        // Standard signals coalesce without allocating again.
+        let u = SigInfo::user(10, 1, 1000);
+        a.send_process(u, SendKind::Kill, &mut ledger);
+        let before = ledger.used_by(1000);
+        assert!(matches!(
+            a.send_process(u, SendKind::Kill, &mut ledger),
+            QueueResult::Coalesced(_)
+        ));
+        assert_eq!(ledger.used_by(1000), before);
+    }
+
+    #[test]
+    fn stop_cont_flush_covers_shared_and_private() {
+        // prepare_signal flushes both queues (flush_sigqueue_mask).
+        let mut ledger = Sigpending::new(64);
+        let mut d = ProcessDomain::new(tg(100));
+        d.send_process(SigInfo::user(SIGCONT, 1, 0), SendKind::Kill, &mut ledger);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(SIGCONT, 1, 0),
+            SendKind::Kill,
+            &mut ledger,
+        );
+        d.send_process(SigInfo::user(20, 1, 0), SendKind::Kill, &mut ledger); // SIGTSTP
+        assert_eq!(d.shared.peek_mask() & bit(SIGCONT), 0);
+        assert_eq!(
+            d.thread(tg(100)).unwrap().private.peek_mask() & bit(SIGCONT),
+            0
+        );
+        d.send_process(SigInfo::user(SIGCONT, 1, 0), SendKind::Kill, &mut ledger);
+        assert_eq!(d.shared.peek_mask() & bit(20), 0);
+    }
+
+    #[test]
+    fn receiver_walk_curr_target_and_kill_wakes_stopped() {
+        let mut d = ProcessDomain::new(tg(100));
         d.threads.push(ThreadState::new(tg(101)));
         d.threads.push(ThreadState::new(tg(102)));
         let facts = [fact(tg(100)), fact(tg(101)), fact(tg(102))];
@@ -661,75 +856,89 @@ mod tests {
         d.thread_mut(tg(100)).unwrap().blocked = bit(10);
         assert_eq!(d.choose_receiver(10, tg(100), &facts), Some(tg(101)));
         assert_eq!(d.curr_target, Some(tg(101)));
-        // SIGKILL ignores the mask on the named target.
-        assert_eq!(d.choose_receiver(SIGKILL, tg(100), &facts), Some(tg(100)));
-        // Virtual stop excludes; running does not rescue a blocked thread.
+        // SIGKILL/SIGCONT wake stopped tasks (TASK_WAKEKILL): a stopped
+        // named target still takes them.
         let mut f2 = facts;
+        f2[0].stopped = true;
         f2[1].stopped = true;
-        assert_eq!(d.choose_receiver(10, tg(100), &f2), Some(tg(102)));
+        f2[2].stopped = true;
+        assert_eq!(d.choose_receiver(10, tg(100), &f2), None);
+        assert_eq!(d.choose_receiver(SIGKILL, tg(100), &f2), Some(tg(100)));
+        assert_eq!(d.choose_receiver(SIGCONT, tg(101), &f2), Some(tg(101)));
     }
 
     #[test]
-    fn delivery_frame_policy_and_outcomes() {
-        let mut d = ProcessDomain::new(tg(100), 8);
-        d.actions[9] = handler(10, SA_RESTORER | SA_ONSTACK);
-        d.thread_mut(tg(100)).unwrap().altstack = Some(AltStack {
+    fn delivery_frame_policy_nested_altstack_and_group_exit() {
+        let mut ledger = Sigpending::new(64);
+        let alt = AltStack {
             base: 0x10000,
             size: 2048,
             disabled: false,
             autodisarm: false,
-        });
-        d.send_thread(tg(100), SigInfo::user(10, 1, 0), SendKind::Kill);
+        };
+        let mut d = ProcessDomain::new(tg(100));
+        d.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendKind::Kill,
+            &mut ledger,
+        );
         let p = d
-            .next_delivery(
-                tg(100),
-                &FrameEnv {
-                    sp_now: 0x7fff0000,
-                    xstate_size: 832,
-                    frame_fixed: 512,
-                    main_headroom: 0,
-                },
-            )
+            .next_delivery(tg(100), &env(0x7fff0000, 832, 0), &mut ledger)
             .unwrap();
         assert!(matches!(p.delivery, Delivery::EnterHandler { frame } if frame.use_altstack));
-        // Host-sized xstate cannot fit: Linux outcome, not a refusal.
-        let mut d2 = ProcessDomain::new(tg(100), 8);
-        d2.actions[9] = handler(10, SA_RESTORER | SA_ONSTACK);
-        d2.thread_mut(tg(100)).unwrap().altstack = Some(AltStack {
-            base: 0x10000,
-            size: 2048,
-            disabled: false,
-            autodisarm: false,
-        });
-        d2.send_thread(tg(100), SigInfo::user(10, 1, 0), SendKind::Kill);
-        let p2 = d2
-            .next_delivery(
-                tg(100),
-                &FrameEnv {
-                    sp_now: 0x7fff0000,
-                    xstate_size: 2700,
-                    frame_fixed: 512,
-                    main_headroom: 0,
-                },
-            )
-            .unwrap();
-        assert_eq!(p2.delivery, Delivery::ForceSegv);
-        // Two threads + fatal default = group exit.
-        let mut d3 = ProcessDomain::new(tg(100), 8);
-        d3.threads.push(ThreadState::new(tg(101)));
-        d3.send_thread(tg(100), SigInfo::user(11, 1, 0), SendKind::Kill);
+        // Host-sized xstate on a fresh altstack: SIGSEGV outcome.
+        let mut d2 = ProcessDomain::new(tg(100));
+        d2.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d2.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d2.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendKind::Kill,
+            &mut ledger,
+        );
+        assert_eq!(
+            d2.next_delivery(tg(100), &env(0x7fff0000, 2700, 0), &mut ledger)
+                .unwrap()
+                .delivery,
+            Delivery::ForceSegv
+        );
+        // Nested: already on the altstack, little room below SP even
+        // though the main stack has headroom to spare.
+        let mut d3 = ProcessDomain::new(tg(100));
+        d3.actions[9] = handler(SA_RESTORER | SA_ONSTACK);
+        d3.thread_mut(tg(100)).unwrap().altstack = Some(alt);
+        d3.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendKind::Kill,
+            &mut ledger,
+        );
         let p3 = d3
-            .next_delivery(
-                tg(100),
-                &FrameEnv {
-                    sp_now: 0x8000,
-                    xstate_size: 832,
-                    frame_fixed: 512,
-                    main_headroom: 1 << 20,
-                },
-            )
+            .next_delivery(tg(100), &env(0x10100, 832, 1 << 20), &mut ledger)
             .unwrap();
-        assert_eq!(p3.delivery, Delivery::GroupExit);
+        assert_eq!(
+            p3.delivery,
+            Delivery::ForceSegv,
+            "nested frame must fit below SP on the altstack"
+        );
+        // Two threads + fatal default = group exit.
+        let mut d4 = ProcessDomain::new(tg(100));
+        d4.threads.push(ThreadState::new(tg(101)));
+        d4.send_thread(
+            tg(100),
+            SigInfo::user(11, 1, 0),
+            SendKind::Kill,
+            &mut ledger,
+        );
+        assert_eq!(
+            d4.next_delivery(tg(100), &env(0x8000, 832, 1 << 20), &mut ledger)
+                .unwrap()
+                .delivery,
+            Delivery::GroupExit
+        );
     }
 
     #[test]
@@ -758,7 +967,7 @@ mod tests {
         assert!(p.may_end_wait(29));
         p.arm(ProducerSource::SigioFd(5), 29);
         assert!(!p.may_end_wait(29));
-        p.arm(ProducerSource::SigioFd(5), 10); // re-arm replaces
+        p.arm(ProducerSource::SigioFd(5), 10);
         assert!(p.may_end_wait(29));
         assert!(!p.may_end_wait(10));
         p.disarm(ProducerSource::SigioFd(5));
@@ -767,12 +976,13 @@ mod tests {
 
     #[test]
     fn seeded_ignored_and_state_clones() {
-        let mut d = ProcessDomain::new(tg(100), 8);
+        let mut ledger = Sigpending::new(8);
+        let mut d = ProcessDomain::new(tg(100));
         d.seed_initial(bit(13) | bit(SIGKILL));
         assert_eq!(d.actions[12].kind, DispositionKind::Ignore);
         assert_eq!(d.actions[8].kind, DispositionKind::Default);
-        let mut copy = d.clone(); // domain state is a plain value
-        copy.send_process(SigInfo::user(13, 1, 0), SendKind::Kill);
+        let mut copy = d.clone();
+        copy.send_process(SigInfo::user(13, 1, 0), SendKind::Kill, &mut ledger);
         assert_eq!(d.shared.len(), 0);
         assert_eq!(copy.shared.len(), 1);
     }

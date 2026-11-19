@@ -9,7 +9,7 @@ license = "BSD-2-Clause"
 readme = "README.md"
 homepage = "https://hermetic-infra.org"
 documentation = "https://docs.rs/reverie-signal"
-keywords = ["linux", "instrumentation", "hermit", "signals"]
+keywords = ["linux", "instrumentation", "signals"]
 categories = ["development-tools::debugging", "os::linux-apis"]
 
 # Pure leaf: no dependencies. State is plain values (Clone), transitions
