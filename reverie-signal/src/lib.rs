@@ -1013,7 +1013,7 @@ impl ProcessDomain {
                 let frame = FrameRequest {
                     handler: act.handler,
                     handler_mask,
-                    restore_mask: t.saved_sigmask.unwrap_or(t.blocked),
+                    restore_mask: t.saved_sigmask.or(t.real_blocked).unwrap_or(t.blocked),
                     use_altstack: use_alt,
                     on_altstack_now: on_now && !switch_to_alt,
                     restorer,
@@ -1024,7 +1024,12 @@ impl ProcessDomain {
                 // Delivering consumes saved_sigmask (signal_delivered
                 // clears it): a nested frame saves the *current* mask.
                 self.threads[idx].blocked = handler_mask;
+                // The stored mask (saved_sigmask, or the timedwait
+                // real_blocked) is consumed by this successful frame;
+                // a ForceSegv path above returns before this point and
+                // preserves both.
                 self.threads[idx].saved_sigmask = None;
+                self.threads[idx].real_blocked = None;
                 // SS_AUTODISARM: EVERY successful handler delivery
                 // resets an autodisarm altstack until rt_sigreturn,
                 // even one that did not use it (signal.c:3057ff).
@@ -2312,6 +2317,76 @@ mod tests {
             .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
             .unwrap();
         assert_eq!(p2.info.value, 4);
+    }
+
+    #[test]
+    fn sigcont_kernel_ignore_class_trio() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        // (1) Unblocked SIG_DFL SIGCONT: discarded, still continues.
+        let out = d.send_process(
+            SigInfo::user(SIGCONT, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert!(out.continued);
+        assert_eq!(out.queue, QueueResult::DiscardedIgnored);
+        // (2) set_action(SIGCONT, Default) flushes a pending blocked CONT.
+        d.thread_mut(tg(100)).unwrap().blocked = bit(SIGCONT);
+        d.actions[17] = handler(SA_RESTORER);
+        d.send_process(
+            SigInfo::user(SIGCONT, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert_ne!(d.shared.peek_mask() & bit(SIGCONT), 0);
+        d.set_action(SIGCONT, SigAction::default(), tg(100), &mut ledger);
+        assert_eq!(
+            d.shared.peek_mask() & bit(SIGCONT),
+            0,
+            "SIG_DFL SIGCONT flushes"
+        );
+        // (3) Blocked SIG_DFL SIGCONT retained, then Discard at delivery.
+        d.actions[17] = handler(SA_RESTORER);
+        d.send_process(
+            SigInfo::user(SIGCONT, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        d.actions[17] = SigAction::default();
+        d.thread_mut(tg(100)).unwrap().blocked = 0;
+        let p = d
+            .next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+            .unwrap();
+        assert_eq!(p.delivery, Delivery::Discard);
+        // Missing SA_RESTORER forces SIGSEGV (x86-64 has no vDSO restorer).
+        let mut d2 = ProcessDomain::new(tg(100), 1000, 64);
+        d2.actions[9] = handler(0);
+        d2.send_thread(
+            tg(100),
+            SigInfo::user(10, 1, 0),
+            SendSource::UserKill,
+            &mut ledger,
+        );
+        assert_eq!(
+            d2.next_delivery(tg(100), &env(0x8000, 832, 0), &mut ledger)
+                .unwrap()
+                .delivery,
+            Delivery::ForceSegv
+        );
+        // curr_target: the walk resumes where the last choice landed.
+        let mut d3 = ProcessDomain::new(tg(100), 1000, 64);
+        d3.threads.push(ThreadState::new(tg(101)));
+        d3.threads.push(ThreadState::new(tg(102)));
+        d3.thread_mut(tg(100)).unwrap().blocked = bit(10);
+        let f3 = [fact(tg(100)), fact(tg(101)), fact(tg(102))];
+        assert_eq!(d3.choose_receiver(10, tg(100), &f3), Some(tg(101)));
+        d3.thread_mut(tg(101)).unwrap().blocked = bit(10);
+        assert_eq!(
+            d3.choose_receiver(10, tg(100), &f3),
+            Some(tg(102)),
+            "walk resumes at curr_target"
+        );
     }
 
     #[test]
