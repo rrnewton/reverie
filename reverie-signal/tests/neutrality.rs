@@ -6,6 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(
+    unexpected_cfgs,
+    reason = "fbcode_build is supplied by the internal Buck build"
+)]
+
 //! Executable neutrality proof: this crate is exercised stand-alone by a
 //! strace-style observer that only records what the domain decides, and
 //! its sources are scanned for consumer/engine vocabulary. The scan is
@@ -76,6 +81,7 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
     // targets, all edge kinds — optional and target-specific incoming
     // dependencies are visible to Cargo even when disabled here.
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let _ = std::fs::remove_file(root.join("Cargo.lock"));
     let out = std::process::Command::new(cargo)
         .args([
             "tree",
@@ -130,6 +136,10 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
     (members, edges)
 }
 
+#[cfg_attr(
+    fbcode_build,
+    ignore = "fbsource-disabled: spawns cargo tree, unavailable in the Buck sandbox; the internal layering-tree target carries the equivalent check"
+)]
 #[test]
 fn no_incoming_dependency_edges() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -232,6 +242,29 @@ fn no_incoming_dependency_edges() {
         d_edges.iter().any(|e| e.contains("member-b")),
         "non-default inherited-alias member must be caught: {d_edges:?}"
     );
+    // Alias-only control: member-c reaches the package ONLY through
+    // the workspace alias, so the resolver pass alone must catch it
+    // (the declared-manifest scan cannot see an alias consumption).
+    std::fs::write(
+        tmp.join("experimental/member-b/Cargo.toml"),
+        "[package]\nname = \"member-b\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("member-a/Cargo.toml"),
+        "[package]\nname = \"member-a\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.join("member-c/Cargo.toml"),
+        "[package]\nname = \"member-c\"\nversion = \"0.0.0\"\nedition = \"2021\"\n[target.'cfg(windows)'.dependencies]\nsignals = { workspace = true, optional = true }\n",
+    )
+    .unwrap();
+    let (_g_checked, g_edges) = incoming_edges(&tmp);
+    assert!(
+        g_edges.iter().any(|e| e.contains("member-c")),
+        "alias-only windows edge must be caught by resolution alone: {g_edges:?}"
+    );
     // Deliberate fail-closed control: a broken workspace refuses.
     std::fs::write(tmp.join("Cargo.toml"), "this is not toml = [").unwrap();
     let (_b_checked, b_edges) = incoming_edges(&tmp);
@@ -242,6 +275,10 @@ fn no_incoming_dependency_edges() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
+#[cfg_attr(
+    fbcode_build,
+    ignore = "fbsource-disabled: reads workspace sources by path; Buck sandboxes do not expose them"
+)]
 #[test]
 fn sources_name_no_consumer_or_engine_policy() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

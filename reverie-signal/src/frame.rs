@@ -810,7 +810,12 @@ mod tests {
 
     fn run_c_abi_probe(name: &str) -> std::collections::BTreeMap<String, usize> {
         // Ported from the KVM backend's LinuxEmu tests with the lift.
-        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        // Prefer the run-time manifest dir: the compile-time value is a
+        // build-host path, absent when the binary runs elsewhere
+        // (remote Buck execution resolves fixtures at run time).
+        let source = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf())
             .join("tests/fixtures")
             .join(format!("signal_abi_{name}.c"));
         let binary =
@@ -843,6 +848,10 @@ mod tests {
             .collect()
     }
 
+    #[cfg_attr(
+        fbcode_build,
+        ignore = "fbsource-disabled: compiles a C ABI probe with cc at test time; internal pins come from the Buck-declared fixtures"
+    )]
     #[test]
     fn kernel_headers_independently_pin_signal_frame_layout() {
         let kernel = run_c_abi_probe("kernel");

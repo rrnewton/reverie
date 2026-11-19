@@ -1,5 +1,5 @@
 // Reviewer probe suite committed as regression tests: astra-seat-sigdomain
-// expanded probes (39). A failure names a semantic deviation from Linux.
+// expanded probes (41). A failure names a semantic deviation from Linux.
 
 use reverie_signal::frame::{XsaveImage, XstateDesc};
 use reverie_signal::*;
@@ -679,5 +679,69 @@ fn explicit_timedwait_exit_recalculates_notification_for_next_shared_send() {
         (pending_after_exit, receiver),
         (false, Some(task(100))),
         "now-blocked private USR1 must not suppress the next shared USR2 receiver"
+    );
+}
+
+#[test]
+fn immediate_timedwait_recalculates_notification_for_remaining_shared_signal() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.threads.push(ThreadState::new(task(101)));
+    d.actions[11] = handler(0);
+    d.thread_mut(task(101)).unwrap().blocked = bit(10);
+    d.send_thread(task(101), info(10, -1, 42), SendSource::SigQueue, &mut l);
+    d.send_process(info(12, 0, 0), SendSource::UserKill, &mut l);
+    assert_eq!(
+        d.choose_receiver(12, task(100), &[fact(task(100)), fact(task(101))]),
+        Some(task(100))
+    );
+    assert!(!d.thread(task(101)).unwrap().sigpending);
+    assert_eq!(d.thread(task(101)).unwrap().real_blocked, None);
+    assert_eq!(
+        d.dequeue_for_timedwait(task(101), bit(10), &mut l)
+            .unwrap()
+            .info
+            .value,
+        42
+    );
+    assert_ne!(d.shared.peek_mask() & bit(12), 0);
+    assert!(
+        d.thread(task(101)).unwrap().sigpending,
+        "Linux dequeue_signal recalculates notification even for an immediate wait; the remaining shared USR2 is unblocked here"
+    );
+}
+
+#[test]
+fn no_match_timedwait_recalculates_notification_without_ending_wait() {
+    let mut d = ProcessDomain::new(task(100), 1000, 8);
+    let mut l = Sigpending::new();
+    d.threads.push(ThreadState::new(task(101)));
+    d.actions[11] = handler(0);
+    d.thread_mut(task(101)).unwrap().blocked = bit(10);
+    d.send_process(info(12, 0, 0), SendSource::UserKill, &mut l);
+    assert_eq!(
+        d.choose_receiver(12, task(100), &[fact(task(100)), fact(task(101))]),
+        Some(task(100))
+    );
+    assert!(!d.thread(task(101)).unwrap().sigpending);
+    let before = (
+        d.thread(task(101)).unwrap().blocked,
+        d.thread(task(101)).unwrap().real_blocked,
+    );
+    assert!(
+        d.dequeue_for_timedwait(task(101), bit(10), &mut l)
+            .is_none()
+    );
+    assert_eq!(
+        (
+            d.thread(task(101)).unwrap().blocked,
+            d.thread(task(101)).unwrap().real_blocked
+        ),
+        before
+    );
+    assert_ne!(d.shared.peek_mask() & bit(12), 0);
+    assert!(
+        d.thread(task(101)).unwrap().sigpending,
+        "Linux dequeue_signal recalculates before returning zero too; no sleeping or mask-exit transition is required"
     );
 }

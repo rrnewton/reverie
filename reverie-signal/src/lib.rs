@@ -6,6 +6,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+#![allow(
+    unexpected_cfgs,
+    reason = "fbcode_build is supplied by the internal Buck build"
+)]
+
 //! A pure model of Linux signal semantics (kernel/signal.c), shared by
 //! every backend. The domain owns masks, pending instances, dispositions,
 //! alternate stacks, `curr_target` and the restart mapping. Callers supply
@@ -402,14 +407,15 @@ pub struct SchedFact {
     pub stopped: bool,
 }
 
+/// Unblocked pending work by mask alone (the recalc_sigpending sum).
+fn unblocked_pending(t: &ThreadState, shared: &SignalQueue) -> bool {
+    (t.private.peek_mask() | shared.peek_mask()) & !t.effective_blocked() != 0
+}
+
 fn has_unblocked_pending(t: &ThreadState, shared: &SignalQueue) -> bool {
     // task_sigpending is the per-thread notification flag, not a scan of
     // the shared queue: a fresh shared send has notified nobody yet.
-    if !t.sigpending {
-        return false;
-    }
-    let blocked = t.effective_blocked();
-    (t.private.peek_mask() | shared.peek_mask()) & !blocked != 0
+    t.sigpending && unblocked_pending(t, shared)
 }
 
 fn wants_signal(signo: i32, t: &ThreadState, shared: &SignalQueue, f: &SchedFact) -> bool {
@@ -579,7 +585,9 @@ impl Sigpending {
 /// Provisional, named: periodic-timer ignore/unignore transitions
 /// (posixtimer_sig_ignore) are not modelled yet; send_thread notifies
 /// without consulting job-control stop state (receiver selection is
-/// where stopped targets are excluded). Both are tracked for step 3.
+/// where stopped targets are excluded); and __set_task_blocked's
+/// retarget_shared_pending (waking another thread for a shared signal
+/// the mask change strands) is not modelled. Tracked for step 3.
 #[derive(Debug, Clone)]
 pub struct ProcessDomain {
     pub actions: [SigAction; NSIG as usize],
@@ -932,9 +940,7 @@ impl ProcessDomain {
             && let Some(saved) = self.threads[idx].real_blocked.take()
         {
             self.threads[idx].blocked = saved;
-            let t = &self.threads[idx];
-            let pending =
-                (t.private.peek_mask() | self.shared.peek_mask()) & !t.effective_blocked() != 0;
+            let pending = unblocked_pending(&self.threads[idx], &self.shared);
             self.threads[idx].sigpending = pending;
         }
     }
@@ -955,17 +961,17 @@ impl ProcessDomain {
         let pending = self.threads[idx]
             .private
             .dequeue_waited(waited)
-            .or_else(|| self.shared.dequeue_waited(waited))?;
+            .or_else(|| self.shared.dequeue_waited(waited));
+        // dequeue_signal always recalcs (signal.c:639), on a match AND
+        // on no-match — separately from the wait exit: a no-match must
+        // not end the wait or touch either mask.
+        let idx = self.threads.iter().position(|t| t.task == task).unwrap();
+        self.threads[idx].sigpending = unblocked_pending(&self.threads[idx], &self.shared);
+        let pending = pending?;
         if let InstanceKind::Charged(uid) = pending.kind {
             ledger.release(uid, 1);
         }
         self.exit_timedwait(task);
-        // recalc_sigpending after the dequeue: no unblocked work left
-        // means the notification flag drops with the wait.
-        let idx = self.threads.iter().position(|t| t.task == task).unwrap();
-        if !has_unblocked_pending(&self.threads[idx], &self.shared) {
-            self.threads[idx].sigpending = false;
-        }
         Some(pending)
     }
 
@@ -1025,9 +1031,7 @@ impl ProcessDomain {
         let delivery = self.resolve(idx, signo, act, env);
         // recalc_sigpending: clear notification when no unblocked work
         // remains for this thread.
-        if !has_unblocked_pending(&self.threads[idx], &self.shared) {
-            self.threads[idx].sigpending = false;
-        }
+        self.threads[idx].sigpending = unblocked_pending(&self.threads[idx], &self.shared);
         Some(DeliveryPlan {
             instance,
             receiver: task,
@@ -2654,6 +2658,33 @@ mod tests {
             t.sigpending,
             "another unblocked signal remains: notification set by recalc"
         );
+    }
+
+    #[test]
+    fn no_match_timedwait_recalculates_notification_without_ending_wait() {
+        let mut ledger = Sigpending::new();
+        let mut d = ProcessDomain::new(tg(100), 1000, 64);
+        d.threads.push(ThreadState::new(tg(101)));
+        d.send_process(SigInfo::user(12, 1, 0), SendSource::UserKill, &mut ledger);
+        assert_eq!(
+            d.choose_receiver(12, tg(100), &[fact(tg(100)), fact(tg(101))]),
+            Some(tg(100))
+        );
+        let t = d.thread_mut(tg(101)).unwrap();
+        t.blocked = bit(10);
+        t.sigpending = false;
+        assert!(
+            d.dequeue_for_timedwait(tg(101), bit(10), &mut ledger)
+                .is_none()
+        );
+        let t = d.thread(tg(101)).unwrap();
+        assert!(t.sigpending, "recalc sets notification for pending USR2");
+        assert_eq!(
+            (t.blocked, t.real_blocked),
+            (bit(10), None),
+            "masks untouched, wait not ended"
+        );
+        assert_ne!(d.shared.peek_mask() & bit(12), 0, "USR2 preserved");
     }
 
     #[test]
