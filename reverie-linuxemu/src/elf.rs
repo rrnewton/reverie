@@ -2662,7 +2662,12 @@ fn load_executable(
             credential_root: launcher.root,
         },
         dumpable: true,
-        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::default())),
+        // The table every launched program starts with, on every backend: the
+        // launcher's ignored signals, except SIGPIPE, plus SIGTTIN and SIGTTOU
+        // (`reverie::process::start_signals` says why).
+        process_signals: std::sync::Arc::new(std::sync::Mutex::new(ProcessSignalState::launched(
+            reverie::process::start_signals::ignored_at_launch(),
+        ))),
         signal_transaction: Default::default(),
         thread_signals: SharedThreadSignalState::default(),
         signal_dequeue_failure: None,

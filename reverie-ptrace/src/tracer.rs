@@ -43,7 +43,6 @@ use futures::future::BoxFuture;
 use futures::future::Either;
 use futures::stream::StreamExt;
 use nix::sys::ptrace;
-use nix::sys::signal;
 use nix::sys::signal::Signal;
 use nix::unistd;
 use nix::unistd::ForkResult;
@@ -3886,28 +3885,15 @@ fn init_tracee(intercept_rdtsc: bool) -> Result<(), Errno> {
 
     safeptrace::traceme_and_stop()?;
 
-    unsafe {
-        signal::sigaction(
-            signal::SIGTTIN,
-            &signal::SigAction::new(
-                signal::SigHandler::SigIgn,
-                signal::SaFlags::SA_RESTART,
-                signal::SigSet::empty(),
-            ),
-        )
-        .map_err(from_nix_error)?;
-
-        signal::sigaction(
-            signal::SIGTTOU,
-            &signal::SigAction::new(
-                signal::SigHandler::SigIgn,
-                signal::SaFlags::SA_RESTART,
-                signal::SigSet::empty(),
-            ),
-        )
-        .map_err(from_nix_error)?;
-    }
-
+    // The tracee keeps the dispositions it starts with. A program it executes
+    // gets the table every launched program starts with
+    // (`reverie::process::start_signals`), applied before this callback runs;
+    // a forked guest gets that table's job-control exception from
+    // `set_up_forked_guest`. Either way SIGTTIN and SIGTTOU are ignored. A
+    // Tool that holds a terminal's job-control signal until the interrupted
+    // call returns (a task keeps it in its single pending-signal slot) never
+    // sees the call return: the restarted call raises the signal again
+    // forever.
     Ok(())
 }
 
@@ -4658,6 +4644,12 @@ fn set_up_forked_guest(
         std::mem::forget(write1);
         std::mem::forget(write2);
     }
+    // A forked guest runs the caller's code and never executes a program, so
+    // the table every launched program starts with does not reach it. It
+    // still needs that table's job-control exception, for the reason
+    // `reverie::process::start_signals` gives.
+    reverie::process::start_signals::ignore_job_control_signals()
+        .map_err(|errno| ("ignore the terminal's job-control signals", errno))?;
     init_tracee(intercept_rdtsc).map_err(|errno| ("prepare itself for tracing", errno))?;
     seccomp_filter
         .load()
@@ -9363,6 +9355,50 @@ mod tests {
             .await
             .expect("function control hung")
             .expect("function tracing failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    /// A forked guest runs its caller's code and never executes a program, so
+    /// the table every launched program starts with
+    /// (`reverie::process::start_signals`) never reaches it. It still starts
+    /// with SIGTTIN and SIGTTOU ignored, that table's job-control exception
+    /// (`set_up_forked_guest`), although its caller has both at the default.
+    /// The guest exits 10 plus the first signal it finds not ignored.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_forked_guest_starts_with_the_job_control_signals_ignored() {
+        for signal in [libc::SIGTTIN, libc::SIGTTOU] {
+            // SAFETY: the default action installs no handler.
+            assert_ne!(
+                unsafe { libc::signal(signal, libc::SIG_DFL) },
+                libc::SIG_ERR
+            );
+        }
+        let tracer = spawn_fn::<(), _>(|| {
+            for signal in [libc::SIGTTIN, libc::SIGTTOU] {
+                // The kernel's struct sigaction: handler, flags, restorer, mask.
+                let mut old = [u64::MAX; 4];
+                // SAFETY: no new action; `old` is large enough for the old one.
+                let read = unsafe {
+                    libc::syscall(
+                        libc::SYS_rt_sigaction,
+                        signal,
+                        std::ptr::null::<u64>(),
+                        old.as_mut_ptr(),
+                        std::mem::size_of::<u64>(),
+                    )
+                };
+                if read != 0 || old[0] != libc::SIG_IGN as u64 {
+                    // SAFETY: ends the guest at once.
+                    unsafe { libc::_exit(10 + signal) };
+                }
+            }
+        })
+        .await
+        .expect("spawn the job-control control");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("job-control control hung")
+            .expect("job-control tracing failed");
         assert_eq!(status, ExitStatus::Exited(0));
     }
 

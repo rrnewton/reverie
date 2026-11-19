@@ -553,6 +553,29 @@ impl Default for ProcessSignalState {
 }
 
 impl ProcessSignalState {
+    /// A launched program's first state. The signals in `ignored` (signal `n`
+    /// at bit `n - 1`) are ignored and every other is at its default, as
+    /// `execve` leaves an image. SIGKILL and SIGSTOP cannot be ignored.
+    pub(crate) fn launched(ignored: u64) -> Self {
+        let unblockable = [libc::SIGKILL, libc::SIGSTOP];
+        Self {
+            dispositions: (1..=64)
+                .filter(|&signal| ignored & (1 << (signal - 1)) != 0)
+                .filter(|signal| !unblockable.contains(signal))
+                .map(|signal| {
+                    (
+                        signal,
+                        KernelSigaction {
+                            handler: libc::SIG_IGN as u64,
+                            ..KernelSigaction::default()
+                        },
+                    )
+                })
+                .collect(),
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn pending_generation(&self, signal: i32) -> u64 {
         self.pending_generations[usize::try_from(signal).expect("positive signal")]
     }
@@ -1454,6 +1477,37 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// A launched program's first table ignores the given signals, the
+    /// highest one included, and leaves every other signal at its default.
+    /// SIGKILL and SIGSTOP cannot be ignored, so a set naming them leaves them
+    /// at their defaults.
+    #[test]
+    fn a_launched_program_ignores_its_launch_set_and_defaults_the_rest() {
+        let bit = |signal: i32| 1u64 << (signal - 1);
+        let ignored =
+            bit(libc::SIGUSR1) | bit(33) | bit(64) | bit(libc::SIGKILL) | bit(libc::SIGSTOP);
+        let state = ProcessSignalState::launched(ignored);
+        let ignored_signals: Vec<i32> = state
+            .dispositions
+            .iter()
+            .filter(|(_, action)| action.is_ignored())
+            .map(|(&signal, _)| signal)
+            .collect();
+        assert_eq!(ignored_signals, vec![libc::SIGUSR1, 33, 64]);
+        assert_eq!(state.dispositions.len(), 3, "{:?}", state.dispositions);
+        assert_eq!(
+            state,
+            ProcessSignalState {
+                dispositions: state.dispositions.clone(),
+                ..ProcessSignalState::default()
+            }
+        );
+        assert_eq!(
+            ProcessSignalState::launched(0),
+            ProcessSignalState::default()
+        );
     }
 
     #[test]

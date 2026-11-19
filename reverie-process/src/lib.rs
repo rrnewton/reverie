@@ -34,6 +34,7 @@ mod pty;
 pub mod sanitizer;
 pub mod seccomp;
 mod spawn;
+pub mod start_signals;
 mod stdio;
 mod util;
 
