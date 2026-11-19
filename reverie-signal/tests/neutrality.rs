@@ -114,7 +114,9 @@ fn incoming_edges(root: &std::path::Path) -> (usize, Vec<String>) {
             continue;
         }
         let manifest = root.join(member).join("Cargo.toml");
+        // Fail closed: an unresolved member is reported, never skipped.
         let Ok(text) = std::fs::read_to_string(&manifest) else {
+            edges.push(format!("unresolved member {member}"));
             continue;
         };
         checked += 1;
