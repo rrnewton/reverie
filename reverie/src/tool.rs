@@ -32,6 +32,25 @@ use crate::guest::Guest;
 use crate::rdtsc::Rdtsc;
 use crate::rdtsc::RdtscResult;
 
+/// How a newly created thread's descriptor table relates to its
+/// parent's, as normalized by the layer that handled the clone
+/// creation. Delivered through
+/// [`Tool::on_descriptor_table_init`] before the child's state is
+/// built, so a tool that models descriptor tables never has to
+/// re-derive Linux table rules from thread-group ids.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(6805): descriptor-table lifecycle bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorTableInit {
+    /// The root thread: a fresh table with no parent.
+    Fresh,
+    /// The child shares its parent's descriptor table
+    /// (`CLONE_FILES`).
+    SharedWithParent,
+    /// The child received a copy of its parent's descriptor table.
+    CopiedFromParent,
+}
+
 /// Static stream role of a Tool, independent of mutable run configuration.
 ///
 /// This pure declaration is not serialized. A composing Tool must explicitly
@@ -1013,6 +1032,23 @@ pub trait Tool: Send + Sync + Default {
         _parent: Option<(Tid, &Self::ThreadState)>,
     ) -> Self::ThreadState {
         Default::default()
+    }
+
+    /// Observe how a new thread's descriptor table relates to its
+    /// parent's, delivered by the layer that handled the clone
+    /// creation before [`Tool::init_thread_state`] builds the
+    /// child's state and before the child can execute. Failed
+    /// creation attempts deliver nothing. The default does
+    /// nothing, so an ordinary run of a tool that does not model
+    /// descriptor tables pays no probe, lock or allocation for it.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(6805): descriptor-table lifecycle bridge.
+    fn on_descriptor_table_init(
+        &self,
+        _child: Tid,
+        _parent: Option<Tid>,
+        _init: DescriptorTableInit,
+    ) {
     }
 
     /// Bind a fresh root state to an initial image whose launch exec has
