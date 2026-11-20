@@ -671,10 +671,15 @@ pub enum InjectionStopOutcome {
     /// it holds any other signal there, and the injection reports that the
     /// call did not run (`ERESTARTSYS`).
     Hold,
-    /// The backend drops the signal and changes no other signal state, and
-    /// the injection fails with the refusal's errno instead of reporting
-    /// that the call did not run, so that no retry of the injection runs the
-    /// call again. The backend records the refusal for
+    /// The backend drops the signal, which the stop took from the kernel's
+    /// queue, together with what it kept of that instance, and changes no
+    /// other signal. The injection fails with the refusal's errno instead of
+    /// reporting that the call did not run, so that a retry does not run the
+    /// call again. That holds only for an errno that a retry does not take
+    /// for an interruption:
+    /// [`Guest::inject_with_retry`](crate::Guest::inject_with_retry) retries
+    /// `EINTR` and `ERESTARTSYS`, so a refusal carries neither, nor another of
+    /// the kernel's restart codes. The backend records the refusal for
     /// [`Guest::take_unsupported_refusal`](crate::Guest::take_unsupported_refusal),
     /// as it records one of its own.
     Refuse(crate::UnsupportedRefusal),

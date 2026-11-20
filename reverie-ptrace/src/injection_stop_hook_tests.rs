@@ -16,7 +16,9 @@
 //! guest resumes. A signal the Tool does not name is held without asking. The
 //! Tool is told the injected call with its arguments and the signal, and
 //! reads the thread's facts while it stays stopped
-//! (`crate::injection_stop_facts::Reader`).
+//! (`crate::injection_stop_facts::Reader`). A refusal also retires the
+//! backend's count of the signal as one already reported, so that a later
+//! signal of the number is reported as itself.
 //!
 //! The tracer sends the signal to the guest thread (`tgkill`), where it stays
 //! pending, and the Tool then injects a call, which the pending signal stops
@@ -374,4 +376,249 @@ fn a_signal_the_tool_does_not_decide_is_held_unasked() {
         panic!("no stop asked, only the injection: {events:?}");
     };
     assert_eq!((*result, *refusal), (-ERESTARTSYS, None), "{events:?}");
+}
+
+/// The steps of `a_refused_stop_retires_its_signals_report`'s guest, as the
+/// first argument of its probe.
+mod step {
+    /// The second argument is the address of a signal set holding SIGUSR2.
+    pub const SET: usize = 1;
+    /// The pending SIGUSR2 stops a call the Tool injects, and it refuses it.
+    pub const REFUSE: usize = 2;
+    /// The tracer sends another SIGUSR2, which stops a call the Tool
+    /// injects, and it holds it.
+    pub const HOLD: usize = 3;
+}
+
+/// What `Recounter` saw of SIGUSR2.
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
+enum Seen2 {
+    /// `Tool::handle_signal_event` reported it.
+    Reported,
+    /// `Tool::filter_unreported_signal` saw it passed on unreported, for the
+    /// reason named.
+    Unreported(String),
+    /// `Tool::decide_injection_stop` was asked about it, and refused it
+    /// (`true`) or held it.
+    Decided(bool),
+}
+
+#[derive(Debug, Default)]
+struct Log2(Mutex<Vec<Seen2>>);
+
+#[reverie::global_tool]
+impl GlobalTool for Log2 {
+    type Request = Seen2;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, seen: Seen2) {
+        self.0.lock().unwrap().push(seen);
+    }
+}
+
+/// The guest's set holding SIGUSR2, and how many times the Tool reported it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Steps {
+    set: usize,
+    reports: usize,
+}
+
+/// A Tool that decides SIGUSR2: it refuses a stop of a call it injected with
+/// `step::REFUSE` as the third argument and holds any other. Its first
+/// report of SIGUSR2 blocks the signal with an injection before passing it
+/// on, so that the resume puts the reported signal back in the kernel's
+/// queue, where it stays pending, and counts it as reported.
+#[derive(Debug, Default)]
+struct Recounter;
+
+#[reverie::tool]
+impl Tool for Recounter {
+    type GlobalState = Log2;
+    type ThreadState = Steps;
+
+    fn subscriptions(_: &()) -> Subscription {
+        let mut events = Subscription::none();
+        events.syscalls([PROBE]);
+        events
+    }
+
+    fn injection_stop_signals(_: &()) -> u64 {
+        bit(libc::SIGUSR2)
+    }
+
+    async fn decide_injection_stop<R: GlobalRPC<Log2>>(
+        &self,
+        rpc: &R,
+        stop: InjectionStop,
+        _facts: &dyn InjectionStopFacts,
+    ) -> InjectionStopOutcome {
+        let refuses = stop.call.is_some_and(|(_, args)| args.arg2 == step::REFUSE);
+        if stop.signal == libc::SIGUSR2 {
+            rpc.send_rpc(Seen2::Decided(refuses)).await;
+        }
+        if refuses {
+            InjectionStopOutcome::Refuse(REFUSAL)
+        } else {
+            InjectionStopOutcome::Hold
+        }
+    }
+
+    async fn filter_unreported_signal<R: GlobalRPC<Log2>>(
+        &self,
+        rpc: &R,
+        signal: reverie::UnreportedSignal,
+    ) -> bool {
+        if signal.number() == libc::SIGUSR2 {
+            rpc.send_rpc(Seen2::Unreported(signal.reason().name().to_owned()))
+                .await;
+        }
+        true
+    }
+
+    async fn handle_signal_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        signal: reverie::Signal,
+    ) -> Result<Option<reverie::Signal>, Errno> {
+        if signal != reverie::Signal::SIGUSR2 {
+            return Ok(Some(signal));
+        }
+        guest.send_rpc(Seen2::Reported).await;
+        let state = guest.thread_state_mut();
+        state.reports += 1;
+        if state.reports == 1 {
+            let block = Syscall::from_raw(
+                Sysno::rt_sigprocmask,
+                SyscallArgs::new(libc::SIG_BLOCK as usize, state.set, 0, 8, 0, 0),
+            );
+            assert_eq!(guest.inject(block).await, Ok(0), "block SIGUSR2");
+        }
+        Ok(Some(signal))
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let (_, args) = syscall.into_parts();
+        let inject = |choice: usize| {
+            Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, MARKER, choice, 0, 0, 0))
+        };
+        let result = match args.arg0 {
+            step::SET => {
+                guest.thread_state_mut().set = args.arg1;
+                return Ok(0);
+            }
+            step::REFUSE => {
+                // Unblocked for this one injection, the requeued SIGUSR2
+                // stops it before it runs.
+                let mask = guest.set_blocked_signals(0).await.expect("unblock");
+                let result = guest.inject(inject(step::REFUSE)).await;
+                assert_eq!(guest.take_unsupported_refusal(), Some(REFUSAL));
+                guest.set_blocked_signals(mask).await.expect("restore");
+                result
+            }
+            step::HOLD => {
+                let (pid, tid) = (guest.pid().as_raw(), guest.tid().as_raw());
+                // SAFETY: tgkill takes three integers and touches no memory.
+                let sent = unsafe { libc::syscall(libc::SYS_tgkill, pid, tid, libc::SIGUSR2) };
+                assert_eq!(sent, 0, "tgkill from the tracer");
+                guest.inject(inject(step::HOLD)).await
+            }
+            _ => guest.tail_inject(Syscall::from_raw(PROBE, args)).await,
+        };
+        // The injection's errno as a positive number, never a restart code,
+        // so that the probe returns it as it is.
+        Ok(match result {
+            Ok(value) => value,
+            Err(errno) => i64::from(errno.into_raw()),
+        })
+    }
+}
+
+/// A refused stop retires the signal's report with the signal. The Tool
+/// reports a SIGUSR2 and passes it on while it blocks it, so that the
+/// resume requeues it, counted as reported. A call the Tool injects with it
+/// unblocked takes that instance, and the Tool refuses the stop. A second,
+/// distinct SIGUSR2, held at another injection, is then reported as itself:
+/// were the refusal to keep the first instance's count, the hold would take
+/// that count, and the second signal would be passed on as one already
+/// reported, never seen by `Tool::handle_signal_event`.
+#[test]
+fn a_refused_stop_retires_its_signals_report() {
+    let (output, log) = crate::testing::test_fn_with_config::<Recounter, _>(
+        || {
+            // SAFETY: the handler only increments an atomic.
+            let installed = unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+                libc::sigaction(libc::SIGUSR2, &action, std::ptr::null_mut())
+            };
+            assert_eq!(installed, 0);
+            // SAFETY: sigemptyset and sigaddset write only the set.
+            let set = unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGUSR2);
+                set
+            };
+            // SAFETY: the probe takes integers. The Tool reads the set the
+            // address points at, which outlives every step below.
+            let probe = |at: usize, arg: libc::c_long| unsafe {
+                libc::syscall(libc::SYS_getppid, at as libc::c_long, arg)
+            };
+            assert_eq!(probe(step::SET, &set as *const _ as libc::c_long), 0);
+            // SAFETY: tgkill takes three integers and touches no memory.
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_tgkill,
+                    libc::getpid(),
+                    libc::gettid(),
+                    libc::SIGUSR2,
+                )
+            };
+            assert_eq!(sent, 0);
+            // The Tool reported that signal and blocked it, and it is pending.
+            assert_eq!(HANDLED.load(Ordering::SeqCst), 0, "blocked, not handled");
+            assert_eq!(probe(step::REFUSE, 0), libc::EIO as libc::c_long);
+            // SAFETY: sigprocmask reads the set and writes no old set.
+            let unblocked =
+                unsafe { libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut()) };
+            assert_eq!(unblocked, 0);
+            assert_eq!(
+                HANDLED.load(Ordering::SeqCst),
+                0,
+                "the refused signal is gone"
+            );
+            const ERESTARTSYS: libc::c_long = 512;
+            assert_eq!(probe(step::HOLD, 0), ERESTARTSYS);
+            assert_eq!(
+                HANDLED.load(Ordering::SeqCst),
+                1,
+                "the held signal is delivered"
+            );
+        },
+        (),
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        output.status,
+        ExitStatus::Exited(0),
+        "guest failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let seen = log.0.into_inner().unwrap();
+    assert_eq!(
+        seen,
+        [
+            Seen2::Reported,
+            Seen2::Decided(true),
+            Seen2::Decided(false),
+            Seen2::Reported,
+        ],
+        "the second SIGUSR2 is reported as itself"
+    );
 }

@@ -5346,18 +5346,19 @@ pub struct TracedTask<L: Tool> {
     /// (`hold_pending_signal`, `pending_signal_reported`), and
     /// `report_held_signal` passes that instance on unreported rather than
     /// report it twice. Any other stop that takes it from the queue ends its
-    /// count: an ordinary signal-delivery stop (`handle_signal`) or a direct
-    /// path (`filter_direct_unreported`). The count is by signal number, so
-    /// it follows instances only for standard signals, which have at most
-    /// one pending instance per queue. For a realtime signal, which can queue
-    /// several instances, it can mark the wrong one: a later instance of the
-    /// same number may be passed on unreported while the requeued one is
-    /// reported again. A realtime signal passed back this way also goes to
-    /// the tail of its queue, behind later instances of its number, and one
-    /// passed back from a syscall stop loses its siginfo (the kernel sends it
-    /// as SI_KERNEL). These arise only when `resume_with_signal` resumes a
-    /// reported realtime signal from an injection's stop while the thread
-    /// blocks it, or from a syscall stop
+    /// count: an ordinary signal-delivery stop (`handle_signal`), a direct
+    /// path (`filter_direct_unreported`), or an injection stop whose signal
+    /// the Tool refuses, which drops it (`hold_or_refuse`). The count is by
+    /// signal number, so it follows instances only for standard signals,
+    /// which have at most one pending instance per queue. For a realtime
+    /// signal, which can queue several instances, it can mark the wrong one:
+    /// a later instance of the same number may be passed on unreported while
+    /// the requeued one is reported again. A realtime signal passed back this
+    /// way also goes to the tail of its queue, behind later instances of its
+    /// number, and one passed back from a syscall stop loses its siginfo (the
+    /// kernel sends it as SI_KERNEL). These arise only when
+    /// `resume_with_signal` resumes a reported realtime signal from an
+    /// injection's stop while the thread blocks it, or from a syscall stop
     /// (<https://github.com/rrnewton/reverie/issues/207>).
     reported_requeued_signals: HashMap<AnySignal, u32>,
 
@@ -17576,11 +17577,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// decides (`GlobalState::injection_stop_signals`) is the Tool's to hold
     /// or refuse (`Tool::decide_injection_stop`), from the facts it asks for
     /// while the thread stays stopped (`crate::injection_stop_facts::Reader`). One
-    /// the Tool refuses is dropped and recorded as the injection's refusal
-    /// (`Guest::take_unsupported_refusal`), and its errno is returned, to be
-    /// the injection's result instead of `ERESTARTSYS`, which a retry of the
-    /// injection would run again. Any other signal, and one the Tool holds,
-    /// is held (`hold_pending_signal`), and `None` is returned.
+    /// the Tool refuses is dropped, with the count of a reported, requeued
+    /// instance it was (`reported_requeued_signals`), and recorded as the
+    /// injection's refusal (`Guest::take_unsupported_refusal`), and its errno
+    /// is returned, to be the injection's result instead of `ERESTARTSYS`,
+    /// which a retry of the injection would run again. Any other signal, and
+    /// one the Tool holds, is held (`hold_pending_signal`), and `None` is
+    /// returned.
     ///
     /// Only a stop before the call ran goes to the Tool. After the call ran,
     /// the signal is held whatever it is, and the call's outcome stands: the
@@ -17609,6 +17612,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 );
                 let errno = refusal.errno;
                 self.unsupported_refusal = Some(refusal);
+                // The stop took `sig` from the kernel's queue, and the refusal
+                // drops it. A reported, requeued instance of `sig` there was
+                // this one, as for a hold (`hold_pending_signal`), so its count
+                // ends with it rather than mark a later instance of the
+                // number as already reported.
+                self.take_reported_requeue(sig);
                 return Some(errno);
             }
         }

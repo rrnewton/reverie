@@ -1789,8 +1789,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/tool.rs",
-        94576,
-        "81f09412aa6d10298857bd1e72527345412f85bd72ee4039ed17926b0b77f197",
+        94934,
+        "6c77aa3c6aeed80dc0779d870e9616be6505acd169a37f0070f0926b09a0a384",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -40293,6 +40293,11 @@ mod tests {
             94576,
             "81f09412aa6d10298857bd1e72527345412f85bd72ee4039ed17926b0b77f197",
         ),
+        (
+            "reverie/src/tool.rs",
+            94934,
+            "6c77aa3c6aeed80dc0779d870e9616be6505acd169a37f0070f0926b09a0a384",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -40354,6 +40359,10 @@ mod tests {
         (
             122,
             "c90e7fc7895b89295d80194c77809216155b0d70aff1016027e324a1d7e077f0",
+        ),
+        (
+            123,
+            "8761211c1f4b6e9f7c519d3007f64944db0c45f073f0fe9c77aa8728668b0c17",
         ),
     ];
 
@@ -41786,6 +41795,11 @@ mod tests {
         // Keep the fixed catalog authoritative and reject their prior tuples.
         assert_eq!(CONTENT_REVERIE_CATALOG.len(), 88);
         let rejected_prior = [
+            (
+                "reverie/src/tool.rs",
+                94576,
+                "81f09412aa6d10298857bd1e72527345412f85bd72ee4039ed17926b0b77f197",
+            ),
             (
                 "reverie/src/tool.rs",
                 90715,
