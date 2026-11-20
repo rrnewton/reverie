@@ -1572,8 +1572,8 @@ const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
 const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     (
         "reverie-liteinst-artifact/src/preparation_identity.rs",
-        55168,
-        "a49de665049d98780ed59832387cb8017687527f961c822105fd0e47aa11f822",
+        54917,
+        "93a27a389f3995ce27daae2fdd812c95e2eef77d343e9f8b511d92be1b901988",
     ),
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
@@ -2224,6 +2224,69 @@ fn content_reverie_inventory(
     root: &Path,
 ) -> Result<(Vec<DeclaredSourceFile>, BTreeMap<String, FileIdentity>)> {
     content_reverie_inventory_for_image(root, FixedImageKind::Standalone)
+}
+
+/// The Reverie root that holds the lib.rs these tests were compiled from,
+/// for tests that read or copy reviewed Reverie sources. The parent of the
+/// run-time CARGO_MANIFEST_DIR comes first: Cargo sets it when it runs a test
+/// in the Reverie workspace, and the Buck unittest target points it into its
+/// staged sources. A host that compiles this file through `#[path]` from
+/// outside the workspace, such as a rust-script producer whose
+/// CARGO_MANIFEST_DIR is its own generated package, falls back to the root
+/// that `file!()` names: directly when the spelling is absolute, otherwise
+/// found above CARGO_MANIFEST_DIR or the current directory. A candidate is
+/// taken only when its lib.rs is byte-identical to the compiled one, so a
+/// wrong root fails by name instead of lending another tree's sources.
+#[cfg(test)]
+fn reverie_workspace_root() -> PathBuf {
+    let mut spelled = PathBuf::new();
+    for component in Path::new(file!()).components() {
+        match component {
+            std::path::Component::ParentDir => {
+                assert!(spelled.pop(), "{} escapes its root", file!())
+            }
+            std::path::Component::CurDir => {}
+            component => spelled.push(component.as_os_str()),
+        }
+    }
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    let compiled_file = if spelled.is_absolute() {
+        Some(spelled)
+    } else {
+        manifest_dir
+            .iter()
+            .cloned()
+            .chain(std::env::current_dir().ok())
+            .find_map(|start| {
+                start
+                    .ancestors()
+                    .map(|ancestor| ancestor.join(&spelled))
+                    .find(|file| file.is_file())
+            })
+    };
+    let depth = BUCK_QUALIFIER_SOURCE.split('/').count();
+    let candidates: Vec<PathBuf> = manifest_dir
+        .iter()
+        .filter_map(|dir| dir.parent())
+        .chain(
+            compiled_file
+                .iter()
+                .filter_map(|file| file.ancestors().nth(depth)),
+        )
+        .map(Path::to_path_buf)
+        .collect();
+    let compiled = qualifier_source_sha256();
+    candidates
+        .iter()
+        .find(|root| {
+            file_sha256(&root.join(BUCK_QUALIFIER_SOURCE)).is_ok_and(|digest| digest == compiled)
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no Reverie root holds the compiled {BUCK_QUALIFIER_SOURCE}; tried {candidates:?}"
+            )
+        })
 }
 fn clean_absolute_source_root(root: &Path) -> Result<()> {
     let normalized: PathBuf = root.components().collect();
@@ -41835,6 +41898,11 @@ mod tests {
             111517,
             "863fafa38640ddab2f44fbd9197581442b721f27739efaa5b486033e922814e0",
         ),
+        (
+            "reverie-liteinst-artifact/src/preparation_identity.rs",
+            54917,
+            "93a27a389f3995ce27daae2fdd812c95e2eef77d343e9f8b511d92be1b901988",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -41912,6 +41980,10 @@ mod tests {
         (
             126,
             "19b218f3cecbd11d94b1f7df9495b16c2a83169004c17a067cece23bb8842691",
+        ),
+        (
+            127,
+            "e0445b4fa4cc399975cc841ee0064d60d377016bb648770c6a65b5f8c9a8b06d",
         ),
     ];
 
@@ -44158,6 +44230,11 @@ mod tests {
                 110256,
                 "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
             ),
+            (
+                "reverie-liteinst-artifact/src/preparation_identity.rs",
+                55168,
+                "a49de665049d98780ed59832387cb8017687527f961c822105fd0e47aa11f822",
+            ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.
         // Catalogue-rebind enforcement runs here, inside content_source_identity_controls,
@@ -45920,19 +45997,6 @@ mod tests {
         assert!(content_root_binding_path(&canonical_graph, &workspace, Path::new("reverie")).is_err());
         assert!(content_root_binding_path(&serde_json::json!({"packages": []}), &workspace, Path::new("reverie"))
             .is_err());
-    }
-
-    // The Reverie workspace root is the parent of the run-time
-    // CARGO_MANIFEST_DIR: Cargo sets it when it runs a test, and a Buck
-    // test target points it into staged sources. Reading it at run time
-    // (not env!) keeps the compiling machine's path out of the test.
-    fn reverie_workspace_root() -> PathBuf {
-        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect(
-            "CARGO_MANIFEST_DIR names reverie-liteinst-artifact's directory at run time",
-        ))
-        .parent()
-        .expect("crate directory has a parent")
-        .to_path_buf()
     }
 
     #[test]
@@ -78733,22 +78797,16 @@ pub mod private_static {
             // The closed list must match the real workspace in both
             // directions. Read that from the workspace's own manifests --
             // the root manifest's member list and each member's package
-            // name -- through the run-time CARGO_MANIFEST_DIR (Cargo sets
-            // it; the Buck unittest target stages every workspace manifest
-            // and points it into the staged tree). The `cargo metadata`
+            // name -- under reverie_workspace_root (the run-time
+            // CARGO_MANIFEST_DIR's parent, where the Buck unittest target
+            // stages every workspace manifest, else the root file!() names).
+            // The `cargo metadata`
             // probe this used before assumed a Cargo binary and a full
             // checkout, which a Buck test sandbox has neither of; the
             // manifests are the same authority Cargo reads them from, and
             // any shape this reader does not understand fails by name
             // rather than guessing. Absence fails; no skip.
-            let workspace = PathBuf::from(
-                std::env::var_os("CARGO_MANIFEST_DIR").expect(
-                    "closed workspace-package check needs CARGO_MANIFEST_DIR at run time",
-                ),
-            )
-            .parent()
-            .expect("crate directory has a parent")
-            .to_path_buf();
+            let workspace = reverie_workspace_root();
             let root_manifest = fs::read_to_string(workspace.join("Cargo.toml"))
                 .expect("real workspace root manifest");
             let string_array = |key: &str| -> Vec<String> {
