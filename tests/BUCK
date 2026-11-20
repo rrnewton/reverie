@@ -34,14 +34,16 @@ CONFORMANCE_TESTS = [
 ]
 
 # Tests whose tools subscribe to CPUID, which Reverie's ptrace backend can
-# intercept only on a host with CPUID faulting.
-GATED_TESTS = ["cpuid.rs", "timer_semantics.rs"]
+# intercept only on a host with CPUID faulting, and a test whose cases name
+# their skip where the host lacks what they need (REVERIE_SKIP), which only
+# the gated runner reports as not relevant rather than passed.
+GATED_TESTS = ["cpuid.rs", "timer_semantics.rs", "timer_step_self_sigtrap.rs"]
 
 [
     rust_unittest(
         name = paths.replace_extension(test, ""),
         srcs = [test],
-        # timer_semantics and cpuid run through gated tests below (fb-only/gated_tests).
+        # GATED_TESTS run through gated tests below (fb-only/gated_tests).
         labels = run_gated_only() if test in GATED_TESTS else [],
         rustc_flags = sanitized_feature,
         deps = [

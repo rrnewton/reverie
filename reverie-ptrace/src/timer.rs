@@ -1069,10 +1069,6 @@ impl Timer {
     /// [`Timer::disregard_stop_before_period`] does: a request whose
     /// notification stays blocked would also leave an event whose single
     /// steps the stop ended with nothing to drive it.
-    // ptrace reports rt_sigreturn only on x86_64 (see
-    // `BackendCapabilities::reports_sigreturns`); reports on aarch64 would
-    // need this too.
-    #[cfg(target_arch = "x86_64")]
     pub(crate) fn disregard_sigreturn_stop(
         &mut self,
         notified_after_return: bool,
@@ -1514,7 +1510,6 @@ enum Interruption {
 
 /// A precise event that a reported `rt_sigreturn` found undelivered (see
 /// [`Timer::disregard_sigreturn_stop`]).
-#[cfg(target_arch = "x86_64")]
 #[derive(Debug, Copy, Clone)]
 struct UndeliveredEvent {
     clock_target: u64,
@@ -2743,7 +2738,6 @@ impl TimerImpl {
         }
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn disregard_sigreturn_stop(&mut self, notified_after_return: bool) -> Result<(), Errno> {
         // Both read before the stop is disregarded, which consumes what the
         // stop observed.
@@ -2768,7 +2762,6 @@ impl TimerImpl {
     /// single steps toward it under way, or with their cleanup failed. An
     /// Armed event the stop did not interrupt was delivered. `None` too for
     /// an imprecise event, and for a held initial-command request.
-    #[cfg(target_arch = "x86_64")]
     fn undelivered_precise_event(&self) -> Option<UndeliveredEvent> {
         if self.initial_command != InitialCommand::Ordinary {
             return None;
@@ -2810,7 +2803,6 @@ impl TimerImpl {
     /// neither is requested past it. A Scheduled event with an instruction
     /// offset counts as past its delivery point at its clock target already
     /// (see [`target_reached`]), so it is requested one branch later too.
-    #[cfg(target_arch = "x86_64")]
     fn request_again(&mut self, undelivered: UndeliveredEvent) -> Result<(), Errno> {
         let UndeliveredEvent {
             clock_target,
@@ -2971,7 +2963,6 @@ impl TimerImpl {
         std::mem::take(&mut self.notification_taken).then_some(Unfinished::Notification)
     }
 
-    #[cfg(target_arch = "x86_64")]
     fn retire(&mut self) -> Result<(), Errno> {
         self.recheck_kept_programming();
         // Only an event that no stop has decided is recorded here, as at the
@@ -7725,9 +7716,57 @@ mod tests {
         assert_eq!(timer.timer_status, EventStatus::Cancelled);
         assert_eq!(timer.overflow_period, None);
 
-        // A reported handler return keeps the same events, and where the
-        // stop above cancels an event nothing has delivered, requests it
-        // again at the same target, with records and without.
+        timer.event = super::ActiveEvent::Imprecise { clock_min: 0 };
+
+        assert!(take_timer_signal_now().is_none());
+        unsafe {
+            libc::pthread_sigmask(libc::SIG_UNBLOCK, &blocked, core::ptr::null_mut());
+        }
+    }
+
+    /// A reported handler return (`Timer::disregard_sigreturn_stop`) keeps a
+    /// precise event more than the keep margin short of its target, as a stop
+    /// that nothing continues does, and within the margin requests an event
+    /// nothing has delivered again at the same target, with records and
+    /// without, if the mask the return installs lets its notification
+    /// through; otherwise it cancels the event.
+    #[test]
+    fn a_reported_return_requests_an_undelivered_precise_event_again() {
+        use reverie::Pid;
+
+        use super::ClockCounter;
+        use super::EventStatus;
+        use super::InterruptedSteps;
+        use super::Interruption;
+        use super::TimerImpl;
+
+        // It checks whole programmings.
+        let _halving = HalvingForTest::set(false);
+        let mut blocked: libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            libc::sigemptyset(&mut blocked);
+            libc::sigaddset(&mut blocked, super::MARKER_SIGNAL as i32);
+            assert_eq!(
+                libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, core::ptr::null_mut()),
+                0
+            );
+        }
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let tid = Pid::from_raw(unsafe { libc::syscall(libc::SYS_gettid) } as i32);
+        let mut timer = TimerImpl::new(pid, tid, false).expect("control requires a working PMU");
+        assert_eq!(timer.timer.take_sample_records(), Some(0));
+        // The clock stops counting this thread, so that it can be read for
+        // the precise event: a counter read while it counts can change
+        // between the two reads a debug build compares.
+        timer.event = super::ActiveEvent::Imprecise { clock_min: 0 };
+        timer.clock.disable().unwrap();
+        const PERIOD: u64 = 10_000;
+        let keep_margin = super::get_pmu_config().keep_margin();
+        let far = 1_000 * keep_margin;
+        let precise = |timer: &TimerImpl, short: u64| super::ActiveEvent::Precise {
+            clock_target: timer.read_clock() + short,
+            offset: 0,
+        };
         let config = super::get_pmu_config();
         let requested_again = |timer: &TimerImpl, target| {
             assert_eq!(timer.timer_status, EventStatus::Scheduled);

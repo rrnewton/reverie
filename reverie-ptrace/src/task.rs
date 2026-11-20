@@ -1753,20 +1753,20 @@ struct TimerStepShield {
     /// ignored nor blocked at the start, and a step can change neither,
     /// because every syscall that could stops the step at its seccomp stop
     /// (`GlobalState::traces_signal_state_syscalls`). Then nothing is read or
-    /// written per step.
+    /// written per step but, on aarch64, the registers (`queues_sigtrap`).
     quiet: bool,
     /// As `quiet`, where a guest `rt_sigreturn` runs without a seccomp stop
-    /// (`GlobalState::reports_sigreturns` is false, as on aarch64): nothing
-    /// is read or written per step but the registers, until a step's
-    /// instruction is an `rt_sigreturn` (`sigreturn_frame_mask_address`),
-    /// which restores a mask from its frame. That step and every later one
-    /// take the full shield. Sound only while each resume runs one
-    /// instruction, or on x86-64 a block that holds no `syscall`
-    /// (`decode_block_bound`), so that only its first instruction can be an
-    /// `rt_sigreturn`; a resume that can run further must not use it. On
-    /// x86-64 the kernel must also refuse x32 syscalls, whose `rt_sigreturn`
-    /// and `rt_sigprocmask` are neither traced nor decoded
-    /// (`x32_syscalls_refused`).
+    /// (`GlobalState::reports_sigreturns` is false: the Tool does not observe
+    /// sigreturns, or a gdbserver is attached): nothing is read or written
+    /// per step but the registers, until a step's instruction is an
+    /// `rt_sigreturn` (`sigreturn_frame_mask_address`), which restores a mask
+    /// from its frame. That step and every later one take the full shield.
+    /// Sound only while each resume runs one instruction, or on x86-64 a
+    /// block that holds no `syscall` (`decode_block_bound`), so that only its
+    /// first instruction can be an `rt_sigreturn`; a resume that can run
+    /// further must not use it. On x86-64 the kernel must also refuse x32
+    /// syscalls, whose `rt_sigreturn` and `rt_sigprocmask` are neither traced
+    /// nor decoded (`x32_syscalls_refused`).
     quiet_unless_sigreturn: bool,
     /// Whether no step of this sequence can change the mask but by a guest
     /// `rt_sigreturn` or a trap of the guest's own, which the steps
@@ -1803,12 +1803,12 @@ struct TimerStepShield {
     pending_trap: bool,
     /// Whether the next step is over an aarch64 `svc` that can queue the
     /// thread a SIGTRAP with a code the guest chooses
-    /// (`timer::queues_the_thread_a_sigtrap`), read from the registers the
-    /// shield reads anyway. Such a step runs to the syscall's exit stop, as
-    /// `syscall_step`, so that the timer reads the queue before anything is
-    /// delivered (on x86_64 the timer chooses that itself,
-    /// `StepUnit::Syscall`). Not read under a tracer filter, where no shield
-    /// runs.
+    /// (`timer::queues_the_thread_a_sigtrap`), read from the registers before
+    /// every step the shield prepares, `quiet` ones included. Such a step
+    /// runs to the syscall's exit stop, as `syscall_step`, so that the timer
+    /// reads the queue before anything is delivered (on x86_64 the timer
+    /// chooses that itself, `StepUnit::Syscall`). Not read under a tracer
+    /// filter, where no shield runs.
     queues_sigtrap: bool,
     /// The site of a step refused because it would reach the target over
     /// such an `svc` (`QueuedSigtrapAtStep`); the step was not made.
@@ -1853,6 +1853,12 @@ impl TimerStepShield {
         #[cfg(target_arch = "x86_64")] regs: Option<&safeptrace::Regs>,
     ) -> Result<(), TraceError> {
         if self.quiet {
+            // On aarch64 the shield, not the timer, finds an `svc` that can
+            // queue the thread a SIGTRAP (`queues_sigtrap`).
+            #[cfg(target_arch = "aarch64")]
+            {
+                self.queues_sigtrap = svc_queues_the_thread_a_sigtrap(task, &task.getregs()?);
+            }
             self.stepped = true;
             return Ok(());
         }
@@ -3529,27 +3535,50 @@ fn callback_observation_decision(
 #[cfg(target_arch = "x86_64")]
 const UC_SIGMASK_OFFSET: u64 = 8 + 8 + 24 + 256;
 
-/// Whether the mask a reported `rt_sigreturn`'s `frame` installs is known
-/// and leaves reverie-ptrace's timer signal unblocked, so that a timer
-/// notification requested at the stop reaches the guest after the return
-/// (see [`crate::timer::Timer::disregard_sigreturn_stop`]). A frame the
-/// backend could not read may also make the kernel's read fault.
-#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
-fn timer_notified_after_return(frame: reverie::SigreturnFrame) -> bool {
-    matches!(
-        frame,
-        reverie::SigreturnFrame::Readable { mask }
-            if mask & (1 << (reverie::PERF_EVENT_SIGNAL as u32 - 1)) == 0
-    )
+/// The words of a guest `rt_sigreturn`'s frame that Linux reads before it
+/// installs the frame's mask, as offsets from the stack pointer at the call,
+/// the mask's word last ([`TracedTask::report_sigreturn`]). x86-64 reads the
+/// frame's `ucontext`, which starts at the stack pointer, for its `uc_flags`
+/// and then its `uc_sigmask` (`arch/x86/kernel/signal_64.c`).
+#[cfg(target_arch = "x86_64")]
+const SIGRETURN_FRAME_WORDS: [u64; 2] = [0, UC_SIGMASK_OFFSET];
+
+/// As on x86-64: aarch64 reads the frame's `uc_sigmask` before anything else
+/// of it (`restore_sigframe`, arch/arm64/kernel/signal.c), at
+/// `SIGRETURN_UC_SIGMASK_OFFSET` from the stack pointer, which is the frame.
+#[cfg(target_arch = "aarch64")]
+const SIGRETURN_FRAME_WORDS: [u64; 1] = [crate::sigtrap_state::SIGRETURN_UC_SIGMASK_OFFSET as u64];
+
+/// Whether Linux refuses an `rt_sigreturn` made with stack pointer `sp`
+/// before it reads the frame: aarch64's refuses one that is not 16-byte
+/// aligned, and raises SIGSEGV with the thread's mask unchanged
+/// (`sys_rt_sigreturn`, arch/arm64/kernel/signal.c:977-978 at v6.12.9).
+/// x86-64's checks no alignment (arch/x86/kernel/signal_64.c:246-261).
+fn sigreturn_refuses_stack_pointer(sp: u64) -> bool {
+    cfg!(target_arch = "aarch64") && !sp.is_multiple_of(16)
+}
+
+/// Whether a reported `rt_sigreturn` made with stack pointer `sp` installs
+/// the mask its `frame` holds, that mask is known, and it leaves
+/// reverie-ptrace's timer signal unblocked, so that a timer notification
+/// requested at the stop reaches the guest after the return (see
+/// [`crate::timer::Timer::disregard_sigreturn_stop`]). A frame the backend
+/// could not read may also make the kernel's read fault.
+fn timer_notified_after_return(sp: u64, frame: reverie::SigreturnFrame) -> bool {
+    !sigreturn_refuses_stack_pointer(sp)
+        && matches!(
+            frame,
+            reverie::SigreturnFrame::Readable { mask }
+                if mask & (1 << (reverie::PERF_EVENT_SIGNAL as u32 - 1)) == 0
+        )
 }
 
 /// What of the `rt_sigreturn` frame at stack pointer `sp` can be read: see
 /// [`TracedTask::report_sigreturn`].
-#[cfg(target_arch = "x86_64")]
 fn sigreturn_frame(task: &Stopped, sp: u64) -> reverie::SigreturnFrame {
-    let mut words = [0u64; 2];
+    let mut words = [0u64; SIGRETURN_FRAME_WORDS.len()];
     let mut protected = false;
-    for (word, offset) in words.iter_mut().zip([0, UC_SIGMASK_OFFSET]) {
+    for (word, offset) in words.iter_mut().zip(SIGRETURN_FRAME_WORDS) {
         let Some(address) = sp
             .checked_add(offset)
             .and_then(|address| usize::try_from(address).ok())
@@ -3572,7 +3601,9 @@ fn sigreturn_frame(task: &Stopped, sp: u64) -> reverie::SigreturnFrame {
     if protected {
         reverie::SigreturnFrame::Protected
     } else {
-        reverie::SigreturnFrame::Readable { mask: words[1] }
+        reverie::SigreturnFrame::Readable {
+            mask: words[SIGRETURN_FRAME_WORDS.len() - 1],
+        }
     }
 }
 
@@ -5760,9 +5791,11 @@ impl<L: Tool> TracedTask<L> {
             tid,
             options.reserved_input.clone(),
         ));
-        // The report reads an x86-64 signal frame (`report_sigreturn`).
-        let reports_sigreturns =
-            cfg!(target_arch = "x86_64") && L::observes_sigreturns(&cfg) && gdbserver.is_none();
+        // The report reads an x86-64 or aarch64 signal frame
+        // (`report_sigreturn`).
+        let reports_sigreturns = (cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"))
+            && L::observes_sigreturns(&cfg)
+            && gdbserver.is_none();
         let keeps_sigtrap_state = L::enforces_serialized_execution(&cfg);
         let caches_sigtrap_disposition = options
             .events
@@ -5787,10 +5820,13 @@ impl<L: Tool> TracedTask<L> {
             let traced: HashSet<Sysno> = options.events.iter_syscalls().collect();
             Sysno::iter().all(|nr| traced.contains(&nr))
         };
+        // Records also need the kernel to refuse x32 syscalls, which is asked
+        // only on x86-64 (`x32_syscalls_refused`): elsewhere none are kept.
         let keeps_signal_records = keeps_sigtrap_state
             && traces_signal_state_syscalls
             && reports_sigreturns
-            && sees_every_sighand_clone;
+            && sees_every_sighand_clone
+            && cfg!(target_arch = "x86_64");
         let global_state = GlobalState {
             gs_ref,
             cfg,
@@ -7643,12 +7679,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         // installs none later under the contract. An unsealed page counts
         // only while its canary is intact.
         //
-        // Where a guest `rt_sigreturn` runs without a stop (aarch64, or a Tool
-        // that does not observe sigreturns), a step can restore a mask only
-        // by running one, which its registers and instruction show before
-        // the step, so only those are read per step until one does: on
-        // aarch64 every step read the mask, about one `PTRACE_GETSIGMASK` per
-        // resume of a preemption-heavy guest.
+        // Where a guest `rt_sigreturn` runs without a stop (a Tool that does
+        // not observe sigreturns, or a gdbserver attached), a step can restore
+        // a mask only by running one, which its registers and instruction
+        // show before the step, so only those are read per step until one
+        // does: on aarch64 every step read the mask, about one
+        // `PTRACE_GETSIGMASK` per resume of a preemption-heavy guest.
         // Not read under a tracer filter, where no shield runs at all.
         let syscalls_stop = !filtered
             && self.global_state.traces_signal_state_syscalls
@@ -8130,12 +8166,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Reports to `Tool::handle_sigreturn` the guest's `rt_sigreturn` about
     /// to run with stack pointer `sp`. x86-64 `rt_sigreturn` reads its frame
     /// at `sp - 8`, so the frame's `ucontext`, whose `uc_flags` word comes
-    /// first, starts at `sp`. Each word is read with the guest's own access
+    /// first, starts at `sp`; aarch64's reads its frame at `sp`
+    /// (`SIGRETURN_FRAME_WORDS`). Each word is read with the guest's own access
     /// rights (`process_vm_readv`). A word that read fails on is read again
     /// with ptrace's forced access (`PTRACE_PEEKDATA`), which reads any
     /// mapped page whatever its protection: if that succeeds the word is
     /// mapped but protected, otherwise it is unmapped.
-    #[cfg(target_arch = "x86_64")]
     fn report_sigreturn(&mut self, task: &Stopped, sp: u64) -> reverie::SigreturnFrame {
         let frame = sigreturn_frame(task, sp);
         let report = reverie::SigreturnReport::new(self.tid(), sp, frame);
@@ -10098,10 +10134,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             // (`GlobalState::reports_sigreturns`). Any other traced
             // rt_sigreturn, which only a guest's own filter can trace, goes
             // to `handle_syscall_event` as before.
-            #[cfg(target_arch = "x86_64")]
             let sigreturn = nr == Sysno::rt_sigreturn && self.global_state.reports_sigreturns;
-            #[cfg(not(target_arch = "x86_64"))]
-            let sigreturn = false;
             if sigreturn {
                 // The Tool does not see this stop as an event and cannot ask
                 // for a timer here, so the stop keeps the timer event as an
@@ -10113,23 +10146,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // target, so that it still fires there, as the guest's clock
                 // alone decides, or, if a late notification let the guest
                 // pass the target, one branch after the return
-                // (`Timer::disregard_sigreturn_stop`). Only if
-                // the mask the frame installs leaves the timer's signal
-                // unblocked, since the new request's notification comes after
-                // the return; otherwise the event is cancelled, as before.
-                #[cfg(target_arch = "x86_64")]
-                {
-                    let sp = task
-                        .getregs()
-                        .tracee_context(tid, "read rt_sigreturn registers")?
-                        .rsp;
-                    let frame = self.report_sigreturn(&task, sp);
-                    let notified_after_return = timer_notified_after_return(frame);
-                    self.timer
-                        .disregard_sigreturn_stop(notified_after_return)
-                        .map_err(TraceError::from)
-                        .tracee_context(tid, "keep the timer across rt_sigreturn")?;
-                }
+                // (`Timer::disregard_sigreturn_stop`). Only if the call
+                // installs the frame's mask and that mask leaves the timer's
+                // signal unblocked (`timer_notified_after_return`), since the
+                // new request's notification comes after the return;
+                // otherwise the event is cancelled, as before.
+                let sp = task
+                    .getregs()
+                    .tracee_context(tid, "read rt_sigreturn registers")?
+                    .stack_ptr();
+                let frame = self.report_sigreturn(&task, sp);
+                let notified_after_return = timer_notified_after_return(sp, frame);
+                self.timer
+                    .disregard_sigreturn_stop(notified_after_return)
+                    .map_err(TraceError::from)
+                    .tracee_context(tid, "keep the timer across rt_sigreturn")?;
                 self.ordinary_continuation()?;
                 self.ordinary_trace_continuation()?;
                 self.timer.finalize_requests();
@@ -21377,20 +21408,35 @@ mod tests {
         use super::timer_notified_after_return;
         let timer = 1u64 << (reverie::PERF_EVENT_SIGNAL as u32 - 1);
         let usr1 = 1u64 << (libc::SIGUSR1 - 1);
-        assert!(timer_notified_after_return(SigreturnFrame::Readable {
-            mask: 0
-        }));
-        assert!(timer_notified_after_return(SigreturnFrame::Readable {
-            mask: usr1
-        }));
-        assert!(!timer_notified_after_return(SigreturnFrame::Readable {
-            mask: timer
-        }));
-        assert!(!timer_notified_after_return(SigreturnFrame::Readable {
-            mask: !0
-        }));
-        assert!(!timer_notified_after_return(SigreturnFrame::Unmapped));
-        assert!(!timer_notified_after_return(SigreturnFrame::Protected));
+        let sp = 0x7fff_0000;
+        assert!(timer_notified_after_return(
+            sp,
+            SigreturnFrame::Readable { mask: 0 }
+        ));
+        assert!(timer_notified_after_return(
+            sp,
+            SigreturnFrame::Readable { mask: usr1 }
+        ));
+        assert!(!timer_notified_after_return(
+            sp,
+            SigreturnFrame::Readable { mask: timer }
+        ));
+        assert!(!timer_notified_after_return(
+            sp,
+            SigreturnFrame::Readable { mask: !0 }
+        ));
+        assert!(!timer_notified_after_return(sp, SigreturnFrame::Unmapped));
+        assert!(!timer_notified_after_return(sp, SigreturnFrame::Protected));
+        // aarch64 refuses a stack pointer that is not 16-byte aligned, and
+        // installs no mask; x86-64 checks no alignment.
+        let open = SigreturnFrame::Readable { mask: usr1 };
+        for misaligned in [sp + 8, sp + 1] {
+            assert_eq!(
+                timer_notified_after_return(misaligned, open),
+                cfg!(target_arch = "x86_64"),
+                "sp {misaligned:#x}"
+            );
+        }
     }
 
     #[test]

@@ -422,7 +422,7 @@ rust_library(
     # forked function guests, so their stdout reaches the tracer.
     features = ["nightly"],
     named_deps = {"reverie": ":reverie"},
-    # Built by :reverie-ptrace-unittest below, on x86_64 only.
+    # Built by :reverie-ptrace-unittest below.
     unittests = False,
     deps = [
         "fbsource//third-party/libunwind:unwind-ptrace",  # Used for getting remote backtraces.
@@ -451,9 +451,8 @@ rust_library(
     ],
 )
 
-# The library's unit tests. Upstream runs them on x86_64 only: several use
-# x86_64-only syscalls (libc::SYS_pause has no aarch64 number), so they don't
-# build for aarch64. The library itself still builds everywhere.
+# The library's unit tests. Cases that need x86_64 are cfg-gated, so the
+# target builds and runs on aarch64 too.
 rust_unittest(
     name = "reverie-ptrace-unittest",
     srcs = glob([
@@ -489,7 +488,6 @@ rust_unittest(
         "--env-set=CARGO_MANIFEST_DIR=$(location :ptrace-test-fixtures)",
     ],
     target_compatible_with = [
-        "ovr_config//cpu:x86_64",
         "ovr_config//os:linux",
     ],
     deps = [

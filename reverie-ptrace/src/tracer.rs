@@ -4477,11 +4477,11 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             });
         }
 
-        // As `GlobalState::reports_sigreturns`: x86-64 only, and not while a
-        // gdbserver is attached.
+        // As `GlobalState::reports_sigreturns`: x86-64 and aarch64, and not
+        // while a gdbserver is attached.
         command.seccomp(seccomp_filter(
             &events,
-            cfg!(target_arch = "x86_64")
+            (cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"))
                 && T::observes_sigreturns(&config)
                 && self.gdbserver.is_none(),
         )?);
@@ -4763,7 +4763,8 @@ where
 
     let seccomp_filter = seccomp_filter(
         &events,
-        cfg!(target_arch = "x86_64") && L::observes_sigreturns(&config),
+        (cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"))
+            && L::observes_sigreturns(&config),
     )?;
 
     // While the pipes are made, no transient open of another thread may be

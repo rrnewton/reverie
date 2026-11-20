@@ -189,12 +189,15 @@ impl UnreportedSignal {
     }
 }
 
-/// What the backend could read of the two frame words x86-64 `rt_sigreturn`
-/// reads before it installs the frame's mask: `uc_flags` and `uc_sigmask`
-/// (`arch/x86/kernel/signal_64.c`).
+/// What the backend could read of the frame words a guest `rt_sigreturn`
+/// reads before it installs the frame's mask. On x86-64 those are two words,
+/// `uc_flags` and `uc_sigmask` (`sys_rt_sigreturn`,
+/// arch/x86/kernel/signal_64.c:246-261 at v6.12.9). On aarch64 it is
+/// `uc_sigmask` alone, which `restore_sigframe` reads before anything else of
+/// the frame (arch/arm64/kernel/signal.c:908-917 at v6.12.9).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SigreturnFrame {
-    /// The guest's own access rights read both words; `mask` is the frame's
+    /// The guest's own access rights read every word; `mask` is the frame's
     /// `uc_sigmask`. A protection key that the guest's PKRU denies is not
     /// seen by such a read (it is a remote read), so the kernel's read can
     /// still fault on a `Readable` frame.
@@ -204,7 +207,7 @@ pub enum SigreturnFrame {
     },
     /// A word is not mapped: the kernel's read faults.
     Unmapped,
-    /// Both words are mapped, but the guest's own access rights could not
+    /// Every word is mapped, but the guest's own access rights could not
     /// read one of them. Whether the kernel's read faults then depends on the
     /// mapping's protection, which the backend does not model: a `PROT_NONE`
     /// page faults, while a write-only page is readable on x86. A tracer
@@ -241,7 +244,9 @@ impl SigreturnReport {
     }
 
     /// The stack pointer at the call. On x86-64 the frame the call reads
-    /// starts 8 bytes below it, and its `ucontext` starts at it.
+    /// starts 8 bytes below it, and its `ucontext` starts at it. On aarch64
+    /// the frame starts at it, and Linux refuses one that is not 16-byte
+    /// aligned.
     pub const fn stack_pointer(&self) -> u64 {
         self.stack_pointer
     }

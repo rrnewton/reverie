@@ -364,8 +364,8 @@ pub struct BackendCapabilities {
 
     /// For a Tool for which [`Tool::observes_sigreturns`](crate::Tool::observes_sigreturns)
     /// holds, the backend calls [`Tool::handle_sigreturn`](crate::Tool::handle_sigreturn)
-    /// once for every guest `rt_sigreturn` made through the x86-64 syscall
-    /// ABI, before it runs. Four are not reported:
+    /// once for every guest `rt_sigreturn` made through the x86-64 or aarch64
+    /// syscall ABI, before it runs. Four are not reported:
     /// - an x32-ABI `rt_sigreturn`;
     /// - one the guest makes from the backend's own private page;
     /// - one that a seccomp filter of higher precedence than the backend's
@@ -490,8 +490,8 @@ impl BackendCapabilities {
         delivers_preemption_timer_events: true,
         runs_guest_code_between_injections: false,
         promotes_open_files_before_native_lifecycle: false,
-        // The report reads an x86-64 signal frame.
-        reports_sigreturns: cfg!(target_arch = "x86_64"),
+        // The report reads an x86-64 or aarch64 signal frame.
+        reports_sigreturns: cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"),
         // DR0-DR3 on x86-64; arm64 watchpoints are not implemented yet.
         hardware_watchpoints: if cfg!(target_arch = "x86_64") { 4 } else { 0 },
         provides_guest_backtraces: true,
@@ -667,7 +667,7 @@ mod tests {
             "delivers_preemption_timer_events": true,
             "runs_guest_code_between_injections": false,
             "promotes_open_files_before_native_lifecycle": false,
-            "reports_sigreturns": cfg!(target_arch = "x86_64"),
+            "reports_sigreturns": cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"),
             "hardware_watchpoints": if cfg!(target_arch = "x86_64") { 4 } else { 0 },
             "provides_guest_backtraces": true,
             "places_orphans": false,
@@ -678,13 +678,12 @@ mod tests {
 
     /// The ptrace table with `changes` applied; every key in `changes` must
     /// already exist and must actually change, so a table cannot list a no-op.
-    /// Off x86-64 ptrace neither reports sigreturns nor sets watchpoints, so
-    /// there a `reports_sigreturns: false` or `hardware_watchpoints: 0`
-    /// change is the no-op it would be, and is dropped.
+    /// Off x86-64 ptrace sets no watchpoints, so there a
+    /// `hardware_watchpoints: 0` change is the no-op it would be, and is
+    /// dropped.
     fn ptrace_with(mut changes: serde_json::Value) -> serde_json::Value {
         if !cfg!(target_arch = "x86_64") {
             let changes = changes.as_object_mut().unwrap();
-            changes.remove("reports_sigreturns");
             changes.remove("hardware_watchpoints");
         }
         let mut table = ptrace_table();

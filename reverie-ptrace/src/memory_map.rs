@@ -368,8 +368,8 @@ mod tests {
 
     /// A traced child's map is the kernel's, the same list the kernel prints
     /// to this process for it, complete: its stack and the files of its image
-    /// among them. Once it has exited, a zombie whose map is empty, it is
-    /// ESRCH, and so once it is reaped.
+    /// among them. Once it has exited, a zombie whose map lists nothing, it
+    /// is ESRCH, and so once it is reaped.
     #[test]
     fn a_traced_childs_map_is_the_kernels_until_it_exits() {
         let mut child = TracedChild::new();
@@ -394,11 +394,18 @@ mod tests {
         child.kill();
         let text = std::fs::read_to_string(format!("/proc/{}/status", child.pid)).unwrap();
         assert!(text.contains("State:\tZ (zombie)\n"), "{text}");
-        assert!(
-            std::fs::read(format!("/proc/{}/maps", child.pid))
-                .unwrap()
-                .is_empty()
-        );
+        // A zombie has no address space. Linux v6.12.9 opens its map anyway
+        // and reads nothing: `mm_access` finds no mm (kernel/fork.c:1563),
+        // `proc_mem_open` hands that on (fs/proc/base.c:838-849) and `m_start`
+        // ends the read at once (fs/proc/task_mmu.c:160-163). v7.3 reads
+        // nothing too: its `mm_access` gives ESRCH for no mm, which
+        // `proc_mem_open` turns back into none (fs/proc/base.c:829-830).
+        // Kernels in between that hand the ESRCH on refuse the open with it
+        // (6.16.1). Either way the zombie's map lists nothing.
+        match std::fs::read(format!("/proc/{}/maps", child.pid)) {
+            Ok(text) => assert!(text.is_empty(), "{}", String::from_utf8_lossy(&text)),
+            Err(error) => assert_eq!(error.raw_os_error(), Some(libc::ESRCH), "{error}"),
+        }
         assert_eq!(child.read(number), Err(NO_THREAD));
         child.reap();
         assert_eq!(child.read(number), Err(NO_THREAD));
