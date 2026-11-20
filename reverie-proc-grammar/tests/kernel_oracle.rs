@@ -347,7 +347,8 @@ fn inventory_floor_requires_an_absolute_attempted_minimum() {
 
 #[test]
 fn read_error_classification_requires_a_verified_cause() {
-    use ReadDisposition::{Excluded, Fail};
+    use ReadDisposition::Excluded;
+    use ReadDisposition::Fail;
 
     // A vanished task is the only excluded NotFound.
     assert_eq!(

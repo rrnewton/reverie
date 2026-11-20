@@ -291,7 +291,8 @@ unsafe impl GuestOut for Pselect6SigmaskArg {}
 // mirrors match their libc layouts field for field. If a libc upgrade
 // changes a layout, these fail to compile instead of leaking bytes.
 const _: () = {
-    use std::mem::{offset_of, size_of};
+    use std::mem::offset_of;
+    use std::mem::size_of;
     assert!(size_of::<libc::timespec>() == 8 + 8);
     assert!(size_of::<libc::timeval>() == 8 + 8);
     assert!(size_of::<libc::itimerspec>() == 16 + 16);
@@ -492,7 +493,10 @@ mod tests {
 
     #[test]
     fn struct_bytes_cover_the_whole_abi_struct() {
-        let value = libc::timespec { tv_sec: 1, tv_nsec: 2 };
+        let value = libc::timespec {
+            tv_sec: 1,
+            tv_nsec: 2,
+        };
         let bytes = struct_bytes(&value);
         assert_eq!(
             bytes.len(),

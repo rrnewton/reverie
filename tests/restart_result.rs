@@ -296,9 +296,10 @@ impl Tool for RestartResult {
             }
             Sysno::ppoll | Sysno::rt_sigsuspend
                 if interrupted
-                    && guest.thread_state().interrupted_arg0.is_none_or(|arg0| {
-                        arg0 == syscall.into_parts().1.arg0
-                    }) =>
+                    && guest
+                        .thread_state()
+                        .interrupted_arg0
+                        .is_none_or(|arg0| arg0 == syscall.into_parts().1.arg0) =>
             {
                 return Ok(RESTARTED);
             }
@@ -431,7 +432,9 @@ impl RestartResult {
             ),
             PLAIN_WITH_AN_UNREAD_FIRST_ARGUMENT | TAKEN_BY_ANOTHER_THREAD => Syscall::from_raw(
                 nr,
-                SyscallArgs::new(args.arg2, args.arg1, args.arg2, args.arg3, args.arg4, args.arg5),
+                SyscallArgs::new(
+                    args.arg2, args.arg1, args.arg2, args.arg3, args.arg4, args.arg5,
+                ),
             ),
             _ => syscall,
         };
@@ -3919,7 +3922,11 @@ mod tests {
 
     /// The guest's raw `rt_sigsuspend` with an empty mask while the thread
     /// blocks `sig`, handled under `flags`: as `masked_ppoll`.
-    fn masked_sigsuspend(sig: Signal, flags: Option<SaFlags>, mode: i64) -> (i64, i32, usize, bool) {
+    fn masked_sigsuspend(
+        sig: Signal,
+        flags: Option<SaFlags>,
+        mode: i64,
+    ) -> (i64, i32, usize, bool) {
         handle(sig, flags);
         SigSet::from(sig).thread_block().expect("block the signal");
         configure(0, sig, mode, &SigSet::empty());
@@ -4025,7 +4032,13 @@ mod tests {
     fn erestartnohand_under_a_temporary_mask_is_eintr_and_restores_the_mask() {
         let flags = Some(SaFlags::SA_RESTART);
         let want = (-1, libc::EINTR, 1, true);
-        check_masked_ppoll(ERESTARTNOHAND, Signal::SIGUSR1, flags, HELD_OVER_INJECTION, want);
+        check_masked_ppoll(
+            ERESTARTNOHAND,
+            Signal::SIGUSR1,
+            flags,
+            HELD_OVER_INJECTION,
+            want,
+        );
     }
 
     /// With no handler (SIGWINCH at its default action), or with the held
@@ -4047,7 +4060,13 @@ mod tests {
     #[test]
     fn a_handled_signal_pending_behind_one_without_a_handler_is_eintr() {
         let want = (-1, libc::EINTR, 1, true);
-        check_masked_ppoll(ERESTARTNOHAND, Signal::SIGWINCH, None, HELD_WITH_SIGUSR1_PENDING, want);
+        check_masked_ppoll(
+            ERESTARTNOHAND,
+            Signal::SIGWINCH,
+            None,
+            HELD_WITH_SIGUSR1_PENDING,
+            want,
+        );
     }
 
     /// `-ERESTARTSYS` with a handler under a pending mask restore, which Linux
@@ -4058,7 +4077,13 @@ mod tests {
     fn erestartsys_with_a_handler_under_a_temporary_mask() {
         let flags = Some(SaFlags::SA_RESTART);
         let want = (RESTARTED, 0, 1, true);
-        check_masked_ppoll(ERESTARTSYS, Signal::SIGUSR1, flags, HELD_OVER_INJECTION, want);
+        check_masked_ppoll(
+            ERESTARTSYS,
+            Signal::SIGUSR1,
+            flags,
+            HELD_OVER_INJECTION,
+            want,
+        );
     }
 
     /// The same on aarch64 is refused by name, with an error that ends the
@@ -4160,7 +4185,13 @@ mod tests {
     fn a_held_signal_the_mask_in_effect_then_blocks_restarts() {
         let flags = Some(SaFlags::SA_RESTART);
         let want = (RESTARTED, 0, 0, true);
-        check_masked_ppoll(ERESTARTNOHAND, Signal::SIGUSR1, flags, HELD_THEN_BLOCKED, want);
+        check_masked_ppoll(
+            ERESTARTNOHAND,
+            Signal::SIGUSR1,
+            flags,
+            HELD_THEN_BLOCKED,
+            want,
+        );
     }
 
     /// The plain pattern: the Tool injects the guest's own `ppoll` or
@@ -4231,7 +4262,12 @@ mod tests {
      {
         check_fn_with_config::<RestartResult, _>(
             || {
-                let got = masked_ppoll(0, Signal::SIGWINCH, None, PLAIN_WITH_AN_UNREAD_FIRST_ARGUMENT);
+                let got = masked_ppoll(
+                    0,
+                    Signal::SIGWINCH,
+                    None,
+                    PLAIN_WITH_AN_UNREAD_FIRST_ARGUMENT,
+                );
                 assert_eq!(
                     got,
                     (RESTARTED, 0, 0, true),

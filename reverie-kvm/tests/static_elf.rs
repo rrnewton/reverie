@@ -10982,7 +10982,7 @@ int main(void) {
                     user_ticks: 0,
                     system_ticks: 0,
                 },
-            forced: false,
+                forced: false,
             },
             BackendChildWaitEvent {
                 parent: SignalProcessId {
@@ -11000,7 +11000,7 @@ int main(void) {
                     user_ticks: 0,
                     system_ticks: 0,
                 },
-            forced: false,
+                forced: false,
             },
             BackendChildWaitEvent {
                 parent: SignalProcessId {
@@ -11018,7 +11018,7 @@ int main(void) {
                     user_ticks: 0,
                     system_ticks: 0,
                 },
-            forced: false,
+                forced: false,
             },
         ],
         "the backend callback must describe every real terminal waitability transition",
