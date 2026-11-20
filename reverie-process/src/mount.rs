@@ -17,10 +17,14 @@ use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::time::Duration;
 
 pub use nix::mount::MsFlags as MountFlags;
 use syscalls::Errno;
 
+use super::error::AddContext;
+use super::error::Context;
+use super::error::Error;
 use super::fd::Fd;
 use super::fd::FileType;
 use super::fd::create_dir_all;
@@ -49,6 +53,9 @@ pub struct Mount {
     allow_readonly_fallback: bool,
     optional: bool,
     pinned_source: Option<PinnedMountSource>,
+    /// Where a read-only bind waits between its bind and its remount
+    /// ([`Mount::pause_before_remount`]).
+    remount_pause: Option<RemountPause>,
     /// A path, fstype or data string that could not be represented as a C
     /// string, recorded at BUILD time and reported at [`Mount::mount`] time.
     ///
@@ -62,6 +69,19 @@ pub struct Mount {
     /// `Errno` the caller already handles.
     unrepresentable: bool,
 }
+
+/// The files [`Mount::pause_before_remount`] creates and waits for, how long
+/// it waits, and how often it looks for the release.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RemountPause {
+    arrived: CString,
+    release: CString,
+    limit: Duration,
+    poll: Duration,
+}
+
+/// How often a paused mount looks for its release file.
+const REMOUNT_PAUSE_POLL: Duration = Duration::from_millis(10);
 
 /// Represents a bind mount. Can be converted into a [`Mount`].
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,6 +97,105 @@ pub struct Bind {
     /// Whether the bind is mounted read-only (the `:ro` suffix in the
     /// `source:target:ro` spelling; `:rw` and no suffix are writable).
     pub readonly: bool,
+}
+
+/// Creates the arrival marker of [`Mount::pause_before_remount`] at `path`
+/// without blocking or following a symbolic link, and refuses an existing
+/// file there that is not a regular file. An existing regular file is reused:
+/// the marker says that a mount reached the pause since its caller last
+/// removed it, so a setup the caller runs again passes the same pause again
+/// instead of failing there. Allocates nothing.
+fn mark_arrival(path: &CString) -> Result<(), Errno> {
+    // SAFETY: `path` is a live NUL-terminated C string; `O_NONBLOCK` keeps an
+    // existing FIFO from blocking the open (with no reader it fails `ENXIO`).
+    let fd = Errno::result(unsafe {
+        libc::open(
+            path.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o644,
+        )
+    })?;
+    let mut stat = MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fd` is the descriptor opened above, and `stat` is a local
+    // buffer `fstat` fills on success.
+    let stated = Errno::result(unsafe { libc::fstat(fd, stat.as_mut_ptr()) });
+    // SAFETY: `fd` is open and owned here.
+    unsafe { libc::close(fd) };
+    stated?;
+    // SAFETY: `fstat` succeeded, so it filled `stat`.
+    let mode = unsafe { stat.assume_init() }.st_mode;
+    if mode & libc::S_IFMT != libc::S_IFREG {
+        return Err(Errno::EEXIST);
+    }
+    Ok(())
+}
+
+/// `CLOCK_MONOTONIC` now, allocating nothing.
+fn monotonic_now() -> Result<Duration, Errno> {
+    let mut now = MaybeUninit::<libc::timespec>::uninit();
+    // SAFETY: `now` is a local buffer `clock_gettime` fills on success.
+    Errno::result(unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, now.as_mut_ptr()) })?;
+    // SAFETY: `clock_gettime` succeeded, so it filled `now`.
+    let now = unsafe { now.assume_init() };
+    Ok(Duration::new(now.tv_sec as u64, now.tv_nsec as u32))
+}
+
+/// What the wait of [`Mount::pause_before_remount`] reads and asks for: the
+/// clock, whether the release file exists, and a sleep. [`SystemPause`] is the
+/// system's; the tests drive [`wait_for_release`] with a scripted one.
+trait PauseClock {
+    /// `CLOCK_MONOTONIC` now.
+    fn now(&mut self) -> Result<Duration, Errno>;
+    /// Whether the file `release` exists.
+    fn released(&mut self, release: &CString) -> bool;
+    /// Sleeps for about `duration`: longer when descheduled, shorter when a
+    /// signal interrupts it.
+    fn sleep(&mut self, duration: Duration);
+}
+
+/// The system's clock, file lookup and sleep, none of which allocates.
+struct SystemPause;
+
+impl PauseClock for SystemPause {
+    fn now(&mut self) -> Result<Duration, Errno> {
+        monotonic_now()
+    }
+
+    fn released(&mut self, release: &CString) -> bool {
+        // SAFETY: `release` is a live NUL-terminated C string; `access`
+        // allocates nothing.
+        unsafe { libc::access(release.as_ptr(), libc::F_OK) == 0 }
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        let duration = libc::timespec {
+            tv_sec: duration.as_secs() as libc::time_t,
+            tv_nsec: duration.subsec_nanos() as libc::c_long,
+        };
+        // SAFETY: `duration` is a valid local `timespec`; `EINTR` is fine,
+        // since the wait reads the clock again.
+        unsafe { libc::nanosleep(&duration, ptr::null_mut()) };
+    }
+}
+
+/// Waits for `pause`'s release until a deadline `pause.limit` after the first
+/// clock reading, decided by the deadline alone: a release counts only when
+/// it was seen before a clock reading that is still short of the deadline.
+/// Each sleep it asks for is the poll interval capped to the time left at the
+/// last reading, and a sleep that ends early just looks again.
+fn wait_for_release(pause: &RemountPause, clock: &mut impl PauseClock) -> Result<(), Errno> {
+    let deadline = clock.now()?.saturating_add(pause.limit);
+    loop {
+        let released = clock.released(&pause.release);
+        let now = clock.now()?;
+        if now >= deadline {
+            return Err(Errno::ETIMEDOUT);
+        }
+        if released {
+            return Ok(());
+        }
+        clock.sleep(pause.poll.min(deadline - now));
+    }
 }
 
 /// `util::to_cstring` panics on an interior NUL. Every mount path, source,
@@ -114,6 +233,7 @@ impl Mount {
             allow_readonly_fallback: false,
             optional: false,
             pinned_source: None,
+            remount_pause: None,
         }
     }
 
@@ -325,6 +445,46 @@ impl Mount {
     /// `ENOENT`/`ESTALE` as before.
     pub fn optional(mut self) -> Self {
         self.optional = true;
+        self
+    }
+
+    /// Pauses a read-only bind between its two steps: after the bind, and
+    /// before the remount of its target path that makes it read-only (Linux
+    /// ignores `MS_RDONLY` on a new bind). There the mount creates the regular
+    /// file `arrived`, without blocking, and then waits until a file `release`
+    /// exists, looking every 10 ms, until a `CLOCK_MONOTONIC` deadline `limit`
+    /// after its arrival. Past the deadline the remount step fails with
+    /// `ETIMEDOUT` ([`Context::BindRemount`]), so a pause nobody releases
+    /// fails the mount instead of holding it forever. Each sleep it asks for is
+    /// capped to the time left at its last clock reading, so a descheduled
+    /// sleep can overshoot the deadline but never admits a release seen after
+    /// it. A marker it cannot create, or an existing file there that is not a
+    /// regular file (a FIFO, say), fails the remount step at once with the
+    /// error. An existing regular file is reused, so a setup run again passes
+    /// the same pause again; a caller that waits for a later arrival removes
+    /// the marker first. A test can change what the target path names while
+    /// the mount is known to be in that window, and then let it go on. Any
+    /// other mount, and a pinned bind, which remounts through a descriptor,
+    /// never takes the pause; but a pause path that is not a C string still
+    /// refuses the mount it is set on, at its first step, as any
+    /// unrepresentable string does. Only code that builds the mount sets a
+    /// pause: Reverie takes none from an environment variable, an argument or
+    /// a file. Like the rest of a mount, the pause allocates nothing.
+    pub fn pause_before_remount<A: AsRef<OsStr>, R: AsRef<OsStr>>(
+        mut self,
+        arrived: A,
+        release: R,
+        limit: Duration,
+    ) -> Self {
+        let (arrived, arrived_ok) = checked_cstring(arrived);
+        let (release, release_ok) = checked_cstring(release);
+        self.unrepresentable |= !(arrived_ok && release_ok);
+        self.remount_pause = Some(RemountPause {
+            arrived,
+            release,
+            limit,
+            poll: REMOUNT_PAUSE_POLL,
+        });
         self
     }
 
@@ -627,7 +787,56 @@ impl Mount {
         Ok(())
     }
 
+    /// [`Mount::mount_in_steps`], with the errno alone.
+    #[cfg(test)]
     pub(super) fn mount(&mut self) -> Result<(), Errno> {
+        self.mount_in_steps().map_err(Errno::from)
+    }
+
+    /// [`Mount::mount`], naming the step that failed: [`Context::BindRemount`]
+    /// for the remount of a read-only bind's target path that makes it
+    /// read-only, [`Context::Mount`] for every other step.
+    pub(super) fn mount_in_steps(&mut self) -> Result<(), Error> {
+        if self.mount_without_remount().context(Context::Mount)? == Installed::Skipped {
+            return Ok(());
+        }
+
+        // Linux ignores MS_RDONLY on the initial bind mount. Apply per-mount flags with the
+        // required bind remount so a read-only bind cannot mutate its source inode. A pinned
+        // bind seals itself through its descriptor (`mount_pinned`).
+        if self.pinned_source.is_none()
+            && self.flags.contains(MountFlags::MS_BIND)
+            && self.flags.contains(MountFlags::MS_RDONLY)
+        {
+            self.pause_before_remount_if_asked()
+                .context(Context::BindRemount)?;
+            Errno::result(unsafe {
+                libc::mount(
+                    ptr::null(),
+                    self.target_ptr(),
+                    ptr::null(),
+                    (self.flags | MountFlags::MS_REMOUNT | self.locked_source_flags()).bits(),
+                    ptr::null(),
+                )
+            })
+            .context(Context::BindRemount)?;
+        }
+
+        Ok(())
+    }
+
+    /// The pause [`Mount::pause_before_remount`] asks for, if it does: the
+    /// arrival marker, then the wait for the release ([`wait_for_release`]).
+    fn pause_before_remount_if_asked(&self) -> Result<(), Errno> {
+        let Some(pause) = &self.remount_pause else {
+            return Ok(());
+        };
+        mark_arrival(&pause.arrived)?;
+        wait_for_release(pause, &mut SystemPause)
+    }
+
+    /// Every step of [`Mount::mount`] but the read-only remount of a bind.
+    fn mount_without_remount(&mut self) -> Result<Installed, Errno> {
         // ⚠️ REFUSE, DO NOT PANIC. A path/fstype/data string that is not a valid
         // C string was recorded at build time (see `unrepresentable`). This is
         // the first point that can report it, and it is a plain flag test
@@ -638,7 +847,7 @@ impl Mount {
             return Err(Errno::EINVAL);
         }
         if let Some(source) = &self.pinned_source {
-            return self.mount_pinned(source);
+            return self.mount_pinned(source).map(|()| Installed::Mounted);
         }
         let other_operations = MountFlags::MS_BIND
             | MountFlags::MS_REMOUNT
@@ -679,7 +888,7 @@ impl Mount {
                     Err(Errno::ENOENT)
                         if self.optional && self.flags.contains(MountFlags::MS_BIND) =>
                     {
-                        return Ok(());
+                        return Ok(Installed::Skipped);
                     }
                     Err(error) => return Err(error),
                 };
@@ -742,31 +951,25 @@ impl Mount {
                         return Err(Errno::ENOENT);
                     }
                 }
-                return Ok(());
+                Ok(Installed::Skipped)
             }
             Err(error) => match self.readonly_proc_fallback(error) {
-                Some(flags) => self.mount_with_flags(flags),
+                Some(flags) => self.mount_with_flags(flags).map(|()| Installed::Mounted),
                 None => Err(error),
             },
-            result => result,
-        }?;
-
-        // Linux ignores MS_RDONLY on the initial bind mount. Apply per-mount flags with the
-        // required bind remount so a read-only bind cannot mutate its source inode.
-        if self.flags.contains(MountFlags::MS_BIND) && self.flags.contains(MountFlags::MS_RDONLY) {
-            Errno::result(unsafe {
-                libc::mount(
-                    ptr::null(),
-                    self.target_ptr(),
-                    ptr::null(),
-                    (self.flags | MountFlags::MS_REMOUNT | self.locked_source_flags()).bits(),
-                    ptr::null(),
-                )
-            })?;
+            Ok(()) => Ok(Installed::Mounted),
         }
-
-        Ok(())
     }
+}
+
+/// What [`Mount::mount_without_remount`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Installed {
+    /// The mount is in place, so a read-only bind goes on to its remount.
+    Mounted,
+    /// An optional bind whose source had vanished was skipped
+    /// ([`Mount::optional`]): there is no bind to pause at or remount.
+    Skipped,
 }
 
 impl Bind {
@@ -819,6 +1022,7 @@ impl From<Bind> for Mount {
             allow_readonly_fallback: false,
             optional: false,
             pinned_source: None,
+            remount_pause: None,
             // A Bind built from a path that was not representable as a C string
             // holds an EMPTY CString (see `checked_cstring`). Empty source or
             // target is never a valid bind mount, so it carries the refusal
@@ -1240,10 +1444,253 @@ mod unrepresentable_paths_are_refused_not_panics {
         );
     }
 
+    /// A pause path that cannot be a C string refuses the whole mount at its
+    /// first step, as any other unrepresentable string does.
+    #[test]
+    fn a_pause_path_with_an_interior_nul_refuses_at_the_mount_step() {
+        let mut m = Mount::bind("/test/source", "/test/target")
+            .readonly()
+            .pause_before_remount(
+                OsStr::from_bytes(b"/test/arr\0ived"),
+                "/test/release",
+                std::time::Duration::from_secs(1),
+            );
+        assert_eq!(
+            m.mount_in_steps(),
+            Err(crate::Error::new(Errno::EINVAL, crate::Context::Mount))
+        );
+    }
+
+    /// The pause is taken only by a read-only bind, but its paths are checked
+    /// on every mount it is set on: on a writable bind, which never pauses, a
+    /// pause path that cannot be a C string still refuses that mount.
+    #[test]
+    fn a_pause_path_with_an_interior_nul_refuses_a_bind_that_never_pauses() {
+        let mut m = Mount::bind("/test/source", "/test/target").pause_before_remount(
+            "/test/arrived",
+            OsStr::from_bytes(b"/test/rel\0ease"),
+            std::time::Duration::from_secs(1),
+        );
+        assert_eq!(
+            m.mount_in_steps(),
+            Err(crate::Error::new(Errno::EINVAL, crate::Context::Mount))
+        );
+    }
+
     #[test]
     fn a_bind_from_a_str_with_an_interior_nul_refuses() {
         let b = Bind::from("/test/a\0b");
         let mut m: Mount = b.into();
         assert_eq!(m.mount(), Err(Errno::EINVAL));
+    }
+}
+
+/// The pause's wait ([`wait_for_release`]) on a scripted clock, and its arrival
+/// marker ([`mark_arrival`]): what the wait asks to sleep and when it gives up,
+/// without a container or the real clock.
+#[cfg(test)]
+mod remount_pause {
+    use std::ffi::CString;
+    use std::fs;
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+    use std::time::Duration;
+
+    use syscalls::Errno;
+
+    use super::PauseClock;
+    use super::REMOUNT_PAUSE_POLL;
+    use super::RemountPause;
+    use super::mark_arrival;
+    use super::wait_for_release;
+
+    const MS: Duration = Duration::from_millis(1);
+    /// Where the scripted clock starts: any time, as the wait only measures
+    /// from its first reading.
+    const START: Duration = Duration::from_secs(1000);
+
+    /// A clock that stands still except across a sleep, which moves it on by
+    /// what the script says that sleep took; and a release that appears at a
+    /// set time.
+    struct ScriptedClock {
+        now: Duration,
+        release_at: Option<Duration>,
+        /// How long a sleep that asked for `asked` takes.
+        took: fn(asked: Duration, sleep: usize) -> Duration,
+        asked: Vec<Duration>,
+    }
+
+    impl ScriptedClock {
+        fn new(release_at: Option<Duration>, took: fn(Duration, usize) -> Duration) -> Self {
+            Self {
+                now: START,
+                release_at: release_at.map(|at| START + at),
+                took,
+                asked: Vec::new(),
+            }
+        }
+    }
+
+    impl PauseClock for ScriptedClock {
+        fn now(&mut self) -> Result<Duration, Errno> {
+            Ok(self.now)
+        }
+
+        fn released(&mut self, _release: &CString) -> bool {
+            self.release_at.is_some_and(|at| self.now >= at)
+        }
+
+        fn sleep(&mut self, duration: Duration) {
+            let took = (self.took)(duration, self.asked.len());
+            self.asked.push(duration);
+            self.now += took;
+        }
+    }
+
+    fn pause(limit: Duration, poll: Duration) -> RemountPause {
+        RemountPause {
+            arrived: CString::new("/arrived").unwrap(),
+            release: CString::new("/release").unwrap(),
+            limit,
+            poll,
+        }
+    }
+
+    fn exact(asked: Duration, _sleep: usize) -> Duration {
+        asked
+    }
+
+    /// With a poll longer than the limit, the one sleep asked for is the
+    /// limit itself, and the wait gives up exactly at its deadline.
+    #[test]
+    fn a_pause_never_released_sleeps_to_its_deadline_and_no_further() {
+        let mut clock = ScriptedClock::new(None, exact);
+        let result = wait_for_release(&pause(300 * MS, Duration::from_secs(10)), &mut clock);
+        assert_eq!(result, Err(Errno::ETIMEDOUT));
+        assert_eq!(clock.asked, [300 * MS], "the sleep is capped to the time left");
+        assert_eq!(clock.now, START + 300 * MS, "it gives up at its deadline");
+    }
+
+    /// Each sleep is the poll interval, and the last is what is left of the
+    /// limit.
+    #[test]
+    fn each_sleep_is_the_poll_capped_to_the_time_left() {
+        let mut clock = ScriptedClock::new(None, exact);
+        let result = wait_for_release(&pause(25 * MS, 10 * MS), &mut clock);
+        assert_eq!(result, Err(Errno::ETIMEDOUT));
+        assert_eq!(clock.asked, [10 * MS, 10 * MS, 5 * MS]);
+    }
+
+    /// A sleep descheduled past the deadline overshoots it, and a release
+    /// that appeared during that sleep, after the deadline, does not count.
+    #[test]
+    fn a_release_seen_only_after_an_overshooting_sleep_does_not_count() {
+        let mut clock = ScriptedClock::new(Some(310 * MS), |asked, _| asked + 50 * MS);
+        let result = wait_for_release(&pause(300 * MS, Duration::from_secs(10)), &mut clock);
+        assert_eq!(result, Err(Errno::ETIMEDOUT));
+        assert_eq!(clock.asked, [300 * MS]);
+    }
+
+    /// A release seen before the deadline ends the wait.
+    #[test]
+    fn a_release_seen_before_the_deadline_ends_the_wait() {
+        let mut clock = ScriptedClock::new(Some(150 * MS), exact);
+        let result = wait_for_release(&pause(300 * MS, 100 * MS), &mut clock);
+        assert_eq!(result, Ok(()));
+        assert_eq!(clock.asked, [100 * MS, 100 * MS]);
+    }
+
+    /// The pause the builder sets looks for its release every 10 ms, the
+    /// cadence the doc gives, each sleep capped to the time left.
+    #[test]
+    fn the_builder_pause_looks_every_10_ms() {
+        let mount = super::Mount::bind("/source", "/target")
+            .readonly()
+            .pause_before_remount("/arrived", "/release", 25 * MS);
+        let pause = mount.remount_pause.clone().unwrap();
+        assert_eq!(pause.poll, 10 * MS);
+        let mut clock = ScriptedClock::new(None, exact);
+        assert_eq!(wait_for_release(&pause, &mut clock), Err(Errno::ETIMEDOUT));
+        assert_eq!(clock.asked, [10 * MS, 10 * MS, 5 * MS]);
+    }
+
+    /// A release already there ends the wait before any sleep.
+    #[test]
+    fn a_release_already_there_needs_no_sleep() {
+        let mut clock = ScriptedClock::new(Some(Duration::ZERO), exact);
+        let result = wait_for_release(&pause(300 * MS, REMOUNT_PAUSE_POLL), &mut clock);
+        assert_eq!(result, Ok(()));
+        assert!(clock.asked.is_empty(), "{:?}", clock.asked);
+    }
+
+    /// A sleep a signal cuts short (here the first two, at once) only makes
+    /// the wait look again: it neither gives up early nor stops capping the
+    /// sleeps it asks for to the time left.
+    #[test]
+    fn an_interrupted_sleep_just_looks_again() {
+        let mut clock = ScriptedClock::new(None, |asked, sleep| {
+            if sleep < 2 { Duration::ZERO } else { asked }
+        });
+        let result = wait_for_release(&pause(300 * MS, Duration::from_secs(10)), &mut clock);
+        assert_eq!(result, Err(Errno::ETIMEDOUT));
+        assert_eq!(clock.asked, [300 * MS, 300 * MS, 300 * MS]);
+        assert_eq!(clock.now, START + 300 * MS);
+    }
+
+    fn c_path(path: &Path) -> CString {
+        CString::new(path.as_os_str().as_bytes()).unwrap()
+    }
+
+    /// The marker is a new empty regular file.
+    #[test]
+    fn an_arrival_marker_is_created_as_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let arrived = temp.path().join("arrived");
+        assert_eq!(mark_arrival(&c_path(&arrived)), Ok(()));
+        let metadata = fs::symlink_metadata(&arrived).unwrap();
+        assert!(metadata.is_file(), "{metadata:?}");
+        assert_eq!(metadata.len(), 0);
+    }
+
+    /// An existing regular file is reused as it is: a setup run again passes
+    /// the same pause again.
+    #[test]
+    fn an_existing_regular_marker_is_reused_as_it_is() {
+        let temp = tempfile::tempdir().unwrap();
+        let arrived = temp.path().join("arrived");
+        fs::write(&arrived, "an earlier arrival").unwrap();
+        assert_eq!(mark_arrival(&c_path(&arrived)), Ok(()));
+        assert_eq!(fs::read(&arrived).unwrap(), b"an earlier arrival");
+    }
+
+    /// A FIFO with no reader fails at once (`ENXIO`) instead of blocking the
+    /// open, so the wait's deadline cannot be skipped by a marker that never
+    /// opens.
+    #[test]
+    fn a_fifo_marker_fails_at_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let arrived = temp.path().join("arrived");
+        let fifo = c_path(&arrived);
+        // SAFETY: `fifo` is a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        assert_eq!(mark_arrival(&fifo), Err(Errno::ENXIO));
+    }
+
+    /// A symbolic link is not followed, even to a regular file.
+    #[test]
+    fn a_symlink_marker_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        fs::write(&file, "").unwrap();
+        let arrived = temp.path().join("arrived");
+        std::os::unix::fs::symlink(&file, &arrived).unwrap();
+        assert_eq!(mark_arrival(&c_path(&arrived)), Err(Errno::ELOOP));
+    }
+
+    /// A directory is not a marker.
+    #[test]
+    fn a_directory_marker_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        assert_eq!(mark_arrival(&c_path(temp.path())), Err(Errno::EISDIR));
     }
 }

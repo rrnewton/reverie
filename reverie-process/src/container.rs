@@ -735,7 +735,7 @@ impl Container {
 
         // Mount all the things.
         for mount in &mut self.mounts {
-            mount.mount().context(Context::Mount)?;
+            mount.mount_in_steps()?;
         }
 
         // Change root directory. Note that we do this *after* mounting anything

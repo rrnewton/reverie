@@ -51,6 +51,13 @@ pub enum Context {
     Seccomp,
     /// Exec failed.
     Exec,
+    /// The remount that makes a read-only bind read-only failed. Linux ignores
+    /// `MS_RDONLY` on a new bind, so a read-only bind is made in two steps: the
+    /// bind, then a remount of the target path ([`Context::Mount`] covers the
+    /// first). Between them the path can come to name something other than the
+    /// new bind (another process renamed a file over the target, or removed
+    /// it), and the remount then fails.
+    BindRemount,
 }
 
 impl Context {
@@ -74,6 +81,7 @@ impl Context {
             Self::PreExec => "pre_exec callback(s) failed",
             Self::Seccomp => "failed to install seccomp filter",
             Self::Exec => "execvp failed",
+            Self::BindRemount => "remounting a read-only bind by its target path failed",
         }
     }
 }

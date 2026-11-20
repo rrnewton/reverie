@@ -1006,6 +1006,468 @@ mod tests {
         );
     }
 
+    /// A read-only optional bind, with a pause, whose source vanished: setup
+    /// skips it whole, neither pausing ([`Mount::pause_before_remount`]) nor
+    /// remounting a target that is not there. `target` and `mount` choose the
+    /// path that finds the source gone.
+    async fn assert_a_vanished_read_only_optional_bind_skips_its_pause_and_remount(
+        target: &std::path::Path,
+        mount: Mount,
+        arrived: &std::path::Path,
+        release: &std::path::Path,
+    ) {
+        // Released in advance: a pause the skip must not take returns at once,
+        // and the remount's refusal shows instead of a hang.
+        fs::write(release, "").unwrap();
+        let output = Command::new("true")
+            .map_root()
+            .mount(mount.optional().readonly().pause_before_remount(
+                arrived,
+                release,
+                std::time::Duration::from_secs(120),
+            ))
+            .output()
+            .await
+            .unwrap_or_else(|error| panic!("a skipped bind over {target:?} refused: {error}"));
+        assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+        assert!(!target.exists(), "no placeholder is left at {target:?}");
+        assert!(!arrived.exists(), "a skipped bind over {target:?} must not pause");
+    }
+
+    /// The source is gone when setup looks at it to create the target
+    /// (`touch_target`).
+    #[tokio::test]
+    async fn mount_optional_read_only_bind_whose_source_setup_finds_gone_skips_its_pause_and_remount()
+     {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let pause = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing");
+        let target = temp.path().join("touched");
+        assert_a_vanished_read_only_optional_bind_skips_its_pause_and_remount(
+            &target,
+            Mount::bind(&missing, &target).touch_target(),
+            &pause.path().join("arrived"),
+            &pause.path().join("release"),
+        )
+        .await;
+    }
+
+    /// The bind finds its source gone and deletes the empty placeholder.
+    #[tokio::test]
+    async fn mount_optional_read_only_bind_whose_bind_finds_its_source_gone_skips_its_pause_and_remount()
+     {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let pause = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing");
+        let target = temp.path().join("placeholder");
+        fs::write(&target, "").unwrap();
+        assert_a_vanished_read_only_optional_bind_skips_its_pause_and_remount(
+            &target,
+            Mount::bind(&missing, &target),
+            &pause.path().join("arrived"),
+            &pause.path().join("release"),
+        )
+        .await;
+    }
+
+    /// Runs `true` in a new user and mount namespace with `mount`, returning
+    /// the result and how long the launch took.
+    fn run_with_mount(mount: Mount) -> (Result<i32, RunError>, std::time::Duration) {
+        let start = std::time::Instant::now();
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(mount)
+            .run(|| 0);
+        (result, start.elapsed())
+    }
+
+    /// A read-only bind of a fresh `source` at `target`, pausing at `arrived`
+    /// until `release` or `limit`.
+    fn paused_bind(
+        source: &Path,
+        target: &Path,
+        arrived: &Path,
+        release: &Path,
+        limit: std::time::Duration,
+    ) -> Mount {
+        fs::write(source, "original").unwrap();
+        Mount::bind(source, target)
+            .touch_target()
+            .readonly()
+            .pause_before_remount(arrived, release, limit)
+    }
+
+    /// A pause nobody releases fails the mount at its remount step
+    /// (`Context::BindRemount`) with `ETIMEDOUT` once its deadline passes, not
+    /// before: after the mount arrived there, and with the source untouched.
+    #[test]
+    fn a_paused_bind_never_released_fails_its_remount_at_its_deadline() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (source, target) = (temp.path().join("source"), temp.path().join("target"));
+        let (arrived, release) = (temp.path().join("arrived"), temp.path().join("release"));
+        let limit = std::time::Duration::from_millis(300);
+
+        let (result, elapsed) =
+            run_with_mount(paused_bind(&source, &target, &arrived, &release, limit));
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(
+                syscalls::Errno::ETIMEDOUT,
+                Context::BindRemount
+            )))
+        );
+        assert!(elapsed >= limit, "timed out after {elapsed:?}, before its {limit:?} limit");
+        assert!(arrived.exists(), "the mount arrived at its pause");
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+    }
+
+    /// An arrival marker that exists as a FIFO with no reader fails the
+    /// remount step with `ENXIO`, instead of blocking its creation before the
+    /// deadline ever starts (`mount::remount_pause::a_fifo_marker_fails_at_once`
+    /// shows the open does not wait; here a blocked open would hang the launch
+    /// past its 120-second limit).
+    #[test]
+    fn a_pause_whose_arrival_marker_is_a_fifo_fails_its_remount_with_enxio() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (source, target) = (temp.path().join("source"), temp.path().join("target"));
+        let (arrived, release) = (temp.path().join("arrived"), temp.path().join("release"));
+        use std::os::unix::ffi::OsStrExt;
+        let fifo = std::ffi::CString::new(arrived.as_os_str().as_bytes()).unwrap();
+        // SAFETY: `fifo` is a NUL-terminated path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o644) }, 0);
+        let limit = std::time::Duration::from_secs(120);
+
+        let (result, _) = run_with_mount(paused_bind(&source, &target, &arrived, &release, limit));
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(
+                syscalls::Errno::ENXIO,
+                Context::BindRemount
+            )))
+        );
+    }
+
+    /// An arrival marker left by an earlier arrival is reused, and the mount
+    /// still waits for its release: it fails at its deadline, not before.
+    #[test]
+    fn a_pause_whose_arrival_marker_is_already_there_still_waits_for_its_release() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (source, target) = (temp.path().join("source"), temp.path().join("target"));
+        let (arrived, release) = (temp.path().join("arrived"), temp.path().join("release"));
+        fs::write(&arrived, "").unwrap();
+        let limit = std::time::Duration::from_millis(300);
+
+        let (result, elapsed) =
+            run_with_mount(paused_bind(&source, &target, &arrived, &release, limit));
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(
+                syscalls::Errno::ETIMEDOUT,
+                Context::BindRemount
+            )))
+        );
+        assert!(elapsed >= limit, "timed out after {elapsed:?}, before its {limit:?} limit");
+    }
+
+    /// Creates `release` when dropped, so that a test which fails while a
+    /// mount waits at its pause lets the mount go on instead of leaving it
+    /// to its deadline.
+    struct ReleaseOnDrop<'a>(&'a Path);
+
+    impl Drop for ReleaseOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = fs::write(self.0, "");
+        }
+    }
+
+    /// The one child process of `parent`.
+    fn only_child_of(parent: u32) -> u32 {
+        let children: Vec<u32> = fs::read_dir("/proc")
+            .unwrap()
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| {
+                let ppid = fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .ok()
+                    .and_then(|stat| {
+                        // The fields after the command name, which is in
+                        // parentheses and may hold anything: state, then the
+                        // parent's PID.
+                        let (_, fields) = stat.rsplit_once(')')?;
+                        fields.split_whitespace().nth(1)?.parse::<u32>().ok()
+                    });
+                ppid == Some(parent)
+            })
+            .collect();
+        assert_eq!(children.len(), 1, "one child of {parent}: {children:?}");
+        children[0]
+    }
+
+    /// Where the launcher half of a test run by [`relaunch_in_own_process`]
+    /// finds its directory, which holds `source`, `target`, `arrived` and
+    /// `release`, and where it writes the launch's `result`.
+    const PAUSED_LAUNCH_DIR: &str = "REVERIE_PROCESS_PAUSED_LAUNCH_DIR";
+
+    /// Runs the calling test again, alone, as a process of its own with
+    /// `--test-threads=1` (the setting `test_runs_in_own_process` describes)
+    /// and `dir` in [`PAUSED_LAUNCH_DIR`], so that its launcher half calls
+    /// `Container::run` from a single-threaded process while this one
+    /// observes it.
+    fn relaunch_in_own_process(dir: &Path) -> std::process::Child {
+        let name = std::thread::current()
+            .name()
+            .expect("libtest names each test thread after its test")
+            .to_owned();
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name.as_str(), "--exact", "--test-threads=1", "--nocapture"])
+            .env(PAUSED_LAUNCH_DIR, dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Waits until `arrived` exists, failing if `launcher` ends first.
+    fn wait_for_arrival(arrived: &Path, launcher: &mut std::process::Child) {
+        while !arrived.exists() {
+            if let Some(status) = launcher.try_wait().unwrap() {
+                panic!("the launcher ended before its pause: {status:?}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Waits for `launcher` to succeed and returns the `result` it wrote.
+    fn launcher_result(launcher: std::process::Child, dir: &Path) -> String {
+        let output = launcher.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "the launcher failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        fs::read_to_string(dir.join("result")).unwrap()
+    }
+
+    /// The pause is the window between the bind and its remount. While the
+    /// mount waits there, the child's mount namespace has the bind at the
+    /// target, still writable: its mountinfo lists a read-write mount there,
+    /// and a write through the child's view of the target reaches the source.
+    /// The caller's namespace does not see the bind. A rename over the target
+    /// then detaches it, and once released the remount fails with `EINVAL` at
+    /// [`Context::BindRemount`]. A pause before the bind, or after the
+    /// remount, fails this test.
+    ///
+    /// `Container::run` needs a single-threaded caller, so the launch runs in
+    /// a process of its own ([`relaunch_in_own_process`]), and this test
+    /// observes that process's container.
+    #[test]
+    fn a_paused_bind_is_in_place_and_writable_until_its_remount() {
+        let limit = std::time::Duration::from_secs(120);
+        if let Some(dir) = std::env::var_os(PAUSED_LAUNCH_DIR) {
+            let dir = Path::new(&dir);
+            let mount = paused_bind(
+                &dir.join("source"),
+                &dir.join("target"),
+                &dir.join("arrived"),
+                &dir.join("release"),
+                limit,
+            );
+            let (result, _) = run_with_mount(mount);
+            fs::write(dir.join("result"), format!("{result:?}")).unwrap();
+            return;
+        }
+        // The observer runs alone in its own process too, so that no other
+        // test's raw clone can copy the launcher's pipe ends.
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        // The paths as the kernel reports them in mountinfo.
+        let dir = temp.path().canonicalize().unwrap();
+        let (source, target) = (dir.join("source"), dir.join("target"));
+        let (arrived, release) = (dir.join("arrived"), dir.join("release"));
+        let mut launcher = relaunch_in_own_process(&dir);
+        let _release = ReleaseOnDrop(&release);
+        wait_for_arrival(&arrived, &mut launcher);
+        let child = only_child_of(launcher.id());
+
+        let mountinfo = fs::read_to_string(format!("/proc/{child}/mountinfo")).unwrap();
+        let options = mountinfo
+            .lines()
+            .find(|line| line.split(' ').nth(4) == target.to_str())
+            .and_then(|line| line.split(' ').nth(5))
+            .unwrap_or_else(|| panic!("no mount at {target:?} while paused:\n{mountinfo}"));
+        assert!(
+            options.split(',').any(|option| option == "rw"),
+            "the paused bind is already read-only: {options}"
+        );
+        let through_child =
+            Path::new(&format!("/proc/{child}/root")).join(target.strip_prefix("/").unwrap());
+        fs::write(&through_child, "changed").expect("the paused bind is writable");
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"changed",
+            "a write through the paused target reaches the source"
+        );
+        assert_eq!(
+            fs::read(&target).unwrap(),
+            b"",
+            "the caller's namespace still sees the empty placeholder, not the bind"
+        );
+
+        let replacement = dir.join("replacement");
+        fs::write(&replacement, "replacement").unwrap();
+        fs::rename(&replacement, &target).unwrap();
+        fs::write(&release, "").unwrap();
+
+        let expected: Result<i32, RunError> = Err(RunError::Spawn(Error::new(
+            syscalls::Errno::EINVAL,
+            Context::BindRemount,
+        )));
+        assert_eq!(launcher_result(launcher, &dir), format!("{expected:?}"));
+    }
+
+    /// One real pause and release, through the real clock: the launch waits
+    /// at its pause while there is no release, goes on once the release
+    /// appears, and the bind comes out read-only, so that an open of the
+    /// target for writing in the container fails with `EROFS`. Launched from
+    /// a process of its own, as the order row is. (A pause never released
+    /// times out: `a_paused_bind_never_released_fails_its_remount_at_its_deadline`.)
+    #[test]
+    fn a_paused_bind_waits_for_its_release_then_seals() {
+        if let Some(dir) = std::env::var_os(PAUSED_LAUNCH_DIR) {
+            use std::os::unix::ffi::OsStrExt;
+            let dir = Path::new(&dir);
+            let target = dir.join("target");
+            let target_c = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+            let result = Container::new()
+                .unshare(Namespace::USER | Namespace::MOUNT)
+                .map_root()
+                .mount(paused_bind(
+                    &dir.join("source"),
+                    &target,
+                    &dir.join("arrived"),
+                    &dir.join("release"),
+                    std::time::Duration::from_secs(120),
+                ))
+                .run(move || {
+                    // SAFETY: `target_c` is a NUL-terminated path; a
+                    // descriptor it opens closes when the child exits.
+                    if unsafe { libc::open(target_c.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC) } < 0 {
+                        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+                    } else {
+                        0
+                    }
+                });
+            fs::write(dir.join("result"), format!("{result:?}")).unwrap();
+            return;
+        }
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().canonicalize().unwrap();
+        let (arrived, release) = (dir.join("arrived"), dir.join("release"));
+        let mut launcher = relaunch_in_own_process(&dir);
+        let _release = ReleaseOnDrop(&release);
+        wait_for_arrival(&arrived, &mut launcher);
+
+        // With no release the launch neither goes on nor gives up.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            launcher.try_wait().unwrap().is_none() && !dir.join("result").exists(),
+            "the launch went on without its release"
+        );
+        fs::write(&release, "").unwrap();
+
+        let expected: Result<i32, RunError> = Ok(libc::EROFS);
+        assert_eq!(launcher_result(launcher, &dir), format!("{expected:?}"));
+        assert_eq!(fs::read(dir.join("source")).unwrap(), b"original");
+    }
+
+    /// With no pause set, a remount that fails is named as the remount step,
+    /// the one change a caller that never pauses sees. The target, `dir/sub/..`,
+    /// is `dir` to the bind; once the bind covers `dir`, the remount looks for
+    /// `sub` in the bind's source, which has none, and fails with `ENOENT` at
+    /// [`Context::BindRemount`], where it was [`Context::Mount`] before.
+    #[test]
+    fn a_read_only_bind_whose_remount_fails_names_the_remount_step() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let dir = temp.path().join("dir");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+
+        let (result, _) =
+            run_with_mount(Mount::bind(&source, dir.join("sub").join("..")).readonly());
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(
+                syscalls::Errno::ENOENT,
+                Context::BindRemount
+            )))
+        );
+    }
+
+    /// An optional read-only bind whose source is there is an ordinary one: it
+    /// pauses between its bind and its remount, and comes out read-only.
+    #[tokio::test]
+    async fn mount_optional_read_only_bind_with_its_source_pauses_and_remounts() {
+        if crate::test_runs_in_own_process() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let pause = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::write(&source, "original").unwrap();
+        let arrived = pause.path().join("arrived");
+        let release = pause.path().join("release");
+        fs::write(&release, "").unwrap();
+
+        let output = Command::new("sh")
+            .args(["-c", "printf changed > \"$TARGET\""])
+            .env("TARGET", &target)
+            .map_root()
+            .mount(
+                Mount::bind(&source, &target)
+                    .touch_target()
+                    .optional()
+                    .readonly()
+                    .pause_before_remount(&arrived, &release, std::time::Duration::from_secs(120)),
+            )
+            .output()
+            .await
+            .unwrap();
+        assert_ne!(output.status, ExitStatus::Exited(0), "{output:?}");
+        assert!(arrived.exists(), "the bind pauses before its remount");
+        assert_eq!(fs::read(&source).unwrap(), b"original");
+    }
+
     #[tokio::test]
     async fn local_networking_ping() {
         if crate::test_runs_in_own_process() {
