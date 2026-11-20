@@ -543,14 +543,15 @@ mod tests {
     }
 }
 
-/// Why the ptrace backend ends a run rather than return a restart code
-/// (`ERESTARTSYS`, `ERESTARTNOINTR`, `ERESTARTNOHAND` or
-/// `ERESTART_RESTARTBLOCK`) that a Tool answered a guest syscall with
-/// ([`RestartRefusal`]). Linux never returns these codes to user space, and in
-/// each case the backend cannot carry the code to the kernel's restart
-/// processing. Only the aarch64 backend refuses: x86-64's kernel resolves
-/// every code. An outcome a Tool cannot decide is its own refusal
-/// (`reverie::RestartUndecidable`).
+/// Why the ptrace backend ends a run rather than return a code internal to
+/// Linux (errno 512-516: `ERESTARTSYS`, `ERESTARTNOINTR`, `ERESTARTNOHAND`,
+/// `ENOIOCTLCMD` or `ERESTART_RESTARTBLOCK`) that a Tool answered a guest
+/// syscall with ([`RestartRefusal`]). Linux never returns these codes to user
+/// space. The four restart codes go to the kernel's restart processing where
+/// the backend can carry them there; each case where it cannot is a reason
+/// here. `OutcomeNotWritable` arises on aarch64 only, where more of the route
+/// is the backend's; the others on either architecture. An outcome a Tool
+/// cannot decide is its own refusal (`reverie::RestartUndecidable`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 #[non_exhaustive]
 pub enum RestartRefusalReason {
@@ -568,11 +569,105 @@ pub enum RestartRefusalReason {
     /// cannot write.
     #[error("the Tool decided an outcome for the code that this backend cannot write")]
     OutcomeNotWritable,
+    /// The Tool answered a number the syscall table cannot name
+    /// (`reverie::UnknownSyscallPolicy::TrapToTool`) where the kernel's route
+    /// is closed and a Tool hook decides the result
+    /// (`reverie::Tool::handle_unresolved_restart`, or
+    /// `reverie::Tool::resolve_restart_under_pending_mask_restore`). Both
+    /// hooks name the syscall with a `Sysno`, which this number has none of.
+    #[error(
+        "the Tool answered a syscall number with no Sysno where only a Tool hook that names the \
+         syscall can decide the result"
+    )]
+    UnknownSyscallUndecidable,
+    /// The guest's syscall number is one whose low 32 bits are all ones
+    /// (0xffffffff, or `u64::MAX`). Linux holds the number as an `int`, and
+    /// -1 there means no syscall: its restart processing skips the code
+    /// (`in_syscall`, arch/arm64/include/asm/ptrace.h:177-180, and
+    /// `syscall_get_nr`, arch/x86/kernel/signal.c:264 and :344, at v7.1.3),
+    /// which the guest would get as its result.
+    #[error(
+        "the guest's syscall number reads as -1, no syscall, to Linux's restart processing, \
+         which would leave the code to the guest"
+    )]
+    NoKernelSyscallNumber,
+    /// The Tool answered with `ENOIOCTLCMD` (515), which `ioctl` turns into
+    /// `ENOTTY` inside the kernel (fs/ioctl.c:52 at v7.1.3): Linux neither
+    /// returns nor restarts it.
+    #[error("ENOIOCTLCMD is internal to the kernel: Linux neither returns nor restarts it")]
+    KernelInternalCode,
+    /// Where the backend cannot hand the code to the kernel, the Tool's
+    /// `reverie::Tool::handle_unresolved_restart` answered with a code
+    /// internal to Linux (errno 512-516; the default answers the code
+    /// itself), which nothing would hand to the kernel either.
+    #[error(
+        "the Tool's unresolved-restart hook answered {answer}, a code internal to Linux that \
+         nothing hands to the kernel here"
+    )]
+    HookAnsweredInternalCode {
+        /// The hook's answer.
+        answer: reverie::Errno,
+    },
+    /// The Tool answered `-ERESTART_RESTARTBLOCK` (516) while the thread has
+    /// a seccomp filter of the guest's own, beyond those it gets from outside
+    /// (or its filter count cannot be read). Linux would restart the call as
+    /// `restart_syscall` (arch/x86/kernel/signal.c:354-356, and
+    /// arch/arm64/kernel/signal.c:1688-1690, at v7.1.3), which a filter
+    /// answering the call need not answer, and a Tool hook's substitute is no
+    /// result Linux would give. It is refused on every backend route after a
+    /// Tool answer, before any of them is taken and whatever a Tool hook would
+    /// answer (a filter answering at the call's entry leaves no Tool answer).
+    #[error(
+        "ERESTART_RESTARTBLOCK while the thread has a seccomp filter of the guest's own: its \
+         restart as restart_syscall need not meet that filter, so it is refused on every backend route"
+    )]
+    RestartBlockUnderGuestSeccompFilter,
+}
+
+/// The guest syscall a Tool answered with a restart code: one the syscall
+/// table names, or, under `reverie::UnknownSyscallPolicy::TrapToTool`, a
+/// number it cannot name (`reverie::Tool::handle_unknown_syscall`). Its
+/// refusal is a [`RestartRefusal`] or an [`UnknownSyscallRestartRefusal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum AnsweredSyscall {
+    /// A syscall the table names.
+    Known(reverie::syscalls::Sysno),
+    /// A number the table cannot name, as the guest's syscall-number
+    /// register holds it (`reverie::syscalls::RawSyscall::nr`).
+    Unknown(u64),
+}
+
+impl AnsweredSyscall {
+    /// The number as the kernel holds it for the thread, an `int`: arm64's
+    /// `syscallno`, taken from `x8` at entry (`el0_svc_common` and
+    /// `do_el0_svc`, arch/arm64/kernel/syscall.c:62-68 and :140 at v7.1.3),
+    /// and x86-64's `orig_ax` as `syscall_get_nr` reads it
+    /// (arch/x86/include/asm/syscall.h:36-39). `None` where that is -1, which
+    /// both read as no syscall, so restart processing would skip the code
+    /// (`RestartRefusalReason::NoKernelSyscallNumber`).
+    pub(crate) fn kernel_number(self) -> Option<i32> {
+        let number = match self {
+            Self::Known(syscall) => syscall as i32,
+            Self::Unknown(nr) => nr as i32,
+        };
+        (number != -1).then_some(number)
+    }
+}
+
+// A hand-written `Display`: this crate does not depend on `derive_more`.
+impl fmt::Display for AnsweredSyscall {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Known(syscall) => write!(f, "{syscall}"),
+            Self::Unknown(nr) => write!(f, "syscall {nr}"),
+        }
+    }
 }
 
 /// The ptrace backend ended the run rather than return the restart code a
 /// Tool answered a guest syscall with ([`RestartRefusalReason`]). The guest's
-/// thread did not resume past the syscall.
+/// thread did not resume past the syscall. A number the syscall table cannot
+/// name is refused with [`UnknownSyscallRestartRefusal`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
     "restart code refused ({reason:?}): thread {tid}'s {syscall} was answered with {code}; {reason}"
@@ -582,6 +677,25 @@ pub struct RestartRefusal {
     pub tid: i32,
     /// The syscall the Tool answered.
     pub syscall: reverie::syscalls::Sysno,
+    /// The restart code the Tool answered it with.
+    pub code: reverie::Errno,
+    /// Why the backend refused it.
+    pub reason: RestartRefusalReason,
+}
+
+/// [`RestartRefusal`] for a number the syscall table cannot name, which a
+/// Tool answered under `reverie::UnknownSyscallPolicy::TrapToTool`
+/// (`reverie::Tool::handle_unknown_syscall`).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "restart code refused ({reason:?}): thread {tid}'s syscall {nr} was answered with {code}; {reason}"
+)]
+pub struct UnknownSyscallRestartRefusal {
+    /// The thread whose syscall was answered.
+    pub tid: i32,
+    /// The number the Tool answered, as the guest's syscall-number register
+    /// holds it (`reverie::syscalls::RawSyscall::nr`).
+    pub nr: u64,
     /// The restart code the Tool answered it with.
     pub code: reverie::Errno,
     /// Why the backend refused it.

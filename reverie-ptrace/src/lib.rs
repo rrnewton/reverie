@@ -103,6 +103,7 @@ pub use failure::RestartRefusal;
 pub use failure::RestartRefusalReason;
 pub use failure::ToolRunCompletion;
 pub use failure::UnattributedSigtrap;
+pub use failure::UnknownSyscallRestartRefusal;
 pub use failure::UnprovenPrivateSyscallCompletion;
 pub use failure::UntracedStubSyscall;
 pub use injected_syscall::InjectedSyscallFrame;

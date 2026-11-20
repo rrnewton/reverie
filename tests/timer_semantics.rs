@@ -306,6 +306,78 @@ impl Tool for InstructionTracing {
     }
 }
 
+/// The flags `RestartBlockAcrossATimerStepRun` and a guest's sibling thread
+/// hand over a seccomp filter's installation with.
+#[cfg(all(not(sanitized), test))]
+static SIBLING_GO: AtomicU64 = AtomicU64::new(0);
+#[cfg(all(not(sanitized), test))]
+static SIBLING_DONE: AtomicU64 = AtomicU64::new(0);
+
+/// The distance of `RestartBlockAcrossATimerStepRun`'s timer event: within
+/// every processor's skid margin, so the backend single-steps the whole way.
+#[cfg(all(not(sanitized), test))]
+const STEPPED_RCBS: u64 = 30;
+
+/// Traces only `getppid`, the guest's probe: completes it, requests a precise
+/// timer event `STEPPED_RCBS` away, and answers `-ERESTART_RESTARTBLOCK` of
+/// its own.
+/// So short an event is driven by an artificial notification taken at the
+/// next resume and single steps (see `reverie_ptrace`'s timer): the
+/// notification's signal-delivery stop comes inside the `get_signal` after
+/// which Linux converts the code, and the first step runs that conversion
+/// (`restart_syscall`, which no restart block answers with `-EINTR`) before
+/// the steps reach the event. The timer callback lets a sibling thread of the
+/// guest install a seccomp filter on every thread (`SIBLING_GO`,
+/// `SIBLING_DONE`) and waits for it.
+#[cfg(all(not(sanitized), test))]
+#[derive(Debug, Default, Clone)]
+struct RestartBlockAcrossATimerStepRun;
+
+#[cfg(all(not(sanitized), test))]
+#[reverie::tool]
+impl Tool for RestartBlockAcrossATimerStepRun {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        let mut subscription = Subscription::none();
+        subscription.syscall(Sysno::getppid);
+        subscription
+    }
+
+    async fn handle_syscall_event<T: Guest<Self>>(
+        &self,
+        guest: &mut T,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() != Sysno::getppid {
+            return guest.tail_inject(syscall).await;
+        }
+        guest.inject(syscall).await?;
+        guest.set_timer_precise(TimerSchedule::Rcbs(STEPPED_RCBS))?;
+        Err(Errno::ERESTART_RESTARTBLOCK.into())
+    }
+
+    async fn handle_timer_event<T: Guest<Self>>(&self, guest: &mut T) {
+        use reverie::syscalls::MemoryAccess;
+        let go = reverie::syscalls::AddrMut::<u64>::from_raw(SIBLING_GO.as_ptr() as usize)
+            .expect("the go flag");
+        let done = reverie::syscalls::Addr::<u64>::from_raw(SIBLING_DONE.as_ptr() as usize)
+            .expect("the done flag");
+        guest
+            .memory()
+            .write_value(go, &1)
+            .expect("let the sibling go");
+        for _ in 0..500 {
+            if guest.memory().read_value(done).expect("read the done flag") == 1 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("the sibling did not install its filter in 5 s");
+    }
+}
+
 #[cfg(all(not(sanitized), test))]
 mod tests {
     //! These tests are highly sensitive to the number of branches executed
@@ -942,5 +1014,60 @@ mod tests {
         );
         let rips = [&gs_1, &gs_2].map(|s| s.timer_events.lock().unwrap()[0].rip);
         assert_ne!(rips[0], rips[1]);
+    }
+
+    /// A Tool's `-ERESTART_RESTARTBLOCK` is converted inside a timer event's
+    /// step run (`RestartBlockAcrossATimerStepRun`): the backend reads the
+    /// guest's filters again at every resume while the answer lives, and the
+    /// answer lives only while the registers are those the last checked
+    /// resume handed the thread. The step run's resumes leave the call, so
+    /// the answer ends with the run; the filter a sibling installs in the
+    /// timer callback, after the conversion, is not taken for one the code
+    /// would meet, and the guest gets `restart_syscall`'s `EINTR`.
+    #[test]
+    fn a_restart_block_converted_inside_a_timer_step_run_ends_with_the_run() {
+        ret_without_perf!();
+        check_fn::<RestartBlockAcrossATimerStepRun, _>(|| {
+            let sibling = std::thread::spawn(|| {
+                while SIBLING_GO.load(Ordering::SeqCst) == 0 {
+                    std::thread::yield_now();
+                }
+                let allow = libc::sock_filter {
+                    code: (libc::BPF_RET | libc::BPF_K) as u16,
+                    jt: 0,
+                    jf: 0,
+                    k: libc::SECCOMP_RET_ALLOW,
+                };
+                let program = libc::sock_fprog {
+                    len: 1,
+                    filter: &allow as *const libc::sock_filter as *mut libc::sock_filter,
+                };
+                // SAFETY: prctl takes integers here; seccomp reads the
+                // one-instruction program, which outlives the call.
+                let installed = unsafe {
+                    libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+                    libc::syscall(
+                        libc::SYS_seccomp,
+                        libc::SECCOMP_SET_MODE_FILTER,
+                        libc::SECCOMP_FILTER_FLAG_TSYNC,
+                        &program as *const libc::sock_fprog,
+                    )
+                };
+                assert_eq!(installed, 0, "install the filter on every thread");
+                SIBLING_DONE.store(1, Ordering::SeqCst);
+            });
+            // SAFETY: getppid takes no arguments.
+            let ret = unsafe { libc::syscall(libc::SYS_getppid) };
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            // The steps' way to the event, before the join can block.
+            do_branches(4 * STEPPED_RCBS);
+            sibling.join().expect("the sibling");
+            assert_eq!(
+                SIBLING_DONE.load(Ordering::SeqCst),
+                1,
+                "the timer event ran"
+            );
+            assert_eq!((ret, errno), (-1, libc::EINTR), "(result, errno)");
+        });
     }
 }

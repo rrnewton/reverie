@@ -87,12 +87,12 @@ use tokio::task::JoinHandle;
 use tracing::Instrument;
 
 use crate::PtraceBackendStatsSource;
-#[cfg(target_arch = "aarch64")]
 use crate::RestartRefusalReason;
 use crate::children;
 use crate::cp;
 use crate::error::Error;
 use crate::error::TraceResultExt;
+use crate::failure::AnsweredSyscall;
 use crate::failure::PtraceCleanupFailure;
 use crate::failure::PtraceRunFailure;
 use crate::gdbstub::ClientFeatures;
@@ -960,7 +960,10 @@ enum GdbSignalResume {
 
 /// The signal a stopped guest resumes with, and, if
 /// `Tool::handle_signal_event` reported it, how its delivery stop took it.
-struct SignalResume {
+/// It cannot step: a held signal is resumed with one (`report_held_signal`),
+/// and only a signal's own delivery stop is shown to gdb, which may answer it
+/// with a step (`SignalResume`).
+struct SignalDelivery {
     signal: Option<AnySignal>,
     reported: Option<TakenSignal>,
     /// Whether the reporting callback approved the signal's delivery
@@ -971,10 +974,25 @@ struct SignalResume {
     /// (`Guest::set_signal_info`), written when the signal is resumed from a
     /// signal-delivery stop (`resume_with_signal`).
     replacement: Option<(AnySignal, SiginfoBytes)>,
-    /// Whether the thread steps one instruction with `signal` rather than
-    /// continuing: gdb answered the signal's stop with a step
+}
+
+/// How a stopped guest resumes: with `delivery`, continuing or stepping one
+/// instruction.
+struct SignalResume {
+    delivery: SignalDelivery,
+    /// Whether the thread steps one instruction with the signal rather than
+    /// continuing: gdb answered the signal's own delivery stop with a step
     /// (`GdbSignalResume::Step`).
     step: bool,
+}
+
+impl From<SignalDelivery> for SignalResume {
+    fn from(delivery: SignalDelivery) -> Self {
+        Self {
+            delivery,
+            step: false,
+        }
+    }
 }
 
 /// A delivery that `Guest::deliver_signal` approved in the running signal
@@ -1203,7 +1221,6 @@ pub(crate) fn blocked_signal_mask(tid: Pid) -> Result<u64, TraceError> {
 /// A signal set procfs reports for the stopped thread `tid`, by its field
 /// name: `SigPnd` for the signals pending for the thread itself (not its
 /// thread group's, `ShdPnd`), `SigCgt` for the signals with a handler.
-#[cfg(target_arch = "aarch64")]
 fn proc_signal_set(tid: Pid, field: &str) -> Result<u64, TraceError> {
     let status = read_status(format!("/proc/{tid}/status"))
         .map_err(|err| Errno::new(err.raw_os_error().unwrap_or(libc::EIO)))?;
@@ -1214,20 +1231,40 @@ fn proc_signal_set(tid: Pid, field: &str) -> Result<u64, TraceError> {
         .ok_or_else(|| Errno::EPROTO.into())
 }
 
-/// What `return_restart_through_syscall_exit` puts back when its trick stops
-/// where it should not: the guest's registers and its signal mask.
-#[cfg(target_arch = "aarch64")]
+/// The guest calls whose native restart code, the kernel's own result for
+/// the call run in place, is left to the kernel
+/// (`TracedTask::reuses_the_native_result`).
+#[cfg(target_arch = "x86_64")]
+const THREE_WAITS: [Sysno; 3] = [Sysno::rt_sigsuspend, Sysno::ppoll, Sysno::pselect6];
+
+/// The restart code the kernel returned for the guest's own call run in
+/// place (`in_place_restart`): the raw result register (`ret`) and the
+/// syscall number Linux restarts from (`orig`) at the call's exit stop, and
+/// the thread's injection epoch then.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct InPlaceRestart {
+    ret: Reg,
+    orig: Reg,
+    epoch: u64,
+}
+
+/// What `return_restart_through_syscall_exit` or
+/// `return_restart_from_a_syscall_stop` puts back when its trick fails after
+/// its first write: the guest's registers and its signal mask.
+#[derive(Clone, Copy)]
 struct RestartTrickRestore {
     guest: libc::user_regs_struct,
     mask: u64,
 }
 
-#[cfg(target_arch = "aarch64")]
 impl RestartTrickRestore {
-    /// Best effort: the trick is failing already, with its own error.
-    fn apply(&self, task: &Stopped) {
-        let _ = task.setregs(&self.guest);
-        let _ = task.setsigmask(self.mask);
+    /// Writes both back, the mask even if the registers fail, and returns the
+    /// first failure.
+    fn apply(&self, task: &Stopped) -> Result<(), TraceError> {
+        let regs = task.setregs(&self.guest);
+        task.setsigmask(self.mask)?;
+        regs?;
+        Ok(())
     }
 }
 
@@ -1243,7 +1280,6 @@ struct RestartMasks {
 /// The first realtime signal, from 64 down, that `pending` (procfs `SigPnd`)
 /// does not hold, to carry a resume into `do_signal`
 /// (`return_restart_through_syscall_exit`); `None` when every one is pending.
-#[cfg(any(test, target_arch = "aarch64"))]
 fn free_carrier(pending: u64) -> Option<AnySignal> {
     (34..=64)
         .rev()
@@ -1253,7 +1289,6 @@ fn free_carrier(pending: u64) -> Option<AnySignal> {
 
 /// Whether the instance the carrier's stop took is the tracer's own: queued
 /// with `SI_QUEUE` and the carrier's `cookie` as its value (`carrier_siginfo`).
-#[cfg(any(test, target_arch = "aarch64"))]
 fn carrier_instance_is_the_tracers(si_code: i32, value: u64, cookie: u64) -> bool {
     si_code == libc::SI_QUEUE && value == cookie
 }
@@ -1274,7 +1309,6 @@ struct DeferredRestart {
 /// tracer's instance from any other of the same number at the carrier's stop.
 /// `SI_TKILL` and the sender's process ID cannot: Linux reports `si_pid` in the
 /// receiver's PID namespace, where a tracer outside it reads as 0.
-#[cfg(target_arch = "aarch64")]
 fn carrier_siginfo(carrier: AnySignal, cookie: u64) -> libc::siginfo_t {
     // SAFETY: a zeroed siginfo is a valid one to fill in.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -1295,7 +1329,6 @@ fn carrier_siginfo(carrier: AnySignal, cookie: u64) -> libc::siginfo_t {
 /// A value no two carriers share in one tracer (`carrier_siginfo`): random
 /// high bits, drawn once per tracer, over a counter. Nothing a guest observes
 /// depends on it: the carrier's own siginfo is never delivered.
-#[cfg(target_arch = "aarch64")]
 fn next_carrier_cookie() -> u64 {
     static HIGH: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1320,6 +1353,199 @@ fn next_carrier_cookie() -> u64 {
     high | (NEXT.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff)
 }
 
+/// A restart code Linux converts from the registers of the stop the thread
+/// resumes from (`pending_conversion`).
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingConversion {
+    /// The call and the code.
+    Code {
+        syscall: AnsweredSyscall,
+        code: Errno,
+    },
+    /// The stop's registers could not be read as it began, so any restart
+    /// code the resume hands over may be one Linux converts.
+    Unread,
+}
+
+/// What a stop's dispatch read of its registers found
+/// (`note_codes_pending_at_this_stop`).
+#[derive(Clone, Copy, Debug)]
+enum StopRegisters {
+    /// Not a signal-delivery or group stop: the thread is outside
+    /// `get_signal`, past any conversion of a code it returned to.
+    OutsideGetSignal,
+    /// A signal-delivery or group stop whose registers could not be read.
+    Unread,
+    /// A signal-delivery or group stop's registers.
+    Read(libc::user_regs_struct),
+}
+
+/// A Tool's `-ERESTART_RESTARTBLOCK` answer on its way to the kernel
+/// (`restart_block_answer`): the call, the registers the last checked resume
+/// handed the thread, which Linux leaves unchanged until it converts the
+/// code, and on aarch64 the same after the rewind Linux makes before
+/// `get_signal` when that resume was from the call's exit stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RestartBlockAnswer {
+    syscall: AnsweredSyscall,
+    resumed_with: Option<RegsFingerprint>,
+    rewound_with: Option<RegsFingerprint>,
+    /// The call's first argument, set by a route that resumes from the
+    /// call's exit stop with the code for the kernel
+    /// (`defer_restart_under_pending_mask_restore`): the next checked resume
+    /// derives `rewound_with` from it.
+    rewind_arg0: Option<Reg>,
+}
+
+impl RestartBlockAnswer {
+    /// Whether the answer lives on at a stop whose registers, as it begins,
+    /// are `stop`: only inside `get_signal`, and there unless a read of the
+    /// registers shows that they are neither those the last checked resume
+    /// handed the thread nor, on aarch64, those after Linux's rewind of them.
+    /// A stop whose registers could not be read keeps it, as does one before
+    /// any checked resume: an unread state proves no conversion.
+    fn survives(&self, stop: &StopRegisters) -> bool {
+        match stop {
+            StopRegisters::OutsideGetSignal => false,
+            StopRegisters::Unread => true,
+            StopRegisters::Read(regs) => {
+                let now = RegsFingerprint::of(regs);
+                self.resumed_with.is_none_or(|resumed| resumed == now)
+                    || self.rewound_with == Some(now)
+            }
+        }
+    }
+}
+
+/// The registers Linux changes when it converts a restart code, or when the
+/// thread runs: the instruction, stack and frame pointers, the syscall-number
+/// register, the syscall number Linux restarts from and the result register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RegsFingerprint([Reg; 6]);
+
+impl RegsFingerprint {
+    fn of(regs: &libc::user_regs_struct) -> Self {
+        Self([
+            regs.ip(),
+            regs.stack_ptr(),
+            regs.frame_ptr(),
+            regs.syscall(),
+            regs.orig_syscall(),
+            regs.ret(),
+        ])
+    }
+
+    /// These registers, at a syscall's exit stop, as aarch64's `do_signal`
+    /// leaves them for `get_signal` when it restarts the call: `pc` back at
+    /// the `svc` and `x0` the call's first argument, `arg0`
+    /// (arch/arm64/kernel/signal.c:1639-1659 at v7.1.3).
+    #[cfg(target_arch = "aarch64")]
+    fn rewound_for_a_restart(self, arg0: Reg) -> Self {
+        let [ip, sp, fp, syscall, orig, _] = self.0;
+        Self([ip - 4, sp, fp, syscall, orig, arg0])
+    }
+}
+
+/// What the end of a timer event's step run (`drive_timer`) shows of the
+/// stop the thread is at, from its registers `now` (`None` where they could
+/// not be read) and those it had as the run began, `before`: nothing new if
+/// they are unchanged; otherwise the stop's registers, or `Unread`.
+fn stop_after_a_step_run(
+    now: Option<libc::user_regs_struct>,
+    before: RegsFingerprint,
+) -> Option<StopRegisters> {
+    match now {
+        None => Some(StopRegisters::Unread),
+        Some(regs) if RegsFingerprint::of(&regs) == before => None,
+        Some(regs) => Some(StopRegisters::Read(regs)),
+    }
+}
+
+/// The pending conversion a stop whose registers, as it begins, are `stop`
+/// hands the resume from it (`pending_conversion`): none outside
+/// `get_signal`, an unknown one where they could not be read.
+#[cfg(target_arch = "x86_64")]
+fn conversion_pending_at(stop: &StopRegisters) -> Option<PendingConversion> {
+    match stop {
+        StopRegisters::OutsideGetSignal => None,
+        StopRegisters::Unread => Some(PendingConversion::Unread),
+        StopRegisters::Read(regs) => conversion_pending_in(regs),
+    }
+}
+
+/// What thread `tid`'s procfs status shows of its seccomp state, for the
+/// check of a Tool's `-ERESTART_RESTARTBLOCK` at a resume
+/// (`check_a_code_handed_to_the_kernel`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestSeccompAtResume {
+    /// No filter beyond those the guest gets from outside.
+    NoOwnFilter,
+    /// A filter of the guest's own.
+    OwnFilter,
+    /// The thread is exiting: its status is gone (`ENOENT`, `ESRCH`) or shows
+    /// a zombie or a dead task. The resume's own request reports the exit.
+    Exiting,
+    /// The thread is not known to be exiting, and its count cannot be read.
+    Unreadable,
+}
+
+/// `GuestSeccompAtResume` for the procfs status read `status` and the count
+/// of filters a guest gets from outside, `baseline`.
+fn guest_seccomp_at_resume_in(
+    status: std::io::Result<String>,
+    baseline: Option<u64>,
+) -> GuestSeccompAtResume {
+    let status = match status {
+        Ok(status) => status,
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            return GuestSeccompAtResume::Exiting;
+        }
+        Err(_) => return GuestSeccompAtResume::Unreadable,
+    };
+    let state = status
+        .lines()
+        .find_map(|line| line.strip_prefix("State:"))
+        .and_then(|state| state.trim_start().bytes().next());
+    if matches!(state, Some(b'Z' | b'X')) {
+        return GuestSeccompAtResume::Exiting;
+    }
+    let filters = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Seccomp_filters:"))
+        .and_then(|count| count.trim().parse::<u64>().ok());
+    match (filters, baseline) {
+        (Some(filters), Some(baseline)) if filters > baseline => GuestSeccompAtResume::OwnFilter,
+        (Some(_), Some(_)) => GuestSeccompAtResume::NoOwnFilter,
+        _ => GuestSeccompAtResume::Unreadable,
+    }
+}
+
+/// The restart code Linux converts from `regs` after `get_signal` returns, on
+/// x86-64: the result register's, when it is one of the four codes and
+/// `orig_ax` reads as a syscall (`syscall_get_nr`, low 32 bits not all ones;
+/// arch/x86/kernel/signal.c:264 and :344 at v7.1.3).
+#[cfg(target_arch = "x86_64")]
+fn conversion_pending_in(regs: &libc::user_regs_struct) -> Option<PendingConversion> {
+    let code = match Errno::from_ret(regs.ret() as usize) {
+        Err(
+            code @ (Errno::ERESTARTSYS
+            | Errno::ERESTARTNOINTR
+            | Errno::ERESTARTNOHAND
+            | Errno::ERESTART_RESTARTBLOCK),
+        ) => code,
+        _ => return None,
+    };
+    let orig = regs.orig_syscall();
+    if orig as u32 == u32::MAX {
+        return None;
+    }
+    let syscall = match Sysno::new(orig as i32 as usize) {
+        Some(nr) => AnsweredSyscall::Known(nr),
+        None => AnsweredSyscall::Unknown(orig),
+    };
+    Some(PendingConversion::Code { syscall, code })
+}
 
 /// `PTRACE_GETSIGMASK`, with an error from a tracee that died passed
 /// through `dead_or`, so that the paths that handle a killed tracee take it.
@@ -5219,6 +5445,34 @@ pub struct TracedTask<L: Tool> {
     /// may queue itself a SIGTRAP whose `si_code` mimics a syscall stop.
     latest_injection_stop: Option<Option<AnySignal>>,
 
+    /// The restart code the kernel returned for the guest's own pending
+    /// syscall, run in place to its exit stop (`run_pending_in_place`), with
+    /// the value of `injection_epoch` when it was recorded. A later
+    /// injection, which moves the thread off that stop, makes the record
+    /// stale; every stop dispatch clears it. See `reuses_the_native_result`.
+    in_place_restart: Option<InPlaceRestart>,
+
+    /// Completed injections of this thread (`note_injection_stop`).
+    injection_epoch: u64,
+
+    /// The restart code Linux converts from this stop's registers when the
+    /// thread resumes, on x86-64: the one the stop's registers hold as it
+    /// begins, at a signal-delivery or group stop inside `get_signal`
+    /// (`note_codes_pending_at_this_stop`), or the one the route leaves to the
+    /// kernel at this stop (`leave_code_to_the_kernel`). It lives for one stop.
+    /// Every resume checks it (`check_a_code_handed_to_the_kernel`).
+    #[cfg(target_arch = "x86_64")]
+    pending_conversion: Option<PendingConversion>,
+
+    /// A Tool's `-ERESTART_RESTARTBLOCK` answer (`note_restart_block_answer`),
+    /// until Linux has converted it: a stop keeps it only if it is a
+    /// signal-delivery or group stop whose registers, as it begins, are those
+    /// the last checked resume handed the thread
+    /// (`note_codes_pending_at_this_stop`). Every resume reads the guest's
+    /// seccomp filters again while it lives
+    /// (`check_a_code_handed_to_the_kernel`).
+    restart_block_answer: StdMutex<Option<RestartBlockAnswer>>,
+
     /// The first argument of the last private-page syscall the thread entered
     /// since the current stop was dispatched (`handle_stop_event`), or `None`
     /// for none: the kernel's `orig_x0`, where a restart takes its first
@@ -5658,6 +5912,11 @@ impl<L: Tool> TracedTask<L> {
             ptracer_waits: Arc::new(PtracerWaitOwner::default()),
             preinit_generation: None,
             latest_injection_stop: None,
+            in_place_restart: None,
+            injection_epoch: 0,
+            #[cfg(target_arch = "x86_64")]
+            pending_conversion: None,
+            restart_block_answer: StdMutex::new(None),
             #[cfg(target_arch = "aarch64")]
             private_first_argument: None,
             held_siginfo_written: AtomicBool::new(false),
@@ -5789,6 +6048,11 @@ impl<L: Tool> TracedTask<L> {
             ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
+            in_place_restart: None,
+            injection_epoch: 0,
+            #[cfg(target_arch = "x86_64")]
+            pending_conversion: None,
+            restart_block_answer: StdMutex::new(None),
             #[cfg(target_arch = "aarch64")]
             private_first_argument: None,
             held_siginfo_written: AtomicBool::new(false),
@@ -5940,6 +6204,11 @@ impl<L: Tool> TracedTask<L> {
             ptracer_waits,
             preinit_generation: None,
             latest_injection_stop: None,
+            in_place_restart: None,
+            injection_epoch: 0,
+            #[cfg(target_arch = "x86_64")]
+            pending_conversion: None,
+            restart_block_answer: StdMutex::new(None),
             #[cfg(target_arch = "aarch64")]
             private_first_argument: None,
             held_siginfo_written: AtomicBool::new(false),
@@ -6141,6 +6410,35 @@ impl<L: Tool> TracedTask<L> {
             ),
         ))
     }
+}
+
+/// Whether `errno` is internal to Linux, which never returns it to user space:
+/// the four restart codes, which its signal delivery resolves, and
+/// `ENOIOCTLCMD`, which `ioctl` turns into `ENOTTY` (errno 512-516).
+fn linux_internal_code(errno: Errno) -> bool {
+    matches!(
+        errno,
+        Errno::ERESTARTSYS
+            | Errno::ERESTARTNOINTR
+            | Errno::ERESTARTNOHAND
+            | Errno::ENOIOCTLCMD
+            | Errno::ERESTART_RESTARTBLOCK
+    )
+}
+
+/// The register value a syscall callback's answer `retval` writes as the
+/// guest's result: the value, or the errno negated.
+fn answer_register(
+    retval: Option<Result<i64, reverie::Error>>,
+) -> Result<Option<Reg>, reverie::Error> {
+    retval
+        .map(|retval| match retval {
+            Ok(value) => Ok(value as Reg),
+            Err(error) => error
+                .into_errno()
+                .map(|errno| (-(errno.into_raw() as i64)) as Reg),
+        })
+        .transpose()
 }
 
 fn set_ret(task: &Stopped, ret: Reg) -> Result<Reg, TraceError> {
@@ -7302,6 +7600,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             },
         };
+        // The step run's first step resumes this stop through `RootStopLease`
+        // directly, past the resume wrappers' check.
+        self.check_a_code_handed_to_the_kernel(&task)?;
+        let before_the_steps = RegsFingerprint::of(&task.getregs()?);
         let armer = self.liteinst_root_stop_armer(&task);
         let held_root_stop = armer
             .as_ref()
@@ -7610,9 +7912,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let task = match result {
             Err(HandleFailure::ImproperSignal(task)) => {
+                // Before the requeue, whose resumes are checked.
+                self.note_codes_pending_after_a_step_run(&task, before_the_steps);
                 return Ok((false, self.requeue_stashed_sigtrap(task).await?));
             }
             Err(HandleFailure::Cancelled(task)) => {
+                self.note_codes_pending_after_a_step_run(&task, before_the_steps);
                 return Ok((true, self.requeue_stashed_sigtrap(task).await?));
             }
             Err(HandleFailure::TraceError(e)) => {
@@ -7661,6 +7966,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Ok(task) => task,
         };
+        // Before the SIGTRAP repair and requeue, whose resumes are checked.
+        self.note_codes_pending_after_a_step_run(&task, before_the_steps);
         let task = if filtered {
             task
         } else {
@@ -7730,6 +8037,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Postconditions:
     ///  * guest thread may or may not be stopped, depending on value of GuestNext
     async fn handle_stop_event(&mut self, stopped: Stopped, event: Event) -> Result<Wait, Error> {
+        // Before gdb or the Tool can see or change the registers.
+        self.note_codes_pending_at_this_stop(&stopped, &event);
         // gdb's interrupt stops the guest at the first stop a thread makes,
         // before the stop is handled.
         self.interrupt_point(&stopped, &event)
@@ -7743,6 +8052,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.mark_segv_unseen();
         }
         self.latest_injection_stop = None;
+        self.in_place_restart = None;
         #[cfg(target_arch = "aarch64")]
         {
             self.private_first_argument = None;
@@ -7945,7 +8255,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let resume = self
                 .report_held_signal(&task, Some(Signal::SIGTRAP.into()), held)
                 .await?;
-            return self.resume_with_signal(task, resume).await;
+            return self.resume_with_signal(task, resume.into()).await;
         }
 
         let span = tracing::trace_span!(
@@ -8012,7 +8322,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let resume = self
                 .report_held_signal(&task, Some(Signal::SIGTRAP.into()), held)
                 .await?;
-            let wait = self.resume_with_signal(task, resume).await?;
+            let wait = self.resume_with_signal(task, resume.into()).await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
                 "completed injected syscall interception"
@@ -8470,12 +8780,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     ///
     /// A returning `tail_inject` from the callback ends it and passes the
     /// signal on (`report_signal`).
+    ///
+    /// The delivery returned cannot step (`SignalDelivery`): gdb is shown a
+    /// signal at its own delivery stop (`handle_signal`), never a held one.
+    /// A seccomp stop's restart code is therefore always resumed, not
+    /// stepped, from the stop `return_restart_through_syscall_exit` leaves.
     async fn report_held_signal(
         &mut self,
         task: &Stopped,
         stop_signal: Option<AnySignal>,
         signal: Option<AnySignal>,
-    ) -> Result<SignalResume, TraceError> {
+    ) -> Result<SignalDelivery, TraceError> {
         let taken = self.pending_signal_taken;
         // Resumed from a signal-delivery stop, whose siginfo can be written,
         // as it stood before the callback's injections. Whether this tracer
@@ -8510,7 +8825,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: &Stopped,
         stop_signal: Option<AnySignal>,
         signal: Option<AnySignal>,
-    ) -> Result<SignalResume, TraceError> {
+    ) -> Result<SignalDelivery, TraceError> {
         let record = self.pending_signal_taken.take();
         let reported = std::mem::take(&mut self.pending_signal_reported);
         let taken = record;
@@ -8556,12 +8871,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             sig
         );
         let verdict = self.report_signal(sig, true, Some(taken.bytes)).await?;
-        Ok(SignalResume {
+        Ok(SignalDelivery {
             signal: verdict.signal,
             reported: Some(taken),
             approved: verdict.approved,
             replacement: verdict.replacement,
-            step: false,
         })
     }
 
@@ -8582,18 +8896,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// `Tool::handle_signal_event`. A job-control stop signal is recorded
     /// (`unreported_stop_signal`), so that the group stop its delivery makes
     /// is reported instead.
-    fn pass_held_signal_unreported(&mut self, signal: Option<AnySignal>) -> SignalResume {
+    fn pass_held_signal_unreported(&mut self, signal: Option<AnySignal>) -> SignalDelivery {
         if let Some(sig @ (Signal::SIGTSTP | Signal::SIGTTIN | Signal::SIGTTOU)) =
             signal.and_then(AnySignal::as_nix)
         {
             self.unreported_stop_signal = Some(sig);
         }
-        SignalResume {
+        SignalDelivery {
             signal,
             reported: None,
             approved: false,
             replacement: None,
-            step: false,
         }
     }
 
@@ -8616,7 +8929,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         taken: Option<TakenSignal>,
         restore_count: bool,
         reason: reverie::UnreportedSignalReason,
-    ) -> Result<SignalResume, TraceError> {
+    ) -> Result<SignalDelivery, TraceError> {
         if let Some(sig) = signal {
             let info = taken
                 .filter(|taken| taken.signal == sig)
@@ -8767,10 +9080,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         deferred: Option<&DeferredNativeCall>,
     ) -> Result<Wait, TraceError> {
         let SignalResume {
-            signal,
-            reported,
-            approved,
-            replacement,
+            delivery:
+                SignalDelivery {
+                    signal,
+                    reported,
+                    approved,
+                    replacement,
+                },
             step,
         } = resume;
         // Before a siginfo write below: a write can land on an exit stop the
@@ -9167,10 +9483,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                 }
                 let resume = SignalResume {
-                    signal,
-                    reported: taken,
-                    approved: verdict.approved,
-                    replacement: verdict.replacement,
+                    delivery: SignalDelivery {
+                        signal,
+                        reported: taken,
+                        approved: verdict.approved,
+                        replacement: verdict.replacement,
+                    },
                     step,
                 };
                 self.resume_with_signal(task, resume).await
@@ -9902,6 +10220,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 result => result,
             };
+            let answer = answer_register(retval)?;
+            if let Some(ret) = answer {
+                self.refuse_unroutable_result(&task, AnsweredSyscall::Known(nr), ret)
+                    .tracee_context(tid, "refuse a result Linux cannot take")?;
+                self.note_restart_block_answer(AnsweredSyscall::Known(nr), ret);
+            }
             self.ordinary_continuation()?;
 
             // A returned emulation must consume its original stop just like an
@@ -9922,14 +10246,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.ordinary_trace_continuation()?;
             self.timer.finalize_requests();
 
-            #[cfg(target_arch = "aarch64")]
-            let mut restart_ret = None;
-            if let Some(retval) = retval {
-                let ret = match retval {
-                    Ok(x) => x as u64,
-                    Err(err) => (-(err.into_errno()?.into_raw() as i64)) as u64,
-                };
-
+            if let Some(ret) = answer {
                 #[cfg(target_arch = "x86_64")]
                 if emulate_legacy_vsyscall {
                     let mut regs = task
@@ -9945,11 +10262,6 @@ impl<L: Tool + 'static> TracedTask<L> {
 
                 #[cfg(not(target_arch = "x86_64"))]
                 set_ret(&task, ret).tracee_context(tid, "set intercepted syscall result")?;
-
-                #[cfg(target_arch = "aarch64")]
-                {
-                    restart_ret = Some(ret);
-                }
             }
 
             #[cfg(test)]
@@ -9974,25 +10286,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.pre_syscall_for_test(&regs, PreSyscallPoint::Late)
                     .await;
             }
-            // The held signal and the siginfo it was taken with, before the
-            // Tool's verdict, for a restart code returned below.
             #[cfg(target_arch = "aarch64")]
-            let held_record = held.map(|sig| {
-                let taken = self.pending_signal_taken.filter(|taken| taken.signal == sig);
-                (sig, taken.map(|taken| taken.bytes))
-            });
+            let held_record = self.held_signal_record(held);
             let resume = self.report_held_signal(&task, None, held).await?;
             // A restart code written as the result is resolved by Linux only
-            // at a syscall's own exit on aarch64.
+            // at a syscall's own exit on aarch64. A deferred native call
+            // comes only with no code: its `tail_inject` cancelled the
+            // callback, which left `retval` `None`.
             #[cfg(target_arch = "aarch64")]
-            if let Some(ret) = restart_ret
-                && !resume.step
+            if let Some(ret) = answer
                 && deferred_native.is_none()
             {
                 task = self
                     .return_restart_through_syscall_exit(
                         task,
-                        nr,
+                        AnsweredSyscall::Known(nr),
                         args.arg0 as Reg,
                         ret,
                         held_record,
@@ -10000,6 +10308,20 @@ impl<L: Tool + 'static> TracedTask<L> {
                     )
                     .await
                     .tracee_context(tid, "return a restart code through a syscall exit")?;
+            }
+            // x86-64 resolves the code after the stop the guest resumes
+            // from, if it runs `do_signal` there
+            // (`return_restart_from_a_syscall_stop`).
+            #[cfg(target_arch = "x86_64")]
+            if let Some(ret) = answer
+                && deferred_native.is_none()
+                && !emulate_legacy_vsyscall
+                && resume.signal.is_none()
+            {
+                task = self
+                    .return_restart_from_a_syscall_stop(task, AnsweredSyscall::Known(nr), ret)
+                    .await
+                    .tracee_context(tid, "carry a restart code into do_signal")?;
             }
             // An original syscall that sets the mask, left to run on this
             // resume, is run to its exit stop where SIGSEGV's state is kept,
@@ -10036,7 +10358,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 };
             }
             let wait = self
-                .resume_with_signal_and_native(task, resume, deferred_native.as_ref())
+                .resume_with_signal_and_native(task, resume.into(), deferred_native.as_ref())
                 .await
                 .tracee_context(tid, "resume after seccomp stop")?;
             self.native_entry_pending = None;
@@ -10061,7 +10383,9 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// There is no `pending_syscall`: with no `Sysno` the Tool cannot
     /// tail-inject the original call, so anything it injects is a
     /// separate known syscall, and the value it returns is delivered as
-    /// this call's result.
+    /// this call's result; on aarch64 a restart code is returned through a
+    /// syscall exit, as in `handle_seccomp`
+    /// (`return_restart_through_syscall_exit`).
     async fn handle_unknown_seccomp(
         &mut self,
         mut task: Stopped,
@@ -10157,6 +10481,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             };
 
+        let answer = answer_register(retval)?;
+        if let Some(ret) = answer {
+            self.refuse_unroutable_result(&task, AnsweredSyscall::Unknown(raw.nr), ret)
+                .tracee_context(tid, "refuse a result Linux cannot take")?;
+            self.note_restart_block_answer(AnsweredSyscall::Unknown(raw.nr), ret);
+        }
         self.ordinary_continuation()?;
         task = self
             .skip_seccomp_syscall(task)
@@ -10165,18 +10495,43 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
 
-        if let Some(retval) = retval {
-            let ret = match retval {
-                Ok(x) => x as u64,
-                Err(err) => (-(err.into_errno()?.into_raw() as i64)) as u64,
-            };
+        if let Some(ret) = answer {
             set_ret(&task, ret).tracee_context(tid, "set unknown syscall result")?;
         }
 
         let held = self.take_pending_signal_for_resume()?;
+        #[cfg(target_arch = "aarch64")]
+        let held_record = self.held_signal_record(held);
         let resume = self.report_held_signal(&task, None, held).await?;
+        // As in `handle_seccomp`.
+        #[cfg(target_arch = "aarch64")]
+        if let Some(ret) = answer
+            && deferred_native.is_none()
+        {
+            task = self
+                .return_restart_through_syscall_exit(
+                    task,
+                    AnsweredSyscall::Unknown(raw.nr),
+                    raw.args.arg0 as Reg,
+                    ret,
+                    held_record,
+                    resume.signal,
+                )
+                .await
+                .tracee_context(tid, "return a restart code through a syscall exit")?;
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(ret) = answer
+            && deferred_native.is_none()
+            && resume.signal.is_none()
+        {
+            task = self
+                .return_restart_from_a_syscall_stop(task, AnsweredSyscall::Unknown(raw.nr), ret)
+                .await
+                .tracee_context(tid, "carry a restart code into do_signal")?;
+        }
         let wait = self
-            .resume_with_signal_and_native(task, resume, deferred_native.as_ref())
+            .resume_with_signal_and_native(task, resume.into(), deferred_native.as_ref())
             .await
             .tracee_context(tid, "resume after unknown syscall stop")?;
         self.native_entry_pending = None;
@@ -10303,6 +10658,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let signal = signal.into();
         self.note_segv_resume(&task, signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
+        // The last request before the resume: no register write follows.
+        self.check_a_code_handed_to_the_kernel(&task)?;
         self.native_transition_started(input);
         let running = self
             .lease_liteinst_root_stop(task)
@@ -10335,6 +10692,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
+        // The last request before the resume: no register write follows.
+        self.check_a_code_handed_to_the_kernel(&task)?;
         self.native_transition_started(input);
         let running = self
             .lease_liteinst_root_stop(task)
@@ -10365,6 +10724,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let signal = signal.into();
         self.note_segv_signal_without_cont(signal.map(|signal| signal as i32));
         let guard = self.exit_stop_guard(&task);
+        // The last request before the resume: no register write follows.
+        self.check_a_code_handed_to_the_kernel(&task)?;
         self.native_transition_started(input);
         let running = self
             .lease_liteinst_root_stop(task)
@@ -10398,6 +10759,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 self.note_segv_resume(&task, Some(signal.raw()));
                 let guard = self.exit_stop_guard(&task);
+                // The last request before the resume: no register write follows.
+                self.check_a_code_handed_to_the_kernel(&task)?;
                 self.native_transition_started(input);
                 let running = self
                     .lease_liteinst_root_stop(task)
@@ -10435,6 +10798,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 record_step_for_test(task.pid());
                 self.note_segv_signal_without_cont(Some(signal.raw()));
                 let guard = self.exit_stop_guard(&task);
+                // The last request before the resume: no register write follows.
+                self.check_a_code_handed_to_the_kernel(&task)?;
                 self.native_transition_started(input);
                 let running = self
                     .lease_liteinst_root_stop(task)
@@ -10464,6 +10829,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         record_step_for_test(task.pid());
         self.note_segv_signal_without_cont(signal.map(AnySignal::raw));
         let guard = self.exit_stop_guard(&task);
+        // The last request before the resume: no register write follows.
+        self.check_a_code_handed_to_the_kernel(&task)?;
         self.native_transition_started(input);
         let running = self
             .lease_liteinst_root_stop(task)
@@ -10488,6 +10855,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
                 self.note_segv_signal_without_cont(Some(signal.raw()));
                 let guard = self.exit_stop_guard(&task);
+                // The last request before the resume: no register write follows.
+                self.check_a_code_handed_to_the_kernel(&task)?;
                 self.native_transition_started(input);
                 let running = self
                     .lease_liteinst_root_stop(task)
@@ -12447,18 +12816,34 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    /// The held signal `held` and the siginfo it was taken with, read before
+    /// the Tool's verdict, for a restart code returned through a syscall exit
+    /// (`return_restart_through_syscall_exit`).
+    #[cfg(target_arch = "aarch64")]
+    fn held_signal_record(
+        &self,
+        held: Option<AnySignal>,
+    ) -> Option<(AnySignal, Option<SiginfoBytes>)> {
+        held.map(|sig| {
+            let taken = self
+                .pending_signal_taken
+                .filter(|taken| taken.signal == sig);
+            (sig, taken.map(|taken| taken.bytes))
+        })
+    }
+
     /// Hands a restart code written as the guest syscall's result back to
     /// Linux on aarch64, where the kernel would otherwise never resolve it.
     ///
     /// Linux turns a syscall's `-ERESTART*` result into a restart or `-EINTR`
     /// on the way back to user mode. x86-64 decides at the delivery, after
     /// the tracer's last stop, from `orig_ax` and `ax` as the tracer left them
-    /// (`handle_signal`, arch/x86/kernel/signal.c:263-281 at v6.12.9, and
+    /// (`handle_signal`, arch/x86/kernel/signal.c:263-281 at v7.1.3, and
     /// `arch_do_signal_or_restart`, :344-361, with no handler), and the skip
     /// puts the guest's `orig_ax` back at its trap (`skip_seccomp_syscall`),
     /// so a result written at any later stop is resolved. arm64 decides before
-    /// `get_signal` and its ptrace stops (`do_signal`,
-    /// arch/arm64/kernel/signal.c:1395-1464 at v6.12.9): only while the
+    /// `get_signal` and its ptrace stops (`arch_do_signal_or_restart`,
+    /// arch/arm64/kernel/signal.c:1626-1695 at v7.1.3): only while the
     /// kernel's own syscall number (`syscallno`) names a syscall, it rewinds
     /// `pc` to the `svc`, puts back `orig_x0` and forgets the syscall; after
     /// the delivery stop it turns the restart into `-EINTR` for a handler
@@ -12487,30 +12872,35 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// The result is therefore returned through a syscall exit of its own.
     /// With every blockable signal blocked, the thread runs a skipped syscall
     /// from the private page, whose entry saves the guest's first argument,
-    /// `arg0`, as `orig_x0`. At its exit stop the guest's registers and its
-    /// syscall number `nr` are put back. With no signal held for the resume
-    /// the guest's mask is put back too, and the caller resumes the thread
-    /// from that stop: `do_signal` resolves the code on the way back to user
-    /// mode for a signal pending by then, as x86-64's kernel resolves it with
-    /// `orig_ax` naming the call, and with none the guest gets the code, as
-    /// on x86-64. With a signal `held`, or after a SIGSTOP delivered meanwhile
-    /// (below), which leaves nothing pending to run `do_signal`, a carrier, a
-    /// realtime signal no instance of which is pending for the thread, is
-    /// queued for it with every other blockable signal blocked, with a value
-    /// only this instance carries (`carrier_siginfo`). The resume runs
-    /// `do_signal` for the guest's call, which prepares the restart, and stops
-    /// at the carrier's signal-delivery stop, which must take that instance,
-    /// or the run ends with a named refusal. There the guest's mask is put back,
-    /// with the siginfo the held signal was taken with, and the caller
-    /// resumes the thread delivering the signal it decided on (`deliver`),
-    /// or none, in the carrier's place. The kernel ends the restart by that
-    /// signal's action: `-EINTR` for a handler, as above, and a restart
-    /// otherwise, also when the Tool dropped the held signal, which the
-    /// kernel sees as a tracer suppressing it. No signal of the guest's is
-    /// sent again, so Linux's send-time handling of SIGCONT and the stop
-    /// signals (`prepare_signal`, kernel/signal.c:902-967 at v6.12.9), which
-    /// discards pending stop signals or a pending SIGCONT, runs for the
-    /// carrier alone, which is neither.
+    /// `arg0`, as `orig_x0`. At its exit stop the guest's registers and the
+    /// kernel's number for `syscall` (`AnsweredSyscall::kernel_number`) are
+    /// put back. A number the kernel reads as no syscall has none, and is
+    /// refused by name before any request
+    /// (`RestartRefusalReason::NoKernelSyscallNumber`). A resume from that
+    /// stop runs `do_signal` only with a signal pending, and none need be (the
+    /// Tool may return the code with no signal, or another thread of the guest
+    /// may take one pending for the process), so a carrier, a realtime signal
+    /// no instance of which is pending for the thread, is always queued for it
+    /// with every other blockable signal blocked, with a value only this
+    /// instance carries (`carrier_siginfo`). The resume runs `do_signal` for
+    /// the guest's call, which prepares the restart, and stops at the
+    /// carrier's signal-delivery stop, which must take that instance, or the
+    /// run ends with a named refusal. There the guest's mask is put back,
+    /// with the siginfo a held signal was taken with, and the caller resumes
+    /// the thread delivering the signal it decided on (`deliver`), or none,
+    /// in the carrier's place. The kernel ends the restart by that signal's
+    /// action, or, with none, by the first signal the guest's mask lets
+    /// through in the same `get_signal`: `-EINTR` for a handler, as above,
+    /// and a restart otherwise, also when the Tool dropped the held signal,
+    /// which the kernel sees as a tracer suppressing it, and when no signal
+    /// is left, as Linux restarts a call whose signal is gone by its delivery
+    /// and as x86-64's kernel restarts the code from the skip's trap. No
+    /// signal of the guest's is sent again, so Linux's send-time handling of
+    /// SIGCONT and the stop signals (`prepare_signal`, kernel/signal.c:871-936
+    /// at v7.1.3), which discards pending stop signals or a pending SIGCONT,
+    /// runs for the carrier alone, which is neither. If the trick fails after
+    /// its first write, the guest's registers and mask are put back before
+    /// the error is returned (`restore_after_restart_trick`).
     ///
     /// A SIGSTOP, which no mask blocks, is delivered at its signal-delivery
     /// stop wherever the thread takes one meanwhile, as the main loop delivers
@@ -12530,12 +12920,14 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// which may not make the requests, or with a seccomp filter besides
     /// Reverie's own, which could act on the skipped call, the code is
     /// reported to the Tool (`Tool::handle_unresolved_restart`), whose answer
-    /// becomes the result.
+    /// becomes the result. Both Tool hooks name the syscall with a `Sysno`,
+    /// so for a number the table cannot name the run ends where one of them
+    /// would decide (`RestartRefusalReason::UnknownSyscallUndecidable`).
     #[cfg(target_arch = "aarch64")]
     async fn return_restart_through_syscall_exit(
         &mut self,
         task: Stopped,
-        nr: Sysno,
+        syscall: AnsweredSyscall,
         arg0: Reg,
         ret: Reg,
         held: Option<(AnySignal, Option<SiginfoBytes>)>,
@@ -12550,16 +12942,36 @@ impl<L: Tool + 'static> TracedTask<L> {
             ) => code,
             _ => return Ok(task),
         };
+        // Refused before the result was written (`refuse_unroutable_result`);
+        // checked again before any request below.
+        let Some(number) = syscall.kernel_number() else {
+            return Err(self.refuse_restart(
+                syscall,
+                code,
+                RestartRefusalReason::NoKernelSyscallNumber,
+                "",
+            ));
+        };
         if thread_may_be_seccomp_filtered() {
             return self
-                .unresolved_restart(task, nr, code, reverie::UnresolvedRestart::TracerMayBeFiltered)
+                .unresolved_restart(
+                    task,
+                    syscall,
+                    code,
+                    reverie::UnresolvedRestart::TracerMayBeFiltered,
+                )
                 .await;
         }
         if !in_place_seccomp_baseline_admitted(self.global_state.seccomp_filter_baseline)
             || self.guest_has_own_seccomp_filter(task.pid())
         {
             return self
-                .unresolved_restart(task, nr, code, reverie::UnresolvedRestart::GuestSeccompFilter)
+                .unresolved_restart(
+                    task,
+                    syscall,
+                    code,
+                    reverie::UnresolvedRestart::GuestSeccompFilter,
+                )
                 .await;
         }
         let mask = sigmask(&task)?;
@@ -12571,53 +12983,100 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
             match held {
                 Some(_) => {
-                    self.restart_under_pending_mask_restore(&task, nr, arg0, code, masks, deliver)
-                        .await?
+                    self.restart_under_pending_mask_restore(
+                        &task, syscall, arg0, code, masks, deliver,
+                    )
+                    .await?
                 }
                 None => {
-                    self.defer_restart_under_pending_mask_restore(&task, nr, arg0, code, masks)
-                        .await?
+                    self.defer_restart_under_pending_mask_restore(
+                        &task, syscall, number, arg0, code, masks,
+                    )
+                    .await?
                 }
             }
             return Ok(task);
         }
-        let guest = task.getregs()?;
-        let restore = RestartTrickRestore { guest, mask };
+        let restore = RestartTrickRestore {
+            guest: task.getregs()?,
+            mask,
+        };
+        let result = self
+            .restart_trick(task, syscall, number, arg0, code, held, restore)
+            .await;
+        if let Err(error) = &result {
+            self.restore_after_restart_trick(restore, error);
+        }
+        result
+    }
+
+    /// The trick of `return_restart_through_syscall_exit` for the guest's
+    /// registers and mask in `restore`, from its first write on. On an error
+    /// the caller puts both back (`restore_after_restart_trick`).
+    #[cfg(target_arch = "aarch64")]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the refusal's identity (`syscall`, `code`), the trick's inputs and what it restores"
+    )]
+    async fn restart_trick(
+        &mut self,
+        task: Stopped,
+        syscall: AnsweredSyscall,
+        number: i32,
+        arg0: Reg,
+        code: Errno,
+        held: Option<(AnySignal, Option<SiginfoBytes>)>,
+        restore: RestartTrickRestore,
+    ) -> Result<Stopped, TraceError> {
+        let RestartTrickRestore { guest, mask } = restore;
         set_sigmask(&task, mask | BLOCKABLE_SIGNAL_BITS)?;
         let mut entry = guest;
         *entry.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
         *entry.ret_mut() = arg0;
         task.setregs(&entry)?;
-        let mut stop_delivered = false;
-        let task = self
-            .resume_restart_trick(task, None, &restore, &mut stop_delivered)
-            .await?;
+        let task = self.resume_restart_trick(task, None, false).await?;
         task.set_syscall(-1)?;
-        let task = self
-            .resume_restart_trick(task, None, &restore, &mut stop_delivered)
-            .await?;
+        let task = self.resume_restart_trick(task, None, false).await?;
         task.setregs(&guest)?;
-        task.set_syscall(nr as i32)?;
-        // A SIGSTOP delivered meanwhile leaves nothing pending to run
-        // `do_signal` (`do_notify_resume`), so a carrier runs it then too.
-        let carrier = if held.is_some() || stop_delivered {
-            let pending =
-                proc_signal_set(task.pid(), "SigPnd").map_err(|error| dead_or(&task, error))?;
-            free_carrier(pending)
-        } else {
-            None
-        };
-        if !(held.is_some() || stop_delivered) {
-            // The caller's resume, with no signal, is from this syscall exit
-            // stop (`resume_with_signal_and_native`).
-            set_sigmask(&task, mask)?;
-            self.latest_injection_stop = Some(None);
-            return Ok(task);
-        }
-        let Some(carrier) = carrier else {
-            set_sigmask(&task, mask)?;
+        task.set_syscall(number)?;
+        // A resume from this exit stop runs `do_signal` only with a signal
+        // pending (`exit_to_user_mode_loop`, kernel/entry/common.c:63-64 at
+        // v7.1.3), and none need be: the Tool may return the code with no
+        // signal at all, another thread of the guest may take a signal left
+        // pending for the process, and a SIGSTOP delivered meanwhile leaves
+        // none. So a carrier always carries the resume there.
+        let held = held.and_then(|(_, siginfo)| siginfo);
+        self.carry_resume_into_do_signal(task, syscall, code, held, mask, false)
+            .await
+    }
+
+    /// Carries the resume of `task`, stopped where the guest's registers
+    /// hold the restart code `code` for `syscall`, into the kernel's
+    /// `do_signal`: a carrier, a realtime signal no instance of which is
+    /// pending for the thread, is queued for it with every other blockable
+    /// signal blocked, with a value only this instance carries
+    /// (`carrier_siginfo`), and the thread runs to that instance's
+    /// signal-delivery stop, which `do_signal`'s `get_signal` makes. There the
+    /// guest's mask `mask` is put back, with `held`, the siginfo of a held
+    /// signal, and the caller resumes the thread delivering the signal it
+    /// decided on, or none, in the carrier's place. `syscall_stops` lets the
+    /// run pass the syscall's exit stop first (from an event stop). A
+    /// failure after the first write leaves the guest's registers and mask
+    /// for the caller to put back.
+    async fn carry_resume_into_do_signal(
+        &mut self,
+        task: Stopped,
+        syscall: AnsweredSyscall,
+        code: Errno,
+        held: Option<SiginfoBytes>,
+        mask: u64,
+        syscall_stops: bool,
+    ) -> Result<Stopped, TraceError> {
+        let pending =
+            proc_signal_set(task.pid(), "SigPnd").map_err(|error| dead_or(&task, error))?;
+        let Some(carrier) = free_carrier(pending) else {
             return Err(self.refuse_restart(
-                nr,
+                syscall,
                 code,
                 RestartRefusalReason::NoFreeCarrierSignal,
                 "",
@@ -12640,12 +13099,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         if sent != 0 {
-            let error = dead_or(&task, Errno::last().into());
-            restore.apply(&task);
-            return Err(error);
+            return Err(dead_or(&task, Errno::last().into()));
         }
         let task = self
-            .resume_restart_trick(task, Some(carrier), &restore, &mut stop_delivered)
+            .resume_restart_trick(task, Some(carrier), syscall_stops)
             .await?;
         // The stop must be the tracer's own instance: one of the guest's, of
         // the same number and queued first, is taken before it.
@@ -12654,9 +13111,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         // `_rt` member's value, which an `SI_QUEUE` siginfo carries.
         let value = unsafe { taken.si_value().sival_ptr } as u64;
         if !carrier_instance_is_the_tracers(taken.si_code, value, cookie) {
-            restore.apply(&task);
             return Err(self.refuse_restart(
-                nr,
+                syscall,
                 code,
                 RestartRefusalReason::CarrierInstanceNotTheTracers,
                 &format!(
@@ -12668,7 +13124,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             ));
         }
         set_sigmask(&task, mask)?;
-        if let Some((_, Some(siginfo))) = held {
+        if let Some(siginfo) = held {
             task.setsiginfo_bytes(&siginfo)
                 .map_err(|error| dead_or(&task, error))?;
         }
@@ -12676,6 +13132,423 @@ impl<L: Tool + 'static> TracedTask<L> {
         // (`resume_with_signal_and_native`).
         self.latest_injection_stop = Some(Some(carrier));
         Ok(task)
+    }
+
+    /// Whether the answer `ret` is the kernel's own result for the guest's own
+    /// `rt_sigsuspend`, `ppoll` or `pselect6` (`THREE_WAITS`), which is then
+    /// left to the kernel: the call ran in place, unchanged, to its exit stop
+    /// (`run_pending_in_place`) and returned `ret` there; the thread has not
+    /// run since (no later injection, SIGTRAP repair or requeue); and its live
+    /// `orig_ax`, the number Linux restarts from, is still that call's. A
+    /// Tool's write of other registers (`Guest::set_regs`), the instruction
+    /// pointer included, does not end the reuse; the result register is not
+    /// compared, since Reverie has just written `ret` there (`set_ret`).
+    ///
+    /// The rule: never 512-516 unless a seccomp filter in the guest's own
+    /// seccomp state (installed by the guest, or inherited at start and
+    /// admitted by the embedding tool) returns it (native parity). For these
+    /// three calls the producers of a restart code at the call's exit stop are
+    /// known (Linux v7.1.3):
+    /// 1. A filter present when the call entered, the guest's own or one it
+    ///    inherited: its `SECCOMP_RET_ERRNO` data, or the reply of a
+    ///    `SECCOMP_RET_USER_NOTIF` supervisor, whose `error` and `val` are not
+    ///    range checked (kernel/seccomp.c:1660-1661, :1222-1224 and
+    ///    :1254-1255; arch/x86/include/asm/syscall.h:79-84), or its
+    ///    interrupted wait's `-ERESTARTSYS`. Either action wins over
+    ///    Reverie's `SECCOMP_RET_TRACE`, the lowest action value deciding
+    ///    (kernel/seccomp.c:426), so the call never reaches a Reverie stop and
+    ///    no Tool answers it: Linux writes that result and decides what the
+    ///    guest gets, as untraced.
+    /// 2. A tracer writing -1 to `orig_ax` at the exit stop, or at a
+    ///    signal-delivery or group stop inside `get_signal`, which x86-64
+    ///    calls before its restart tests (arch/x86/kernel/signal.c:337):
+    ///    Linux's restart processing reads it as no syscall (`syscall_get_nr`,
+    ///    arch/x86/include/asm/syscall.h:36-39; arch/x86/kernel/signal.c:264
+    ///    and :344) and leaves the code to the guest, raw or saved in a
+    ///    handler's frame; the tracer sees the raw code at the exit stop
+    ///    (include/linux/entry-common.h:247-248). This suppresses a
+    ///    conversion; it makes no new value. Excluded: the live `orig_ax`
+    ///    must be the call's number; a Tool's -1 is refused before the result
+    ///    is written (`refuse_unroutable_result`); every later resume until
+    ///    the thread leaves the syscall checks again
+    ///    (`check_a_code_handed_to_the_kernel`), from the registers each such
+    ///    stop holds as it begins (`note_codes_pending_at_this_stop`).
+    /// 3. The call itself: `sigsuspend` returns `-ERESTARTNOHAND` only once
+    ///    `signal_pending` holds (kernel/signal.c:4840-4845), `pselect6` and
+    ///    `ppoll` only if it holds after the wait (fs/select.c:682-685 and
+    ///    :937-939). Their other errors are `EINVAL`, `EFAULT`, `ENOMEM` and
+    ///    `EBADF`; a driver's `poll` returns a mask, not an error.
+    /// 4. A filter a guest thread installed with `SECCOMP_FILTER_FLAG_TSYNC`
+    ///    while the call was stopped, which applies when the call's filters
+    ///    run again after the tracer's stop (kernel/seccomp.c:1319-1333,
+    ///    guarded at :1296-1297): its `SECCOMP_RET_ERRNO` data
+    ///    (kernel/seccomp.c:1279-1285) or its supervisor's reply `error` or
+    ///    `val`, the result the guest-installed filter writes; or `-ERESTARTSYS` from a
+    ///    notification wait a signal interrupted (kernel/seccomp.c:1199-1211,
+    ///    kernel/sched/completion.c:219-225), only once `signal_pending`
+    ///    holds.
+    ///
+    /// Where `signal_pending` held (3, and 4's interrupted wait), this
+    /// thread's `TIF_SIGPENDING` or `TIF_NOTIFY_SIGNAL` was set
+    /// (include/linux/sched/signal.h:387-395). The stop clears neither, its
+    /// resume only sets the first (kernel/signal.c:2497-2499), and either
+    /// makes `exit_to_user_mode_loop` run the restart processing
+    /// (kernel/entry/common.c:63-64), which converts the code as for an
+    /// untraced thread (arch/x86/kernel/signal.c:263-283 and :344-358): the
+    /// guest never sees it. Otherwise (4's error or reply) the code is the
+    /// result the guest-installed filter wrote, and the guest gets what
+    /// Linux's exit work makes of it, as untraced, except
+    /// `-ERESTART_RESTARTBLOCK`, which every backend route refuses by name
+    /// after the Tool's answer while the thread has a seccomp filter of the
+    /// guest's own (`refuse_unroutable_result`). Producer 2 suppresses a
+    /// conversion; it makes no new value. The enumeration is of the call's
+    /// syscall-exit stop, for the guest's own call run unchanged.
+    /// There is no other producer, so the kernel's handling is right
+    /// whichever gave the code. For any other call a native restart code may
+    /// be a driver's, and is not reused.
+    #[cfg(target_arch = "x86_64")]
+    fn reuses_the_native_result(&self, task: &Stopped, ret: Reg) -> Result<bool, TraceError> {
+        let Some(native) = self.in_place_restart else {
+            return Ok(false);
+        };
+        if !THREE_WAITS.iter().any(|&nr| native.orig == nr as Reg) {
+            return Ok(false);
+        }
+        if native.ret != ret || native.epoch != self.injection_epoch {
+            return Ok(false);
+        }
+        Ok(task.getregs()?.orig_syscall() == native.orig)
+    }
+
+    /// Records the restart code `code` for `syscall` that the route leaves to
+    /// the kernel at this stop (`pending_conversion`).
+    #[cfg(target_arch = "x86_64")]
+    fn leave_code_to_the_kernel(&mut self, syscall: AnsweredSyscall, code: Errno) {
+        self.pending_conversion = Some(PendingConversion::Code { syscall, code });
+    }
+
+    /// Notes, as a stop begins and before gdb or a Tool can read or write the
+    /// registers, what the resume from it may hand Linux. Only a
+    /// signal-delivery or group stop (`Event::Signal`, `Event::RawSignal`) is
+    /// inside `get_signal`, after which Linux converts a restart code from the
+    /// resume-time registers (arch/x86/kernel/signal.c:337, then :264 or :344
+    /// at v7.1.3); no other stop leads to a conversion.
+    ///
+    /// On x86-64 the code this stop's registers hold, when `orig_ax` reads as
+    /// a syscall (`conversion_pending_in`), is the stop's pending conversion:
+    /// a Tool's or debugger's write at this stop cannot hide it, since it is
+    /// read before them, and it ends with the stop.
+    ///
+    /// A Tool's `-ERESTART_RESTARTBLOCK` answer lives on only at such a stop
+    /// whose registers are those the last checked resume handed the thread
+    /// (`RestartBlockAnswer::resumed_with`): Linux changes none of them
+    /// before it converts the code, and the conversion changes the result
+    /// register on x86-64 (to `-EINTR` or `restart_syscall`'s number) and the
+    /// instruction pointer or the result register on aarch64, which rewinds
+    /// before `get_signal` and converts after it
+    /// (arch/arm64/kernel/signal.c:1636-1695 at v7.1.3); a return to user
+    /// mode changes them too. A write by the Tool, a debugger or Reverie
+    /// before that resume is part of those registers, so it neither fools nor
+    /// ends the answer. On aarch64 a route that resumes from the call's exit
+    /// stop with the code for the kernel
+    /// (`defer_restart_under_pending_mask_restore`) also admits those
+    /// registers as `do_signal` rewinds them before `get_signal`
+    /// (`RegsFingerprint::rewound_for_a_restart`); the conversion after
+    /// `get_signal` changes them again.
+    ///
+    /// Registers that cannot be read keep the answer, and on x86-64 leave a
+    /// pending conversion of unknown code (`PendingConversion::Unread`): an
+    /// unread state proves no conversion (`RestartBlockAnswer::survives`).
+    ///
+    /// Not covered, by design: a Tool or a debugger that writes a value other
+    /// than the code to the result register at one stop, so that the next
+    /// stop's registers no longer show it, and writes the code back at a
+    /// later stop, with `orig_ax` reading as no syscall on x86-64, or with a
+    /// seccomp filter of the guest's own installed in between. That is a
+    /// deliberate register write, which `Tool`'s documentation forbids; every
+    /// write of Reverie's own (an injection's save and restore, a timer step
+    /// run's trap flag) happens before the resume that records the registers
+    /// (`check_a_code_handed_to_the_kernel`), and so stays covered.
+    fn note_codes_pending_at_this_stop(&mut self, task: &Stopped, event: &Event) {
+        let stop = if !matches!(event, Event::Signal(..) | Event::RawSignal(..)) {
+            StopRegisters::OutsideGetSignal
+        } else {
+            match task.getregs() {
+                Ok(regs) => StopRegisters::Read(regs),
+                Err(_) => StopRegisters::Unread,
+            }
+        };
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.pending_conversion = conversion_pending_at(&stop);
+        }
+        let mut answer = self.restart_block_answer.lock().unwrap();
+        if answer.is_some_and(|answer| !answer.survives(&stop)) {
+            *answer = None;
+        }
+    }
+
+    /// Notes what the resume from `task`, the stop a timer event's step run
+    /// ended at (`drive_timer`), may hand Linux, if the thread ran: its
+    /// registers are no longer `before`, those it had as the run began. The
+    /// stop its dispatch noted (`note_codes_pending_at_this_stop`) is then
+    /// behind it, so on x86-64 the pending conversion is the one the
+    /// registers now hold, and a Tool's `-ERESTART_RESTARTBLOCK` answer
+    /// lives on only if they are those the last checked resume handed the
+    /// thread, which the run's own resumes (`RootStopLease`) leave unchanged
+    /// only if the thread did not leave the call. Registers that cannot be
+    /// read keep the answer and, on x86-64, leave a pending code of unknown
+    /// value (`stop_after_a_step_run`): an unread state proves no conversion,
+    /// and the thread may be at another stop.
+    fn note_codes_pending_after_a_step_run(&mut self, task: &Stopped, before: RegsFingerprint) {
+        let Some(stop) = stop_after_a_step_run(task.getregs().ok(), before) else {
+            return;
+        };
+        #[cfg(target_arch = "x86_64")]
+        {
+            self.pending_conversion = conversion_pending_at(&stop);
+        }
+        let mut answer = self.restart_block_answer.lock().unwrap();
+        if answer.is_some_and(|answer| !answer.survives(&stop)) {
+            *answer = None;
+        }
+    }
+
+    /// Refuses a resume that would hand the kernel a restart code it must
+    /// not convert as it stands. Every resume, step and syscall resume
+    /// wrapper calls it, before the request, and so does a timer event's step
+    /// run before its first step (`drive_timer`), which resumes through
+    /// `RootStopLease` directly: its later steps resume from its own step
+    /// stops, where no Tool or debugger callback runs and its only register
+    /// writes (`remove_stepping_trap_flag` and `adopt_trap_flag` in timer.rs)
+    /// put back the registers just read with only the trap flag changed.
+    ///
+    /// On x86-64, the stop's pending conversion (`pending_conversion`), with
+    /// the code still the result and the live `orig_ax` reading as no
+    /// syscall (low 32 bits all ones, `syscall_get_nr`): Linux would skip the
+    /// conversion and the guest would get the code (arch/x86/kernel/signal.c:264
+    /// and :344 at v7.1.3), at a syscall's exit stop or at a signal-delivery
+    /// or group stop `get_signal` makes before the conversion (:337), where a
+    /// Tool or debugger can write registers (`Guest::set_regs`).
+    /// `PTRACE_EVENT_STOP` stops there need `PTRACE_SEIZE`, which this
+    /// backend does not use. aarch64 has no such stop: its `do_signal` reads
+    /// the result and sets `syscallno` to `NO_SYSCALL` before `get_signal`
+    /// (arch/arm64/kernel/signal.c:1639-1659 at v7.1.3), so no write at a
+    /// signal-delivery stop changes the outcome; its one such hazard is
+    /// `syscallno` at the route's own exit stop, which only Reverie writes
+    /// (`Stopped::set_syscall`; `Guest::set_regs` writes `x8`), and every
+    /// route that leaves a code to the kernel there writes the call's number
+    /// back (`return_restart_through_syscall_exit`,
+    /// `defer_restart_under_pending_mask_restore`).
+    ///
+    /// The check is each wrapper's last request before the ptrace resume, so
+    /// the registers it reads and records are those Linux resumes with: every
+    /// write of Reverie's own (an injection's restore, `restored_regs`; the
+    /// carrier's) happens before it.
+    ///
+    /// On both, while a Tool's `-ERESTART_RESTARTBLOCK` answer lives
+    /// (`restart_block_answer`), a seccomp filter of the guest's own that a
+    /// sibling thread installed after the answer was first checked
+    /// (`refuse_unroutable_result`), while the route or a callback awaited:
+    /// the filters are read again here, after the last await
+    /// (`guest_seccomp_at_resume`). A count that cannot be read while the
+    /// thread is not known to be exiting is refused by name too; a thread
+    /// whose status is gone or shows a zombie or a dead task is exiting, and
+    /// no refusal stands in for its exit. The registers handed the thread are
+    /// then noted for the next stop, and a resume whose registers cannot be
+    /// read is not made.
+    fn check_a_code_handed_to_the_kernel(&self, task: &Stopped) -> Result<(), TraceError> {
+        let answer = *self.restart_block_answer.lock().unwrap();
+        if let Some(answer) = answer {
+            let detail = match self.guest_seccomp_at_resume(task.pid()) {
+                GuestSeccompAtResume::OwnFilter => {
+                    Some(" (a seccomp filter of the guest's own appeared before the resume)")
+                }
+                GuestSeccompAtResume::Unreadable => {
+                    Some(" (the guest's seccomp state could not be read before the resume)")
+                }
+                GuestSeccompAtResume::NoOwnFilter | GuestSeccompAtResume::Exiting => None,
+            };
+            if let Some(detail) = detail {
+                return Err(self.refuse_restart(
+                    answer.syscall,
+                    Errno::ERESTART_RESTARTBLOCK,
+                    RestartRefusalReason::RestartBlockUnderGuestSeccompFilter,
+                    detail,
+                ));
+            }
+            // No resume goes on unchecked: a read that fails ends it with the
+            // read's error, which for a thread that is exiting is the
+            // `Died` any other request at its stop gets.
+            let regs = task.getregs()?;
+            let resumed_with = RegsFingerprint::of(&regs);
+            #[cfg(target_arch = "aarch64")]
+            let rewound_with = answer
+                .rewind_arg0
+                .map(|arg0| resumed_with.rewound_for_a_restart(arg0));
+            #[cfg(not(target_arch = "aarch64"))]
+            let rewound_with = None;
+            *self.restart_block_answer.lock().unwrap() = Some(RestartBlockAnswer {
+                resumed_with: Some(resumed_with),
+                rewound_with,
+                rewind_arg0: None,
+                ..answer
+            });
+        }
+        #[cfg(target_arch = "x86_64")]
+        if let Some(pending) = self.pending_conversion {
+            let regs = task.getregs()?;
+            let orig_reads_no_syscall = regs.orig_syscall() as u32 == u32::MAX;
+            match pending {
+                PendingConversion::Code { syscall, code }
+                    if orig_reads_no_syscall
+                        && Errno::from_ret(regs.ret() as usize) == Err(code) =>
+                {
+                    return Err(self.refuse_restart(
+                        syscall,
+                        code,
+                        RestartRefusalReason::NoKernelSyscallNumber,
+                        " (orig_ax read -1 at a resume before Linux converted the code)",
+                    ));
+                }
+                PendingConversion::Unread if orig_reads_no_syscall => {
+                    if let Err(
+                        code @ (Errno::ERESTARTSYS
+                        | Errno::ERESTARTNOINTR
+                        | Errno::ERESTARTNOHAND
+                        | Errno::ERESTART_RESTARTBLOCK),
+                    ) = Errno::from_ret(regs.ret() as usize)
+                    {
+                        return Err(self.refuse_restart(
+                            AnsweredSyscall::Unknown(regs.orig_syscall()),
+                            code,
+                            RestartRefusalReason::NoKernelSyscallNumber,
+                            " (orig_ax read -1 at a resume from a stop with unread registers)",
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// `GuestSeccompAtResume` for thread `tid`.
+    fn guest_seccomp_at_resume(&self, tid: Pid) -> GuestSeccompAtResume {
+        guest_seccomp_at_resume_in(
+            read_status(format!("/proc/{tid}/status")),
+            self.global_state.seccomp_filter_baseline,
+        )
+    }
+
+    /// Carries a restart code written as the guest syscall's result into
+    /// x86-64's `do_signal` (`arch_do_signal_or_restart`), which resolves it
+    /// after the tracer's last stop from `orig_ax` and `ax`
+    /// (arch/x86/kernel/signal.c:264-281 and :344-361 at v7.1.3), but runs
+    /// only with a signal pending (`exit_to_user_mode_loop`,
+    /// kernel/entry/common.c:63-64).
+    ///
+    /// A resume from a signal-delivery stop is inside `get_signal` already:
+    /// the skip's trap (`skip_seccomp_syscall`), a stepped injection's, or a
+    /// held signal's, whose resume with no signal goes on to the restart. A
+    /// resume delivering a held signal sends it. Neither needs anything here.
+    /// After an injection that ended at another stop, a syscall's exit
+    /// between syscall stops (`syscall_stops_admitted`) or an event stop,
+    /// nothing need be pending, so the resume is carried to a carrier's
+    /// signal-delivery stop (`carry_resume_into_do_signal`), as aarch64's
+    /// route carries every resume (`return_restart_through_syscall_exit`).
+    /// The kernel's own result for the guest's own `rt_sigsuspend`, `ppoll`
+    /// or `pselect6`, run in place unchanged (`reuses_the_native_result`),
+    /// is left to the kernel, under a tracer filter too, as on main: Linux
+    /// converts it as for an untraced thread, or it is a guest-installed
+    /// filter's result. A signal procfs shows pending is no witness for this
+    /// thread: one pending for the thread group can be taken by another
+    /// thread before the resume, leaving this thread's `TIF_SIGPENDING`
+    /// unset. Under a tracer that may be filtered, which may not make the
+    /// requests, any other code is reported to the Tool
+    /// (`Tool::handle_unresolved_restart`), whose default answer is refused
+    /// by name. `-ERESTART_RESTARTBLOCK` while the thread has a seccomp filter
+    /// of the guest's own never gets here: it is refused by name when the
+    /// Tool returns it (`refuse_unroutable_result`). Any other code a guest
+    /// filter returned for the
+    /// call is restarted by the carrier, and the filter, now present at the
+    /// call's entry, answers it there as Linux would. With a temporary mask's
+    /// restore pending, writing the mask would discard the restore, and the
+    /// code is left to the `do_signal` that the interrupting signal's pending
+    /// state runs, as on aarch64 (`defer_restart_under_pending_mask_restore`).
+    #[cfg(target_arch = "x86_64")]
+    async fn return_restart_from_a_syscall_stop(
+        &mut self,
+        task: Stopped,
+        syscall: AnsweredSyscall,
+        ret: Reg,
+    ) -> Result<Stopped, TraceError> {
+        let code = match Errno::from_ret(ret as usize) {
+            Err(
+                code @ (Errno::ERESTARTSYS
+                | Errno::ERESTARTNOINTR
+                | Errno::ERESTARTNOHAND
+                | Errno::ERESTART_RESTARTBLOCK),
+            ) => code,
+            _ => return Ok(task),
+        };
+        if self.latest_injection_stop != Some(None) {
+            return Ok(task);
+        }
+        if syscall.kernel_number().is_none() {
+            return Err(self.refuse_restart(
+                syscall,
+                code,
+                RestartRefusalReason::NoKernelSyscallNumber,
+                "",
+            ));
+        }
+        if self.reuses_the_native_result(&task, ret)? {
+            self.leave_code_to_the_kernel(syscall, code);
+            return Ok(task);
+        }
+        if thread_may_be_seccomp_filtered() {
+            return self
+                .unresolved_restart(
+                    task,
+                    syscall,
+                    code,
+                    reverie::UnresolvedRestart::TracerMayBeFiltered,
+                )
+                .await;
+        }
+        let mask = sigmask(&task)?;
+        let in_effect = blocked_signal_mask(task.pid()).map_err(|error| dead_or(&task, error))?;
+        if in_effect != mask {
+            self.leave_code_to_the_kernel(syscall, code);
+            return Ok(task);
+        }
+        let restore = RestartTrickRestore {
+            guest: task.getregs()?,
+            mask,
+        };
+        let result = self
+            .carry_resume_into_do_signal(task, syscall, code, None, mask, true)
+            .await;
+        if let Err(error) = &result {
+            self.restore_after_restart_trick(restore, error);
+        }
+        result
+    }
+
+    /// Puts back the guest's registers and mask (`restore`) after the trick of
+    /// `return_restart_through_syscall_exit` failed with `error`, which the
+    /// caller returns. A failure to put them back is reported beside that
+    /// error, never in its place.
+    fn restore_after_restart_trick(&self, restore: RestartTrickRestore, error: &TraceError) {
+        if let Err(secondary) = restore.apply(&self.assume_stopped()) {
+            tracing::error!(
+                "[scheduler/tool] (pid = {}) could not put back the guest's registers and mask after returning a restart code failed ({:?}): {:?}",
+                self.tid(),
+                error,
+                secondary
+            );
+        }
     }
 
     /// `return_restart_through_syscall_exit` with a temporary mask's restore
@@ -12707,12 +13580,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn restart_under_pending_mask_restore(
         &mut self,
         task: &Stopped,
-        nr: Sysno,
+        syscall: AnsweredSyscall,
         arg0: Reg,
         code: Errno,
         masks: RestartMasks,
         deliver: Option<AnySignal>,
     ) -> Result<(), TraceError> {
+        let AnsweredSyscall::Known(nr) = syscall else {
+            return Err(self.refuse_restart(
+                syscall,
+                code,
+                RestartRefusalReason::UnknownSyscallUndecidable,
+                " (a temporary mask's restore is pending)",
+            ));
+        };
         let read = |field| proc_signal_set(task.pid(), field).map_err(|error| dead_or(task, error));
         let facts = reverie::PendingMaskRestore::new(
             self.tid(),
@@ -12774,7 +13655,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             outcome => {
                 return Err(self.refuse_restart(
-                    nr,
+                    syscall,
                     code,
                     RestartRefusalReason::OutcomeNotWritable,
                     &format!(" ({outcome:?})"),
@@ -12791,9 +13672,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// `return_restart_through_syscall_exit` with a temporary mask's restore
     /// pending (`masks`) and no signal held for the resume. From a stop that is
     /// not a signal-delivery stop the kernel's own route is open, as on
-    /// x86-64, where `orig_ax` names the call: the kernel's syscall number is
-    /// put back as `nr`, `x0` keeps the code, and the `do_signal` that runs on
-    /// the way back to user mode resolves it with the restore still pending.
+    /// x86-64, where `orig_ax` names the call: the kernel's number for
+    /// `syscall` is put back, `x0` keeps the code, and the `do_signal` that
+    /// runs on the way back to user mode resolves it with the restore still
+    /// pending.
     ///
     /// A restart there puts back `orig_x0`, the first argument of the last
     /// syscall the thread entered (arch/arm64/kernel/signal.c:1395-1427 at
@@ -12822,7 +13704,8 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn defer_restart_under_pending_mask_restore(
         &mut self,
         task: &Stopped,
-        nr: Sysno,
+        syscall: AnsweredSyscall,
+        number: i32,
         arg0: Reg,
         code: Errno,
         masks: RestartMasks,
@@ -12832,10 +13715,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "[scheduler/tool] (pid = {}) writes the outcome of {} for {}: no signal is held, and do_signal is past its restart decision",
                 task.pid(),
                 code,
-                nr
+                syscall
             );
             return self
-                .restart_under_pending_mask_restore(task, nr, arg0, code, masks, None)
+                .restart_under_pending_mask_restore(task, syscall, arg0, code, masks, None)
                 .await;
         }
         if let Some(first) = self.private_first_argument
@@ -12845,21 +13728,33 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "[scheduler/tool] (pid = {}) writes the outcome of {} for {}: a kernel restart would take the first argument of an injected call ({:#x} for {:#x})",
                 task.pid(),
                 code,
-                nr,
+                syscall,
                 first,
                 arg0
             );
             return self
-                .restart_under_pending_mask_restore(task, nr, arg0, code, masks, None)
+                .restart_under_pending_mask_restore(task, syscall, arg0, code, masks, None)
                 .await;
         }
         tracing::debug!(
             "[scheduler/tool] (pid = {}) leaves {} for {} to the kernel's do_signal, a temporary mask's restore pending",
             task.pid(),
             code,
-            nr
+            syscall
         );
-        task.set_syscall(nr as i32)?;
+        // `number` is never NO_SYSCALL (-1), with which the restart
+        // processing would see no syscall (`in_syscall`,
+        // arch/arm64/include/asm/ptrace.h:177-180 at v7.1.3) and leave the code
+        // to the guest (`AnsweredSyscall::kernel_number`). The skip left that
+        // in `syscallno` (`skip_seccomp_syscall`), and a Tool cannot write
+        // `syscallno` (`RegAccess::orig_syscall_mut`).
+        task.set_syscall(number)?;
+        // The resume from this exit stop runs `do_signal`, which rewinds the
+        // registers before the `get_signal` whose stops come next
+        // (`RegsFingerprint::rewound_for_a_restart`).
+        if let Some(answer) = self.restart_block_answer.lock().unwrap().as_mut() {
+            answer.rewind_arg0 = Some(arg0);
+        }
         if self.latest_injection_stop.is_some() {
             let regs = task.getregs()?;
             self.deferred_restart = Some(DeferredRestart {
@@ -12914,13 +13809,84 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(())
     }
 
-    /// Records the refusal to return the restart code `code` for `nr` with the
-    /// session, which ends the run with `RestartRefusal`, and returns the
-    /// error that unwinds the handler. `detail` is appended to the log line.
-    #[cfg(target_arch = "aarch64")]
+    /// Refuses, before the result is written or the guest resumes, a result
+    /// `ret` for `syscall` that Linux's restart processing cannot take:
+    /// `ENOIOCTLCMD`, internal to the kernel, and any restart code for a
+    /// number the kernel reads as no syscall (`AnsweredSyscall::kernel_number`),
+    /// or, on x86-64, for a thread of `task` whose live `orig_ax` the Tool set
+    /// to that number (`Guest::set_regs`), which Linux reads as an `int`
+    /// (`syscall_get_nr`); for either that processing would leave the code to
+    /// the guest (`refuse_restart`). The Tool's write is not undone. Also
+    /// `-ERESTART_RESTARTBLOCK` while the thread has a seccomp filter of the
+    /// guest's own (`guest_has_own_seccomp_filter`), on both architectures, on
+    /// every backend route the answer could take: the in-place native result,
+    /// the carrier, a Tool hook, a held signal's resume and a pending mask
+    /// restore's deferral
+    /// (`RestartRefusalReason::RestartBlockUnderGuestSeccompFilter`). Any other
+    /// result is the caller's to write.
+    fn refuse_unroutable_result(
+        &self,
+        task: &Stopped,
+        syscall: AnsweredSyscall,
+        ret: Reg,
+    ) -> Result<(), TraceError> {
+        let (code, reason, detail) = match Errno::from_ret(ret as usize) {
+            Err(code @ Errno::ENOIOCTLCMD) => (code, RestartRefusalReason::KernelInternalCode, ""),
+            Err(
+                code @ (Errno::ERESTARTSYS
+                | Errno::ERESTARTNOINTR
+                | Errno::ERESTARTNOHAND
+                | Errno::ERESTART_RESTARTBLOCK),
+            ) if syscall.kernel_number().is_none() => {
+                (code, RestartRefusalReason::NoKernelSyscallNumber, "")
+            }
+            #[cfg(target_arch = "x86_64")]
+            Err(
+                code @ (Errno::ERESTARTSYS
+                | Errno::ERESTARTNOINTR
+                | Errno::ERESTARTNOHAND
+                | Errno::ERESTART_RESTARTBLOCK),
+            ) if self.read_guest_registers(task)?.orig_syscall() as u32 == u32::MAX => (
+                code,
+                RestartRefusalReason::NoKernelSyscallNumber,
+                " (the Tool wrote -1 as the syscall number)",
+            ),
+            Err(code @ Errno::ERESTART_RESTARTBLOCK)
+                if self.guest_has_own_seccomp_filter(task.pid()) =>
+            {
+                (
+                    code,
+                    RestartRefusalReason::RestartBlockUnderGuestSeccompFilter,
+                    "",
+                )
+            }
+            _ => return Ok(()),
+        };
+        Err(self.refuse_restart(syscall, code, reason, detail))
+    }
+
+    /// Records a Tool's `-ERESTART_RESTARTBLOCK` answer for `syscall`
+    /// (`restart_block_answer`), which every resume checks again until Linux
+    /// has converted it (`check_a_code_handed_to_the_kernel`).
+    fn note_restart_block_answer(&mut self, syscall: AnsweredSyscall, ret: Reg) {
+        if Errno::from_ret(ret as usize) == Err(Errno::ERESTART_RESTARTBLOCK) {
+            *self.restart_block_answer.lock().unwrap() = Some(RestartBlockAnswer {
+                syscall,
+                resumed_with: None,
+                rewound_with: None,
+                rewind_arg0: None,
+            });
+        }
+    }
+
+    /// Records the refusal to return the code `code` for `syscall` with the
+    /// session, which ends the run with `RestartRefusal`, or for a number the
+    /// syscall table cannot name `UnknownSyscallRestartRefusal`, and returns
+    /// the error that unwinds the handler. `detail` is appended to the log
+    /// line.
     fn refuse_restart(
         &self,
-        nr: Sysno,
+        syscall: AnsweredSyscall,
         code: Errno,
         reason: RestartRefusalReason,
         detail: &str,
@@ -12929,7 +13895,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             "[scheduler/tool] (pid = {}) refuses to return {} as the result of {}: {}{}",
             self.tid(),
             code,
-            nr,
+            syscall,
             reason,
             detail
         );
@@ -12939,12 +13905,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 tid: self.tid(),
                 phase: "restart code refused",
             },
-            anyhow::Error::new(crate::RestartRefusal {
-                tid: self.tid().as_raw(),
-                syscall: nr,
-                code,
-                reason,
-            })
+            match syscall {
+                AnsweredSyscall::Known(syscall) => anyhow::Error::new(crate::RestartRefusal {
+                    tid: self.tid().as_raw(),
+                    syscall,
+                    code,
+                    reason,
+                }),
+                AnsweredSyscall::Unknown(nr) => {
+                    anyhow::Error::new(crate::UnknownSyscallRestartRefusal {
+                        tid: self.tid().as_raw(),
+                        nr,
+                        code,
+                        reason,
+                    })
+                }
+            }
             .into(),
         );
         Errno::ECANCELED.into()
@@ -12952,15 +13928,25 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     /// Reports a restart code the backend cannot hand to the kernel to the
     /// Tool (`Tool::handle_unresolved_restart`), and writes what it returns as
-    /// the syscall's result.
-    #[cfg(target_arch = "aarch64")]
+    /// the syscall's result. Nothing hands that answer to the kernel either,
+    /// so an answer internal to Linux (`linux_internal_code`), the default's
+    /// included, is refused by name
+    /// (`RestartRefusalReason::HookAnsweredInternalCode`).
     async fn unresolved_restart(
         &mut self,
         task: Stopped,
-        nr: Sysno,
+        syscall: AnsweredSyscall,
         code: Errno,
         reason: reverie::UnresolvedRestart,
     ) -> Result<Stopped, TraceError> {
+        let AnsweredSyscall::Known(nr) = syscall else {
+            return Err(self.refuse_restart(
+                syscall,
+                code,
+                RestartRefusalReason::UnknownSyscallUndecidable,
+                &format!(" ({reason:?})"),
+            ));
+        };
         let result = self
             .process_state
             .clone()
@@ -12990,23 +13976,31 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(Errno::ECANCELED.into());
             }
         };
+        if let Err(answer) = Errno::from_ret(ret as usize)
+            && linux_internal_code(answer)
+        {
+            return Err(self.refuse_restart(
+                syscall,
+                code,
+                RestartRefusalReason::HookAnsweredInternalCode { answer },
+                &format!(" ({reason:?})"),
+            ));
+        }
         set_ret(&task, ret)?;
         Ok(task)
     }
 
     /// Resumes `task` (`PTRACE_SYSCALL`) for
-    /// `return_restart_through_syscall_exit`: to its next syscall stop, or with
-    /// `until`, to the signal-delivery stop of that signal. A SIGSTOP's
-    /// signal-delivery stop delivers it, which sets `stop_delivered`, and a group
-    /// stop is resumed. Any other stop ends the trick with `EPROTO`, after
-    /// `restore` puts the guest's registers and mask back.
-    #[cfg(target_arch = "aarch64")]
+    /// `return_restart_through_syscall_exit` or `carry_resume_into_do_signal`:
+    /// to its next syscall stop, or with `until`, to the signal-delivery stop
+    /// of that signal, passing syscall stops on the way if `syscall_stops`. A
+    /// SIGSTOP's signal-delivery stop delivers it, and a group stop is
+    /// resumed. Any other stop ends the trick with `EPROTO`.
     async fn resume_restart_trick(
         &mut self,
         mut task: Stopped,
         until: Option<AnySignal>,
-        restore: &RestartTrickRestore,
-        stop_delivered: &mut bool,
+        syscall_stops: bool,
     ) -> Result<Stopped, TraceError> {
         let mut deliver = None;
         loop {
@@ -13017,44 +14011,33 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.arm_liteinst_wait(&wait);
             match wait {
                 Wait::Stopped(stopped, Event::Syscall) if until.is_none() => return Ok(stopped),
+                Wait::Stopped(stopped, Event::Syscall) if syscall_stops => task = stopped,
                 Wait::Stopped(stopped, event) if until.is_some() && event.signal() == until => {
                     return Ok(stopped);
                 }
                 Wait::Stopped(stopped, Event::Signal(sig)) => {
                     if !is_group_stop(&stopped, sig)? {
                         if sig != Signal::SIGSTOP {
-                            return Err(self.restart_trick_stopped_at(
-                                stopped,
-                                Event::Signal(sig),
-                                restore,
-                            ));
+                            return Err(self.restart_trick_stopped_at(stopped, Event::Signal(sig)));
                         }
                         deliver = Some(Signal::SIGSTOP);
-                        *stop_delivered = true;
                     }
                     task = stopped;
                 }
                 Wait::Stopped(_, Event::Exit) | Wait::Exited(..) => return Err(Errno::ESRCH.into()),
                 Wait::Stopped(stopped, event) => {
-                    return Err(self.restart_trick_stopped_at(stopped, event, restore));
+                    return Err(self.restart_trick_stopped_at(stopped, event));
                 }
             }
         }
     }
 
-    #[cfg(target_arch = "aarch64")]
-    fn restart_trick_stopped_at(
-        &self,
-        task: Stopped,
-        event: Event,
-        restore: &RestartTrickRestore,
-    ) -> TraceError {
+    fn restart_trick_stopped_at(&self, task: Stopped, event: Event) -> TraceError {
         tracing::error!(
             "[scheduler/tool] (pid = {}) returning a restart code stopped at {:?}",
             task.pid(),
             event
         );
-        restore.apply(&task);
         Errno::EPROTO.into()
     }
 
@@ -17396,6 +18379,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .next_state_with_owner(&self.ptracer_waits)
             .await?;
         self.arm_liteinst_wait(&wait);
+        let at_exit = matches!(wait, Wait::Stopped(_, Event::Syscall));
         let result = self
             .status_to_result(
                 wait,
@@ -17406,6 +18390,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 InjectionRestoration::PreserveResult,
             )
             .await?;
+        let epoch = self.injection_epoch;
         if rewrite {
             // The kernel ran the rewritten call in the guest's frame:
             // put back the guest's six argument registers and its
@@ -17432,11 +18417,35 @@ impl<L: Tool + 'static> TracedTask<L> {
         // (`handle_new_task`); an ignored SIGTRAP its trap reset is
         // put back before the Tool goes on, and a guest SIGTRAP the
         // step delivered is queued again (`absorb_sigtrap_at_stop`).
-        if self.sigtrap_repair().is_some() && self.keeps_sigtrap_state() {
+        let repairs = self.sigtrap_repair().is_some() && self.keeps_sigtrap_state();
+        if repairs {
             let task = self.assume_stopped();
             self.apply_sigtrap_repair(task).await?;
         }
+        let requeues = self.stashed_sigtrap.is_some();
         self.requeue_stashed_sigtrap_after_injection().await?;
+        // The guest's own call, unchanged, returned a restart code at its own
+        // exit stop, and nothing has run the thread since.
+        self.in_place_restart = None;
+        if let Err(
+            Errno::ERESTARTSYS
+            | Errno::ERESTARTNOINTR
+            | Errno::ERESTARTNOHAND
+            | Errno::ERESTART_RESTARTBLOCK,
+        ) = result
+            && at_exit
+            && !rewrite
+            && !repairs
+            && !requeues
+            && self.injection_epoch == epoch
+        {
+            let regs = self.assume_stopped().getregs()?;
+            self.in_place_restart = Some(InPlaceRestart {
+                ret: regs.ret(),
+                orig: regs.orig_syscall(),
+                epoch,
+            });
+        }
         Ok(result)
     }
 
@@ -17489,6 +18498,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// (`is_group_stop_unless_filtered`); no held signal is reported there
     /// (`report_held_signal`), and only a reported one uses the record.
     fn note_injection_stop(&mut self, wait: &Wait) -> Result<(), TraceError> {
+        self.injection_epoch += 1;
         // Every completed injection moves the thread off the stop an approved
         // delivery was checked at.
         if let Some(approval) = &mut self.signal_approval {
@@ -20112,6 +21122,186 @@ mod set_blocked_signals_tests;
 
 #[cfg(test)]
 mod tests {
+    /// Registers at a stop, all zero but the ones given.
+    fn registers_with(ip: u64, ret: u64, orig: u64) -> libc::user_regs_struct {
+        use super::RegAccess;
+        // SAFETY: `user_regs_struct` is plain integers, for which zero is valid.
+        let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        *regs.ip_mut() = ip;
+        *regs.ret_mut() = ret;
+        *regs.orig_syscall_mut() = orig;
+        regs
+    }
+
+    /// A Tool's `-ERESTART_RESTARTBLOCK` answer lives on at a stop whose
+    /// registers could not be read, and at one before any checked resume:
+    /// an unread state proves no conversion. It ends outside `get_signal`
+    /// and at a stop whose registers are read and changed.
+    #[test]
+    fn a_516_answer_ends_only_where_read_registers_show_a_change() {
+        use super::RegsFingerprint;
+        use super::RestartBlockAnswer;
+        use super::StopRegisters;
+        let at_resume = registers_with(0x1000, -516i64 as u64, 110);
+        let answer = RestartBlockAnswer {
+            syscall: crate::failure::AnsweredSyscall::Known(reverie::syscalls::Sysno::getppid),
+            resumed_with: Some(RegsFingerprint::of(&at_resume)),
+            rewound_with: None,
+            rewind_arg0: None,
+        };
+        assert!(
+            answer.survives(&StopRegisters::Unread),
+            "unread registers keep it"
+        );
+        assert!(
+            answer.survives(&StopRegisters::Read(at_resume)),
+            "unchanged registers keep it"
+        );
+        assert!(
+            !answer.survives(&StopRegisters::OutsideGetSignal),
+            "a stop outside get_signal ends it"
+        );
+        let converted = registers_with(0x1000, -4i64 as u64, 110);
+        assert!(
+            !answer.survives(&StopRegisters::Read(converted)),
+            "a conversion (EINTR) ends it"
+        );
+        let never_resumed = RestartBlockAnswer {
+            resumed_with: None,
+            ..answer
+        };
+        assert!(
+            never_resumed.survives(&StopRegisters::Read(converted)),
+            "no checked resume yet: nothing to compare, so it stays"
+        );
+    }
+
+    /// The code a stop hands its resume on x86-64: none outside
+    /// `get_signal`, the code with the call where `orig_ax` names one, and
+    /// an unknown one where the registers could not be read.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_stop_whose_registers_could_not_be_read_leaves_an_unknown_pending_code() {
+        use super::PendingConversion;
+        use super::StopRegisters;
+        use super::conversion_pending_at;
+        assert_eq!(
+            conversion_pending_at(&StopRegisters::Unread),
+            Some(PendingConversion::Unread)
+        );
+        assert_eq!(
+            conversion_pending_at(&StopRegisters::OutsideGetSignal),
+            None
+        );
+        let in_the_exit = registers_with(0x1000, -514i64 as u64, 130);
+        assert_eq!(
+            conversion_pending_at(&StopRegisters::Read(in_the_exit)),
+            Some(PendingConversion::Code {
+                syscall: crate::failure::AnsweredSyscall::Known(
+                    reverie::syscalls::Sysno::rt_sigsuspend
+                ),
+                code: reverie::Errno::ERESTARTNOHAND,
+            })
+        );
+        let in_user_mode = registers_with(0x1000, -514i64 as u64, u64::MAX);
+        assert_eq!(
+            conversion_pending_at(&StopRegisters::Read(in_user_mode)),
+            None
+        );
+    }
+
+    /// The end of a timer event's step run: registers that could not be read
+    /// are `Unread`, which keeps a Tool's `-ERESTART_RESTARTBLOCK` answer and,
+    /// on x86-64, leaves a pending code of unknown value in place of the one
+    /// noted before the run; unchanged registers change nothing; changed ones
+    /// are read as the new stop.
+    #[test]
+    fn a_step_run_whose_end_registers_could_not_be_read_leaves_the_stop_unread() {
+        use super::RegsFingerprint;
+        use super::RestartBlockAnswer;
+        use super::StopRegisters;
+        use super::stop_after_a_step_run;
+        let at_start = registers_with(0x1000, -516i64 as u64, 110);
+        let before = RegsFingerprint::of(&at_start);
+        let unread = stop_after_a_step_run(None, before);
+        assert!(
+            matches!(unread, Some(StopRegisters::Unread)),
+            "unread end registers: {unread:?}"
+        );
+        assert!(
+            stop_after_a_step_run(Some(at_start), before).is_none(),
+            "unchanged registers change nothing"
+        );
+        let moved = registers_with(0x2000, 0, u64::MAX);
+        assert!(matches!(
+            stop_after_a_step_run(Some(moved), before),
+            Some(StopRegisters::Read(_))
+        ));
+        let answer = RestartBlockAnswer {
+            syscall: crate::failure::AnsweredSyscall::Known(reverie::syscalls::Sysno::getppid),
+            resumed_with: Some(before),
+            rewound_with: None,
+            rewind_arg0: None,
+        };
+        assert!(answer.survives(&unread.unwrap()), "the answer lives on");
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            super::conversion_pending_at(&StopRegisters::Unread),
+            Some(super::PendingConversion::Unread),
+            "an unknown pending code replaces the one noted before the run"
+        );
+    }
+
+    /// The guest's seccomp state at a resume: a status that is gone or shows
+    /// a zombie or a dead task is an exiting thread; one that cannot be read
+    /// otherwise, or lacks the count, is unreadable; otherwise the count
+    /// against the baseline decides.
+    #[test]
+    fn an_exiting_thread_is_told_apart_from_an_unreadable_seccomp_count() {
+        use super::GuestSeccompAtResume;
+        use super::guest_seccomp_at_resume_in;
+        let gone = |errno| Err(std::io::Error::from_raw_os_error(errno));
+        let status = |text: &str| Ok(text.to_owned());
+        assert_eq!(
+            guest_seccomp_at_resume_in(gone(libc::ENOENT), Some(1)),
+            GuestSeccompAtResume::Exiting
+        );
+        assert_eq!(
+            guest_seccomp_at_resume_in(gone(libc::ESRCH), Some(1)),
+            GuestSeccompAtResume::Exiting
+        );
+        assert_eq!(
+            guest_seccomp_at_resume_in(gone(libc::EMFILE), Some(1)),
+            GuestSeccompAtResume::Unreadable
+        );
+        for zombie in ["State:\tZ (zombie)\n", "State:\tX (dead)\n"] {
+            assert_eq!(
+                guest_seccomp_at_resume_in(
+                    status(&format!("{zombie}Seccomp_filters:\t2\n")),
+                    Some(1)
+                ),
+                GuestSeccompAtResume::Exiting
+            );
+        }
+        let stopped = "State:\tt (tracing stop)\n";
+        assert_eq!(
+            guest_seccomp_at_resume_in(status(&format!("{stopped}Seccomp_filters:\t2\n")), Some(1)),
+            GuestSeccompAtResume::OwnFilter
+        );
+        assert_eq!(
+            guest_seccomp_at_resume_in(status(&format!("{stopped}Seccomp_filters:\t1\n")), Some(1)),
+            GuestSeccompAtResume::NoOwnFilter
+        );
+        assert_eq!(
+            guest_seccomp_at_resume_in(status(stopped), Some(1)),
+            GuestSeccompAtResume::Unreadable
+        );
+        assert_eq!(
+            guest_seccomp_at_resume_in(status(&format!("{stopped}Seccomp_filters:\t1\n")), None),
+            GuestSeccompAtResume::Unreadable
+        );
+    }
+
     /// `set_blocked_signals` never adds SIGTRAP or the timer signal and never
     /// clears a guest's own block of them, so restoring `old` is exact.
     #[test]

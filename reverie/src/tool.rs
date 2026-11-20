@@ -1212,6 +1212,15 @@ pub trait Tool: Send + Sync + Default {
     /// # Return value
     ///  - `Some(sig)`: The signal `sig` will be delivered to guest.
     ///  - `None`: The signal is supressed and never delivered to the guest.
+    ///
+    /// A signal that interrupted a syscall can be reported while a restart
+    /// code (errno 512-516) is still the thread's result, before Linux turns
+    /// it into a restart or `EINTR`. A Tool must not hide such a code at one
+    /// stop, by writing another value to the result register
+    /// ([`Guest::set_regs`]), and write it back at a later stop: a backend
+    /// checks each resume against the registers its stop began with, so it
+    /// cannot vouch for a code written back after a stop that did not show
+    /// it.
     async fn handle_signal_event<T: Guest<Self>>(
         &self,
         _guest: &mut T,
@@ -1423,15 +1432,18 @@ pub trait Tool: Send + Sync + Default {
     ///
     /// # Return value
     ///  - `Ok(value)` or `Err(Error::Errno(errno))`: the syscall's result
-    ///    instead of `code`, as from [`Tool::handle_syscall_event`].
+    ///    instead of `code`, as from [`Tool::handle_syscall_event`]. Nothing
+    ///    hands it to the kernel either, so a backend refuses a result that is
+    ///    itself internal to Linux (errno 512-516), which ends the run.
     ///  - Any other error: the Tool refuses the code, and the error ends the
     ///    run.
     ///
     /// The hook can only decide: it gets the thread's ID and a handle that
     /// can send RPCs to the global tool, and no access to the guest, so it
     /// cannot inject a syscall or change the guest's registers, signal mask
-    /// or memory. The default returns `code` itself, which the guest then
-    /// sees as the result. Only the ptrace backend on aarch64 calls it;
+    /// or memory. The default returns `code` itself, so the run ends where a
+    /// Tool decides nothing. The ptrace backend calls it on aarch64, and on
+    /// x86-64 where it cannot rule out a seccomp filter on its own thread;
     /// elsewhere the kernel resolves every code.
     async fn handle_unresolved_restart<R: GlobalRPC<Self::GlobalState>>(
         &self,

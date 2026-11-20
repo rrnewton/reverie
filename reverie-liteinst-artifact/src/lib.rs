@@ -2023,8 +2023,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/tool.rs",
-        90715,
-        "ad286d81cf90fac13b4b377741f5e3fdc6e28c577a34ff4eea24480dab86fdc3",
+        91501,
+        "76f97d0e9f2f5238d236ed3e8916f71a71f49be6684eb46c31e835b638cdb26e",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -41903,6 +41903,11 @@ mod tests {
             54917,
             "93a27a389f3995ce27daae2fdd812c95e2eef77d343e9f8b511d92be1b901988",
         ),
+        (
+            "reverie/src/tool.rs",
+            91501,
+            "76f97d0e9f2f5238d236ed3e8916f71a71f49be6684eb46c31e835b638cdb26e",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -41984,6 +41989,10 @@ mod tests {
         (
             127,
             "e0445b4fa4cc399975cc841ee0064d60d377016bb648770c6a65b5f8c9a8b06d",
+        ),
+        (
+            128,
+            "d9ad210624955db27e111f16382d19793788fd3b723b619480f7eac4ad752445",
         ),
     ];
 
@@ -44234,6 +44243,11 @@ mod tests {
                 "reverie-liteinst-artifact/src/preparation_identity.rs",
                 55168,
                 "a49de665049d98780ed59832387cb8017687527f961c822105fd0e47aa11f822",
+            ),
+            (
+                "reverie/src/tool.rs",
+                90715,
+                "ad286d81cf90fac13b4b377741f5e3fdc6e28c577a34ff4eea24480dab86fdc3",
             ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.
