@@ -2192,6 +2192,57 @@ mod tests {
         );
     }
 
+    /// The same with the signal sent by an injected `tgkill`, held over an
+    /// injection, or held with a second instance pending for the process:
+    /// the backend carries a held signal into the kernel's restart processing
+    /// as for a named syscall (`return_restart_through_syscall_exit`).
+    #[test_case(ERESTARTSYS, SaFlags::SA_RESTART, SENT_BY_INJECTION, (RESTARTED, 0, 1); "erestartsys with sa_restart sent by an injection")]
+    #[test_case(ERESTARTSYS, SaFlags::empty(), SENT_BY_INJECTION, (-1, libc::EINTR, 1); "erestartsys without sa_restart sent by an injection")]
+    #[test_case(ERESTARTNOINTR, SaFlags::empty(), SENT_BY_INJECTION, (RESTARTED, 0, 1); "erestartnointr sent by an injection")]
+    #[test_case(ERESTARTNOHAND, SaFlags::SA_RESTART, SENT_BY_INJECTION, (-1, libc::EINTR, 1); "erestartnohand sent by an injection")]
+    #[test_case(ERESTART_RESTARTBLOCK, SaFlags::SA_RESTART, SENT_BY_INJECTION, (-1, libc::EINTR, 1); "erestart_restartblock sent by an injection")]
+    #[test_case(ERESTARTSYS, SaFlags::SA_RESTART, HELD_OVER_INJECTION, (RESTARTED, 0, 1); "erestartsys with sa_restart held over an injection")]
+    #[test_case(ERESTARTSYS, SaFlags::empty(), HELD_OVER_INJECTION, (-1, libc::EINTR, 1); "erestartsys without sa_restart held over an injection")]
+    #[test_case(ERESTARTNOINTR, SaFlags::empty(), HELD_OVER_INJECTION, (RESTARTED, 0, 1); "erestartnointr held over an injection")]
+    #[test_case(ERESTARTNOHAND, SaFlags::SA_RESTART, HELD_OVER_INJECTION, (-1, libc::EINTR, 1); "erestartnohand held over an injection")]
+    #[test_case(ERESTART_RESTARTBLOCK, SaFlags::SA_RESTART, HELD_OVER_INJECTION, (-1, libc::EINTR, 1); "erestart_restartblock held over an injection")]
+    #[test_case(ERESTARTSYS, SaFlags::SA_RESTART, HELD_AND_PENDING_FOR_THE_PROCESS, (RESTARTED, 0, 2); "erestartsys with sa_restart held and pending for the process")]
+    #[test_case(ERESTARTSYS, SaFlags::empty(), HELD_AND_PENDING_FOR_THE_PROCESS, (-1, libc::EINTR, 2); "erestartsys without sa_restart held and pending for the process")]
+    #[test_case(ERESTARTNOINTR, SaFlags::empty(), HELD_AND_PENDING_FOR_THE_PROCESS, (RESTARTED, 0, 2); "erestartnointr held and pending for the process")]
+    #[test_case(ERESTARTNOHAND, SaFlags::SA_RESTART, HELD_AND_PENDING_FOR_THE_PROCESS, (-1, libc::EINTR, 2); "erestartnohand held and pending for the process")]
+    #[test_case(ERESTART_RESTARTBLOCK, SaFlags::SA_RESTART, HELD_AND_PENDING_FOR_THE_PROCESS, (-1, libc::EINTR, 2); "erestart_restartblock held and pending for the process")]
+    fn an_unknown_numbers_restart_code_with_a_handler_after_an_injection(
+        code: i32,
+        flags: SaFlags,
+        sent_by: i64,
+        want: (i64, i32, usize),
+    ) {
+        check_unknown(code, Signal::SIGUSR1, Some(flags), sent_by, want);
+    }
+
+    /// With no handler (SIGWINCH), or with the held signal dropped, which runs
+    /// no handler, every code runs the number again after an injection too.
+    #[test_case(ERESTARTSYS, Signal::SIGWINCH, SENT_BY_INJECTION; "erestartsys without a handler sent by an injection")]
+    #[test_case(ERESTARTSYS, Signal::SIGWINCH, HELD_OVER_INJECTION; "erestartsys without a handler held over an injection")]
+    #[test_case(ERESTARTSYS, Signal::SIGUSR1, HELD_AND_DROPPED; "erestartsys with the held signal dropped")]
+    #[test_case(ERESTARTNOINTR, Signal::SIGWINCH, SENT_BY_INJECTION; "erestartnointr without a handler sent by an injection")]
+    #[test_case(ERESTARTNOINTR, Signal::SIGWINCH, HELD_OVER_INJECTION; "erestartnointr without a handler held over an injection")]
+    #[test_case(ERESTARTNOINTR, Signal::SIGUSR1, HELD_AND_DROPPED; "erestartnointr with the held signal dropped")]
+    #[test_case(ERESTARTNOHAND, Signal::SIGWINCH, SENT_BY_INJECTION; "erestartnohand without a handler sent by an injection")]
+    #[test_case(ERESTARTNOHAND, Signal::SIGWINCH, HELD_OVER_INJECTION; "erestartnohand without a handler held over an injection")]
+    #[test_case(ERESTARTNOHAND, Signal::SIGUSR1, HELD_AND_DROPPED; "erestartnohand with the held signal dropped")]
+    #[test_case(ERESTART_RESTARTBLOCK, Signal::SIGWINCH, SENT_BY_INJECTION; "erestart_restartblock without a handler sent by an injection")]
+    #[test_case(ERESTART_RESTARTBLOCK, Signal::SIGWINCH, HELD_OVER_INJECTION; "erestart_restartblock without a handler held over an injection")]
+    #[test_case(ERESTART_RESTARTBLOCK, Signal::SIGUSR1, HELD_AND_DROPPED; "erestart_restartblock with the held signal dropped")]
+    fn an_unknown_number_without_a_handler_runs_again_after_an_injection(
+        code: i32,
+        sig: Signal,
+        sent_by: i64,
+    ) {
+        let flags = (sig == Signal::SIGUSR1).then_some(SaFlags::empty());
+        check_unknown(code, sig, flags, sent_by, (RESTARTED, 0, 0));
+    }
+
     /// Installs a seccomp filter that allows every call on the calling thread:
     /// the guest's own, or the tracer's (`under_a_tracer_filter`).
     fn install_a_seccomp_filter_allowing_every_call() {

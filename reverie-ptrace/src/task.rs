@@ -5318,6 +5318,12 @@ pub struct TracedTask<L: Tool> {
     /// Taking this record consumes that authority, including fast tail injection
     /// which transfers the original call to the callback's final resume.
     pending_syscall: Option<(Sysno, SyscallArgs)>,
+    /// `pending_syscall` for a number the syscall table cannot name
+    /// (`handle_unknown_seccomp`): its kernel entry is not skipped yet. The
+    /// callback's first injection takes it and skips the call first
+    /// (`private_inject`), and the callback's end skips it only if it is
+    /// still pending.
+    unknown_syscall_pending: bool,
     native_callback: Option<u64>,
     native_entry_pending: Option<Arc<AtomicBool>>,
     deferred_native_call: Option<DeferredNativeCall>,
@@ -5870,6 +5876,7 @@ impl<L: Tool> TracedTask<L> {
             deferred_restart: None,
             initial_stack_pointer: None,
             pending_syscall: None,
+            unknown_syscall_pending: false,
             native_callback: None,
             native_entry_pending: None,
             deferred_native_call: None,
@@ -6010,6 +6017,7 @@ impl<L: Tool> TracedTask<L> {
             deferred_restart: None,
             initial_stack_pointer: self.initial_stack_pointer,
             pending_syscall: None,
+            unknown_syscall_pending: false,
             native_callback: None,
             native_entry_pending: None,
             deferred_native_call: None,
@@ -6166,6 +6174,7 @@ impl<L: Tool> TracedTask<L> {
             deferred_restart: None,
             initial_stack_pointer: self.initial_stack_pointer,
             pending_syscall: None,
+            unknown_syscall_pending: false,
             native_callback: None,
             native_entry_pending: None,
             deferred_native_call: None,
@@ -9565,6 +9574,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // program start as a clean slate, hence it is actually ok to do either
         // inject or tail inject after execve succeeded.
         self.pending_syscall = None;
+        self.unknown_syscall_pending = false;
         self.injected_syscall_frame = None;
         // The new image is a new address space, of this process alone,
         // holding none of gdb's breakpoints: a later `z0` for an old one
@@ -10382,10 +10392,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// stop decides the timer event as any intercepted syscall's does.
     /// There is no `pending_syscall`: with no `Sysno` the Tool cannot
     /// tail-inject the original call, so anything it injects is a
-    /// separate known syscall, and the value it returns is delivered as
-    /// this call's result; on aarch64 a restart code is returned through a
-    /// syscall exit, as in `handle_seccomp`
-    /// (`return_restart_through_syscall_exit`).
+    /// separate known syscall. `unknown_syscall_pending` stands for the
+    /// guest's call instead: the first injection skips it before it runs
+    /// (`private_inject`), so the kernel never runs the number. The value
+    /// the Tool returns is delivered as this call's result; on aarch64 a
+    /// restart code is returned through a syscall exit, as in
+    /// `handle_seccomp` (`return_restart_through_syscall_exit`).
     async fn handle_unknown_seccomp(
         &mut self,
         mut task: Stopped,
@@ -10426,6 +10438,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .into());
         }
 
+        self.unknown_syscall_pending = true;
         let (retval, deferred_native) =
             match self.global_state.subscriptions.unknown_syscall_policy() {
                 UnknownSyscallPolicy::Enosys => {
@@ -10488,10 +10501,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.note_restart_block_answer(AnsweredSyscall::Unknown(raw.nr), ret);
         }
         self.ordinary_continuation()?;
-        task = self
-            .skip_seccomp_syscall(task)
-            .await
-            .tracee_context(tid, "skip unknown syscall")?;
+        if std::mem::take(&mut self.unknown_syscall_pending) {
+            task = self
+                .skip_seccomp_syscall(task)
+                .await
+                .tracee_context(tid, "skip unknown syscall")?;
+        }
         self.ordinary_trace_continuation()?;
         self.timer.finalize_requests();
 
@@ -12238,6 +12253,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.reported_requeued_signals.clear();
                     self.stale_private_step_trap = false;
                     self.pending_syscall = None;
+                    self.unknown_syscall_pending = false;
                     self.cancel_handler.store(false, Ordering::Release);
                     stop.frozen.store(false, Ordering::Release);
                     self.arm_liteinst_root_stop(&stopped, &Event::Exec(former));
@@ -19049,7 +19065,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> Result<Result<i64, Errno>, TraceError> {
         let task = self.assume_stopped();
         let restoration = InjectionRestoration::for_public_returning(
-            self.pending_syscall.is_some(),
+            self.pending_syscall.is_some() || self.unknown_syscall_pending,
             self.injected_syscall_frame.is_some(),
             self.in_signal_callback,
             self.in_held_signal_callback,
@@ -19096,6 +19112,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                     self.run_pending_in_place(task, nr, args, true, input).await
                 }
                 Some(_) => {
+                    self.private_inject(task, nr, args, input, restoration)
+                        .await
+                }
+                None if std::mem::take(&mut self.unknown_syscall_pending) => {
                     self.private_inject(task, nr, args, input, restoration)
                         .await
                 }
@@ -19250,6 +19270,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                 self.defer_pending_to_resume(&task, nr, native)
             }
             Some(_) => {
+                self.private_inject(
+                    task,
+                    nr,
+                    args,
+                    Some(&native),
+                    InjectionRestoration::PreserveResult,
+                )
+                .await
+            }
+            None if std::mem::take(&mut self.unknown_syscall_pending) => {
                 self.private_inject(
                     task,
                     nr,
