@@ -1416,9 +1416,7 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// threads are host tasks needs no handle for a tool to read the
     /// kernel's state for them itself, and an unimplemented provider
     /// must not be mistaken for an empty answer from a real one.
-    fn descriptor_provider(
-        &self,
-    ) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
         None
     }
 
@@ -2051,9 +2049,7 @@ where
         self.inner.link_path(tid, link)
     }
 
-    fn descriptor_provider(
-        &self,
-    ) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
         self.inner.descriptor_provider()
     }
 
@@ -2572,9 +2568,7 @@ where
         self.inner.link_path(tid, link)
     }
 
-    fn descriptor_provider(
-        &self,
-    ) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
         self.inner.descriptor_provider()
     }
 

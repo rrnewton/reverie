@@ -1184,21 +1184,14 @@ pub trait DescriptorProvider: Send + Sync {
     /// (`anon_inode:[eventfd]`, `pipe:[…]`, an absolute path). The
     /// read's own error is preserved (a closed descriptor is
     /// `ENOENT`).
-    fn link(
-        &self,
-        task: crate::Pid,
-        fd: std::os::fd::RawFd,
-    ) -> std::io::Result<std::path::PathBuf>;
+    fn link(&self, task: crate::Pid, fd: std::os::fd::RawFd)
+    -> std::io::Result<std::path::PathBuf>;
 
     /// The `fdinfo` text of descriptor `fd` in task `task`'s table,
     /// as `/proc/<pid>/fdinfo/<fd>` prints it: `Ok(None)` when the
     /// descriptor is not open, `Err` when the read itself failed
     /// otherwise.
-    fn fdinfo(
-        &self,
-        task: crate::Pid,
-        fd: std::os::fd::RawFd,
-    ) -> std::io::Result<Option<String>>;
+    fn fdinfo(&self, task: crate::Pid, fd: std::os::fd::RawFd) -> std::io::Result<Option<String>>;
 
     /// [`DescriptorMetadata`] of descriptor `fd` in task `task`'s
     /// table, with [`DescriptorProvider::fdinfo`]'s error shape.

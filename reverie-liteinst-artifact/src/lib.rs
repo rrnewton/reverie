@@ -1719,8 +1719,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/guest.rs",
-        111517,
-        "863fafa38640ddab2f44fbd9197581442b721f27739efaa5b486033e922814e0",
+        111472,
+        "0f919549dd9e07aa762644a790373dd0bad77938cf51045c34aaa9d559ca5e31",
     ),
     (
         "reverie/src/pidfd_self.rs",
@@ -40290,8 +40290,8 @@ mod tests {
         ),
         (
             "reverie/src/guest.rs",
-            111517,
-            "863fafa38640ddab2f44fbd9197581442b721f27739efaa5b486033e922814e0",
+            111472,
+            "0f919549dd9e07aa762644a790373dd0bad77938cf51045c34aaa9d559ca5e31",
         ),
     ];
 
@@ -40353,7 +40353,7 @@ mod tests {
         ),
         (
             122,
-            "66bc33c41a0d15f0241a45476134ee76845ba9c20a035353b5c317585bcfdb51",
+            "9865e9ca860ae5f1495775f3e313ec4f55f28fbeeb5837591db2ee66a73cebef",
         ),
     ];
 
