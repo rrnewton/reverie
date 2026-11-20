@@ -51,6 +51,27 @@ pub enum DescriptorTableInit {
     CopiedFromParent,
 }
 
+/// A successful exec's descriptor-table transition, as normalized
+/// by the layer that owns the Linux descriptor-table model.
+/// `former` is the exec'ing thread's TID before the exec;
+/// `current` is the TID it runs under in the new image (the
+/// process leader's, after `de_thread`). `surviving_fds` are
+/// exactly the descriptor numbers in the survivor's private
+/// post-exec table: the owning layer has already applied
+/// close-on-exec and the table copy, so a consumer must not
+/// re-derive either rule.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(6805): descriptor-table lifecycle bridge.
+#[derive(Debug, Clone, Copy)]
+pub struct DescriptorTableExec<'a> {
+    /// The exec'ing thread before the exec.
+    pub former: Tid,
+    /// The same thread in the new image.
+    pub current: Tid,
+    /// Descriptor numbers present in its post-exec table.
+    pub surviving_fds: &'a [std::os::fd::RawFd],
+}
+
 /// Static stream role of a Tool, independent of mutable run configuration.
 ///
 /// This pure declaration is not serialized. A composing Tool must explicitly
@@ -1050,6 +1071,16 @@ pub trait Tool: Send + Sync + Default {
         _init: DescriptorTableInit,
     ) {
     }
+
+    /// Observe a successful exec's descriptor-table transition,
+    /// delivered by the composing layer that owns the descriptor
+    /// table after it has installed the survivor's private table
+    /// and rebound a non-leader survivor to its new TID, and
+    /// before the new image executes. A failed exec delivers
+    /// nothing. The default does nothing.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(6805): descriptor-table lifecycle bridge.
+    fn on_descriptor_table_exec(&self, _exec: DescriptorTableExec<'_>) {}
 
     /// Bind a fresh root state to an initial image whose launch exec has
     /// already completed before this Tool's first registration.
