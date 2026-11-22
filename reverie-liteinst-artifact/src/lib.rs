@@ -354,6 +354,15 @@ pub struct Runner {
     /// The CPU budget of every command not given its own through
     /// `run_cpu_bounded`; `None` leaves them bounded by the wall deadline only.
     every_command_cpu: Option<Duration>,
+    /// Aggregate CPU budget over every command this Runner runs, set
+    /// through [`Runner::bound_total_cpu`]; `None` leaves the run bounded
+    /// by the wall deadline and any per-command budgets only.
+    total_cpu_budget: Option<Duration>,
+    /// CPU measured so far against `total_cpu_budget`.
+    total_cpu_used: Duration,
+    /// When this Runner was created, for naming measured wall time in
+    /// aggregate-budget refusals.
+    started: Instant,
     /// A substitute `cargo` program for this Runner, set through
     /// [`Self::set_cargo_program`]; `None` spawns the `cargo` found on
     /// PATH, exactly as before. It exists so a test can inject a stand-in
@@ -389,6 +398,9 @@ impl Runner {
             command_cpu: Vec::new(),
             wall_budget: budget,
             every_command_cpu: None,
+            total_cpu_budget: None,
+            total_cpu_used: Duration::ZERO,
+            started: Instant::now(),
             #[cfg(test)]
             cargo_program: None,
             #[cfg(test)]
@@ -434,6 +446,42 @@ impl Runner {
         require(!cpu_budget.is_zero(), "CPU budget must be positive")?;
         self.every_command_cpu = Some(cpu_budget);
         Ok(())
+    }
+
+    /// Bound the aggregate CPU of every command this Runner runs from
+    /// here on. Each later command is CPU-accounted as in
+    /// [`Runner::run_cpu_bounded`] (not started where that cannot be
+    /// accounted) under a per-command cap of the budget's remainder, its
+    /// measured CPU is added to the aggregate, and a command that would
+    /// start with the aggregate already spent — or that spends it — is
+    /// refused by name. The wall deadline stays the backstop, so callers
+    /// size it generously (several times the CPU budget): cost is judged
+    /// by CPU, and wall only stops a hang. Set at most once, before the
+    /// work it bounds.
+    pub fn bound_total_cpu(&mut self, cpu_budget: Duration) -> Result<()> {
+        require(!cpu_budget.is_zero(), "CPU budget must be positive")?;
+        require(
+            self.total_cpu_budget.is_none(),
+            "producer total CPU budget is already set",
+        )?;
+        self.total_cpu_budget = Some(cpu_budget);
+        Ok(())
+    }
+
+    /// CPU measured so far against the total budget, if one is set.
+    pub fn total_cpu_used(&self) -> Duration {
+        self.total_cpu_used
+    }
+
+    fn total_cpu_failure(&self, used: Duration, budget: Duration) -> String {
+        format!(
+            "exceeded the producer total CPU budget (used {:.2} of {:.2} CPU-s \
+             across this producer run; wall {:.2} s of {} s backstop)",
+            used.as_secs_f64(),
+            budget.as_secs_f64(),
+            self.started.elapsed().as_secs_f64(),
+            self.wall_budget.as_secs()
+        )
     }
 
     fn run_with_combined_limit(
@@ -483,6 +531,22 @@ impl Runner {
                 self.wall_budget.as_secs()
             ),
         )?;
+        // An aggregate budget caps this command at its remainder (or the
+        // command's own smaller budget) and refuses to start spent.
+        let (cpu_budget, total_binding) = match (cpu_budget, self.total_cpu_budget) {
+            (own, Some(total)) => {
+                require(
+                    self.total_cpu_used < total,
+                    self.total_cpu_failure(self.total_cpu_used, total),
+                )?;
+                let remaining = total - self.total_cpu_used;
+                match own {
+                    Some(own) if own <= remaining => (Some(own), false),
+                    _ => (Some(remaining), true),
+                }
+            }
+            (own, None) => (own, false),
+        };
         let cgroup = match cpu_budget {
             Some(_) => Some(
                 self.cgroup_parent()
@@ -629,7 +693,12 @@ impl Runner {
                 } else if let Some(e) = accounting_failure {
                     format!("killed: producer CPU accounting failed ({e})")
                 } else if let Some((used, budget)) = cpu_used.filter(|_| cpu_exceeded) {
-                    cpu_budget_failure(used, budget, wall)
+                    if total_binding {
+                        let total = self.total_cpu_budget.unwrap_or(budget);
+                        self.total_cpu_failure(self.total_cpu_used + used, total)
+                    } else {
+                        cpu_budget_failure(used, budget, wall)
+                    }
                 } else {
                     let cpu = cpu_used
                         .map(|(used, _)| format!(", CPU used {:.2} CPU-s", used.as_secs_f64()))
@@ -714,13 +783,29 @@ impl Runner {
             },
             None => None,
         };
+        if let Some(used) = measured_cpu {
+            self.total_cpu_used += used;
+        }
+        if bounds_failure.is_none() {
+            if let Some(total) = self.total_cpu_budget {
+                if self.total_cpu_used > total {
+                    bounds_failure =
+                        Some(self.total_cpu_failure(self.total_cpu_used, total));
+                }
+            }
+        }
         // A command that passed its budget and finished within one poll still
         // exceeded it.
         // (A guard rather than a nested `if`: this file is also built as
         // edition 2024, where clippy asks for a let chain edition 2021 lacks.)
         match (&bounds_failure, measured_cpu, cpu_budget) {
             (None, Some(used), Some(budget)) if used > budget => {
-                bounds_failure = Some(cpu_budget_failure(used, budget, start.elapsed()));
+                bounds_failure = Some(if total_binding {
+                    let total = self.total_cpu_budget.unwrap_or(budget);
+                    self.total_cpu_failure(self.total_cpu_used, total)
+                } else {
+                    cpu_budget_failure(used, budget, start.elapsed())
+                });
             }
             _ => {}
         }
@@ -9407,7 +9492,14 @@ const FIXED_ARENA_OPERANDS_12: &[FixedArenaOperand] = &[
     },
 ];
 
-// Observed stable Rust 1.99.1 normal+diagnostic / fixed_setup_bitmap_range; all constant operands and internal branches are literal.
+// Hand-derived from a real ELF (scripts/detcore-alloc-recipe.py derives only
+// the alloc-family rows): libreverie_liteinst.so from
+// scripts/build-liteinst-test-runtime.rs --for-ci on stable Rust 1.99.1
+// (58cf8f9c3 2026-10-13), ELF SHA256
+// 962d59423a3615ada4e7a4a7a77b05c31aa0b434a246995840854812f91d0867;
+// fixed_setup_bitmap_range at VA 0x118340, 217 bytes, body SHA256
+// 29a3f26bd4ebab85dc09740018e391f2514e7b5b75bc8cbd46fac6764d3a4666. All
+// constant operands and internal branches are literal.
 const FIXED_ARENA_BYTES_13: &[u8] = &[
     0xb0, 0x01, 0x48, 0x39, 0xf2, 0x0f, 0x86, 0xcd, 0x00, 0x00, 0x00, 0x84, 0xc9, 0x74, 0x69, 0x89,
     0xd1, 0x29, 0xf1, 0x4c, 0x8d, 0x46, 0x01, 0xf6, 0xc1, 0x01, 0x74, 0x17, 0x41, 0xb9, 0x01, 0x00,
@@ -30633,8 +30725,10 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         transfers: &[(8, 1)],
     },
     // Stable Rust 1.99.1 (58cf8f9c3 2026-10-13), rust-toolchain.toml channel 1.99.1.
-    // Profile liteinst-runtime; features allocator-fixture. Derived from a real ELF
-    // built by ci/build-liteinst-allocator-fixtures.rs: ELF
+    // Profile liteinst-runtime; features allocator-fixture. Hand-derived from a
+    // real ELF (scripts/detcore-alloc-recipe.py derives only the alloc-family
+    // rows) built by ci/build-liteinst-allocator-fixtures.rs, whose Detcore leaf
+    // command is: cargo build --locked --offline --manifest-path <Hermit>/Cargo.toml -p detcore-liteinst --lib --profile liteinst-runtime --features allocator-fixture. ELF
     // SHA256 4c7ff58ac7164eba3512aebb67392d0195d0e0cf13f6956d9ba67037806d3134.
     // fixed_setup_bitmap_range _RNvNtNtNtCsfhI59vbc6Q6_15reverie_inguest5guest11tool_region5arena18fixed_bitmap_range at VA 0x13be3a0, 282 bytes; complete body SHA256 544a0b636ffd06ff6e12518abfa4fd7642949ae34925b2ed68b84a162dcc0077.
     // Location operands bind the setup143:27 profile; the null panic GOT operand binds panic_null_reference_constructed.
@@ -71664,6 +71758,22 @@ mod tests {
                     check(&bad, kind, native).unwrap_err().to_string(),
                     "unknown or mixed naked-owner publication whole composition"
                 );
+                // With the bitmap identity correct, the callee arm still
+                // guards its scalar storage, address and transfers.
+                for mutation in 0..3 {
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    let bitmap = bad.witnesses.get_mut("fixed_setup_bitmap_range").unwrap();
+                    match mutation {
+                        0 => bitmap.scalar_storage = None,
+                        1 => bitmap.address += 1,
+                        _ => bitmap.edges.clear(),
+                    }
+                    assert_eq!(
+                        check(&bad, kind, native).unwrap_err().to_string(),
+                        "naked-owner bitmap callee loses selected complete identity",
+                        "bitmap callee arm {case}/{mutation}"
+                    );
+                }
                 let mut old = scalar_ordinary_bit_result_control_graph(false);
                 let current = &graph.witnesses["fixed_setup_bitmap_range"];
                 old.witnesses.insert(
@@ -73795,10 +73905,11 @@ mod tests {
     #[test]
     fn source_owned_template_end_covers_stable_prepare_identities() {
         // 111 and 116 are the stable 0x100 and generated stable native 0xf8
-        // fixed_patch_alloc templates, and 117 the generated 0xf8
-        // fixed_tls_fn_once template; as appended identities they too must
-        // route a lone witness to the naked-composition check.
-        for index in [108, 109, 110, 111, 112, 113, 114, 115, 116, 117] {
+        // fixed_patch_alloc templates, 117 the generated 0xf8
+        // fixed_tls_fn_once template, and 118 the Rust 1.99.1
+        // fixed_setup_bitmap_range template; as appended identities they
+        // too must route a lone witness to the naked-composition check.
+        for index in [108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118] {
             let mut graph = scalar_ordinary_bit_result_control_graph(false);
             fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, false)
                 .unwrap();
@@ -73819,6 +73930,118 @@ mod tests {
         assert_eq!(
             FIXED_SOURCE_OWNED_TEMPLATE_END,
             DETCORE_VALIDATE_TEMPLATES.len()
+        );
+    }
+
+    // The Rust 1.99.1 bitmap bodies, found by identity and pinned by their
+    // complete digests: DetcoreValidateTemplate 118 (282 bytes, the
+    // liteinst-runtime profile body whose provenance comment carries this
+    // digest) and FIXED_ARENA_BYTES_13 (217 bytes, the standalone release
+    // body).
+    #[test]
+    fn detcore_bitmap_1_99_1_templates_are_the_observed_bodies() {
+        let template = &DETCORE_VALIDATE_TEMPLATES[118];
+        assert_eq!(template.role, "fixed_setup_bitmap_range");
+        let body = fixed_hex(template.hex);
+        assert_eq!(body.len(), 282);
+        assert_eq!(
+            sha256(&body),
+            "544a0b636ffd06ff6e12518abfa4fd7642949ae34925b2ed68b84a162dcc0077"
+        );
+        assert_eq!(FIXED_ARENA_BYTES_13.len(), 217);
+        assert_eq!(
+            sha256(FIXED_ARENA_BYTES_13),
+            "29a3f26bd4ebab85dc09740018e391f2514e7b5b75bc8cbd46fac6764d3a4666"
+        );
+    }
+
+    // Every composition row's own witness set selects exactly that row:
+    // the cohort tuple plus the bitmap witness's exact template identity
+    // discriminate the whole table, including the 85/105/118 bitmap
+    // generations that share cohorts.
+    #[test]
+    fn naked_composition_selection_binds_each_rows_own_witnesses() {
+        fn operation(
+            role: &str,
+            index: usize,
+        ) -> (String, AuthenticatedDetcoreOperation) {
+            (
+                role.into(),
+                AuthenticatedDetcoreOperation {
+                    role: role.into(),
+                    address: 0x1000,
+                    kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(index),
+                    edges: Vec::new(),
+                    scalar_storage: None,
+                },
+            )
+        }
+        for (row, spec) in FIXED_NAKED_COMPOSITIONS.iter().enumerate() {
+            let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> =
+                spec.cohort
+                    .iter()
+                    .map(|&(role, index)| operation(role, index))
+                    .collect();
+            witnesses.insert(
+                "fixed_scalar_syscall".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_scalar_syscall".into(),
+                    address: 0x2000,
+                    kind: if spec.native_syscalls {
+                        AuthenticatedDetcoreOperationKind::NativeFixedSyscall3
+                    } else {
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                    },
+                    edges: Vec::new(),
+                    scalar_storage: None,
+                },
+            );
+            let (bridge_role, bridge) = operation("fixed_arena_mprotect", 83);
+            witnesses.insert(bridge_role, bridge);
+            if let Some(index) = spec.setup_bitmap_template {
+                let (role, witness) = operation("fixed_setup_bitmap_range", index);
+                witnesses.insert(role, witness);
+            }
+            let selected = fixed_naked_composition(&witnesses, Some(spec.image_kind))
+                .unwrap_or_else(|e| panic!("composition row {row} must select itself: {e}"));
+            // Field-wise, not pointer, equality: the table is a const, so
+            // each use may promote a distinct copy.
+            assert!(
+                selected.image_kind == spec.image_kind
+                    && selected.native_syscalls == spec.native_syscalls
+                    && selected.setup_bitmap_template == spec.setup_bitmap_template
+                    && selected.cohort == spec.cohort
+                    && selected.incoming.len() == spec.incoming.len(),
+                "composition row {row} must select exactly itself"
+            );
+        }
+        // The 1.99.1 bitmap (118) under the host cohort, whose rows bind
+        // template 85, selects nothing and is refused.
+        let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> =
+            FIXED_NAKED_HOST_ORDINARY_COHORT
+                .iter()
+                .map(|&(role, index)| operation(role, index))
+                .collect();
+        witnesses.insert(
+            "fixed_scalar_syscall".into(),
+            AuthenticatedDetcoreOperation {
+                role: "fixed_scalar_syscall".into(),
+                address: 0x2000,
+                kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(26),
+                edges: Vec::new(),
+                scalar_storage: None,
+            },
+        );
+        let (bridge_role, bridge) = operation("fixed_arena_mprotect", 83);
+        witnesses.insert(bridge_role, bridge);
+        let (role, witness) = operation("fixed_setup_bitmap_range", 118);
+        witnesses.insert(role, witness);
+        assert_eq!(
+            match fixed_naked_composition(&witnesses, Some(FixedImageKind::Detcore)) {
+                Ok(_) => panic!("host cohort with the 118 bitmap must be refused"),
+                Err(error) => error,
+            },
+            "unknown or mixed naked-owner publication whole composition"
         );
     }
 
@@ -81590,6 +81813,48 @@ mod runner_cpu_budget_tests {
         assert!(
             exhausted.contains("producer wall deadline exhausted (1 s wall backstop"),
             "{exhausted}"
+        );
+        assert_own_cgroups_removed(&runner, 1);
+    }
+
+    #[test]
+    fn total_cpu_budget_bounds_aggregate_not_wall() {
+        let scratch = Scratch::new("totalcpu");
+        // Slow wall, negligible CPU: a 2 s sleep under a generous wall
+        // backstop passes on its CPU budget, where a tight wall-only
+        // deadline (the test above) refuses the same sleep.
+        let mut runner =
+            Runner::new(scratch.0.join("slow-logs"), Duration::from_secs(30), 1 << 20).unwrap();
+        runner.bound_total_cpu(Duration::from_secs(60)).unwrap();
+        runner
+            .run("/bin/sh", &sh("sleep 2"), &scratch.0)
+            .expect("a low-CPU sleep must not be refused for its wall time");
+        assert!(
+            runner.total_cpu_used() < Duration::from_millis(500),
+            "a sleep used {:?} of CPU",
+            runner.total_cpu_used()
+        );
+        assert_own_cgroups_removed(&runner, 1);
+        // Real CPU work over the aggregate budget is refused by name, and
+        // the spent budget refuses the next command before it starts.
+        let mut runner =
+            Runner::new(scratch.0.join("busy-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        runner
+            .bound_total_cpu(Duration::from_millis(300))
+            .unwrap();
+        let error = runner
+            .run("/bin/sh", &sh("while :; do :; done"), &scratch.0)
+            .unwrap_err();
+        assert!(
+            error.contains(
+                "stopped: exceeded the producer total CPU budget (used "
+            ) && error.contains("of 0.30 CPU-s across this producer run; wall "),
+            "{error}"
+        );
+        let spent = runner.run("/bin/true", &[], &scratch.0).unwrap_err();
+        assert!(
+            spent.contains("exceeded the producer total CPU budget (used "),
+            "{spent}"
         );
         assert_own_cgroups_removed(&runner, 1);
     }
