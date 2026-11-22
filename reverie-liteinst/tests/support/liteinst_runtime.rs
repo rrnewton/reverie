@@ -325,11 +325,21 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             ("c_workload".to_owned(), C_ORACLE_SHA256.to_owned()),
         ]);
         let manifest = source.root.join("Cargo.toml");
+        // Same measured producer budget as liteinst-runtime-build: this
+        // resolution runs a subset (compiled sources) of that work.
         let mut source_runner = artifact::Runner::new(
             evidence.join("compiled-sources"),
-            Duration::from_secs(60),
+            Duration::from_secs(240),
             16 << 20,
         )?;
+        if let artifact::TotalCpuBound::WallBackstopOnly(reason) =
+            source_runner.bound_total_cpu_or_wall_backstop(Duration::from_secs(30))?
+        {
+            eprintln!(
+                "compiled-source resolution: CPU accounting unavailable ({reason}); \
+                 running under the 240 s wall backstop only"
+            );
+        }
         // Resolve from this consumer's current worktree, never from the receipt.
         // The receipt-only transaction closes on success and ordinary error.
         let (receipt, _) = artifact::VerifiedCompiledSources::with_resolved(

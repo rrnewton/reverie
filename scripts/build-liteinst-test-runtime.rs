@@ -100,11 +100,21 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
         .map_err(|e| e.to_string())?;
     let rust_exports = root.join("reverie-liteinst/src/allocator_fixture.rs");
     let c_workload = root.join("reverie-liteinst/tests/fixtures/m1_allocator_guest.c");
+    // Same measured producer budget as liteinst-runtime-build: this
+    // preflight runs a subset (compiled-source resolution) of that work.
     let mut runner = Runner::new(
         generation.join("preflight-logs"),
-        Duration::from_secs(60),
+        Duration::from_secs(240),
         1 << 20,
     )?;
+    if let m1_artifact::TotalCpuBound::WallBackstopOnly(reason) =
+        runner.bound_total_cpu_or_wall_backstop(Duration::from_secs(30))?
+    {
+        eprintln!(
+            "producer preflight: CPU accounting unavailable ({reason}); \
+             running under the 240 s wall backstop only"
+        );
+    }
     let source = m1_artifact::source_identity(
         &root,
         &root.join("Cargo.lock"),
