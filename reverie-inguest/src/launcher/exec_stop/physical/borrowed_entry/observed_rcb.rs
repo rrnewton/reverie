@@ -334,6 +334,13 @@ impl PreparedMapping<'_> {
         if self.entry.rcb.is_some() {
             return Err("rcb_observer_attempt_spent".into());
         }
+        // This diagnostic observer drives the leader to its terminal
+        // stop itself and never drives a watched run's fork children,
+        // so a mapping that retains one is refused by name before any
+        // restore.
+        if self.watch.is_some() {
+            return Err("rcb_observer_watched_mapping_unsupported".into());
+        }
         // Exactly the existing registration/readback/AT_RANDOM-preserving restore.
         self.restore_guest_for_release(deadline).await?;
         let view = View::parse(self._inputs.handoff_bytes, self._inputs.handoff_address)

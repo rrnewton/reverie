@@ -613,6 +613,10 @@ struct ChildWait {
     /// for a child that is only being settled.
     exit: Option<safeptrace::PtracerExitDriver>,
     initialized: bool,
+    /// An exit-stop settle a non-blocking pass could not decide yet:
+    /// the held main thread and its drain state, resumed by later
+    /// passes. Teardown finishes it synchronously.
+    settle: Option<PendingSettle>,
 }
 
 impl ChildWait {
@@ -623,6 +627,7 @@ impl ChildWait {
             driver: leader_wait(running),
             exit,
             initialized: false,
+            settle: None,
         }
     }
 
@@ -632,17 +637,30 @@ impl ChildWait {
             driver,
             exit: None,
             initialized,
+            settle: None,
         }
     }
 
     /// Poll this child's exit-stop claim once. `Some(task)` is the
     /// child stopped at its exit stop; the claim is spent either way
-    /// once it resolves.
+    /// once it resolves. A settle a non-blocking pass left undecided
+    /// is handed back first, so teardown settles it synchronously.
     fn poll_exit_stop(&mut self) -> Option<Stopped> {
-        let exit = self.exit.as_mut()?;
+        if let Some(pending) = self.settle.take() {
+            return Some(pending.task);
+        }
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
-        match exit.poll_on_ptracer_thread(&mut cx) {
+        self.poll_exit_stop_in(&mut cx)
+    }
+
+    /// [`Self::poll_exit_stop`] without the pending settle, registering
+    /// `cx`'s waker on the claim while it is pending.
+    fn poll_exit_stop_in(&mut self, cx: &mut Context<'_>) -> Option<Stopped> {
+        let exit = self.exit.as_mut()?;
+        #[cfg(test)]
+        note_poll(PollSite::ChildExit, cx.waker());
+        match exit.poll_on_ptracer_thread(cx) {
             Poll::Pending => None,
             Poll::Ready(claimed) => {
                 self.exit = None;
@@ -1005,27 +1023,109 @@ fn threads_pass(pid: safeptrace::Pid, main_killed: bool) -> ThreadsPass {
     pass
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test-only controlled clock for the exit-stop drain: when set,
+    /// the drain reads `(now, tick)`'s `now` instead of the host clock,
+    /// and every read advances it by `tick`. Time then depends only on
+    /// how many times the drain looked, never on host scheduling.
+    static DRAIN_CLOCK: std::cell::Cell<Option<(Instant, Duration)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The instant the exit-stop drain reads: the host clock, or the
+/// test-only controlled clock when a test set one.
+fn drain_now() -> Instant {
+    #[cfg(test)]
+    if let Some((now, tick)) = DRAIN_CLOCK.with(std::cell::Cell::get) {
+        DRAIN_CLOCK.with(|clock| clock.set(Some((now + tick, tick))));
+        return now;
+    }
+    Instant::now()
+}
+
 /// The refusal reason for releasing fork child `pid`'s main thread from
-/// its exit stop, or `None` to release it (see [`pass_verdict`]).
-fn exit_stop_refusal(pid: safeptrace::Pid) -> Option<String> {
-    let main_killed = main_thread_killed(std::path::Path::new(&format!(
-        "/proc/{0}/task/{0}",
-        pid.as_raw()
-    )));
-    let deadline = Instant::now() + EXIT_STOP_DRAIN_BOUND;
-    loop {
-        let pass = threads_pass(pid, main_killed);
-        match pass_verdict(main_killed, &pass) {
-            PassVerdict::Release => return None,
-            PassVerdict::RefuseExec => return Some("exec from a non-leader thread".to_owned()),
-            PassVerdict::Undecided if Instant::now() >= deadline => {
-                return Some(format!(
-                    "a live non-leader thread that could not be ruled out of exec after its main thread was killed ({} after {EXIT_STOP_DRAIN_BOUND:?})",
-                    pass.describe()
-                ));
-            }
-            PassVerdict::Undecided => std::thread::sleep(Duration::from_millis(1)),
+/// its exit stop, or a release (see [`pass_verdict`]), taken one
+/// `/proc` pass at a time: the main-thread fact and the drain bound
+/// are fixed when the exit stop is first claimed. Undecided passes
+/// repeat until the bound, which then refuses.
+///
+/// The bound is host time from that first claim. A non-blocking caller
+/// that polls rarely, or a held successor stop between polls, therefore
+/// gets fewer passes before the bound; the outcome then fails closed (the
+/// group is killed and the refusal named). A settle that teardown takes
+/// back is finished synchronously with a fresh drain.
+struct RefusalDrain {
+    pid: safeptrace::Pid,
+    main_killed: bool,
+    deadline: Instant,
+}
+
+impl RefusalDrain {
+    fn new(pid: safeptrace::Pid) -> Self {
+        let main_killed = main_thread_killed(std::path::Path::new(&format!(
+            "/proc/{0}/task/{0}",
+            pid.as_raw()
+        )));
+        Self {
+            pid,
+            main_killed,
+            deadline: drain_now() + EXIT_STOP_DRAIN_BOUND,
         }
+    }
+
+    /// One pass. `Some(decision)` once decided (`Some(None)` releases,
+    /// `Some(Some(seen))` refuses); `None` while undecided and still
+    /// inside the drain bound.
+    fn step(&self) -> Option<Option<String>> {
+        let pass = threads_pass(self.pid, self.main_killed);
+        match pass_verdict(self.main_killed, &pass) {
+            PassVerdict::Release => Some(None),
+            PassVerdict::RefuseExec => Some(Some("exec from a non-leader thread".to_owned())),
+            PassVerdict::Undecided if drain_now() >= self.deadline => Some(Some(format!(
+                "a live non-leader thread that could not be ruled out of exec after its main thread was killed ({} after {EXIT_STOP_DRAIN_BOUND:?})",
+                pass.describe()
+            ))),
+            PassVerdict::Undecided => None,
+        }
+    }
+}
+
+/// A fork child held at its exit stop whose release a non-blocking
+/// pass could not decide yet: the held main thread and its drain.
+struct PendingSettle {
+    task: Stopped,
+    drain: RefusalDrain,
+}
+
+impl PendingSettle {
+    fn new(task: Stopped) -> Self {
+        let drain = RefusalDrain::new(task.pid());
+        Self { task, drain }
+    }
+}
+
+/// One step of an exit-stop settle.
+enum SettleStep {
+    /// Decided and finished, exactly as [`settle_exit_stop`].
+    Done(ExitStopOutcome),
+    /// Still undecided inside the drain bound; resume it later.
+    Undecided(PendingSettle),
+}
+
+/// Start or resume a fork child's exit-stop settle. With `block`, drain
+/// to a decision exactly as [`settle_exit_stop`] does (1 ms between
+/// passes). Without it, take ONE pass and hand an undecided settle
+/// back, so the caller never sleeps here.
+fn settle_exit_stop_step(pending: PendingSettle, block: bool) -> Result<SettleStep> {
+    loop {
+        if let Some(seen) = pending.drain.step() {
+            return finish_exit_stop(pending.task, seen).map(SettleStep::Done);
+        }
+        if !block {
+            return Ok(SettleStep::Undecided(pending));
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
@@ -1048,7 +1148,7 @@ fn kill_child_group(task: &Stopped) -> std::result::Result<(), String> {
 ///
 /// A non-leader exec's de_thread kills the old main thread and then
 /// waits for it, so while this held main thread stays at its exit stop
-/// the new image cannot run. [`exit_stop_refusal`] decides whether the
+/// the new image cannot run. [`RefusalDrain`] decides whether the
 /// release is refused (see [`pass_verdict`]); if so, the whole group is
 /// killed first and the refusal is named, and if that kill cannot be
 /// sent, the main thread is not released at all and the error says so.
@@ -1072,8 +1172,21 @@ fn kill_child_group(task: &Stopped) -> std::result::Result<(), String> {
 /// unsupervised. Conversely, a sibling seen inside an execve that will
 /// fail gets a healthy group killed.
 fn settle_exit_stop(task: Stopped) -> Result<ExitStopOutcome> {
+    match settle_exit_stop_step(PendingSettle::new(task), true)? {
+        SettleStep::Done(outcome) => Ok(outcome),
+        // A blocking step never returns undecided; keep the type honest
+        // without a panic path.
+        SettleStep::Undecided(_) => {
+            Err("exec supervisor blocking settle returned undecided".into())
+        }
+    }
+}
+
+/// The rest of [`settle_exit_stop`] once its release is decided: kill
+/// the group first when refused, then detach the main thread.
+fn finish_exit_stop(task: Stopped, seen: Option<String>) -> Result<ExitStopOutcome> {
     let pid = task.pid();
-    let refusal = if let Some(seen) = exit_stop_refusal(pid) {
+    let refusal = if let Some(seen) = seen {
         if let Err(error) = kill_child_group(&task) {
             // Keep the main thread held: releasing it would let a
             // waiting exec run.
@@ -1166,10 +1279,58 @@ fn poll_driver(
 ) -> Option<std::result::Result<Wait, safeptrace::OwnedWaitError>> {
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    match driver.poll_on_ptracer_thread(&mut cx) {
+    poll_driver_in(driver, &mut cx)
+}
+
+/// [`poll_driver`], registering `cx`'s waker on the wait while it is
+/// pending.
+fn poll_driver_in(
+    driver: &mut safeptrace::PtracerWaitDriver,
+    cx: &mut Context<'_>,
+) -> Option<std::result::Result<Wait, safeptrace::OwnedWaitError>> {
+    #[cfg(test)]
+    note_poll(PollSite::Driver, cx.waker());
+    match driver.poll_on_ptracer_thread(cx) {
         Poll::Ready(result) => Some(result),
         Poll::Pending => None,
     }
+}
+
+/// Test-only: which kind of wait a poll reached.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PollSite {
+    /// A fork child's exit-stop claim.
+    ChildExit,
+    /// A leader's or fork child's ordinary wait driver.
+    Driver,
+    /// The start of one pass of `wait_watched_inner`.
+    PassStart,
+    /// A non-blocking pass waking its own caller before Pending.
+    SelfWake,
+    /// A pass finishing an exit-stop settle it took from a child's
+    /// retained `settle` (no fresh wait is polled on that path).
+    RetainedSettleDone,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only record of the waker each wait was actually polled
+    /// with, so a test observes waker registration directly instead of
+    /// inferring it from timing.
+    static POLLS: std::cell::RefCell<Vec<(PollSite, Waker)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+fn note_poll(site: PollSite, waker: &Waker) {
+    POLLS.with(|polls| polls.borrow_mut().push((site, waker.clone())));
+}
+
+/// Test-only: take (and clear) the polls recorded on this thread.
+#[cfg(test)]
+fn take_polls() -> Vec<(PollSite, Waker)> {
+    POLLS.with(|polls| std::mem::take(&mut *polls.borrow_mut()))
 }
 
 /// What a watched run's teardown observed.
@@ -1764,6 +1925,7 @@ impl Supervisor {
             seize_child(request, receipt, true, before_seize)?;
         match consume_handshake(&mut owner, running, pid, before_initial_resume) {
             Ok((running, group_stop_clear_pending)) => Ok(WatchedSupervisor {
+                staged: None,
                 pid,
                 started,
                 children: ChildSet::new(Some(leader_wait(running)), receipt.clone()),
@@ -1811,6 +1973,10 @@ enum NextExec {
     Exec(Stopped),
     Finished(ExitStatus),
 }
+
+/// A watched wait's outcome: the next event, or the failure together
+/// with the leader's status when teardown consumed it.
+type WatchedNext = std::result::Result<NextExec, (Box<dyn std::error::Error>, Option<ExitStatus>)>;
 
 /// A driven fork child's state after one of its stops.
 enum ChildNext {
@@ -1960,35 +2126,93 @@ fn wait_watched(
     group_stop_clear_pending: &mut bool,
     children: &mut ChildSet,
 ) -> std::result::Result<NextExec, (Box<dyn std::error::Error>, Option<ExitStatus>)> {
-    match wait_watched_inner(pid, pre_first_exec, group_stop_clear_pending, children) {
-        Ok(next) => Ok(next),
-        Err(error) => {
-            let teardown = children.teardown();
-            let error = match teardown.error {
-                None => error,
-                Some(detach) => {
-                    format!("{error}; exec supervisor fork-child detach also failed: {detach}")
-                        .into()
-                }
-            };
-            Err((error, teardown.leader_status))
-        }
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let polled = wait_watched_inner(
+        pid,
+        pre_first_exec,
+        group_stop_clear_pending,
+        children,
+        &mut cx,
+        true,
+    );
+    match polled {
+        Ok(Some(next)) => Ok(next),
+        // A blocking pass never returns idle; keep the type honest
+        // without a panic path.
+        Ok(None) => Err(watched_failure(
+            children,
+            "exec supervisor blocking wait returned idle".into(),
+        )),
+        Err(error) => Err(watched_failure(children, error)),
     }
 }
 
+/// Tear the watched run's children down after `error`, appending any
+/// detach failure, and return the error with the leader's status if
+/// teardown consumed it.
+fn watched_failure(
+    children: &mut ChildSet,
+    error: Box<dyn std::error::Error>,
+) -> (Box<dyn std::error::Error>, Option<ExitStatus>) {
+    let teardown = children.teardown();
+    let error = match teardown.error {
+        None => error,
+        Some(detach) => {
+            format!("{error}; exec supervisor fork-child detach also failed: {detach}").into()
+        }
+    };
+    (error, teardown.leader_status)
+}
+
+/// Drive the watched leader and its fork children until the leader's
+/// next exec or terminal exit. With `block`, an idle pass sleeps 1 ms
+/// and repeats, so this returns only `Some`. Without it, an idle pass
+/// returns `Ok(None)` after every wait was polled with `cx`, so each
+/// pending wait has `cx`'s waker registered for the next change.
 fn wait_watched_inner(
     pid: safeptrace::Pid,
     pre_first_exec: bool,
     group_stop_clear_pending: &mut bool,
     children: &mut ChildSet,
-) -> Result<NextExec> {
+    cx: &mut Context<'_>,
+    block: bool,
+) -> Result<Option<NextExec>> {
     loop {
+        #[cfg(test)]
+        note_poll(PollSite::PassStart, cx.waker());
         let mut progressed = false;
+        // An exit-stop settle this non-blocking pass left undecided.
+        let mut settling = false;
         let mut index = 0;
         while index < children.children.len() {
-            if let Some(task) = children.children[index].poll_exit_stop() {
+            #[cfg(test)]
+            let retained = children.children[index].settle.is_some();
+            let held = match children.children[index].settle.take() {
+                Some(pending) => Some(pending),
+                None => children.children[index]
+                    .poll_exit_stop_in(cx)
+                    .map(PendingSettle::new),
+            };
+            if let Some(pending) = held {
+                let step = settle_exit_stop_step(pending, block);
+                #[cfg(test)]
+                if retained && !matches!(step, Ok(SettleStep::Undecided(_))) {
+                    note_poll(PollSite::RetainedSettleDone, cx.waker());
+                }
+                let outcome = match step? {
+                    SettleStep::Done(outcome) => outcome,
+                    SettleStep::Undecided(pending) => {
+                        // Non-blocking only: keep the held main thread
+                        // and its drain for the next pass. Its ordinary
+                        // wait is not polled while the stop is held.
+                        children.children[index].settle = Some(pending);
+                        settling = true;
+                        index += 1;
+                        continue;
+                    }
+                };
                 progressed = true;
-                let outcome = settle_exit_stop(task)?;
                 let detached = match outcome.dying {
                     None => {
                         children.children.remove(index);
@@ -2006,7 +2230,7 @@ fn wait_watched_inner(
                     continue;
                 }
             }
-            match poll_driver(&mut children.children[index].driver) {
+            match poll_driver_in(&mut children.children[index].driver, cx) {
                 Some(Ok(Wait::Exited(_, _))) => {
                     children.children.remove(index);
                     progressed = true;
@@ -2072,7 +2296,7 @@ fn wait_watched_inner(
             .leader
             .as_mut()
             .ok_or("exec supervisor watched leader has no running wait")?;
-        if let Some(waited) = poll_driver(leader) {
+        if let Some(waited) = poll_driver_in(leader, cx) {
             progressed = true;
             // A refused poll keeps the driver for teardown's quiesce;
             // a completed one transfers the leader's state to `waited`.
@@ -2084,8 +2308,13 @@ fn wait_watched_inner(
                     // child cannot be detached: that failure is
                     // recorded in the cleanup receipt the outcome
                     // carries (`CleanupState::child_detach_error`).
-                    children.teardown();
-                    return Ok(NextExec::Finished(status));
+                    // A non-blocking pass leaves the teardown (bounded
+                    // waits) to `wait_next`, which runs it before it
+                    // returns the outcome.
+                    if block {
+                        children.teardown();
+                    }
+                    return Ok(Some(NextExec::Finished(status)));
                 }
                 Wait::Stopped(task, Event::Exec(former)) => {
                     if former != pid {
@@ -2094,7 +2323,7 @@ fn wait_watched_inner(
                         )
                         .into());
                     }
-                    return Ok(NextExec::Exec(task));
+                    return Ok(Some(NextExec::Exec(task)));
                 }
                 Wait::Stopped(task, Event::NewChild(_op, child)) => {
                     children.children.push(ChildWait::new(child));
@@ -2139,21 +2368,25 @@ fn wait_watched_inner(
                         // interrupts the running leader: only teardown
                         // does (`quiesce_leader`), and it consumes its
                         // own trap and never resumes the leader.
+                        // It ends the pass like every other progress
+                        // (no `continue`), so a non-blocking pass still
+                        // yields at the loop's tail.
                         children.leader = Some(leader_wait(task.resume(None)?));
-                        continue;
+                    } else {
+                        if pre_first_exec {
+                            return Err(
+                                "exec supervisor encountered unexpected group stop before exec"
+                                    .into(),
+                            );
+                        }
+                        // A signal injected on the group-stop resume would
+                        // be ignored and leave the natural-parent stop
+                        // report for after detach. Generate a real SIGCONT
+                        // instead; its notify trap is consumed above and
+                        // its delivery reaches the general signal arm.
+                        send_own_sigcont(pid)?;
+                        children.leader = Some(leader_wait(task.resume(None)?));
                     }
-                    if pre_first_exec {
-                        return Err(
-                            "exec supervisor encountered unexpected group stop before exec".into(),
-                        );
-                    }
-                    // A signal injected on the group-stop resume would be
-                    // ignored and leave the natural-parent stop report
-                    // for after detach. Generate a real SIGCONT instead;
-                    // its notify trap is consumed above and its delivery
-                    // reaches the general signal arm.
-                    send_own_sigcont(pid)?;
-                    children.leader = Some(leader_wait(task.resume(None)?));
                 }
                 Wait::Stopped(_task, other_event) => {
                     return Err(format!(
@@ -2162,6 +2395,19 @@ fn wait_watched_inner(
                     .into());
                 }
             }
+        }
+        if !block {
+            // Bounded work per poll: ONE pass. Progress, or a settle
+            // still undecided, asks the executor to poll again (a
+            // self-wake) instead of looping here, so other work on this
+            // thread runs in between. An idle pass returns with `cx`'s
+            // waker registered on every wait it polled.
+            if progressed || settling {
+                #[cfg(test)]
+                note_poll(PollSite::SelfWake, cx.waker());
+                cx.waker().wake_by_ref();
+            }
+            return Ok(None);
         }
         if !progressed {
             std::thread::sleep(Duration::from_millis(1));
@@ -2176,6 +2422,9 @@ fn wait_watched_inner(
 /// best-effort cleanup; `EXITKILL` covers supervisor death).
 #[must_use = "retain the watched supervisor through its terminal outcome or cancellation"]
 pub struct WatchedSupervisor<'fd> {
+    // The next event a [`WatchedSupervisor::poll_ready`] pass already
+    // took from the waits; `wait_next` consumes it before waiting.
+    staged: Option<WatchedNext>,
     pid: safeptrace::Pid,
     started: Instant,
     // Declared before `owner`: fields drop in order, so the leader's
@@ -2219,12 +2468,54 @@ impl<'fd> WatchedSupervisor<'fd> {
         self.owner._request.take_parent_stdio()
     }
 
+    /// Poll for the guest's next exec event or terminal exit, on the
+    /// original ptracer thread, doing BOUNDED work: one pass over the
+    /// leader and every driven fork child, the same transitions as
+    /// [`Self::wait_next`], with no sleep and no wait of its own.
+    /// - Nothing ready: `Pending`, with `cx`'s waker registered on the
+    ///   leader's and each child's wait.
+    /// - Progress without an outcome, or a fork child's exit-stop
+    ///   settle still undecided (resumed by later polls, one `/proc`
+    ///   pass each): `Pending` after waking `cx` itself, so the caller
+    ///   polls again after its other work.
+    /// - `Ready`: the next event or failure is staged and
+    ///   [`Self::wait_next`] returns it without waiting for the guest.
+    ///   The teardown a terminal exit or failure needs (bounded child
+    ///   detaches) runs in that `wait_next`, not here.
+    ///
+    /// This lets an embedder serve its other work (for example the
+    /// guest's RPC) on the same OS thread while the guest runs. The run
+    /// stays owned by `self` across every poll.
+    pub fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.staged.is_some() {
+            return Poll::Ready(());
+        }
+        let polled = wait_watched_inner(
+            self.pid,
+            self.pre_first_exec,
+            &mut self.group_stop_clear_pending,
+            &mut self.children,
+            cx,
+            false,
+        );
+        let next = match polled {
+            Ok(None) => return Poll::Pending,
+            Ok(Some(next)) => Ok(next),
+            // Staged raw: wait_next runs the teardown.
+            Err(error) => Err((error, None)),
+        };
+        self.staged = Some(next);
+        Poll::Ready(())
+    }
+
     /// Run the guest until its next exec event or terminal exit, on
     /// the original ptracer thread. A caught exec is drained and
     /// captured before this returns, so the successor stop sits at
-    /// the new image's kernel entry with no guest progress.
+    /// the new image's kernel entry with no guest progress. An event
+    /// already taken by [`Self::poll_ready`] is returned at once.
     pub fn wait_next(self) -> std::result::Result<WatchedStep<'fd>, LaunchFailure<'fd>> {
         let Self {
+            staged,
             pid,
             started,
             mut owner,
@@ -2234,14 +2525,23 @@ impl<'fd> WatchedSupervisor<'fd> {
             execs_seen,
             mut children,
         } = self;
-        let next = wait_watched(
-            pid,
-            pre_first_exec,
-            &mut group_stop_clear_pending,
-            &mut children,
-        );
+        let next = match staged {
+            Some(Ok(next)) => Ok(next),
+            // A poll pass staged the failure raw; tear down here, as
+            // wait_watched does for a blocking wait.
+            Some(Err((error, _))) => Err(watched_failure(&mut children, error)),
+            None => wait_watched(
+                pid,
+                pre_first_exec,
+                &mut group_stop_clear_pending,
+                &mut children,
+            ),
+        };
         match next {
             Ok(NextExec::Finished(status)) => {
+                // Idempotent: a blocking wait already tore down; a
+                // staged exit from poll_ready did not.
+                children.teardown();
                 owner.record_detached_terminal(status);
                 Ok(WatchedStep::Finished(WatchedOutcome {
                     pid,
@@ -2285,6 +2585,11 @@ impl<'fd> WatchedSupervisor<'fd> {
     /// retained) cleanup state as
     /// [`CleanupState::child_detach_error`].
     pub fn cancel(mut self) -> std::result::Result<CleanupState, Box<ChildOwner<'fd>>> {
+        // A terminal status a poll pass already consumed is recorded
+        // first, so the owner does not wait for a leader already gone.
+        if let Some(Ok(NextExec::Finished(status)) | Err((_, Some(status)))) = self.staged.take() {
+            self.owner.record_detached_terminal(status);
+        }
         if let Some(status) = self.children.teardown().leader_status {
             self.owner.record_detached_terminal(status);
         }
@@ -2361,6 +2666,35 @@ impl<'fd> SuccessorStop<'fd> {
         self.owner.duplicate_birth_pidfd(&self.task)
     }
 
+    /// Duplicate this held birth only for a descriptor borrowed by the
+    /// retained launch request, exactly as
+    /// [`super::InitialExecStop::duplicate_birth_pidfd_for_inherited`]
+    /// does, and only for the watched run's FIRST image: the retained
+    /// request governs what that image inherited at the initial exec.
+    /// A later successor's descriptor table is not governed by it (a
+    /// runtime may have moved its descriptors or marked them
+    /// close-on-exec in the predecessor), so a later successor refuses
+    /// by name, `mapped_successor_leases_unwired`, until a successor
+    /// lease proof exists.
+    #[cfg(feature = "loader-private-runtime")]
+    pub fn duplicate_birth_pidfd_for_inherited(
+        &self,
+        fd: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<std::os::fd::OwnedFd> {
+        if self.execs_seen != 1 {
+            return Err(successor_leases_unwired(self.execs_seen).into());
+        }
+        self.owner
+            .duplicate_birth_pidfd_for_inherited(&self.task, fd)
+    }
+
+    /// Whether this stop is the watched run's first image (its initial
+    /// exec), whose inherited descriptors the retained launch request
+    /// governs.
+    pub fn is_first_image(&self) -> bool {
+        self.execs_seen == 1
+    }
+
     /// Take the original child's parent pipe endpoints once, before
     /// releasing guest execution.
     pub fn take_parent_stdio(&mut self) -> Option<reverie::process::ParentStdio> {
@@ -2401,6 +2735,7 @@ impl<'fd> SuccessorStop<'fd> {
             Ok(running) => {
                 children.leader = Some(leader_wait(running));
                 Ok(WatchedSupervisor {
+                    staged: None,
                     pid,
                     started,
                     children,
@@ -2529,6 +2864,132 @@ impl<'fd> SuccessorStop<'fd> {
             Some(error) => Err(error.into()),
         };
         (self.task, self.context, self.boundary, self.owner, detach)
+    }
+
+    /// Crate-private decomposition for a watched re-arm. Like
+    /// [`Self::into_parts`], but the watched run is RETAINED instead
+    /// of torn down: the driven fork children stay seized and the
+    /// run's receipt and counters are kept in a [`WatchRetention`],
+    /// so a prepared mapping can resume this leader still seized
+    /// and the supervisor catches its next exec. The parts are
+    /// rechecked against each other, and against the retention's
+    /// leader identity, by the physical-preparation entry.
+    #[cfg(feature = "loader-private-runtime")]
+    pub(crate) fn into_watched_parts(
+        self,
+    ) -> (
+        Stopped,
+        EntryContext,
+        ExecBoundary,
+        ChildOwner<'fd>,
+        WatchRetention,
+    ) {
+        let Self {
+            task,
+            context,
+            boundary,
+            children,
+            owner,
+            receipt,
+            pid,
+            started,
+            execs_seen,
+        } = self;
+        (
+            task,
+            context,
+            boundary,
+            owner,
+            WatchRetention {
+                children,
+                receipt,
+                pid,
+                started,
+                execs_seen,
+            },
+        )
+    }
+}
+
+/// The watched run a successor's prepared mapping retains in place
+/// of the [`SuccessorStop`] it was prepared from: the driven fork
+/// children, the shared cleanup receipt and the run's counters. It
+/// holds no stop, wait or resume authority of its own. Only
+/// [`WatchRetention::resume`], given the same run's owner and the
+/// leader's own resumed task, turns it back into a
+/// [`WatchedSupervisor`]. Dropping it tears the children down, as
+/// dropping the successor stop would; a holder that retires the
+/// leader calls [`WatchRetention::teardown`] first, so no child stays
+/// seized with nobody left to wait it.
+#[cfg(feature = "loader-private-runtime")]
+pub(crate) struct WatchRetention {
+    children: ChildSet,
+    receipt: CleanupReceipt,
+    pid: safeptrace::Pid,
+    started: Instant,
+    execs_seen: u64,
+}
+
+/// The named refusal for vouching for, or preparing, a watched run's
+/// successor image after its first: nothing yet proves that image's
+/// per-birth descriptors are the ones the route supplies.
+#[cfg(feature = "loader-private-runtime")]
+pub(crate) fn successor_leases_unwired(execs_seen: u64) -> String {
+    format!("mapped_successor_leases_unwired: exec {execs_seen} has no successor lease proof")
+}
+
+#[cfg(feature = "loader-private-runtime")]
+impl WatchRetention {
+    /// The watched leader this retention belongs to.
+    pub(crate) fn pid(&self) -> safeptrace::Pid {
+        self.pid
+    }
+
+    /// Exec events caught in this watched run, the retained stop's own
+    /// included (1 for the run's first image).
+    pub(crate) fn execs_seen(&self) -> u64 {
+        self.execs_seen
+    }
+
+    /// Detach every driven fork child (killing and reaping any that
+    /// cannot be detached). Idempotent. The first failure is recorded
+    /// in the cleanup receipt as
+    /// [`CleanupState::child_detach_error`] and also returned.
+    pub(crate) fn teardown(&mut self) -> Option<String> {
+        self.children.teardown().error
+    }
+
+    /// Rebuild the watched supervisor around the leader's resumed
+    /// task, exactly as [`SuccessorStop::rearm_and_resume`] does after
+    /// its hook: the leader's wait is owned again on this ptracer
+    /// thread and the next [`WatchedSupervisor::wait_next`] catches
+    /// the leader's next exec. The caller must pass the owner this
+    /// retention was split from and the `running` value its own
+    /// restored leader stop was resumed into.
+    pub(crate) fn resume<'fd>(
+        self,
+        owner: ChildOwner<'fd>,
+        running: Running,
+    ) -> WatchedSupervisor<'fd> {
+        let Self {
+            mut children,
+            receipt,
+            pid,
+            started,
+            execs_seen,
+        } = self;
+        children.leader = Some(leader_wait(running));
+        WatchedSupervisor {
+            staged: None,
+            pid,
+            started,
+            children,
+            owner,
+            receipt,
+            pre_first_exec: false,
+            group_stop_clear_pending: false,
+            execs_seen,
+        }
     }
 }
 
@@ -2669,6 +3130,622 @@ mod tests {
     fn rearm_ok(stop: Box<SuccessorStop<'_>>) -> WatchedSupervisor<'_> {
         stop.rearm_and_resume(|task, _entry, _boundary| Ok(task))
             .unwrap()
+    }
+
+    /// A STOP bound only: it ends a test that would otherwise hang and
+    /// marks it incomplete. No functional verdict depends on it.
+    const HELD_STOP: Duration = Duration::from_secs(30);
+
+    /// A waker that counts its wakes and unparks the test thread.
+    struct CountingWake {
+        wakes: std::sync::atomic::AtomicUsize,
+        thread: std::thread::Thread,
+    }
+
+    impl CountingWake {
+        fn new() -> std::sync::Arc<Self> {
+            std::sync::Arc::new(Self {
+                wakes: std::sync::atomic::AtomicUsize::new(0),
+                thread: std::thread::current(),
+            })
+        }
+
+        fn count(&self) -> usize {
+            self.wakes.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Park until the count exceeds `seen`; false only at the STOP.
+        fn wait_beyond(&self, seen: usize) -> bool {
+            let stop = Instant::now() + HELD_STOP;
+            while self.count() <= seen {
+                let now = Instant::now();
+                if now >= stop {
+                    return false;
+                }
+                std::thread::park_timeout(stop - now);
+            }
+            true
+        }
+    }
+
+    impl std::task::Wake for CountingWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.wakes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.thread.unpark();
+        }
+    }
+
+    /// `/bin/sh -c script`, inheriting `fds` at their own numbers.
+    fn held_request<'fd>(
+        script: &str,
+        fds: Vec<std::os::fd::BorrowedFd<'fd>>,
+    ) -> PreparedExec<'fd> {
+        let arguments: Vec<OsString> = ["sh", "-c", script].iter().map(OsString::from).collect();
+        PreparedExec::new(Path::new("/bin/sh"), &arguments, &[], None, fds).unwrap()
+    }
+
+    /// Every entry the last call recorded used `waker` (each wait was
+    /// polled with the caller's waker). Returns all recorded sites; the
+    /// caller decides which sites must be present.
+    fn polled_only_with(waker: &Waker, step: &str) -> Vec<PollSite> {
+        let polls = take_polls();
+        let sites: Vec<PollSite> = polls.iter().map(|(site, _)| *site).collect();
+        assert!(
+            polls.iter().all(|(_, polled)| polled.will_wake(waker)),
+            "{step}: a wait was polled without the caller's waker: {sites:?}"
+        );
+        sites
+    }
+
+    /// A real wait (a Driver or ChildExit site), not a pass or
+    /// self-wake marker.
+    fn polled_a_real_wait(sites: &[PollSite]) -> bool {
+        sites
+            .iter()
+            .any(|site| matches!(site, PollSite::Driver | PollSite::ChildExit))
+    }
+
+    /// A STOP bound on the polls one drive loop may take: a livelock in
+    /// which every pass self-wakes ends there instead of spinning.
+    const DRIVE_CALL_STOP: usize = 10_000;
+
+    /// From the recorder: how many passes one `poll_ready` call ran,
+    /// and whether it recorded a self-wake.
+    fn pass_profile(sites: &[PollSite]) -> (usize, bool) {
+        let passes = sites
+            .iter()
+            .filter(|site| **site == PollSite::PassStart)
+            .count();
+        (passes, sites.contains(&PollSite::SelfWake))
+    }
+
+    /// One `poll_ready` call, checked by the recorder: every wait it
+    /// polled used the caller's waker, it ran exactly ONE pass, and a
+    /// recorded self-wake really woke the caller (the count rose during
+    /// the call: `wake_by_ref` increments it synchronously). Returns the
+    /// result, the recorded sites and whether it self-woke.
+    fn poll_once(
+        watched: &mut WatchedSupervisor<'_>,
+        wake: &std::sync::Arc<CountingWake>,
+        step: &str,
+    ) -> (Poll<()>, Vec<PollSite>, bool) {
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        take_polls();
+        let before = wake.count();
+        let polled = watched.poll_ready(&mut cx);
+        let after = wake.count();
+        let sites = polled_only_with(&waker, step);
+        let (passes, woke) = pass_profile(&sites);
+        assert_eq!(
+            passes, 1,
+            "{step}: one poll_ready call ran {passes} passes (the per-poll work budget is one pass)"
+        );
+        assert!(
+            !woke || after > before,
+            "{step}: a pass recorded its self-wake but did not wake the caller"
+        );
+        if polled.is_pending() {
+            // A Pending call must have registered the caller on some
+            // real wait; pass and self-wake markers do not count.
+            assert!(
+                polled_a_real_wait(&sites),
+                "{step}: a Pending call polled no wait: {sites:?}"
+            );
+        } else {
+            // A Ready call either polled a real wait, or legitimately
+            // finished a settle it had ALREADY retained (that path polls
+            // no fresh wait, by design). Nothing else may end without a
+            // wait.
+            assert!(
+                polled_a_real_wait(&sites) || sites.contains(&PollSite::RetainedSettleDone),
+                "{step}: a Ready call polled no wait and finished no retained settle: {sites:?}"
+            );
+        }
+        (polled, sites, woke)
+    }
+
+    /// Drive `watched` like an executor until `poll_ready` is Ready:
+    /// poll (one pass each), and after each Pending wait for a wake (a
+    /// self-wake or a registered one) before polling again.
+    fn drive_until_staged(
+        watched: &mut WatchedSupervisor<'_>,
+        wake: &std::sync::Arc<CountingWake>,
+        step: &str,
+    ) {
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            assert!(
+                calls <= DRIVE_CALL_STOP,
+                "STOP (incomplete): {step}: not staged within {DRIVE_CALL_STOP} calls"
+            );
+            let before = wake.count();
+            let (polled, _, _) = poll_once(watched, wake, step);
+            if polled.is_ready() {
+                break;
+            }
+            assert!(
+                wake.wait_beyond(before),
+                "STOP (incomplete): {step}: no wake within {HELD_STOP:?} after a Pending poll"
+            );
+        }
+        let waker = Waker::from(wake.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(
+            watched.poll_ready(&mut cx).is_ready(),
+            "{step}: the staged event was not kept for wait_next"
+        );
+    }
+
+    /// After a held, idle Pending call whose waker count was `held`,
+    /// releasing the guest must WAKE that waker (a wake beyond `held`)
+    /// before the event is driven to staging.
+    fn require_release_wake(wake: &CountingWake, held: usize, step: &str) {
+        assert!(
+            wake.wait_beyond(held),
+            "STOP (incomplete): {step}: the release did not wake the caller's waker within \
+             {HELD_STOP:?}"
+        );
+    }
+
+    /// One pipe-held event: an idle pass is Pending, ran one pass, did
+    /// not wake itself, and polled every wait with the caller's waker;
+    /// releasing the guest then WAKES that waker (the held-phase wake
+    /// baseline); only then is the event driven to staging.
+    fn release_and_stage(
+        watched: &mut WatchedSupervisor<'_>,
+        wake: &std::sync::Arc<CountingWake>,
+        writer: &mut std::io::PipeWriter,
+        step: &str,
+    ) {
+        let (polled, _, woke) = poll_once(watched, wake, step);
+        assert!(
+            polled.is_pending(),
+            "{step}: poll_ready returned Ready while the guest was held on its pipe"
+        );
+        assert!(
+            !woke,
+            "{step}: an idle pass woke itself (it recorded progress while the guest was held)"
+        );
+        // The held-phase baseline: the idle call has registered the
+        // waker and did not wake itself, so a wake beyond this count is
+        // the release's.
+        let held = wake.count();
+        std::io::Write::write_all(writer, b"x\n").unwrap();
+        require_release_wake(wake, held, step);
+        drive_until_staged(watched, wake, step);
+    }
+
+    #[test]
+    fn poll_ready_registers_waker_and_stages_pipe_held_events() {
+        // The guest blocks reading its inherited pipe before each event,
+        // so no event can occur until the test writes: Pending, the
+        // registration and the wake are properties, not timing.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
+        let script =
+            format!("read a < /proc/self/fd/{fd}; exec /bin/sh -c 'read b < /proc/self/fd/{fd}'");
+        let mut watched = Supervisor::spawn_watched(
+            held_request(&script, vec![std::os::fd::AsFd::as_fd(&reader)]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let wake = CountingWake::new();
+        // The initial exec is polled too (pre-first-exec), not waited.
+        drive_until_staged(&mut watched, &wake, "initial exec");
+        let first = match watched.wait_next().unwrap() {
+            WatchedStep::Exec(stop) => stop,
+            WatchedStep::Finished(outcome) => {
+                panic!("expected the staged initial exec, got terminal {outcome:?}")
+            }
+        };
+        let mut watched = rearm_ok(first);
+        release_and_stage(&mut watched, &wake, &mut writer, "inner exec");
+        let stop = match watched.wait_next().unwrap() {
+            WatchedStep::Exec(stop) => stop,
+            WatchedStep::Finished(outcome) => {
+                panic!("expected the staged inner exec, got terminal {outcome:?}")
+            }
+        };
+        let mut watched = rearm_ok(stop);
+        release_and_stage(&mut watched, &wake, &mut writer, "exit");
+        let outcome = match watched.wait_next().unwrap() {
+            WatchedStep::Finished(outcome) => outcome,
+            WatchedStep::Exec(_) => panic!("expected the staged exit, got another exec"),
+        };
+        assert_eq!(outcome.execs_seen, 2);
+        assert_eq!(outcome.status, ExitStatus::Exited(0));
+        assert!(outcome.cleanup.confirmed);
+    }
+
+    #[test]
+    fn poll_ready_registers_and_wakes_through_a_held_fork_child() {
+        // The guest forks a subshell (no exec) that blocks on the pipe;
+        // the leader then waits for it. After the release, only the
+        // child's exit stop can wake the poll: the leader stays in its
+        // wait until the child is settled.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
+        let script = format!("(read c < /proc/self/fd/{fd}) & wait");
+        let watched = Supervisor::spawn_watched(
+            held_request(&script, vec![std::os::fd::AsFd::as_fd(&reader)]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        let wake = CountingWake::new();
+        // Drive until an idle pass has the child attached: it polled the
+        // child's exit claim, and every poll used the caller's waker.
+        // The leader's fork event and the child's initial stop are
+        // progress without an outcome: each call must run ONE pass and
+        // record its own self-wake (the recorder, not a wake count,
+        // which safeptrace's notifier can also raise).
+        let mut self_woke = false;
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            assert!(
+                calls <= DRIVE_CALL_STOP,
+                "STOP (incomplete): held child: not idle within {DRIVE_CALL_STOP} calls"
+            );
+            let before = wake.count();
+            let (polled, sites, woke) = poll_once(&mut watched, &wake, "held child");
+            assert!(
+                polled.is_pending(),
+                "the guest finished while its child was held on the pipe"
+            );
+            if woke {
+                self_woke = true;
+            } else if sites.contains(&PollSite::ChildExit) {
+                break;
+            }
+            assert!(
+                wake.wait_beyond(before),
+                "STOP (incomplete): the fork child was not attached within {HELD_STOP:?}"
+            );
+        }
+        assert!(
+            self_woke,
+            "no pass recorded a self-wake after progress (the per-poll work budget)"
+        );
+        // The held-phase baseline: the last call was idle (no self-wake)
+        // with the child's exit claim registered, so a wake beyond this
+        // count is the child's release.
+        let held = wake.count();
+        std::io::Write::write_all(&mut writer, b"x\n").unwrap();
+        require_release_wake(&wake, held, "child release");
+        drive_until_staged(&mut watched, &wake, "child release");
+        let outcome = match watched.wait_next().unwrap() {
+            WatchedStep::Finished(outcome) => outcome,
+            WatchedStep::Exec(_) => panic!("expected the staged exit, got an exec"),
+        };
+        assert_eq!(outcome.status, ExitStatus::Exited(0));
+        assert!(outcome.cleanup.confirmed);
+        assert_eq!(outcome.cleanup.child_detach_error, None);
+    }
+
+    #[test]
+    fn poll_ready_leaves_terminal_teardown_to_wait_next() {
+        // The leader exits while its fork child is still held on the
+        // pipe: the staged exit must leave the child attached (teardown
+        // and its bounded detach waits belong to wait_next), and
+        // wait_next must then detach it cleanly.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
+        let script = format!("(read c < /proc/self/fd/{fd}) & exit 0");
+        let watched = Supervisor::spawn_watched(
+            held_request(&script, vec![std::os::fd::AsFd::as_fd(&reader)]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        let wake = CountingWake::new();
+        // The leader's fork and exit wake the poll; no write is needed.
+        drive_until_staged(&mut watched, &wake, "leader exit");
+        assert!(
+            !watched.children.children.is_empty(),
+            "poll_ready tore down the fork children before wait_next"
+        );
+        std::io::Write::write_all(&mut writer, b"x\n").unwrap();
+        let outcome = match watched.wait_next().unwrap() {
+            WatchedStep::Finished(outcome) => outcome,
+            WatchedStep::Exec(_) => panic!("expected the leader's exit, got an exec"),
+        };
+        assert_eq!(outcome.status, ExitStatus::Exited(0));
+        assert!(outcome.cleanup.confirmed);
+        assert_eq!(outcome.cleanup.child_detach_error, None);
+    }
+
+    #[test]
+    fn poll_ready_yields_while_an_exit_stop_settle_is_undecided() {
+        // The short-listing hook keeps the fork child's exit-stop check
+        // undecided, exactly as in
+        // watched_nonleader_exec_is_refused_when_listing_is_short. The
+        // drain reads a CONTROLLED clock that advances one tick per read,
+        // so the bound passes after a fixed number of drain looks, never
+        // because of host scheduling. One pass per call takes one look,
+        // so the settle is handed back across several calls (each with a
+        // recorded self-wake) before it refuses by name; a settle that
+        // drained inside one call would cross the bound there and be
+        // handed back zero times. The refused image must never run and
+        // nothing may stay traced.
+        let marker = supervisor_test_file("thread-exec-poll.marker");
+        let args: Vec<&Path> = vec![&marker];
+        let _delay = HookScope::delay_after_exit_stop_detach();
+        let _hooks = HookScope::drop_last_listed_task();
+        let _clock = DrainClockScope::set(Instant::now(), Duration::from_millis(100));
+        let watched = Supervisor::spawn_watched(
+            fork_request("thread-exec-child-marker", &args),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        let wake = CountingWake::new();
+        let mut handed_back = 0;
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            assert!(
+                calls <= DRIVE_CALL_STOP,
+                "STOP (incomplete): held settle: no outcome within {DRIVE_CALL_STOP} calls"
+            );
+            let before = wake.count();
+            let (polled, sites, woke) = poll_once(&mut watched, &wake, "held settle");
+            if polled.is_ready() {
+                // The refusing call is the completion of the settle this
+                // test kept retained, not a fresh wait.
+                assert!(
+                    sites.contains(&PollSite::RetainedSettleDone),
+                    "the refusing call did not finish the retained settle: {sites:?}"
+                );
+                break;
+            }
+            if watched
+                .children
+                .children
+                .iter()
+                .any(|child| child.settle.is_some())
+            {
+                assert!(
+                    woke,
+                    "a poll left the exit-stop settle undecided without recording a self-wake"
+                );
+                handed_back += 1;
+            }
+            assert!(
+                wake.wait_beyond(before),
+                "STOP (incomplete): no wake within {HELD_STOP:?} after a Pending poll"
+            );
+        }
+        assert!(
+            handed_back >= 2,
+            "the undecided exit-stop settle was handed back {handed_back} times: it drained \
+             inside one call instead of one look per call"
+        );
+        let failure = watched.wait_next().unwrap_err();
+        let report = failure.error.to_string();
+        assert!(
+            report.contains("exec_supervisor_fork_child_exec_refused")
+                && report.contains("could not be ruled out"),
+            "unexpected failure: {report}"
+        );
+        // Parity with assert_nonleader_exec_refused: confirmed cleanup,
+        // no child-detach error, nothing traced, then a margin for an
+        // image released in error to run before the marker check.
+        assert!(failure.cleanup().confirmed);
+        assert_eq!(failure.cleanup().child_detach_error, None);
+        assert_no_traced_by_current_thread("held settle refusal");
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !marker.exists(),
+            "the refused image ran: its marker exists after a refusal from a held settle"
+        );
+    }
+
+    /// Test-only scope for the drain's controlled clock.
+    struct DrainClockScope;
+
+    impl DrainClockScope {
+        /// Start the controlled clock at `now`, advancing `tick` per read.
+        fn set(now: Instant, tick: Duration) -> Self {
+            super::DRAIN_CLOCK.with(|clock| clock.set(Some((now, tick))));
+            Self
+        }
+    }
+
+    impl Drop for DrainClockScope {
+        fn drop(&mut self) {
+            super::DRAIN_CLOCK.with(|clock| clock.set(None));
+        }
+    }
+
+    #[test]
+    fn poll_ready_returns_pending_while_the_guest_is_held() {
+        // The guest blocks on its pipe. The functional verdict is the
+        // recorder's pass count, which no host pause can change: a
+        // non-blocking call runs ONE pass, while a call that waits for
+        // the guest keeps passing until something releases it. The
+        // watchdog only ends such a wait (a STOP); a Ready after it
+        // fired is classified incomplete, never a verdict.
+        let (reader, writer) = std::io::pipe().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
+        let script = format!("read a < /proc/self/fd/{fd}");
+        let watched = Supervisor::spawn_watched(
+            held_request(&script, vec![std::os::fd::AsFd::as_fd(&reader)]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        let mut watchdog_writer = writer.try_clone().unwrap();
+        let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watchdog_fired = fired.clone();
+        let (done, done_rx) = std::sync::mpsc::channel::<()>();
+        let watchdog = std::thread::spawn(move || {
+            if done_rx.recv_timeout(HELD_STOP).is_err() {
+                // STOP: release the guest so a waiting call returns.
+                watchdog_fired.store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = std::io::Write::write_all(&mut watchdog_writer, b"x\n");
+            }
+        });
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        take_polls();
+        let polled = watched.poll_ready(&mut cx);
+        let sites: Vec<PollSite> = take_polls().into_iter().map(|(site, _)| site).collect();
+        let _ = done.send(());
+        watchdog.join().unwrap();
+        let (passes, _) = pass_profile(&sites);
+        assert_eq!(
+            passes, 1,
+            "poll_ready ran {passes} passes in one call while the guest was held: it waited \
+             for the guest instead of returning"
+        );
+        // After the pass-count verdict, ANY watchdog firing is a STOP: a
+        // released guest makes Ready a valid observation and the running-
+        // cancel check below meaningless (it may already have exited).
+        if fired.load(std::sync::atomic::Ordering::SeqCst) {
+            panic!(
+                "STOP (incomplete): the STOP watchdog released the guest, so the held-guest \
+                 checks no longer apply"
+            );
+        }
+        assert!(
+            polled.is_pending(),
+            "poll_ready returned Ready while the guest was held on its pipe"
+        );
+        // r7's running-cancel check, kept: cancelling the held guest
+        // after a Pending poll confirms retirement.
+        let cleanup = match watched.cancel() {
+            Ok(cleanup) => cleanup,
+            Err(owner) => panic!("cancel of the held guest is unconfirmed: {owner:?}"),
+        };
+        assert!(cleanup.confirmed);
+        drop(writer);
+    }
+
+    #[test]
+    fn poll_ready_yields_after_a_sigcont_notify_trap() {
+        // A seized guest's own SIGCONT arms a notify trap even though the
+        // guest ignores it. The trap is progress without an outcome: its
+        // pass must end like any other (ONE pass, then a recorded
+        // self-wake), never start a second pass inside the same call.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&reader);
+        let script = format!("trap '' CONT; kill -CONT $$; read a < /proc/self/fd/{fd}");
+        let watched = Supervisor::spawn_watched(
+            held_request(&script, vec![std::os::fd::AsFd::as_fd(&reader)]),
+            CleanupReceipt::default(),
+        )
+        .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        let wake = CountingWake::new();
+        let mut self_woke = false;
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            assert!(
+                calls <= DRIVE_CALL_STOP,
+                "STOP (incomplete): sigcont notify: not idle within {DRIVE_CALL_STOP} calls"
+            );
+            let before = wake.count();
+            // poll_once asserts ONE pass per call.
+            let (polled, _, woke) = poll_once(&mut watched, &wake, "sigcont notify");
+            assert!(
+                polled.is_pending(),
+                "the guest finished while it was held on its pipe"
+            );
+            if woke {
+                self_woke = true;
+            } else if self_woke {
+                // Idle after the trap's progress: the guest is held.
+                break;
+            }
+            assert!(
+                wake.wait_beyond(before),
+                "STOP (incomplete): no wake within {HELD_STOP:?} after a Pending poll"
+            );
+        }
+        let held = wake.count();
+        std::io::Write::write_all(&mut writer, b"x\n").unwrap();
+        require_release_wake(&wake, held, "exit");
+        drive_until_staged(&mut watched, &wake, "exit");
+        let outcome = match watched.wait_next().unwrap() {
+            WatchedStep::Finished(outcome) => outcome,
+            WatchedStep::Exec(_) => panic!("expected the exit, got an exec"),
+        };
+        assert_eq!(outcome.status, ExitStatus::Exited(0));
+    }
+
+    #[test]
+    fn cancel_after_staged_terminal_confirms_retirement() {
+        let tokio = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let watched =
+            Supervisor::spawn_watched(request("/bin/true", &["true"]), CleanupReceipt::default())
+                .unwrap();
+        let mut watched = rearm_ok(watched_next_exec(watched));
+        // Stage the leader's terminal exit, then cancel instead of
+        // calling wait_next: the status the poll consumed must be
+        // recorded, or the owner would wait for a leader already gone.
+        tokio
+            .block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(30),
+                    std::future::poll_fn(|cx| watched.poll_ready(cx)),
+                )
+                .await
+            })
+            .expect(
+                "STOP (incomplete): poll_ready was not woken for the terminal exit within 30 s",
+            );
+        let cleanup = match watched.cancel() {
+            Ok(cleanup) => cleanup,
+            Err(owner) => panic!("cancel after a staged exit is unconfirmed: {owner:?}"),
+        };
+        assert!(cleanup.confirmed);
+        // The staged status itself is the proof: the leader's real exit
+        // is recorded as a normal wait, and retirement requests no kill.
+        // Without the staged-status record, cancel would kill and
+        // confirm through its own terminal wait instead.
+        assert_eq!(cleanup.terminal_status, Some(ExitStatus::Exited(0)));
+        assert!(
+            matches!(
+                cleanup.confirmation,
+                Some(crate::launcher::exec_stop::CleanupConfirmation::NormalWait)
+            ),
+            "cancel after a staged exit did not record the staged status as a normal wait"
+        );
+        assert!(
+            !cleanup.kill_requested,
+            "cancel after a staged exit requested a kill of a leader already gone"
+        );
     }
 
     /// A background child's marker is written immediately before its
@@ -5180,6 +6257,7 @@ int main(int argc, char **argv) {
         use super::*;
         use crate::launcher::exec_stop::CopiedInputRequest;
         use crate::launcher::exec_stop::physical::Preparation;
+        use crate::launcher::exec_stop::physical::PreparedMapping;
         use crate::launcher::exec_stop::register_words;
 
         const PAGE: u64 = 4096;
@@ -5753,10 +6831,18 @@ int main(int argc, char **argv) {
             let handoff_file = memfd(&[], false).unwrap();
             let input_file = memfd(INERT_PACKET, true).unwrap();
             let mut watched = watched_guest(&runtime_file, &handoff_file, &input_file);
-            // Release the first image UNPREPARED so it can self-exec;
-            // a prepared image has no release transition in this
-            // slice (cancel-only), which is the named residual gap
-            // for a one-lineage prepared->exec->prepared chain.
+            // Release the first image UNPREPARED so it can self-exec.
+            // A one-lineage prepared->exec->prepared chain is not
+            // exercised here, for two reasons:
+            // - a prepared image's seized release
+            //   (resume_watched_after_ready) requires a genuine
+            //   initializer observation, which this synthetic runtime
+            //   cannot produce;
+            // - a second WATCHED preparation is refused by design
+            //   (mapped_successor_leases_unwired) until a successor
+            //   lease proof exists; only this unsafe prepare_mapping
+            //   route can prepare that successor.
+            // That positive chain is the named residual gap.
             let first = next_exec(watched);
             let pid = first.pid();
             watched = first
@@ -5998,6 +7084,366 @@ int main(int argc, char **argv) {
             drop(task_b);
             let cancelled = owner_b.cancel().unwrap();
             assert!(cancelled.confirmed);
+        }
+
+        #[test]
+        fn preparation_parts_refuse_foreign_watch() {
+            use crate::launcher::exec_stop::physical::prepare_mapping_parts_retaining;
+
+            let runtime = synthetic_runtime();
+            let descriptor = descriptor_words(&runtime);
+            let geometry = geometry(&descriptor);
+            let runtime_file = memfd(&runtime, true).unwrap();
+            let handoff_file = memfd(&[], false).unwrap();
+            let input_file = memfd(INERT_PACKET, true).unwrap();
+            let watched_a = watched_guest(&runtime_file, &handoff_file, &input_file);
+            let stop_a = next_exec(watched_a);
+            let runtime_file_b = memfd(&runtime, true).unwrap();
+            let handoff_file_b = memfd(&[], false).unwrap();
+            let input_file_b = memfd(INERT_PACKET, true).unwrap();
+            let watched_b = watched_guest(&runtime_file_b, &handoff_file_b, &input_file_b);
+            let stop_b = next_exec(watched_b);
+            let (task_a, context_a, boundary_a, owner_a, _watch_a) = stop_a.into_watched_parts();
+            let (task_b, _context_b, _boundary_b, owner_b, watch_b) = stop_b.into_watched_parts();
+            let preparation = Preparation {
+                runtime_fd: runtime_file.as_fd(),
+                runtime_bytes: &runtime,
+                layout_address: RUNTIME_WINDOW.start + 512,
+                handoff_fd: handoff_file.as_fd(),
+                handoff_bytes: &[],
+                handoff_address: geometry.roles[3].start + PAGE,
+                input_fd: input_file.as_fd(),
+                free_band: geometry.free_band,
+                filter_scratch: geometry.filter_scratch,
+            };
+            // SAFETY: same obligations as the happy witness; A's own
+            // parts paired with B's watched run must refuse before any
+            // child mutation, which is the fence under test.
+            let failure = match unsafe {
+                prepare_mapping_parts_retaining(
+                    task_a,
+                    context_a,
+                    boundary_a,
+                    owner_a,
+                    preparation,
+                    Some(watch_b),
+                )
+            } {
+                Ok(_) => panic!("foreign watched run unexpectedly prepared"),
+                Err(failure) => failure,
+            };
+            assert!(
+                failure
+                    .error
+                    .to_string()
+                    .contains("mapped_preparation_foreign_watch"),
+                "unexpected refusal: {}",
+                failure.error
+            );
+            assert!(failure.cleanup().confirmed);
+            drop(task_b);
+            let cancelled = owner_b.cancel().unwrap();
+            assert!(cancelled.confirmed);
+        }
+
+        /// Prepare `stop` exactly as the release-token test does
+        /// (copied inputs, numeric wire, sealed handoff), retaining
+        /// the watched run when `watched`, and hand the prepared
+        /// mapping and the stop's pid to `check`.
+        #[allow(clippy::too_many_arguments)]
+        fn with_release_mapping(
+            stop: SuccessorStop<'_>,
+            runtime: &[u8],
+            descriptor: &[u64; 12],
+            geometry: &Geometry,
+            runtime_file: &File,
+            handoff_file: &File,
+            input_file: &File,
+            watched: bool,
+            check: impl FnOnce(PreparedMapping<'_>, safeptrace::Pid),
+        ) {
+            let pid = stop.pid();
+            let original_regs = register_words(stop.entry().regs());
+            let original_mask = stop.entry().signal_mask();
+            let image = validated(runtime);
+            let captured = stop.capture_initial_inputs().unwrap();
+            let copied = stop
+                .prepare_copied_inputs(
+                    &captured,
+                    &image,
+                    &CopiedInputRequest {
+                        roles: geometry.roles,
+                        free_band: geometry.free_band,
+                        layout_address: RUNTIME_WINDOW.start + 512,
+                        copied_address: geometry.copied_address,
+                        copied_capacity: geometry.copied_capacity,
+                        control_address: geometry.control,
+                        relay_address: geometry.relay,
+                        filter_scratch: geometry.filter_scratch,
+                    },
+                )
+                .unwrap();
+            // SAFETY: same held-generation XSAVE read as the
+            // preparation witnesses above.
+            let pkru = unsafe { stop.entry().xstate().pkru() }.expect("stopped PKRU");
+            let wire = build_wire(
+                &image,
+                descriptor,
+                geometry,
+                &copied,
+                &WireContext {
+                    pid: pid.as_raw() as u64,
+                    regs: original_regs,
+                    mask: original_mask,
+                    input_fd: input_file.as_raw_fd() as u64,
+                    pkru,
+                },
+            )
+            .unwrap();
+            let role_bytes = geometry.roles[3].end - geometry.roles[3].start - 2 * PAGE;
+            handoff_file.write_all_at(&wire, 0).unwrap();
+            handoff_file.set_len(role_bytes).unwrap();
+            seal_file(handoff_file).unwrap();
+            let preparation = Preparation {
+                runtime_fd: runtime_file.as_fd(),
+                runtime_bytes: runtime,
+                layout_address: RUNTIME_WINDOW.start + 512,
+                handoff_fd: handoff_file.as_fd(),
+                handoff_bytes: &wire,
+                handoff_address: geometry.roles[3].start + PAGE,
+                input_fd: input_file.as_fd(),
+                free_band: geometry.free_band,
+                filter_scratch: geometry.filter_scratch,
+            };
+            // SAFETY: original ptracer thread, inherited immutable
+            // descriptors, genuine captured context, as in
+            // prepare_and_cancel. Preparation only; the releases the
+            // checks attempt refuse before any restore or entry.
+            let prepared = if watched {
+                unsafe { stop.prepare_mapping_watched(preparation) }
+            } else {
+                unsafe { stop.prepare_mapping(preparation) }
+            };
+            let prepared = match prepared {
+                Ok(prepared) => prepared,
+                Err(failure) => panic!(
+                    "preparation refused: {} cleanup={:?}",
+                    failure.error,
+                    failure.cleanup()
+                ),
+            };
+            check(prepared, pid);
+        }
+
+        /// Attempt the seized resume with `ready` and return its
+        /// refusal; a resume that succeeds fails the test.
+        fn refused_watched_resume<'fd>(
+            mapping: PreparedMapping<'fd>,
+            ready: crate::launcher::exec_stop::physical::VerifiedReady,
+        ) -> Box<crate::launcher::exec_stop::physical::ReleaseFailure<'fd>> {
+            let tokio = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap();
+            // SAFETY: every caller presents a token or mapping that
+            // must refuse at the resume's prechecks, before any
+            // physical change.
+            tokio.block_on(async {
+                match unsafe {
+                    mapping
+                        .resume_watched_after_ready(
+                            ready,
+                            std::time::Instant::now() + std::time::Duration::from_secs(30),
+                        )
+                        .await
+                } {
+                    Ok(_) => panic!("refused seized resume unexpectedly resumed"),
+                    Err(failure) => failure,
+                }
+            })
+        }
+
+        #[test]
+        fn watched_resume_refuses_unwatched_mapping_by_name() {
+            use crate::launcher::exec_stop::physical::VerifiedReady;
+
+            let runtime = synthetic_runtime();
+            let descriptor = descriptor_words(&runtime);
+            let geometry = geometry(&descriptor);
+            let runtime_file = memfd(&runtime, true).unwrap();
+            let handoff_file = memfd(&[], false).unwrap();
+            let input_file = memfd(INERT_PACKET, true).unwrap();
+            let watched = watched_guest(&runtime_file, &handoff_file, &input_file);
+            let stop = next_exec(watched);
+            with_release_mapping(
+                stop,
+                &runtime,
+                &descriptor,
+                &geometry,
+                &runtime_file,
+                &handoff_file,
+                &input_file,
+                false,
+                |mut mapping, pid| {
+                    assert!(
+                        !mapping.watch_retained_for_test(),
+                        "prepare_mapping must not retain the watched run"
+                    );
+                    // A token naming this child and its exact recorded
+                    // stop, so only the missing watched run can refuse.
+                    let terminal = RUNTIME_WINDOW.start + 8192;
+                    let reserved = 1_u64 << (libc::SIGSYS - 1);
+                    mapping.set_initialized_stop_for_test(Some((terminal, reserved)));
+                    let ready = VerifiedReady::for_test(pid, terminal, reserved);
+                    let failure = refused_watched_resume(mapping, ready);
+                    assert!(
+                        failure
+                            .error
+                            .to_string()
+                            .contains("mapped_watched_resume_not_watched"),
+                        "unexpected seized-resume refusal: {}",
+                        failure.error
+                    );
+                    let mapping = failure.into_mapping();
+                    assert_eq!(
+                        mapping.handover_flags_for_test(),
+                        (false, false),
+                        "the refusal must leave failed and handover_started unset"
+                    );
+                    let cancelled = match mapping.cancel() {
+                        Ok(cancelled) => cancelled,
+                        Err(retained) => panic!("cancel unconfirmed: {:?}", retained.cleanup()),
+                    };
+                    assert!(cancelled.cleanup.confirmed);
+                },
+            );
+        }
+
+        #[test]
+        fn watched_mapping_retains_run_through_refused_resume() {
+            use crate::launcher::exec_stop::physical::VerifiedReady;
+
+            let runtime = synthetic_runtime();
+            let descriptor = descriptor_words(&runtime);
+            let geometry = geometry(&descriptor);
+            let runtime_file = memfd(&runtime, true).unwrap();
+            let handoff_file = memfd(&[], false).unwrap();
+            let input_file = memfd(INERT_PACKET, true).unwrap();
+            let watched = watched_guest(&runtime_file, &handoff_file, &input_file);
+            let stop = next_exec(watched);
+            with_release_mapping(
+                stop,
+                &runtime,
+                &descriptor,
+                &geometry,
+                &runtime_file,
+                &handoff_file,
+                &input_file,
+                true,
+                |mut mapping, pid| {
+                    assert!(
+                        mapping.watch_retained_for_test(),
+                        "prepare_mapping_watched must retain the watched run"
+                    );
+                    // The exact recorded stop, but another child: only
+                    // the token recheck can refuse, ahead of the
+                    // watched-run check and any restore.
+                    let terminal = RUNTIME_WINDOW.start + 8192;
+                    let reserved = 1_u64 << (libc::SIGSYS - 1);
+                    mapping.set_initialized_stop_for_test(Some((terminal, reserved)));
+                    let wrong = VerifiedReady::for_test(
+                        safeptrace::Pid::from_raw(pid.as_raw() + 1),
+                        terminal,
+                        reserved,
+                    );
+                    let failure = refused_watched_resume(mapping, wrong);
+                    assert!(
+                        failure
+                            .error
+                            .to_string()
+                            .contains("mapped_ready_token_mismatch"),
+                        "unexpected seized-resume refusal: {}",
+                        failure.error
+                    );
+                    let mapping = failure.into_mapping();
+                    assert!(
+                        mapping.watch_retained_for_test(),
+                        "a refused seized resume must keep the watched run for retirement"
+                    );
+                    assert_eq!(
+                        mapping.handover_flags_for_test(),
+                        (false, false),
+                        "the refusal must leave failed and handover_started unset"
+                    );
+                    let cancelled = match mapping.cancel() {
+                        Ok(cancelled) => cancelled,
+                        Err(retained) => panic!("cancel unconfirmed: {:?}", retained.cleanup()),
+                    };
+                    assert!(cancelled.cleanup.confirmed);
+                    assert_eq!(cancelled.cleanup.child_detach_error, None);
+                },
+            );
+        }
+
+        #[test]
+        fn watched_successor_refuses_unwired_leases_by_name() {
+            let runtime = synthetic_runtime();
+            let descriptor = descriptor_words(&runtime);
+            let geometry = geometry(&descriptor);
+            let runtime_file = memfd(&runtime, true).unwrap();
+            let handoff_file = memfd(&[], false).unwrap();
+            let input_file = memfd(INERT_PACKET, true).unwrap();
+            let mut watched = watched_guest(&runtime_file, &handoff_file, &input_file);
+            let first = next_exec(watched);
+            assert!(first.is_first_image());
+            // The first image's inheritance is governed by the retained
+            // request, so it may vouch for a borrowed descriptor.
+            drop(
+                first
+                    .duplicate_birth_pidfd_for_inherited(input_file.as_fd())
+                    .expect("the first image inherited the borrowed descriptor"),
+            );
+            watched = first
+                .rearm_and_resume(|task, _entry, _boundary| Ok(task))
+                .unwrap();
+            let successor = next_exec(watched);
+            assert!(!successor.is_first_image());
+            let refused = successor
+                .duplicate_birth_pidfd_for_inherited(input_file.as_fd())
+                .expect_err("a later successor must not vouch for inheritance");
+            assert!(
+                refused
+                    .to_string()
+                    .contains("mapped_successor_leases_unwired"),
+                "unexpected refusal: {refused}"
+            );
+            let preparation = Preparation {
+                runtime_fd: runtime_file.as_fd(),
+                runtime_bytes: &runtime,
+                layout_address: RUNTIME_WINDOW.start + 512,
+                handoff_fd: handoff_file.as_fd(),
+                handoff_bytes: &[],
+                handoff_address: geometry.roles[3].start + PAGE,
+                input_fd: input_file.as_fd(),
+                free_band: geometry.free_band,
+                filter_scratch: geometry.filter_scratch,
+            };
+            // SAFETY: same obligations as the happy witness; a later
+            // successor must refuse before any child mutation, which
+            // is the fence under test.
+            let failure = match unsafe { successor.prepare_mapping_watched(preparation) } {
+                Ok(_) => panic!("a later successor was prepared without a lease proof"),
+                Err(failure) => failure,
+            };
+            assert!(
+                failure
+                    .error
+                    .to_string()
+                    .contains("mapped_successor_leases_unwired"),
+                "unexpected refusal: {}",
+                failure.error
+            );
+            assert!(failure.cleanup().confirmed);
         }
     }
 }

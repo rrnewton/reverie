@@ -286,7 +286,7 @@ impl<'fd> ReleaseFailure<'fd> {
 
     /// Repeat only bounded terminal cleanup, never entry or release work.
     pub fn retry_cleanup(&mut self) -> bool {
-        self.mapping.owner.retire();
+        self.mapping.retire_owner();
         self.cleanup().confirmed
     }
 

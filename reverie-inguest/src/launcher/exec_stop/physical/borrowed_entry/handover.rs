@@ -1,7 +1,10 @@
 //! Narrow same-owner handover after an actual initializer terminal observation.
 //! No numeric constructor, returned observation or ready word authorizes entry.
 
+use safeptrace::Running;
+
 use super::*;
+use crate::launcher::exec_stop::WatchedSupervisor;
 use crate::launcher::exec_stop::trace;
 
 const NATIVE_BYTES: [u8; 9] = [0xf3, 0x0f, 0x1e, 0xfa, 0x0f, 0x05, 0x41, 0xff, 0xe4];
@@ -117,6 +120,77 @@ impl<'fd> PreparedMapping<'fd> {
         match result {
             Ok(()) => Ok(ReleasedPreparedMapping { mapping: self }),
             Err(error) => {
+                self.entry.failed = true;
+                Err(Box::new(ReleaseFailure::new(error, self)))
+            }
+        }
+    }
+
+    /// Restore registrations/context exactly as
+    /// [`Self::release_after_ready`] does, then RESUME the leader
+    /// still seized under the watched run this mapping retains
+    /// (prepared by
+    /// [`SuccessorStop::prepare_mapping_watched`](crate::launcher::exec_stop::SuccessorStop::prepare_mapping_watched)),
+    /// instead of detaching it. The returned [`WatchedSupervisor`]
+    /// owns the leader's wait again, drives the retained fork
+    /// children, and catches the leader's next exec as a successor
+    /// stop, so the same preparation can be re-run for that image.
+    ///
+    /// Refusals before any physical change return the mapping
+    /// unspent, with `entry.failed` and the handover latch unset:
+    /// - `mapped_ready_token_mismatch`, exactly as
+    ///   [`Self::release_after_ready`];
+    /// - `mapped_watched_resume_not_watched` for a mapping that
+    ///   retains no watched run (one prepared from a first-image
+    ///   stop, or by `SuccessorStop::prepare_mapping`).
+    ///
+    /// # Safety
+    /// The complete contract of [`Self::handover_and_wait`] applies,
+    /// except that the guest is not detached: the wait obligation
+    /// transfers to the returned supervisor. The original synchronous
+    /// ptracer root retains it, and every borrowed resource the
+    /// mapped runtime uses (descriptor leases, backing, RPC and
+    /// services), outside all futures; it drives
+    /// [`WatchedSupervisor::wait_next`] on the original OS thread and
+    /// requires real same-generation terminal confirmation before
+    /// releasing any of them. While seized, every signal delivered to
+    /// the guest, including the trap filter's SIGSYS, stops in the
+    /// tracer and is forwarded unchanged.
+    pub async unsafe fn resume_watched_after_ready(
+        mut self,
+        ready: VerifiedReady,
+        operation_deadline: Instant,
+    ) -> std::result::Result<WatchedSupervisor<'fd>, Box<ReleaseFailure<'fd>>> {
+        if !ready_token_matches(
+            &ready,
+            self.owner.generation.pid(),
+            self.entry.initialized_stop,
+        ) {
+            return Err(Box::new(ReleaseFailure::new(
+                "mapped_ready_token_mismatch".into(),
+                self,
+            )));
+        }
+        let Some(watch) = self.watch.take() else {
+            return Err(Box::new(ReleaseFailure::new(
+                "mapped_watched_resume_not_watched".into(),
+                self,
+            )));
+        };
+        let result = async {
+            self.restore_guest_for_release(operation_deadline).await?;
+            self.resume_after_restore(operation_deadline)
+        }
+        .await;
+        match result {
+            Ok(running) => {
+                let PreparedMapping { owner, .. } = self;
+                Ok(watch.resume(*owner, running))
+            }
+            Err(error) => {
+                // Put the run back so retirement detaches its
+                // children before the owner kills the leader.
+                self.watch = Some(watch);
                 self.entry.failed = true;
                 Err(Box::new(ReleaseFailure::new(error, self)))
             }
@@ -310,6 +384,15 @@ impl<'fd> PreparedMapping<'fd> {
         if Instant::now() >= deadline {
             return Err("mapped_handover_deadline_before_detach".into());
         }
+        // A detaching release of a watched mapping ends the watched
+        // run: detach its retained fork children first, as
+        // SuccessorStop::prepare_mapping and release_detached do, so
+        // none stays seized with nobody left to wait it.
+        if let Some(mut watch) = self.watch.take()
+            && let Some(error) = watch.teardown()
+        {
+            return Err(format!("mapped_handover_watch_teardown: {error}").into());
+        }
         let task = self.task.take().ok_or("mapped_handover_missing_stop")?;
         match task.detach_retaining(None) {
             Ok(running) => {
@@ -317,6 +400,29 @@ impl<'fd> PreparedMapping<'fd> {
                 self.entry.wait = Some(running.wait_owned_on_ptracer_thread().into_driver());
                 self.entry.event = None;
                 Ok(())
+            }
+            Err((task, error)) => {
+                self.task = Some(task);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// The seized counterpart of [`Self::detach_after_restore`]:
+    /// resume the restored leader under the existing seize, with no
+    /// signal, retaining the same stop on error. No wait driver is
+    /// stored here; the caller hands the returned task to the
+    /// watched run, which owns the leader's wait from then on.
+    fn resume_after_restore(&mut self, deadline: Instant) -> Result<Running> {
+        self.entry_thread()?;
+        if Instant::now() >= deadline {
+            return Err("mapped_handover_deadline_before_resume".into());
+        }
+        let task = self.task.take().ok_or("mapped_handover_missing_stop")?;
+        match task.resume_retaining(None) {
+            Ok(running) => {
+                self.entry.event = None;
+                Ok(running)
             }
             Err((task, error)) => {
                 self.task = Some(task);

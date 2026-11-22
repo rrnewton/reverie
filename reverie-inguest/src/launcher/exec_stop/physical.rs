@@ -28,6 +28,7 @@ use super::inject::InjectedCall;
 use super::inject::Injector;
 use super::mapping_plan;
 use super::mapping_plan::interior;
+use super::supervisor::WatchRetention;
 
 mod borrowed_entry;
 pub use borrowed_entry::BootstrapEntryCoordinates;
@@ -103,6 +104,10 @@ pub struct PrevalidationObservation {
 /// complete initializer observer. Only cancellation can consume this owner.
 #[must_use = "cancel and retain unresolved ownership until actual terminal wait"]
 pub struct PreparedMapping<'fd> {
+    // A watched run's retained fork children drop (and so detach)
+    // before the owner kills the leader, as in the supervisor's own
+    // field order. Present only for SuccessorStop::prepare_mapping_watched.
+    watch: Option<WatchRetention>,
     // Owner drops before source borrows; Drop is still only bounded best effort.
     owner: Box<ChildOwner<'fd>>,
     task: Option<Stopped>,
@@ -166,7 +171,7 @@ impl PreparedMapping<'_> {
     /// to be resolved; this bootstrap-only prototype does not implement that.
     pub fn retire_once(&mut self) -> Result<CleanupState> {
         self.entry.failed = true;
-        self.owner.retire();
+        self.retire_owner();
         let cleanup = self.cleanup();
         if self.entry.retains_child() {
             return Err("mapped_entry_unexpected_child_owner_retained".into());
@@ -175,6 +180,23 @@ impl PreparedMapping<'_> {
             return Err("mapped_entry_terminal_wait_unconfirmed".into());
         }
         Ok(cleanup)
+    }
+
+    /// Retire the original owner (bounded kill/wait), first detaching a
+    /// watched run's retained fork children so none stays seized with
+    /// nobody left to wait it. A teardown failure is recorded in the
+    /// cleanup receipt; it never skips the owner's retirement.
+    fn retire_owner(&mut self) {
+        if let Some(watch) = self.watch.as_mut() {
+            watch.teardown();
+        }
+        self.owner.retire();
+    }
+
+    /// Whether this mapping retains a watched run for a seized resume.
+    #[cfg(all(test, feature = "stage1a-probe"))]
+    pub(crate) fn watch_retained_for_test(&self) -> bool {
+        self.watch.is_some()
     }
 
     /// Request bounded kill/wait. Unconfirmed retirement returns this complete
@@ -208,7 +230,7 @@ impl PreparationFailure<'_> {
     }
     /// Repeat only bounded terminal cleanup, never mapping/launch/filter work.
     pub fn retry_cleanup(&mut self) -> bool {
-        self.state.owner.retire();
+        self.state.retire_owner();
         self.cleanup().confirmed
     }
 }
@@ -437,8 +459,10 @@ fn prepared_mapping_state<'fd>(
     boundary: ExecBoundary,
     owner: ChildOwner<'fd>,
     inputs: Preparation<'fd>,
+    watch: Option<WatchRetention>,
 ) -> PreparedMapping<'fd> {
     PreparedMapping {
+        watch,
         owner: Box::new(owner),
         task: Some(task),
         entry: borrowed_entry::RetainedEntry::default(),
@@ -480,13 +504,39 @@ pub(crate) unsafe fn prepare_mapping_parts<'fd>(
     owner: ChildOwner<'fd>,
     inputs: Preparation<'fd>,
 ) -> std::result::Result<PreparedMapping<'fd>, Box<PreparationFailure<'fd>>> {
-    let mut state = prepared_mapping_state(task, context, boundary, owner, inputs);
+    // SAFETY: the same parts and caller obligations; no watched run
+    // is retained.
+    unsafe { prepare_mapping_parts_retaining(task, context, boundary, owner, inputs, None) }
+}
+
+/// [`prepare_mapping_parts`], additionally retaining a watched run
+/// (`watch`, split from the same successor stop as the parts) in the
+/// prepared mapping, so it can later resume the leader still seized.
+/// The retention's leader identity is rechecked against the owner
+/// before any child mutation, beside the generation identities.
+///
+/// # Safety
+/// Exactly the obligations of [`prepare_mapping_parts`].
+pub(crate) unsafe fn prepare_mapping_parts_retaining<'fd>(
+    task: Stopped,
+    context: EntryContext,
+    boundary: ExecBoundary,
+    owner: ChildOwner<'fd>,
+    inputs: Preparation<'fd>,
+    watch: Option<WatchRetention>,
+) -> std::result::Result<PreparedMapping<'fd>, Box<PreparationFailure<'fd>>> {
+    let mut state = prepared_mapping_state(task, context, boundary, owner, inputs, watch);
     let result = (|| -> Result<()> {
         let stopped = state.task.as_ref().ok_or("mapped_preparation_lost_stop")?;
         if stopped.generation() != state.context.generation
             || stopped.generation() != state.owner.generation
         {
             return Err("mapped_preparation_foreign_parts".into());
+        }
+        if let Some(watch) = state.watch.as_ref()
+            && watch.pid() != state.owner.generation.pid()
+        {
+            return Err("mapped_preparation_foreign_watch".into());
         }
         let inputs = &state._inputs;
         for fd in [inputs.runtime_fd, inputs.handoff_fd, inputs.input_fd] {
@@ -667,7 +717,7 @@ pub(crate) unsafe fn prepare_mapping_parts<'fd>(
     match result {
         Ok(()) => Ok(state),
         Err(error) => {
-            state.owner.retire();
+            state.retire_owner();
             Err(Box::new(PreparationFailure { error, state }))
         }
     }
@@ -701,7 +751,7 @@ impl<'fd> SuccessorStop<'fd> {
             // No mapping work runs after a failed fork-child
             // detach; retain the same stopped owner in the
             // preparation failure for terminal cleanup.
-            let mut state = prepared_mapping_state(task, context, boundary, owner, inputs);
+            let mut state = prepared_mapping_state(task, context, boundary, owner, inputs, None);
             state.owner.retire();
             return Err(Box::new(PreparationFailure { error, state }));
         }
@@ -709,6 +759,53 @@ impl<'fd> SuccessorStop<'fd> {
         // construction at its drained exec stop; every caller
         // obligation above carries over to the parts form unchanged.
         unsafe { prepare_mapping_parts(task, context, boundary, owner, inputs) }
+    }
+
+    /// Prepare exactly as [`Self::prepare_mapping`] does, but RETAIN
+    /// the watched run instead of tearing it down: the driven fork
+    /// children stay seized and the run's receipt and counters are
+    /// kept in the prepared mapping. After its initializer, that
+    /// mapping can resume the leader still seized
+    /// ([`PreparedMapping::resume_watched_after_ready`]), and the
+    /// supervisor then catches the leader's next exec as a successor
+    /// stop. The same mapping can instead take a detaching release,
+    /// which first detaches the retained children (the
+    /// [`Self::prepare_mapping`] behaviour, moved to release time).
+    /// Any preparation failure detaches the retained children before
+    /// the owner retires the leader.
+    ///
+    /// Only the watched run's FIRST image is prepared: its inherited
+    /// descriptors are the ones the retained launch request governs.
+    /// A later successor refuses by name,
+    /// `mapped_successor_leases_unwired`, before any child mutation,
+    /// and the run ends fail-closed: such an image must not run under
+    /// an inherited filter whose handler is gone, and nothing yet
+    /// proves its per-birth descriptors.
+    ///
+    /// # Safety
+    /// Every obligation documented on [`Self::prepare_mapping`]
+    /// applies unchanged.
+    pub unsafe fn prepare_mapping_watched(
+        self,
+        inputs: Preparation<'fd>,
+    ) -> std::result::Result<PreparedMapping<'fd>, Box<PreparationFailure<'fd>>> {
+        let (task, context, boundary, owner, watch) = self.into_watched_parts();
+        if watch.execs_seen() != 1 {
+            let error = super::supervisor::successor_leases_unwired(watch.execs_seen());
+            let mut state =
+                prepared_mapping_state(task, context, boundary, owner, inputs, Some(watch));
+            state.retire_owner();
+            return Err(Box::new(PreparationFailure {
+                error: error.into(),
+                state,
+            }));
+        }
+        // SAFETY: the parts and the retention are this stop's own,
+        // split together at its drained exec stop; every caller
+        // obligation above carries over to the parts form unchanged.
+        unsafe {
+            prepare_mapping_parts_retaining(task, context, boundary, owner, inputs, Some(watch))
+        }
     }
 }
 
