@@ -82409,11 +82409,14 @@ mod runner_cpu_budget_tests {
     /// Writes a named skip past libtest output capture (fd 2
     /// directly), so the counted runner reports it as skipped rather
     /// than as a silent pass: the `REVERIE_SKIP:` line other Reverie
-    /// tests use. When skips are forbidden (`HERMIT_FORBID_SKIPS=1`),
-    /// the same case fails by name instead.
+    /// tests use. `test` must be the exact listed case name (the
+    /// gated runner matches it exactly, module path included); callers
+    /// pass this thread's libtest name. When skips are forbidden
+    /// (`REVERIE_FORBID_SKIPS=1`, set by validation nodes that
+    /// forbid skips), the same case fails by name instead.
     fn report_skip_or_fail(test: &str, reason: &str, forbid_skips: bool) {
         if forbid_skips {
-            panic!("{test} cannot run and HERMIT_FORBID_SKIPS forbids skips: {reason}");
+            panic!("{test} cannot run and REVERIE_FORBID_SKIPS forbids skips: {reason}");
         }
         let line = format!("\nREVERIE_SKIP: {test}: {reason}\n");
         let mut rest = line.as_bytes();
@@ -82431,58 +82434,146 @@ mod runner_cpu_budget_tests {
     }
 
     fn skips_forbidden() -> bool {
-        std::env::var_os("HERMIT_FORBID_SKIPS").is_some_and(|value| value == "1")
+        std::env::var_os("REVERIE_FORBID_SKIPS").is_some_and(|value| value == "1")
     }
 
     #[test]
-    #[should_panic(expected = "HERMIT_FORBID_SKIPS forbids skips")]
+    #[should_panic(expected = "REVERIE_FORBID_SKIPS forbids skips")]
     fn forbidden_skips_fail_by_name() {
         report_skip_or_fail("forbidden_skips_fail_by_name", "test reason", true);
+    }
+
+    /// How the permission-denied test below gets a parent under
+    /// which creating a command cgroup is refused.
+    #[derive(Debug, PartialEq, Eq)]
+    enum DenialPlan {
+        /// /sys/fs/cgroup itself: not writable by this process.
+        RootItself,
+        /// A child of the root with cgroup.max.descendants = 0:
+        /// creation under it is refused even for root.
+        LimitedChild,
+        /// No cgroup v2 hierarchy at all: counted named skip.
+        SkipNoCgroupV2,
+        /// No cgroup v2 and skips forbidden: fail by name.
+        FailForbidden,
+    }
+
+    fn denial_plan(is_cgroup_v2: bool, root_writable: bool, forbid_skips: bool) -> DenialPlan {
+        match (is_cgroup_v2, root_writable, forbid_skips) {
+            (false, _, true) => DenialPlan::FailForbidden,
+            (false, _, false) => DenialPlan::SkipNoCgroupV2,
+            (true, false, _) => DenialPlan::RootItself,
+            (true, true, _) => DenialPlan::LimitedChild,
+        }
+    }
+
+    #[test]
+    fn denial_plan_covers_every_host_shape() {
+        // No cgroup v2: skip, or fail by name where skips are forbidden.
+        assert_eq!(denial_plan(false, false, false), DenialPlan::SkipNoCgroupV2);
+        assert_eq!(denial_plan(false, true, false), DenialPlan::SkipNoCgroupV2);
+        assert_eq!(denial_plan(false, false, true), DenialPlan::FailForbidden);
+        assert_eq!(denial_plan(false, true, true), DenialPlan::FailForbidden);
+        // Unwritable v2 root: the denial is direct, forbidden or not.
+        assert_eq!(denial_plan(true, false, false), DenialPlan::RootItself);
+        assert_eq!(denial_plan(true, false, true), DenialPlan::RootItself);
+        // Writable v2 root (root, delegated subtree): manufacture the
+        // denial with a descendant limit — never a skip.
+        assert_eq!(denial_plan(true, true, false), DenialPlan::LimitedChild);
+        assert_eq!(denial_plan(true, true, true), DenialPlan::LimitedChild);
     }
 
     #[test]
     fn a_non_writable_cgroup_parent_falls_back_to_wall_only() {
         // The real-world permission-denied path: the parent IS a real
-        // cgroup v2 directory (so the v2 check passes), but this
-        // process may not create a child cgroup in it, so creation
-        // itself is refused. Probe what the test needs — whether
-        // /sys/fs/cgroup is writable by this process — instead of
-        // assuming from the user id: where it is writable (root, or a
-        // delegated subtree) this process cannot produce the denial,
-        // and the case reports a counted named skip, never a pass.
-        let cgroup_root = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
-        // SAFETY: access reads the NUL-terminated path only.
-        if unsafe { libc::access(cgroup_root.as_ptr(), libc::W_OK) } == 0 {
-            report_skip_or_fail(
-                "a_non_writable_cgroup_parent_falls_back_to_wall_only",
-                "/sys/fs/cgroup is writable by this process, so no permission denial can be produced",
-                skips_forbidden(),
-            );
-            return;
-        }
+        // cgroup v2 directory (so the v2 check passes), but creating
+        // a child cgroup under it is refused. Where the root is not
+        // writable that is direct; where it is writable (root, or a
+        // delegated subtree) a child with cgroup.max.descendants = 0
+        // manufactures the same refusal, so this runs on every
+        // cgroup v2 host and never skips there. The only skip left is
+        // a host with no cgroup v2 hierarchy at all.
+        let root = PathBuf::from("/sys/fs/cgroup");
+        // SAFETY: an all-zero statfs is a valid output buffer for statfs.
+        let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
+        let root_cstr = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+        // SAFETY: statfs reads the NUL-terminated path, writes the buffer.
+        let is_cgroup_v2 = unsafe { libc::statfs(root_cstr.as_ptr(), &mut filesystem) } == 0
+            && filesystem.f_type == 0x6367_7270;
+        // SAFETY: faccessat reads the NUL-terminated path only.
+        // AT_EACCESS checks the effective uid, as mkdir will use.
+        let root_writable = unsafe {
+            libc::faccessat(
+                libc::AT_FDCWD,
+                root_cstr.as_ptr(),
+                libc::W_OK,
+                libc::AT_EACCESS,
+            )
+        } == 0;
+        let mut limited_child: Option<PathBuf> = None;
+        let parent = match denial_plan(is_cgroup_v2, root_writable, skips_forbidden()) {
+            DenialPlan::RootItself => root.clone(),
+            DenialPlan::LimitedChild => {
+                let child = root.join(format!("reverie-test-limited-{}", std::process::id()));
+                fs::create_dir(&child).unwrap();
+                fs::write(child.join("cgroup.max.descendants"), "0").unwrap();
+                limited_child = Some(child.clone());
+                child
+            }
+            DenialPlan::SkipNoCgroupV2 | DenialPlan::FailForbidden => {
+                // The exact listed case name: the gated runner matches
+                // it exactly, module path included, and libtest names
+                // this thread by it in every binary that includes us.
+                let case = std::thread::current()
+                    .name()
+                    .unwrap_or("a_non_writable_cgroup_parent_falls_back_to_wall_only")
+                    .to_owned();
+                report_skip_or_fail(
+                    &case,
+                    "no cgroup v2 hierarchy at /sys/fs/cgroup on this host",
+                    skips_forbidden(),
+                );
+                return;
+            }
+        };
         let scratch = Scratch::new("nonwritable");
-        let parent = PathBuf::from("/sys/fs/cgroup");
         let mut runner =
             Runner::new(scratch.0.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
         runner.cgroup_parent = Some(parent.clone());
         let bound = runner
             .bound_total_cpu_or_wall_backstop(Duration::from_secs(30))
             .unwrap();
+        let output = runner
+            .run("/bin/sh", &sh("printf wall-only"), &scratch.0)
+            .unwrap();
+        let created = CommandCgroup::create(&parent);
+        // Remove the manufactured child before asserting, so a failed
+        // assertion cannot leak it into the real hierarchy. A removal
+        // failure fails by name here: a leaked cgroup in the host's
+        // real tree must not pass silently.
+        if let Some(child) = &limited_child {
+            fs::remove_dir(child).unwrap_or_else(|error| {
+                panic!(
+                    "remove manufactured limited cgroup {}: {error}",
+                    child.display()
+                )
+            });
+        }
         assert!(
             matches!(&bound, TotalCpuBound::WallBackstopOnly(_)),
             "expected wall-only fallback, got {bound:?}"
         );
-        let output = runner
-            .run("/bin/sh", &sh("printf wall-only"), &scratch.0)
-            .unwrap();
         assert_eq!(output, b"wall-only");
         // The fallback carries a typed unavailable reason, not text.
-        match CommandCgroup::create(&parent) {
+        match created {
             Err(CgroupCreateError::Unavailable(_)) => {}
             Err(CgroupCreateError::Other(error)) => {
                 panic!("expected typed Unavailable, got Other: {error}")
             }
-            Ok(_) => panic!("expected typed Unavailable, got Ok"),
+            Ok(cgroup) => {
+                let _ = cgroup.remove();
+                panic!("expected typed Unavailable, got Ok")
+            }
         }
     }
 
