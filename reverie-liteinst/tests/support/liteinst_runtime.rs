@@ -328,7 +328,9 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
         // This resolution's own completed observations on devbig014
         // (2026-11-22, aggregate CPU / wall): 5.24/8.78 s, 5.62/7.89 s,
         // 5.81/14.91 s, 6.38/13.39 s. Budget is ceil(1.5 x 6.38) = 10
-        // CPU-s, wall 8 x 14.91 = 120 s backstop.
+        // CPU-s, wall 8 x 14.91 = 120 s backstop. The observations ran
+        // in the unoptimized dev profile, which is also the profile
+        // CI runs these tests in.
         let mut source_runner = artifact::Runner::new(
             evidence.join("compiled-sources"),
             Duration::from_secs(120),
