@@ -323,43 +323,45 @@ pub fn verify_guest_receipt(
 
 #[cfg(test)]
 thread_local! {
-    /// Test override for this thread's producer-self CPU reading. A unit
-    /// test process runs many producers on many threads, so a real
-    /// RUSAGE_SELF delta would charge this budget for unrelated tests.
-    static PRODUCER_SELF_CPU_OVERRIDE: std::cell::Cell<Option<Duration>> =
+    /// Test override for this thread's producer CPU reading, so a test
+    /// can state the calling thread's work exactly while child CPU
+    /// below remains real cgroup accounting.
+    static PRODUCER_THREAD_CPU_OVERRIDE: std::cell::Cell<Option<Duration>> =
         const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
-fn set_producer_self_cpu_for_test(value: Option<Duration>) {
-    PRODUCER_SELF_CPU_OVERRIDE.with(|cell| cell.set(value));
+fn set_producer_thread_cpu_for_test(value: Option<Duration>) {
+    PRODUCER_THREAD_CPU_OVERRIDE.with(|cell| cell.set(value));
 }
 
-/// This producer process's own CPU since boot, summed over its threads.
-/// The delta from a budget's creation is the producer work no command
-/// cgroup can see: file hashing, ELF parsing and the proof itself.
-fn producer_self_cpu() -> Result<Duration> {
+/// This thread's own CPU since it started. The delta from a budget's
+/// creation, plus each reader thread's delta added when it is joined,
+/// is the producer work no command cgroup can see: file hashing, ELF
+/// parsing and the proof itself. Only the producer's own threads are
+/// measured; unrelated threads sharing the process are not charged.
+fn producer_thread_cpu() -> Result<Duration> {
     #[cfg(test)]
-    if let Some(value) = PRODUCER_SELF_CPU_OVERRIDE.with(|cell| cell.get()) {
+    if let Some(value) = PRODUCER_THREAD_CPU_OVERRIDE.with(|cell| cell.get()) {
         return Ok(value);
     }
     fn timeval(value: &libc::timeval) -> Result<Duration> {
         let seconds = u64::try_from(value.tv_sec)
-            .map_err(|_| "producer self CPU accounting unavailable: negative rusage seconds")?;
+            .map_err(|_| "producer thread CPU accounting unavailable: negative rusage seconds")?;
         let micros = u64::try_from(value.tv_usec)
-            .map_err(|_| "producer self CPU accounting unavailable: negative rusage micros")?;
+            .map_err(|_| "producer thread CPU accounting unavailable: negative rusage micros")?;
         require(
             micros < 1_000_000,
-            "producer self CPU accounting unavailable: rusage micros out of range",
+            "producer thread CPU accounting unavailable: rusage micros out of range",
         )?;
         Ok(Duration::from_secs(seconds) + Duration::from_micros(micros))
     }
     // SAFETY: an all-zero rusage is a valid output buffer for getrusage.
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: `usage` is writable and RUSAGE_SELF names this process.
-    if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {
+    // SAFETY: `usage` is writable and RUSAGE_THREAD names this thread.
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
         return Err(format!(
-            "producer self CPU accounting unavailable: {}",
+            "producer thread CPU accounting unavailable: {}",
             std::io::Error::last_os_error()
         ));
     }
@@ -367,10 +369,14 @@ fn producer_self_cpu() -> Result<Duration> {
 }
 
 /// One aggregate CPU budget shared by every Runner a producer attaches
-/// it to. Used CPU is the child commands' cgroup CPU plus this producer
-/// process's own CPU delta (`getrusage(RUSAGE_SELF)`) since creation.
-/// Work this process spawns outside a Runner (an outer Cargo build, for
-/// one) is not counted. Cloning shares the same budget and baseline.
+/// it to. Used CPU is the child commands' cgroup CPU, plus the CPU of
+/// the producer's own threads: the attaching thread's
+/// `getrusage(RUSAGE_THREAD)` delta since creation and each reader
+/// thread's delta added when the Runner joins it. Work this process
+/// spawns outside a Runner (an outer Cargo build, for one) and
+/// unrelated threads sharing the process are not counted. Cloning
+/// shares the same budget and baseline; attach it only from the
+/// thread that created it, whose delta is the one measured.
 #[derive(Clone)]
 pub struct ProducerCpuBudget {
     state: Arc<Mutex<ProducerCpuState>>,
@@ -379,7 +385,8 @@ pub struct ProducerCpuBudget {
 struct ProducerCpuState {
     budget: Duration,
     child_cpu_used: Duration,
-    self_cpu_baseline: Duration,
+    reader_cpu_used: Duration,
+    thread_cpu_baseline: Duration,
 }
 
 impl ProducerCpuBudget {
@@ -389,7 +396,8 @@ impl ProducerCpuBudget {
             state: Arc::new(Mutex::new(ProducerCpuState {
                 budget: cpu_budget,
                 child_cpu_used: Duration::ZERO,
-                self_cpu_baseline: producer_self_cpu()?,
+                reader_cpu_used: Duration::ZERO,
+                thread_cpu_baseline: producer_thread_cpu()?,
             })),
         })
     }
@@ -400,11 +408,14 @@ impl ProducerCpuBudget {
             .unwrap_or(Duration::ZERO)
     }
 
-    /// Aggregate CPU used against this budget right now: accounted child
-    /// CPU plus this process's own CPU since the budget was created.
+    /// Aggregate CPU used against this budget right now: accounted
+    /// child CPU, joined reader-thread CPU, and the creating thread's
+    /// CPU delta since the budget was created.
     pub fn used(&self) -> Result<Duration> {
         let state = self.lock()?;
-        Ok(state.child_cpu_used + producer_self_cpu()?.saturating_sub(state.self_cpu_baseline))
+        Ok(state.child_cpu_used
+            + state.reader_cpu_used
+            + producer_thread_cpu()?.saturating_sub(state.thread_cpu_baseline))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, ProducerCpuState>> {
@@ -417,6 +428,14 @@ impl ProducerCpuBudget {
         {
             let mut state = self.lock()?;
             state.child_cpu_used += used;
+        }
+        self.used()
+    }
+
+    fn add_reader(&self, used: Duration) -> Result<Duration> {
+        {
+            let mut state = self.lock()?;
+            state.reader_cpu_used += used;
         }
         self.used()
     }
@@ -624,12 +643,12 @@ impl Runner {
             self.total_cpu_budget.is_none() && self.total_cpu_fallback.is_none(),
             "producer total CPU budget is already set",
         )?;
-        match self.probe_cpu_accounting() {
-            Ok(()) => {
+        match self.probe_cpu_accounting()? {
+            None => {
                 self.bound_shared_total_cpu(budget)?;
                 Ok(TotalCpuBound::Accounted)
             }
-            Err(error) => Ok(self.total_cpu_wall_fallback(error)),
+            Some(reason) => Ok(self.total_cpu_wall_fallback(reason)),
         }
     }
 
@@ -639,15 +658,32 @@ impl Runner {
     }
 
     /// Whether a fresh command cgroup can be created and removed under
-    /// this process's cgroup. Only creation/open failures prove
-    /// accounting unavailable; anything else is an ordinary error.
-    fn probe_cpu_accounting(&self) -> Result<()> {
-        let parent = self.cgroup_parent()?;
-        CommandCgroup::create(&parent)?.remove()
+    /// this process's cgroup: `Ok(None)` when it can, `Ok(Some(reason))`
+    /// when creation or open proves accounting unavailable, and an
+    /// ordinary error for anything else (including a failed remove).
+    fn probe_cpu_accounting(&self) -> Result<Option<String>> {
+        let parent = match self.cgroup_parent() {
+            Ok(parent) => parent,
+            Err(error) => return Ok(Some(error)),
+        };
+        match CommandCgroup::create(&parent) {
+            Ok(cgroup) => {
+                cgroup.remove()?;
+                Ok(None)
+            }
+            Err(error)
+                if error.contains("cannot create command cgroup")
+                    || error.contains("cannot open ")
+                    || error.contains("is not a cgroup v2 directory") =>
+            {
+                Ok(Some(error))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Aggregate CPU at the last command boundary: accounted child CPU
-    /// plus this process's own CPU delta since the budget was created.
+    /// plus the producer threads' CPU since the budget was created.
     pub fn total_cpu_used(&self) -> Duration {
         self.total_cpu_used
     }
@@ -672,7 +708,7 @@ impl Runner {
         let total_phrase = self.total_cpu_budget.as_ref().map(|budget| {
             format!(
                 "total CPU {:.2} of {:.2} CPU-s across Runner-accounted child \
-                 commands plus this producer process since the budget was created",
+                 commands plus the producer threads since the budget was created",
                 self.total_cpu_used.as_secs_f64(),
                 budget.budget().as_secs_f64()
             )
@@ -886,15 +922,20 @@ impl Runner {
             let combined_bytes = Arc::clone(&combined_bytes);
             let stop_reading = Arc::clone(&stop_reading);
             let cap = self.max_stream_bytes;
-            readers.push(thread::spawn(move || -> Result<Vec<u8>> {
-                read_child_stream(
+            readers.push(thread::spawn(move || -> Result<(Vec<u8>, Duration)> {
+                let thread_start = producer_thread_cpu().unwrap_or(Duration::ZERO);
+                let bytes = read_child_stream(
                     &mut *pipe,
                     &stop_reading,
                     &overflow,
                     &combined_bytes,
                     combined_limit,
                     cap,
-                )
+                )?;
+                let thread_used = producer_thread_cpu()
+                    .unwrap_or(thread_start)
+                    .saturating_sub(thread_start);
+                Ok((bytes, thread_used))
             }));
         }
         let mut bounds_failure: Option<String> = None;
@@ -987,14 +1028,15 @@ impl Runner {
             thread::sleep(Duration::from_millis(50));
         };
         stop_reading.store(true, Ordering::Release);
-        let stdout = readers
+        let (stdout, stdout_reader_cpu) = readers
             .remove(0)
             .join()
             .map_err(|_| "stdout reader panicked")??;
-        let stderr = readers
+        let (stderr, stderr_reader_cpu) = readers
             .remove(0)
             .join()
             .map_err(|_| "stderr reader panicked")??;
+        let reader_cpu = stdout_reader_cpu + stderr_reader_cpu;
         if overflow.load(Ordering::Acquire) {
             bounds_failure = Some(format!("exceeded {byte_limit_description}"));
         }
@@ -1013,6 +1055,12 @@ impl Runner {
         };
         if let Some(total) = &self.total_cpu_budget {
             match total.add_child(measured_cpu.unwrap_or(Duration::ZERO)) {
+                Ok(aggregate) => self.total_cpu_used = aggregate,
+                Err(error) => {
+                    bounds_failure.get_or_insert(error);
+                }
+            }
+            match total.add_reader(reader_cpu) {
                 Ok(aggregate) => self.total_cpu_used = aggregate,
                 Err(error) => {
                     bounds_failure.get_or_insert(error);
@@ -33734,7 +33782,9 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
     },
     // The same pinned tuples with the Rust 1.99.1 bitmap body: identical
     // cohort and incoming edges, discriminated from the 85 pair above
-    // only by the bitmap witness's exact template identity.
+    // only by the bitmap witness's exact template identity. The native
+    // row is bitmap checked by hand; composition, allocator and TLS
+    // not machine-observed on the native producer yet.
     FixedNakedComposition {
         image_kind: FixedImageKind::Detcore,
         native_syscalls: true,
@@ -33809,12 +33859,9 @@ fn fixed_naked_composition(
                     })
                 })
                 && spec.setup_bitmap_template.is_none_or(|index| {
-                    witnesses
-                        .get("fixed_setup_bitmap_range")
-                        .is_some_and(|w| {
-                            w.kind
-                                == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
-                        })
+                    witnesses.get("fixed_setup_bitmap_range").is_some_and(|w| {
+                        w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                    })
                 })
         })
         .collect();
@@ -74185,16 +74232,14 @@ mod tests {
         );
     }
 
-    // Every composition row's own witness set selects exactly that row:
-    // the cohort tuple plus the bitmap witness's exact template identity
-    // discriminate the whole table, including the 85/105/118 bitmap
-    // generations that share cohorts.
+    // Every composition row's own witness set selects exactly that row.
+    // Discrimination is by the cohort tuple, the raw syscall kind
+    // (native vs ordinary), and the bitmap witness's exact template
+    // identity where the row binds one (85, 105 and 118 are three
+    // generations of that binding, on different cohorts).
     #[test]
     fn naked_composition_selection_binds_each_rows_own_witnesses() {
-        fn operation(
-            role: &str,
-            index: usize,
-        ) -> (String, AuthenticatedDetcoreOperation) {
+        fn operation(role: &str, index: usize) -> (String, AuthenticatedDetcoreOperation) {
             (
                 role.into(),
                 AuthenticatedDetcoreOperation {
@@ -74207,11 +74252,11 @@ mod tests {
             )
         }
         for (row, spec) in FIXED_NAKED_COMPOSITIONS.iter().enumerate() {
-            let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> =
-                spec.cohort
-                    .iter()
-                    .map(|&(role, index)| operation(role, index))
-                    .collect();
+            let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> = spec
+                .cohort
+                .iter()
+                .map(|&(role, index)| operation(role, index))
+                .collect();
             witnesses.insert(
                 "fixed_scalar_syscall".into(),
                 AuthenticatedDetcoreOperation {
@@ -74234,6 +74279,17 @@ mod tests {
             }
             let selected = fixed_naked_composition(&witnesses, Some(spec.image_kind))
                 .unwrap_or_else(|e| panic!("composition row {row} must select itself: {e}"));
+            // Selection with no image kind (the result-contract caller)
+            // must land on the same row.
+            let selected_none = fixed_naked_composition(&witnesses, None)
+                .unwrap_or_else(|e| panic!("composition row {row} must select itself: {e}"));
+            assert!(
+                selected_none.image_kind == selected.image_kind
+                    && selected_none.native_syscalls == selected.native_syscalls
+                    && selected_none.setup_bitmap_template == selected.setup_bitmap_template
+                    && selected_none.cohort == selected.cohort,
+                "composition row {row} must select itself with no image kind"
+            );
             // Field-wise, not pointer, equality: the table is a const, so
             // each use may promote a distinct copy.
             assert!(
@@ -82051,7 +82107,7 @@ mod runner_cpu_budget_tests {
     fn total_cpu_budget_bounds_aggregate_not_wall() {
         // Isolate producer-self CPU from the other tests sharing this
         // process; child CPU below is real cgroup accounting.
-        set_producer_self_cpu_for_test(Some(Duration::ZERO));
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
         let scratch = Scratch::new("totalcpu");
         // Slow wall, negligible CPU: a 2 s sleep passes a CPU budget
         // smaller than its own wall time, where a tight wall-only
@@ -82072,19 +82128,18 @@ mod runner_cpu_budget_tests {
         assert_own_cgroups_removed(&runner, 1);
 
         // Later commands are capped at what earlier usage left: a first
-        // command capped at 250 ms of a shared 600 ms budget leaves the
-        // next command to trip the aggregate, not a fresh 600 ms.
+        // command capped at 1 s of a shared 3 s budget, plus 1 s of
+        // producer-thread work, leaves the next command about 1 s of
+        // its own CPU before the aggregate trips.
         let mut runner =
             Runner::new(scratch.0.join("busy-logs"), Duration::from_secs(60), 1 << 20).unwrap();
-        runner
-            .bound_total_cpu(Duration::from_millis(600))
-            .unwrap();
+        runner.bound_total_cpu(Duration::from_secs(3)).unwrap();
         let first = runner
             .run_cpu_bounded(
                 "/bin/sh",
                 &sh("while :; do :; done"),
                 &scratch.0,
-                Duration::from_millis(250),
+                Duration::from_secs(1),
             )
             .unwrap_err();
         assert!(
@@ -82093,23 +82148,24 @@ mod runner_cpu_budget_tests {
         );
         let after_first = runner.total_cpu_used();
         assert!(
-            after_first >= Duration::from_millis(250),
+            after_first >= Duration::from_secs(1),
             "first command left aggregate at {after_first:?}"
         );
-        // Producer-process work between commands counts too.
-        set_producer_self_cpu_for_test(Some(Duration::from_millis(100)));
+        // Producer-thread work between commands counts too.
+        set_producer_thread_cpu_for_test(Some(Duration::from_secs(1)));
         let second = runner
             .run("/bin/sh", &sh("while :; do :; done"), &scratch.0)
             .unwrap_err();
         assert!(
             second.contains("stopped: producer total CPU bound tripped (total CPU ")
-                && second.contains("of 0.60 CPU-s"),
+                && second.contains("of 3.00 CPU-s"),
             "{second}"
         );
+        let second_own = runner.command_cpu.last().copied().flatten().unwrap();
         assert!(
-            runner.total_cpu_used() < Duration::from_millis(1200),
-            "second command was not capped at the remainder: {:?}",
-            runner.total_cpu_used()
+            second_own >= Duration::from_millis(800)
+                && second_own < Duration::from_millis(1400),
+            "second command used {second_own:?}, not near the 1 s remainder"
         );
         // The spent budget refuses the next command before it starts.
         let spent = runner.run("/bin/true", &[], &scratch.0).unwrap_err();
@@ -82121,7 +82177,7 @@ mod runner_cpu_budget_tests {
 
         // A command's own budget below the aggregate remainder trips as
         // a command bound, not as the aggregate.
-        set_producer_self_cpu_for_test(Some(Duration::ZERO));
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
         let mut runner =
             Runner::new(scratch.0.join("own-logs"), Duration::from_secs(60), 1 << 20).unwrap();
         runner.bound_total_cpu(Duration::from_secs(10)).unwrap();
@@ -82141,7 +82197,7 @@ mod runner_cpu_budget_tests {
 
         // A hang with a total budget set is still stopped by the wall
         // backstop, named through the same formatter.
-        set_producer_self_cpu_for_test(Some(Duration::ZERO));
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
         let mut runner =
             Runner::new(scratch.0.join("hang-logs"), Duration::from_secs(1), 1 << 20).unwrap();
         runner.bound_total_cpu(Duration::from_secs(60)).unwrap();
@@ -82155,7 +82211,7 @@ mod runner_cpu_budget_tests {
             "{hang}"
         );
         assert_own_cgroups_removed(&runner, 1);
-        set_producer_self_cpu_for_test(None);
+        set_producer_thread_cpu_for_test(None);
     }
 
     #[test]
@@ -82180,6 +82236,71 @@ mod runner_cpu_budget_tests {
             "ok\n"
         );
         assert!(runner.created_cgroups.is_empty());
+    }
+
+    #[test]
+    fn total_cpu_budget_is_shared_across_runners() {
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let scratch = Scratch::new("totalshared");
+        let budget = ProducerCpuBudget::new(Duration::from_millis(600)).unwrap();
+        let mut first =
+            Runner::new(scratch.0.join("first-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        first.bound_shared_total_cpu(budget.clone()).unwrap();
+        let _ = first
+            .run_cpu_bounded(
+                "/bin/sh",
+                &sh("while :; do :; done"),
+                &scratch.0,
+                Duration::from_millis(250),
+            )
+            .unwrap_err();
+        // The second Runner sees the first Runner's child CPU through
+        // the shared budget and is capped at what remains.
+        let mut second =
+            Runner::new(scratch.0.join("second-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        second.bound_shared_total_cpu(budget).unwrap();
+        assert!(
+            second.total_cpu_used() >= Duration::from_millis(250),
+            "shared aggregate at second Runner start: {:?}",
+            second.total_cpu_used()
+        );
+        let error = second
+            .run("/bin/sh", &sh("while :; do :; done"), &scratch.0)
+            .unwrap_err();
+        assert!(
+            error.contains("stopped: producer total CPU bound tripped (total CPU "),
+            "{error}"
+        );
+        assert!(
+            second.total_cpu_used() < Duration::from_millis(1200),
+            "second Runner was not capped at the shared remainder: {:?}",
+            second.total_cpu_used()
+        );
+        assert_own_cgroups_removed(&first, 1);
+        assert_own_cgroups_removed(&second, 1);
+        set_producer_thread_cpu_for_test(None);
+    }
+
+    #[test]
+    fn producer_thread_cpu_counts_this_threads_work() {
+        // The real getrusage(RUSAGE_THREAD) path, no override: CPU
+        // burned on this thread is a lower bound the budget must see.
+        set_producer_thread_cpu_for_test(None);
+        let budget = ProducerCpuBudget::new(Duration::from_secs(60)).unwrap();
+        let start = producer_thread_cpu().unwrap();
+        let wall = Instant::now();
+        while producer_thread_cpu().unwrap() - start < Duration::from_millis(50) {
+            assert!(
+                wall.elapsed() < Duration::from_secs(10),
+                "thread CPU did not advance"
+            );
+            std::hint::spin_loop();
+        }
+        assert!(
+            budget.used().unwrap() >= Duration::from_millis(50),
+            "budget used {:?} after burning 50 ms on this thread",
+            budget.used().unwrap()
+        );
     }
 
     #[test]

@@ -100,8 +100,9 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
         .map_err(|e| e.to_string())?;
     let rust_exports = root.join("reverie-liteinst/src/allocator_fixture.rs");
     let c_workload = root.join("reverie-liteinst/tests/fixtures/m1_allocator_guest.c");
-    // Same measured producer budget as liteinst-runtime-build: this
-    // preflight runs a subset (compiled-source resolution) of that work.
+    // Interim: the full producer's measured budget (30 CPU-s, 240 s
+    // wall) as an upper bound for this subset (compiled-source
+    // resolution) until its own workload is measured separately.
     let mut runner = Runner::new(
         generation.join("preflight-logs"),
         Duration::from_secs(240),
@@ -115,6 +116,7 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
              running under the 240 s wall backstop only"
         );
     }
+    let measure_started = std::time::Instant::now();
     let source = m1_artifact::source_identity(
         &root,
         &root.join("Cargo.lock"),
@@ -124,6 +126,11 @@ fn ci_config(generation: PathBuf) -> Result<Config> {
         ]),
         &mut runner,
     )?;
+    eprintln!(
+        "MEASURED preflight aggregate CPU {:.2} CPU-s wall {:.2} s",
+        runner.total_cpu_used().as_secs_f64(),
+        measure_started.elapsed().as_secs_f64()
+    );
     let config = Config {
         workspace_root: root,
         target_directory: generation.join("target"),

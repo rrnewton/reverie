@@ -325,8 +325,9 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             ("c_workload".to_owned(), C_ORACLE_SHA256.to_owned()),
         ]);
         let manifest = source.root.join("Cargo.toml");
-        // Same measured producer budget as liteinst-runtime-build: this
-        // resolution runs a subset (compiled sources) of that work.
+        // Interim: the full producer's measured budget (30 CPU-s, 240 s
+        // wall) as an upper bound for this subset (compiled sources)
+        // until its own workload is measured separately.
         let mut source_runner = artifact::Runner::new(
             evidence.join("compiled-sources"),
             Duration::from_secs(240),
@@ -342,6 +343,7 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
         }
         // Resolve from this consumer's current worktree, never from the receipt.
         // The receipt-only transaction closes on success and ordinary error.
+        let measure_started = std::time::Instant::now();
         let (receipt, _) = artifact::VerifiedCompiledSources::with_resolved(
             &artifact::CompiledSourceExpectation {
                 layout: artifact::CompiledSourceLayout::ReverieWorkspace,
@@ -368,6 +370,11 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
                 artifact::verify_runtime_receipt(&receipt_path, &path, &expectation)
             },
         )?;
+        eprintln!(
+            "MEASURED compiled-source aggregate CPU {:.2} CPU-s wall {:.2} s",
+            source_runner.total_cpu_used().as_secs_f64(),
+            measure_started.elapsed().as_secs_f64()
+        );
         if receipt.source_before != source || receipt.source_after != source {
             return Err("receipt source root/lock/oracle paths differ from the exact current source snapshot".into());
         }
