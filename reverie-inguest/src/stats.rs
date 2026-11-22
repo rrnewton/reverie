@@ -9,8 +9,13 @@
 //! Shared statistics protocol, guest collector, and end-of-run aggregation.
 //!
 //! The existing LiteInst names and wire format remain compatible while the
-//! shared runtime owns their implementation. Guest collection does not require
-//! the host launcher feature.
+//! shared runtime owns their implementation, with one deliberate exception:
+//! each process report carries the set of process creations the runtime
+//! refused (`LiteinstProcessStats::refused_creations`), and a report without
+//! it does not decode. Guest and host ship pinned together, so a default
+//! would only read "nothing refused" from a guest that cannot report it. That
+//! would hide a refusal instead of failing closed. Guest collection does not
+//! require the host launcher feature.
 
 #[cfg(any(feature = "launcher", test))]
 use std::collections::BTreeSet;
@@ -41,6 +46,7 @@ use reverie_rpc_transport::BlockingRpcClient;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::guest::protect::RefusedProcessCreations;
 use crate::guest::rpc::describe_rpc_error;
 
 /// A distinct outcome for one candidate LiteInst patch site.
@@ -72,6 +78,7 @@ pub struct LiteinstBackendStatsSnapshot {
     patch_decisions: CounterSnapshot<LiteinstPatchDecision>,
     dispatch_paths: CounterSnapshot<LiteinstDispatchPath>,
     fork_child_entries: InheritedEntries,
+    refused_process_creations: RefusedProcessCreations,
 }
 
 impl LiteinstBackendStatsSnapshot {
@@ -93,6 +100,15 @@ impl LiteinstBackendStatsSnapshot {
     /// is one physical entry already counted in the parent.
     pub const fn fork_child_entries(&self) -> InheritedEntries {
         self.fork_child_entries
+    }
+
+    /// The kinds of process or thread creation the runtime refused, merged
+    /// over every report: a kind is set if any process reported it. A refused
+    /// creation returned `ENOTSUP` to the guest, so a host that runs a route
+    /// where creation is refused can refuse the run by name instead of
+    /// letting the guest's failure stand unexplained.
+    pub const fn refused_process_creations(&self) -> RefusedProcessCreations {
+        self.refused_process_creations
     }
 
     /// Aggregate shape distribution over distinct patch-site identities.
@@ -498,6 +514,8 @@ pub fn native_exec_report_test() -> NativeExecCollectorObservation {
             paths: collector.snapshot(0),
             sites: Vec::new(),
             inherited: collector.inherited_entries(),
+            // An observation must not take (and so clear) the refused set.
+            refused_creations: RefusedProcessCreations::default(),
         },
     }
 }
@@ -602,6 +620,7 @@ impl GuestStatsHooks {
                 paths,
                 sites,
                 inherited,
+                refused_creations: crate::guest::protect::take_refused_process_creations(),
             })
             .map_err(|error| io::Error::other(describe_rpc_error(&error)))
     }
@@ -737,6 +756,11 @@ pub(crate) struct LiteinstProcessStats {
     pub(crate) paths: CounterSnapshot<LiteinstDispatchPath>,
     pub(crate) sites: Vec<LiteinstProcessSiteStats>,
     pub(crate) inherited: InheritedEntries,
+    /// The process or thread creations the runtime refused in this process
+    /// image, taken at exit; refusals before an `execve` are not carried over.
+    /// Required on the wire, with no default: a report that lacks it does not
+    /// decode (see the module documentation).
+    pub(crate) refused_creations: RefusedProcessCreations,
 }
 
 /// The in-guest route of an entry a fork-like syscall's child re-counts.
@@ -797,12 +821,15 @@ impl LiteinstStatsGlobal {
         let mut decisions = [0_u64; 4];
         let mut paths = Vec::new();
         let mut fork_child_entries = InheritedEntries::default();
+        let mut refused_process_creations = RefusedProcessCreations::default();
 
         for (process_identity, process) in processes {
             reported_processes.insert(process_identity);
             paths.extend(process.paths.counts().iter().copied());
             fork_child_entries.sigsys += process.inherited.sigsys;
             fork_child_entries.hooks += process.inherited.hooks;
+            refused_process_creations =
+                merged_refusals(refused_process_creations, process.refused_creations);
             for site in process.sites {
                 if !seen_sites.insert((process_identity, site.rip)) {
                     continue;
@@ -837,8 +864,24 @@ impl LiteinstStatsGlobal {
                 ]),
                 dispatch_paths: CounterSnapshot::new(paths),
                 fork_child_entries,
+                refused_process_creations,
             },
         }
+    }
+}
+
+/// The union of two refused sets: a kind is refused if either refused it.
+#[cfg(any(feature = "launcher", test))]
+fn merged_refusals(
+    a: RefusedProcessCreations,
+    b: RefusedProcessCreations,
+) -> RefusedProcessCreations {
+    RefusedProcessCreations {
+        clone_thread: a.clone_thread || b.clone_thread,
+        clone_process: a.clone_process || b.clone_process,
+        clone3: a.clone3 || b.clone3,
+        fork: a.fork || b.fork,
+        vfork: a.vfork || b.vfork,
     }
 }
 
@@ -901,6 +944,7 @@ mod tests {
                     (LiteinstDispatchPath::DirectHook, 9),
                 ]),
                 fork_child_entries: InheritedEntries::default(),
+                refused_process_creations: RefusedProcessCreations::default(),
             },
         };
 
@@ -942,6 +986,7 @@ mod tests {
                             sigsys: 1,
                             hooks: direct_hooks % 2,
                         },
+                        refused_creations: RefusedProcessCreations::default(),
                     },
                 )
                 .await;
@@ -1009,6 +1054,7 @@ mod tests {
             ]),
             dispatch_paths: CounterSnapshot::new(paths),
             fork_child_entries: InheritedEntries::default(),
+            refused_process_creations: RefusedProcessCreations::default(),
         }
     }
 
@@ -1097,6 +1143,7 @@ mod tests {
                 sigsys: 1,
                 hooks: 4,
             },
+            refused_creations: RefusedProcessCreations::default(),
         };
 
         let bytes = bincode::serde::encode_to_vec(&report, bincode::config::legacy()).unwrap();
@@ -1111,6 +1158,151 @@ mod tests {
             3
         );
         assert_eq!(decoded.paths.total(), 13);
+    }
+
+    #[test]
+    fn process_report_round_trips_refused_creations() {
+        let report = LiteinstProcessStats {
+            paths: CounterSnapshot::new([(LiteinstDispatchPath::InGuestSigsys, 1)]),
+            sites: Vec::new(),
+            inherited: InheritedEntries::default(),
+            refused_creations: RefusedProcessCreations {
+                clone_thread: true,
+                fork: true,
+                ..RefusedProcessCreations::default()
+            },
+        };
+
+        let bytes = bincode::serde::encode_to_vec(&report, bincode::config::legacy()).unwrap();
+        let (decoded, consumed): (LiteinstProcessStats, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(decoded, report);
+        assert!(decoded.refused_creations.clone_thread);
+        assert!(decoded.refused_creations.fork);
+        assert!(!decoded.refused_creations.clone3);
+    }
+
+    /// The wire's one deliberate break (see the module documentation): a
+    /// report from a guest that cannot say what it refused does not decode,
+    /// so the host never reads "nothing refused" from it.
+    #[test]
+    fn a_report_without_refused_creations_does_not_decode() {
+        #[derive(Serialize)]
+        struct ReportWithoutRefusals {
+            paths: CounterSnapshot<LiteinstDispatchPath>,
+            sites: Vec<LiteinstProcessSiteStats>,
+            inherited: InheritedEntries,
+        }
+
+        let bytes = bincode::serde::encode_to_vec(
+            ReportWithoutRefusals {
+                paths: CounterSnapshot::new([(LiteinstDispatchPath::InGuestSigsys, 1)]),
+                sites: Vec::new(),
+                inherited: InheritedEntries::default(),
+            },
+            bincode::config::legacy(),
+        )
+        .unwrap();
+        let decoded: Result<(LiteinstProcessStats, usize), _> =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy());
+        // The wire is positional, so the error cannot name the field; it is
+        // the end of the input where the field should start.
+        assert!(
+            matches!(
+                decoded,
+                Err(bincode::error::DecodeError::UnexpectedEnd { .. })
+            ),
+            "{decoded:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_creations_are_merged_across_reports() {
+        let report = |refused_creations| LiteinstProcessStats {
+            paths: CounterSnapshot::new([(LiteinstDispatchPath::InGuestSigsys, 1)]),
+            sites: Vec::new(),
+            inherited: InheritedEntries::default(),
+            refused_creations,
+        };
+
+        let global = LiteinstStatsGlobal::default();
+        for refused in [
+            RefusedProcessCreations {
+                fork: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations {
+                clone3: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations::default(),
+        ] {
+            global.receive_rpc(Tid::from_raw(7), report(refused)).await;
+        }
+        let source = global.into_source();
+        assert_eq!(source.snapshot().process_reports(), 3);
+        assert_eq!(
+            source.snapshot().refused_process_creations(),
+            RefusedProcessCreations {
+                fork: true,
+                clone3: true,
+                ..RefusedProcessCreations::default()
+            }
+        );
+
+        // Each kind alone survives the union, between two empty reports, and
+        // sets no other kind.
+        for kind in [
+            RefusedProcessCreations {
+                clone_thread: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations {
+                clone_process: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations {
+                clone3: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations {
+                fork: true,
+                ..RefusedProcessCreations::default()
+            },
+            RefusedProcessCreations {
+                vfork: true,
+                ..RefusedProcessCreations::default()
+            },
+        ] {
+            let global = LiteinstStatsGlobal::default();
+            for refused in [
+                RefusedProcessCreations::default(),
+                kind,
+                RefusedProcessCreations::default(),
+            ] {
+                global.receive_rpc(Tid::from_raw(7), report(refused)).await;
+            }
+            assert_eq!(
+                global.into_source().snapshot().refused_process_creations(),
+                kind
+            );
+        }
+
+        // Nothing refused anywhere stays empty.
+        let quiet = LiteinstStatsGlobal::default();
+        for _ in 0..2 {
+            quiet
+                .receive_rpc(Tid::from_raw(7), report(RefusedProcessCreations::default()))
+                .await;
+        }
+        assert!(
+            quiet
+                .into_source()
+                .snapshot()
+                .refused_process_creations()
+                .is_empty()
+        );
     }
 
     fn deserialize_dispatch_paths(

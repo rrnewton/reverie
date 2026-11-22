@@ -45,7 +45,6 @@ use reverie_rpc_transport::ConnectionAdmission;
 use reverie_rpc_transport::ConnectionMonitor;
 use reverie_rpc_transport::ExitReporter;
 use reverie_rpc_transport::RpcError;
-#[cfg(feature = "exec-private-init")]
 use reverie_rpc_transport::RpcIssueMonitor;
 use reverie_rpc_transport::RpcServer;
 
@@ -1407,6 +1406,46 @@ async fn unwrap_global_after_connections<G>(mut global: Arc<G>) -> io::Result<G>
     ))
 }
 
+/// The statistics side of an ordinary preload launch, kept after its server
+/// moves into the serving task: the reports it aggregates and the connection
+/// failures it retains.
+struct PreloadStats {
+    global: Arc<crate::stats::LiteinstStatsGlobal>,
+    issues: RpcIssueMonitor,
+}
+
+impl PreloadStats {
+    /// Binds the statistics endpoint. Its server retains every connection
+    /// failure, so a report that does not decode, or a connection cut short,
+    /// cannot leave the run with a partial aggregate. The transport retains at
+    /// most 64 outstanding or failed connections; past that it stops serving,
+    /// and the run fails.
+    fn bind(socket: &Path) -> io::Result<(Self, RpcServer<crate::stats::LiteinstStatsGlobal>)> {
+        let global = Arc::new(crate::stats::LiteinstStatsGlobal::default());
+        let mut server = RpcServer::bind(socket, global.clone(), ())
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let issues = server.retain_connection_issues();
+        Ok((Self { global, issues }, server))
+    }
+
+    /// The run's statistics, once the serving task has joined. A retained
+    /// connection failure refuses them: some process's report is missing.
+    async fn into_source(self) -> io::Result<crate::stats::LiteinstBackendStatsSource> {
+        let issues = self.issues.snapshot();
+        if let Some(first) = issues.first() {
+            return Err(io::Error::other(format!(
+                "{} statistics connection(s) failed, so the run's statistics are \
+                 incomplete; the first: {:?}",
+                issues.len(),
+                first.failure
+            )));
+        }
+        Ok(unwrap_global_after_connections(self.global)
+            .await?
+            .into_source())
+    }
+}
+
 async fn launch<T>(
     mut command: Command,
     config: <T::GlobalState as GlobalTool>::Config,
@@ -1473,13 +1512,11 @@ where
         });
     });
     let mut connection_monitors = vec![server.connection_monitor()];
-    let (stats_global, stats_server, stats_socket) = if stats_request.is_enabled() {
+    let (stats, stats_server, stats_socket) = if stats_request.is_enabled() {
         let socket = directory.path().join("stats.sock");
-        let global = Arc::new(crate::stats::LiteinstStatsGlobal::default());
-        let server = RpcServer::bind(&socket, global.clone(), ())
-            .map_err(|error| io::Error::other(error.to_string()))?;
+        let (stats, server) = PreloadStats::bind(&socket)?;
         connection_monitors.push(server.connection_monitor());
-        (Some(global), Some(server), Some(socket))
+        (Some(stats), Some(server), Some(socket))
     } else {
         (None, None, None)
     };
@@ -1568,8 +1605,8 @@ where
         return Err(pre_connect_error(&wait).into());
     }
     let global = unwrap_global_after_connections(global).await?;
-    let stats = match stats_global {
-        Some(stats) => Some(unwrap_global_after_connections(stats).await?.into_source()),
+    let stats = match stats {
+        Some(stats) => Some(stats.into_source().await?),
         None => None,
     };
     Ok((wait, global, stats))
@@ -2120,6 +2157,126 @@ mod tests {
             .expect("the two-monitor coordinator drain hung")
             .unwrap();
         main_client.await.unwrap();
+    }
+
+    /// A statistics report that does not decode (here one from a guest that
+    /// predates the refused-creation field) refuses the run's statistics, even
+    /// though another report decodes and the root exits cleanly. Otherwise the
+    /// aggregate would silently lack that process.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_undecodable_stats_report_refuses_the_run_statistics() {
+        use reverie_rpc_transport::codec::DEFAULT_MAX_FRAME_LEN;
+        use reverie_rpc_transport::codec::read_message;
+
+        use crate::stats::InheritedEntries;
+        use crate::stats::LiteinstDispatchPath;
+        use crate::stats::LiteinstProcessSiteStats;
+
+        #[derive(serde::Serialize)]
+        struct ReportWithoutRefusals {
+            paths: reverie::CounterSnapshot<LiteinstDispatchPath>,
+            sites: Vec<LiteinstProcessSiteStats>,
+            inherited: InheritedEntries,
+        }
+
+        let directory = short_socket_tempdir();
+        let main_socket = directory.path().join("coordinator.sock");
+        let stats_socket = directory.path().join("stats.sock");
+        let main_server =
+            RpcServer::bind(&main_socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
+        let (stats, stats_server) = PreloadStats::bind(&stats_socket).unwrap();
+        let connection_monitors = vec![
+            main_server.connection_monitor(),
+            stats_server.connection_monitor(),
+        ];
+        let completion = async move {
+            // One process reports in the current shape.
+            let client =
+                reverie_rpc_transport::RpcClient::<crate::stats::LiteinstStatsGlobal>::connect(
+                    &stats_socket,
+                    Tid::from_raw(405),
+                )
+                .await
+                .unwrap();
+            client
+                .try_send_rpc(crate::stats::LiteinstProcessStats {
+                    paths: reverie::CounterSnapshot::new([(
+                        LiteinstDispatchPath::InGuestSigsys,
+                        1,
+                    )]),
+                    sites: Vec::new(),
+                    inherited: InheritedEntries::default(),
+                    refused_creations: crate::guest::protect::RefusedProcessCreations::default(),
+                })
+                .await
+                .unwrap();
+            drop(client);
+
+            // Another sends the old shape, one field short.
+            let mut stream = tokio::net::UnixStream::connect(&stats_socket)
+                .await
+                .unwrap();
+            let request =
+                reverie_rpc_transport::codec::encode(&reverie_rpc_transport::RequestEnvelope {
+                    from: Tid::from_raw(406),
+                    request: ReportWithoutRefusals {
+                        paths: reverie::CounterSnapshot::new([(
+                            LiteinstDispatchPath::InGuestSigsys,
+                            1,
+                        )]),
+                        sites: Vec::new(),
+                        inherited: InheritedEntries::default(),
+                    },
+                })
+                .unwrap();
+            reverie_rpc_transport::codec::write_message(&mut stream, &request)
+                .await
+                .unwrap();
+            // The server's config frame, then its close once the report fails
+            // to decode: the server accepted this connection before the root
+            // completes, so the drain waits for it.
+            read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)
+                .await
+                .unwrap();
+            assert!(
+                read_message(&mut stream, DEFAULT_MAX_FRAME_LEN)
+                    .await
+                    .is_err()
+            );
+            Ok::<(), io::Error>(())
+        };
+        serve_rpc_until_with_timeout(
+            main_server,
+            Some(stats_server),
+            connection_monitors,
+            completion,
+            std::future::pending(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+
+        let issues = stats.issues.snapshot();
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            matches!(
+                &issues[0].failure,
+                reverie_rpc_transport::ConnectionFailure::Transport(error)
+                    if matches!(
+                        **error,
+                        RpcError::Decode(bincode::error::DecodeError::UnexpectedEnd { .. })
+                    )
+            ),
+            "{issues:?}"
+        );
+        let error = match stats.into_source().await {
+            Err(error) => error,
+            Ok(source) => panic!("a partial aggregate escaped: {source}"),
+        };
+        assert!(
+            error.to_string().contains("statistics are incomplete"),
+            "{error}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

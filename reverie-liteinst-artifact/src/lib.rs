@@ -2001,10 +2001,12 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     // and the A6 static-executable floor (literoot sprint rebase, M1): a
     // static program, ld.so target or `#!` interpreter is refused before
     // spawn, and only regular files the exec loads are inspected.
+    // Re-bound so the ordinary preload launch retains its statistics
+    // connection failures and refuses a run whose statistics lack a report.
     (
         "reverie-inguest/src/launcher/mod.rs",
-        144269,
-        "def24cd44c55b43e78759a1f87aac9eb227bb98b1f178b5aaa700a10249ed646",
+        150635,
+        "97af0150751d63dafad9e418a5ca3bad6e5ee37fcdc217d64470820fd194fedd",
     ),
     (
         "reverie/src/native_syscall.rs",
@@ -41835,6 +41837,11 @@ mod tests {
             436063,
             "0db96a23e2662b3d434231d031d8bef88421afd741a0a42d69b37738468e651e",
         ),
+        (
+            "reverie-inguest/src/launcher/mod.rs",
+            150635,
+            "97af0150751d63dafad9e418a5ca3bad6e5ee37fcdc217d64470820fd194fedd",
+        ),
     ];
 
     /// Seals over prefixes of `CONTENT_REVERIE_CATALOG_BINDINGS`: (rows covered,
@@ -41912,6 +41919,10 @@ mod tests {
         (
             126,
             "79cd73adaa49c1a324a3e0900bf619b4929ceb4fce778ac6916fc4244a18d3fe",
+        ),
+        (
+            127,
+            "73df6b0a20491d1e12d5929473df9ea26ca15f0d63248da25cb4a940ff2c2422",
         ),
     ];
 
@@ -44157,6 +44168,11 @@ mod tests {
                 "reverie-inguest/src/guest/host.rs",
                 426999,
                 "b70381d892784ffe85fa93652b9e46620170bc0cb2f433bd4f2bf77cdcaaa402",
+            ),
+            (
+                "reverie-inguest/src/launcher/mod.rs",
+                144269,
+                "def24cd44c55b43e78759a1f87aac9eb227bb98b1f178b5aaa700a10249ed646",
             ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.

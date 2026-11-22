@@ -2226,6 +2226,12 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
         },
         "{stats}"
     );
+    // Forks are allowed here, so the exit reports name nothing refused: the
+    // twin of `refused_fork_is_named_in_the_exit_report`.
+    assert!(
+        stats.snapshot().refused_process_creations().is_empty(),
+        "{stats}"
+    );
     let record = stats
         .snapshot()
         .dispatch_stats()
@@ -2234,6 +2240,46 @@ async fn fallback_fork_reports_both_process_dispatch_paths() {
     assert_physical_signals_agree(&stats, &record);
     assert_tool_callbacks_were_delivered(&global, &stats);
     println!("{stats}");
+}
+
+/// With process forks refused, the runtime answers the guest's `fork` with
+/// `ENOTSUP` and no child exists. The process's exit report must name the
+/// refused kind, so a host can refuse such a run by name instead of letting
+/// the guest's failure stand unexplained. The twin,
+/// `fallback_fork_reports_both_process_dispatch_paths`, allows forks and
+/// reports nothing refused.
+#[tokio::test(flavor = "current_thread")]
+async fn refused_fork_is_named_in_the_exit_report() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let mut command = guest_command("refused-fork-stats");
+    // The value `set_guest_process_forks(_, false)` writes; that helper takes a
+    // `std::process::Command`, and this suite launches a reverie `Command`.
+    command.env(reverie_liteinst::PROCESS_FORK_ENV, "0");
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            command,
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("refused fork statistics run hung")
+    .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout, b"refused fork stats: fork=ENOTSUP\n",
+        "{output:?}"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.fork.load(Ordering::Relaxed), 0);
+    assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
+    let refused = stats.snapshot().refused_process_creations();
+    assert!(refused.fork, "{refused:?} {stats}");
+    assert!(
+        !refused.clone_thread && !refused.clone_process && !refused.clone3 && !refused.vfork,
+        "{refused:?} {stats}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
