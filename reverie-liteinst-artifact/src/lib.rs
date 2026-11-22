@@ -626,11 +626,15 @@ impl Runner {
 
     /// [`Runner::bound_total_cpu`], except that where this process
     /// cannot account command CPU (cgroup creation or open fails, or
-    /// thread rusage is unavailable), commands instead run under the wall backstop
-    /// alone and the returned [`TotalCpuBound::WallBackstopOnly`] names
-    /// why, for the caller to log. This is the codebase's named
-    /// fallback for build environments without cgroup write access;
-    /// the strict setters above refuse there instead.
+    /// this thread's rusage cannot be read while creating the
+    /// budget), commands instead run under the wall backstop alone
+    /// and the returned [`TotalCpuBound::WallBackstopOnly`] names why,
+    /// for the caller to log. This is the codebase's named fallback
+    /// for build environments without cgroup write access; the strict
+    /// setters above refuse there instead. The fallback covers only
+    /// budget attachment: reader threads still read their own rusage
+    /// for every command, budgeted or not, and a failure there fails
+    /// the command by name in both modes.
     pub fn bound_total_cpu_or_wall_backstop(
         &mut self,
         cpu_budget: Duration,
@@ -82402,18 +82406,57 @@ mod runner_cpu_budget_tests {
         );
     }
 
+    /// Writes a named skip past libtest output capture (fd 2
+    /// directly), so the counted runner reports it as skipped rather
+    /// than as a silent pass: the `REVERIE_SKIP:` line other Reverie
+    /// tests use. When skips are forbidden (`HERMIT_FORBID_SKIPS=1`),
+    /// the same case fails by name instead.
+    fn report_skip_or_fail(test: &str, reason: &str, forbid_skips: bool) {
+        if forbid_skips {
+            panic!("{test} cannot run and HERMIT_FORBID_SKIPS forbids skips: {reason}");
+        }
+        let line = format!("\nREVERIE_SKIP: {test}: {reason}\n");
+        let mut rest = line.as_bytes();
+        while !rest.is_empty() {
+            // SAFETY: writing a borrowed byte slice to the stderr descriptor.
+            let written =
+                unsafe { libc::write(libc::STDERR_FILENO, rest.as_ptr().cast(), rest.len()) };
+            assert!(
+                written > 0,
+                "write the named skip for {test}: {}",
+                std::io::Error::last_os_error()
+            );
+            rest = &rest[written as usize..];
+        }
+    }
+
+    fn skips_forbidden() -> bool {
+        std::env::var_os("HERMIT_FORBID_SKIPS").is_some_and(|value| value == "1")
+    }
+
+    #[test]
+    #[should_panic(expected = "HERMIT_FORBID_SKIPS forbids skips")]
+    fn forbidden_skips_fail_by_name() {
+        report_skip_or_fail("forbidden_skips_fail_by_name", "test reason", true);
+    }
+
     #[test]
     fn a_non_writable_cgroup_parent_falls_back_to_wall_only() {
         // The real-world permission-denied path: the parent IS a real
         // cgroup v2 directory (so the v2 check passes), but this
         // process may not create a child cgroup in it, so creation
-        // itself is refused. /sys/fs/cgroup is that directory for an
-        // unprivileged process; root could create there, so as root
-        // this test skips by name instead of touching the real tree.
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } == 0 {
-            eprintln!(
-                "SKIP a_non_writable_cgroup_parent_falls_back_to_wall_only: running as root, /sys/fs/cgroup is writable"
+        // itself is refused. Probe what the test needs — whether
+        // /sys/fs/cgroup is writable by this process — instead of
+        // assuming from the user id: where it is writable (root, or a
+        // delegated subtree) this process cannot produce the denial,
+        // and the case reports a counted named skip, never a pass.
+        let cgroup_root = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+        // SAFETY: access reads the NUL-terminated path only.
+        if unsafe { libc::access(cgroup_root.as_ptr(), libc::W_OK) } == 0 {
+            report_skip_or_fail(
+                "a_non_writable_cgroup_parent_falls_back_to_wall_only",
+                "/sys/fs/cgroup is writable by this process, so no permission denial can be produced",
+                skips_forbidden(),
             );
             return;
         }
