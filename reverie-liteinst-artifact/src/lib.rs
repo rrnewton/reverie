@@ -380,6 +380,7 @@ fn producer_thread_cpu() -> Result<Duration> {
 #[derive(Clone)]
 pub struct ProducerCpuBudget {
     state: Arc<Mutex<ProducerCpuState>>,
+    creator: std::thread::ThreadId,
 }
 
 struct ProducerCpuState {
@@ -399,6 +400,7 @@ impl ProducerCpuBudget {
                 reader_cpu_used: Duration::ZERO,
                 thread_cpu_baseline: producer_thread_cpu()?,
             })),
+            creator: std::thread::current().id(),
         })
     }
 
@@ -410,8 +412,14 @@ impl ProducerCpuBudget {
 
     /// Aggregate CPU used against this budget right now: accounted
     /// child CPU, joined reader-thread CPU, and the creating thread's
-    /// CPU delta since the budget was created.
+    /// CPU delta since the budget was created. Refuses from any other
+    /// thread: that thread's delta against the creator's baseline
+    /// would be meaningless.
     pub fn used(&self) -> Result<Duration> {
+        require(
+            std::thread::current().id() == self.creator,
+            "producer CPU budget used from a thread other than its creator",
+        )?;
         let state = self.lock()?;
         Ok(state.child_cpu_used
             + state.reader_cpu_used
@@ -598,8 +606,8 @@ impl Runner {
     /// [`Runner::run_cpu_bounded`] (not started where that cannot be
     /// accounted) under a per-command cap of the aggregate remainder at
     /// its start. The aggregate is checked at every command start and
-    /// after every command: child cgroup CPU plus this process's own
-    /// CPU delta, shared by every Runner holding a clone of the same
+    /// after every command: child cgroup CPU plus the producer's own
+    /// threads' CPU delta, shared by every Runner holding a clone of the same
     /// budget. A command that finishes with aggregate use exactly at
     /// the budget passes; the next is refused as exhausted. The wall
     /// deadline stays the backstop, so callers size it generously
@@ -616,8 +624,8 @@ impl Runner {
     }
 
     /// [`Runner::bound_total_cpu`], except that where this process
-    /// cannot account command CPU (no writable cgroup v2 directory, or
-    /// no self rusage), commands instead run under the wall backstop
+    /// cannot account command CPU (cgroup creation or open fails, or
+    /// thread rusage is unavailable), commands instead run under the wall backstop
     /// alone and the returned [`TotalCpuBound::WallBackstopOnly`] names
     /// why, for the caller to log. This is the codebase's named
     /// fallback for build environments without cgroup write access;
@@ -671,14 +679,8 @@ impl Runner {
                 cgroup.remove()?;
                 Ok(None)
             }
-            Err(error)
-                if error.contains("cannot create command cgroup")
-                    || error.contains("cannot open ")
-                    || error.contains("is not a cgroup v2 directory") =>
-            {
-                Ok(Some(error))
-            }
-            Err(error) => Err(error),
+            Err(CgroupCreateError::Unavailable(reason)) => Ok(Some(reason)),
+            Err(CgroupCreateError::Other(error)) => Err(error),
         }
     }
 
@@ -795,7 +797,7 @@ impl Runner {
         )?;
         // An aggregate budget caps this command at its remainder (or the
         // command's own smaller budget) and refuses to start spent. The
-        // aggregate read at this start includes this process's own CPU
+        // aggregate read at this start includes the producer threads' CPU
         // since the budget was created.
         let (cpu_budget, total_binding) = match (cpu_budget, &self.total_cpu_budget) {
             (own, Some(total)) => {
@@ -822,7 +824,7 @@ impl Runner {
         let cgroup = match cpu_budget {
             Some(_) => Some(
                 self.cgroup_parent()
-                    .and_then(|parent| CommandCgroup::create(&parent))
+                    .and_then(|parent| CommandCgroup::create(&parent).map_err(|e| e.into_string()))
                     .map_err(|e| {
                         format!("{program} not started: producer CPU accounting unavailable: {e}")
                     })?,
@@ -923,7 +925,7 @@ impl Runner {
             let stop_reading = Arc::clone(&stop_reading);
             let cap = self.max_stream_bytes;
             readers.push(thread::spawn(move || -> Result<(Vec<u8>, Duration)> {
-                let thread_start = producer_thread_cpu().unwrap_or(Duration::ZERO);
+                let thread_start = producer_thread_cpu()?;
                 let bytes = read_child_stream(
                     &mut *pipe,
                     &stop_reading,
@@ -932,9 +934,7 @@ impl Runner {
                     combined_limit,
                     cap,
                 )?;
-                let thread_used = producer_thread_cpu()
-                    .unwrap_or(thread_start)
-                    .saturating_sub(thread_start);
+                let thread_used = producer_thread_cpu()?.saturating_sub(thread_start);
                 Ok((bytes, thread_used))
             }));
         }
@@ -1209,40 +1209,66 @@ thread_local! {
     static FIELD_READ_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Why creating a command cgroup failed. Callers deciding on a
+/// wall-only fallback match on this type, never on message text.
+#[derive(Debug)]
+enum CgroupCreateError {
+    /// Creation or open proved CPU accounting unavailable here.
+    Unavailable(String),
+    /// Any other failure; accounting may well exist.
+    Other(String),
+}
+
+impl CgroupCreateError {
+    fn into_string(self) -> String {
+        match self {
+            CgroupCreateError::Unavailable(message) | CgroupCreateError::Other(message) => message,
+        }
+    }
+}
+
 impl CommandCgroup {
-    fn create(parent: &Path) -> Result<Self> {
+    fn create(parent: &Path) -> std::result::Result<Self, CgroupCreateError> {
+        use CgroupCreateError::Other;
+        use CgroupCreateError::Unavailable;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let directory = fs::File::open(parent)
-            .map_err(|e| format!("cannot open cgroup {}: {e}", parent.display()))?;
+            .map_err(|e| Unavailable(format!("cannot open cgroup {}: {e}", parent.display())))?;
         // SAFETY: an all-zero statfs is a valid output buffer for fstatfs.
         let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
         // SAFETY: `directory` is an open descriptor and `filesystem` is writable.
         if unsafe { libc::fstatfs(directory.as_raw_fd(), &mut filesystem) } != 0 {
-            return Err(format!(
+            return Err(Unavailable(format!(
                 "cannot inspect {}: {}",
                 parent.display(),
                 std::io::Error::last_os_error()
-            ));
+            )));
         }
         const CGROUP2_SUPER_MAGIC: libc::c_long = 0x6367_7270;
-        require(
-            filesystem.f_type == CGROUP2_SUPER_MAGIC,
-            format!("{} is not a cgroup v2 directory", parent.display()),
-        )?;
+        if filesystem.f_type != CGROUP2_SUPER_MAGIC {
+            return Err(Unavailable(format!(
+                "{} is not a cgroup v2 directory",
+                parent.display()
+            )));
+        }
         let path = parent.join(format!(
             "reverie-producer-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)
-            .map_err(|e| format!("cannot create command cgroup {}: {e}", path.display()))?;
-        let opened = (|| {
+        fs::create_dir(&path).map_err(|e| {
+            Unavailable(format!(
+                "cannot create command cgroup {}: {e}",
+                path.display()
+            ))
+        })?;
+        let opened = (|| -> std::result::Result<Self, CgroupCreateError> {
             let open = |name: &str, write: bool| {
                 OpenOptions::new()
                     .read(!write)
                     .write(write)
                     .open(path.join(name))
-                    .map_err(|e| format!("cannot open {}/{name}: {e}", path.display()))
+                    .map_err(|e| Unavailable(format!("cannot open {}/{name}: {e}", path.display())))
             };
             let cgroup = Self {
                 path: path.clone(),
@@ -1254,10 +1280,11 @@ impl CommandCgroup {
                 #[cfg(test)]
                 reads: std::cell::Cell::new(0),
             };
-            require(
-                cgroup.usage()?.is_zero() && !cgroup.populated()?,
-                "fresh command cgroup is not empty",
-            )?;
+            let empty =
+                cgroup.usage().map_err(Other)?.is_zero() && !cgroup.populated().map_err(Other)?;
+            if !empty {
+                return Err(Other("fresh command cgroup is not empty".to_owned()));
+            }
             Ok(cgroup)
         })();
         opened.inspect_err(|_| {
@@ -82068,9 +82095,8 @@ mod runner_cpu_budget_tests {
             )
             .unwrap_err();
         assert!(
-            error.contains(
-                "stopped: producer wall bound tripped (command CPU "
-            ) && error.contains("of 1 s backstop; command wall "),
+            error.contains("stopped: producer wall bound tripped (command CPU ")
+                && error.contains("of 1 s backstop; command wall "),
             "{error}"
         );
         // The backstop fired at the budget (the error's command wall), and
@@ -82096,8 +82122,7 @@ mod runner_cpu_budget_tests {
             .run_cpu_bounded("/bin/true", &[], &scratch.0, Duration::from_secs(60))
             .unwrap_err();
         assert!(
-            exhausted
-                .contains("/bin/true not started: producer wall bound tripped (command CPU "),
+            exhausted.contains("/bin/true not started: producer wall bound tripped (command CPU "),
             "{exhausted}"
         );
         assert_own_cgroups_removed(&runner, 1);
@@ -82111,12 +82136,14 @@ mod runner_cpu_budget_tests {
         let scratch = Scratch::new("totalcpu");
         // Slow wall, negligible CPU: a 2 s sleep passes a CPU budget
         // smaller than its own wall time, where a tight wall-only
-        // deadline (the test above) refuses the same sleep.
-        let mut runner =
-            Runner::new(scratch.0.join("slow-logs"), Duration::from_secs(30), 1 << 20).unwrap();
-        runner
-            .bound_total_cpu(Duration::from_millis(500))
-            .unwrap();
+        // deadline (the test above) refuses a sleep.
+        let mut runner = Runner::new(
+            scratch.0.join("slow-logs"),
+            Duration::from_secs(30),
+            1 << 20,
+        )
+        .unwrap();
+        runner.bound_total_cpu(Duration::from_millis(500)).unwrap();
         runner
             .run("/bin/sh", &sh("sleep 2"), &scratch.0)
             .expect("a low-CPU sleep must not be refused for its wall time");
@@ -82131,8 +82158,12 @@ mod runner_cpu_budget_tests {
         // command capped at 1 s of a shared 3 s budget, plus 1 s of
         // producer-thread work, leaves the next command about 1 s of
         // its own CPU before the aggregate trips.
-        let mut runner =
-            Runner::new(scratch.0.join("busy-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        let mut runner = Runner::new(
+            scratch.0.join("busy-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
         runner.bound_total_cpu(Duration::from_secs(3)).unwrap();
         let first = runner
             .run_cpu_bounded(
@@ -82163,8 +82194,7 @@ mod runner_cpu_budget_tests {
         );
         let second_own = runner.command_cpu.last().copied().flatten().unwrap();
         assert!(
-            second_own >= Duration::from_millis(800)
-                && second_own < Duration::from_millis(1400),
+            second_own >= Duration::from_millis(800) && second_own < Duration::from_millis(1400),
             "second command used {second_own:?}, not near the 1 s remainder"
         );
         // The spent budget refuses the next command before it starts.
@@ -82243,8 +82273,12 @@ mod runner_cpu_budget_tests {
         set_producer_thread_cpu_for_test(Some(Duration::ZERO));
         let scratch = Scratch::new("totalshared");
         let budget = ProducerCpuBudget::new(Duration::from_millis(600)).unwrap();
-        let mut first =
-            Runner::new(scratch.0.join("first-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        let mut first = Runner::new(
+            scratch.0.join("first-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
         first.bound_shared_total_cpu(budget.clone()).unwrap();
         let _ = first
             .run_cpu_bounded(
@@ -82256,8 +82290,12 @@ mod runner_cpu_budget_tests {
             .unwrap_err();
         // The second Runner sees the first Runner's child CPU through
         // the shared budget and is capped at what remains.
-        let mut second =
-            Runner::new(scratch.0.join("second-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        let mut second = Runner::new(
+            scratch.0.join("second-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
         second.bound_shared_total_cpu(budget).unwrap();
         assert!(
             second.total_cpu_used() >= Duration::from_millis(250),
@@ -82301,6 +82339,50 @@ mod runner_cpu_budget_tests {
             "budget used {:?} after burning 50 ms on this thread",
             budget.used().unwrap()
         );
+    }
+
+    #[test]
+    fn total_cpu_budget_refuses_a_foreign_thread() {
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let budget = ProducerCpuBudget::new(Duration::from_secs(60)).unwrap();
+        let from_sibling = std::thread::spawn(move || budget.used())
+            .join()
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            from_sibling.contains("producer CPU budget used from a thread other than its creator"),
+            "{from_sibling}"
+        );
+        set_producer_thread_cpu_for_test(None);
+    }
+
+    #[test]
+    fn total_cpu_fallback_on_a_non_writable_cgroup_parent() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new("totalfallbackro");
+        let read_only = scratch.0.join("cgroup-parent");
+        fs::create_dir(&read_only).unwrap();
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o555)).unwrap();
+        let mut runner =
+            Runner::new(scratch.0.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        runner.cgroup_parent = Some(read_only);
+        // Root bypasses directory write bits; the typed path then
+        // legitimately accounts, so only the fallback arm is asserted.
+        if unsafe { libc::geteuid() } != 0 {
+            let bound = runner
+                .bound_total_cpu_or_wall_backstop(Duration::from_secs(20))
+                .unwrap();
+            assert!(
+                matches!(&bound, TotalCpuBound::WallBackstopOnly(_)),
+                "{bound:?}"
+            );
+            assert_eq!(
+                runner
+                    .text("/bin/sh", &["-c", "echo ok"], &scratch.0)
+                    .unwrap(),
+                "ok\n"
+            );
+        }
     }
 
     #[test]
