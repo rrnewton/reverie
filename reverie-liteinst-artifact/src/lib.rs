@@ -9407,6 +9407,25 @@ const FIXED_ARENA_OPERANDS_12: &[FixedArenaOperand] = &[
     },
 ];
 
+// Observed stable Rust 1.99.1 normal+diagnostic / fixed_setup_bitmap_range; all constant operands and internal branches are literal.
+const FIXED_ARENA_BYTES_13: &[u8] = &[
+    0xb0, 0x01, 0x48, 0x39, 0xf2, 0x0f, 0x86, 0xcd, 0x00, 0x00, 0x00, 0x84, 0xc9, 0x74, 0x69, 0x89,
+    0xd1, 0x29, 0xf1, 0x4c, 0x8d, 0x46, 0x01, 0xf6, 0xc1, 0x01, 0x74, 0x17, 0x41, 0xb9, 0x01, 0x00,
+    0x00, 0x00, 0x89, 0xf1, 0x49, 0xd3, 0xe1, 0x48, 0xc1, 0xee, 0x06, 0x4c, 0x09, 0x4c, 0xf7, 0x08,
+    0x4c, 0x89, 0xc6, 0x4c, 0x39, 0xc2, 0x0f, 0x84, 0x9c, 0x00, 0x00, 0x00, 0x0f, 0x1f, 0x40, 0x00,
+    0x41, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xf1, 0x49, 0xd3, 0xe0, 0x48, 0x89, 0xf1, 0x48, 0xc1,
+    0xe9, 0x06, 0x4c, 0x09, 0x44, 0xcf, 0x08, 0x48, 0x8d, 0x4e, 0x01, 0x41, 0xb8, 0x01, 0x00, 0x00,
+    0x00, 0x49, 0xd3, 0xe0, 0x48, 0xc1, 0xe9, 0x06, 0x4c, 0x09, 0x44, 0xcf, 0x08, 0x48, 0x83, 0xc6,
+    0x02, 0x48, 0x39, 0xf2, 0x75, 0xca, 0xeb, 0x60, 0x48, 0x89, 0xf1, 0x48, 0xc1, 0xe9, 0x06, 0x48,
+    0x8b, 0x4c, 0xcf, 0x08, 0x48, 0x0f, 0xa3, 0xf1, 0x73, 0x03, 0x31, 0xc0, 0xc3, 0x48, 0x8d, 0x4a,
+    0xff, 0x48, 0x39, 0xce, 0x74, 0x42, 0x41, 0xb8, 0x02, 0x00, 0x00, 0x00, 0x49, 0x29, 0xd0, 0x48,
+    0xff, 0xc6, 0x66, 0x66, 0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xf1, 0x48, 0xd3, 0xe0, 0x48, 0x89, 0xf1, 0x48, 0xc1, 0xe9,
+    0x06, 0x48, 0x85, 0x44, 0xcf, 0x08, 0x0f, 0x94, 0xc0, 0x75, 0x0d, 0x49, 0x8d, 0x0c, 0x30, 0x48,
+    0xff, 0xc6, 0x48, 0x83, 0xf9, 0x01, 0x75, 0xd8, 0xc3,
+];
+const FIXED_ARENA_OPERANDS_13: &[FixedArenaOperand] = &[];
+
 const FIXED_ARENA_TEMPLATES: &[FixedArenaTemplate] = &[
     FixedArenaTemplate {
         role: "fixed_arena_setup",
@@ -9472,6 +9491,11 @@ const FIXED_ARENA_TEMPLATES: &[FixedArenaTemplate] = &[
         role: "fixed_arena_backing",
         bytes: FIXED_ARENA_BYTES_12,
         operands: FIXED_ARENA_OPERANDS_12,
+    },
+    FixedArenaTemplate {
+        role: "fixed_setup_bitmap_range",
+        bytes: FIXED_ARENA_BYTES_13,
+        operands: FIXED_ARENA_OPERANDS_13,
     },
 ];
 
@@ -24322,6 +24346,24 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         column: 27,
     },
     DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_251_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_269_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
         key: "fixed_scalar_native_record_location",
         location: true,
         hex: "",
@@ -30590,6 +30632,43 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         ],
         transfers: &[(8, 1)],
     },
+    // Stable Rust 1.99.1 (58cf8f9c3 2026-10-13), rust-toolchain.toml channel 1.99.1.
+    // Profile liteinst-runtime; features allocator-fixture. Derived from a real ELF
+    // built by ci/build-liteinst-allocator-fixtures.rs: ELF
+    // SHA256 4c7ff58ac7164eba3512aebb67392d0195d0e0cf13f6956d9ba67037806d3134.
+    // fixed_setup_bitmap_range _RNvNtNtNtCsfhI59vbc6Q6_15reverie_inguest5guest11tool_region5arena18fixed_bitmap_range at VA 0x13be3a0, 282 bytes; complete body SHA256 544a0b636ffd06ff6e12518abfa4fd7642949ae34925b2ed68b84a162dcc0077.
+    // Location operands bind the setup143:27 profile; the null panic GOT operand binds panic_null_reference_constructed.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "504989f04889fe40f6c6070f85ea0000004885f60f84f3000000b0014c39c20f86d400000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa0f84a10000000f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb624c89c148c1e906488b4cce084c0fa3c1730431c059c3488d4aff4939c87443bf020000004829d749ffc06666666666662e0f1f840000000000b8010000004489c148d3e04c89c148c1e906488544ce080f94c0750d4a8d0c0749ffc04883f90175d759c3488d15f6ad2300bf08000000ff1513282500488d3de4ad2300ff15765e2500",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 254,
+                next: 258,
+                key: "fixed_naked_bitmap_251_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 265,
+                next: 269,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 272,
+                next: 276,
+                key: "fixed_naked_bitmap_269_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 278,
+                next: 282,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(263, 1), (276, 3)],
+    },
 ];
 
 // Distinct from every historical TLS-bearing241B recipe. Measured in the true
@@ -33329,6 +33408,23 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         incoming: FIXED_NAKED_STABLE_STANDALONE_INCOMING,
         setup_bitmap_template: None,
     },
+    // The same pinned tuples with the Rust 1.99.1 bitmap body: identical
+    // cohort and incoming edges, discriminated from the 85 pair above
+    // only by the bitmap witness's exact template identity.
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_PINNED_NATIVE_COHORT,
+        incoming: FIXED_NAKED_PINNED_NATIVE_INCOMING,
+        setup_bitmap_template: Some(118),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_PINNED_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_PINNED_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(118),
+    },
 ];
 // Exclusive end of the source-owned appended template identities
 // (78..END). The contiguous range is a deliberate over-approximation:
@@ -33348,8 +33444,9 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
 // stable 0x100 alloc template at 111 (dh-r5tic) follows the same
 // rule: it can only add refusals through this over-approximation. So
 // does the generated stable native 0xf8 alloc template at 116, and its
-// generated 0xf8 FnOnce template at 117.
-const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 118;
+// generated 0xf8 FnOnce template at 117. So does the stable Rust 1.99.1
+// bitmap template at 118.
+const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 119;
 
 fn fixed_naked_publication_present(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
@@ -33386,6 +33483,14 @@ fn fixed_naked_composition(
                     witnesses.get(role).is_some_and(|w| {
                         w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
                     })
+                })
+                && spec.setup_bitmap_template.is_none_or(|index| {
+                    witnesses
+                        .get("fixed_setup_bitmap_range")
+                        .is_some_and(|w| {
+                            w.kind
+                                == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                        })
                 })
         })
         .collect();
@@ -71552,9 +71657,12 @@ mod tests {
                 let bitmap = bad.witnesses.get_mut("fixed_setup_bitmap_range").unwrap();
                 bitmap.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(25);
                 bitmap.scalar_storage = None;
+                // Composition selection binds the bitmap witness's exact
+                // template identity, so the mutated graph matches no
+                // composition and is refused there, before the callee arm.
                 assert_eq!(
                     check(&bad, kind, native).unwrap_err().to_string(),
-                    "naked-owner bitmap callee loses selected complete identity"
+                    "unknown or mixed naked-owner publication whole composition"
                 );
                 let mut old = scalar_ordinary_bit_result_control_graph(false);
                 let current = &graph.witnesses["fixed_setup_bitmap_range"];
