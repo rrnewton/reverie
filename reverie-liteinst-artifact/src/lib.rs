@@ -74262,8 +74262,9 @@ mod tests {
     // Every composition row's own witness set selects exactly that row.
     // Discrimination is by the cohort tuple, the raw syscall kind
     // (native vs ordinary), and the bitmap witness's exact template
-    // identity where the row binds one (85, 105 and 118 are three
-    // generations of that binding, on different cohorts).
+    // identity where the row binds one. Templates 85 and 118 share the
+    // same pinned cohorts and incoming edges, so only that identity
+    // separates their rows; 105 binds the stable-native cohort.
     #[test]
     fn naked_composition_selection_binds_each_rows_own_witnesses() {
         fn operation(role: &str, index: usize) -> (String, AuthenticatedDetcoreOperation) {
