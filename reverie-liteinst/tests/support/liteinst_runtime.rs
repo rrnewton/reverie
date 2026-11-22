@@ -325,25 +325,25 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
             ("c_workload".to_owned(), C_ORACLE_SHA256.to_owned()),
         ]);
         let manifest = source.root.join("Cargo.toml");
-        // Interim: the full producer's measured budget (30 CPU-s, 240 s
-        // wall) as an upper bound for this subset (compiled sources)
-        // until its own workload is measured separately.
+        // This resolution's own completed observations on devbig014
+        // (2026-11-22, aggregate CPU / wall): 5.24/8.78 s, 5.62/7.89 s,
+        // 5.81/14.91 s, 6.38/13.39 s. Budget is ceil(1.5 x 6.38) = 10
+        // CPU-s, wall 8 x 14.91 = 120 s backstop.
         let mut source_runner = artifact::Runner::new(
             evidence.join("compiled-sources"),
-            Duration::from_secs(240),
+            Duration::from_secs(120),
             16 << 20,
         )?;
         if let artifact::TotalCpuBound::WallBackstopOnly(reason) =
-            source_runner.bound_total_cpu_or_wall_backstop(Duration::from_secs(30))?
+            source_runner.bound_total_cpu_or_wall_backstop(Duration::from_secs(10))?
         {
             eprintln!(
                 "compiled-source resolution: CPU accounting unavailable ({reason}); \
-                 running under the 240 s wall backstop only"
+                 running under the 120 s wall backstop only"
             );
         }
         // Resolve from this consumer's current worktree, never from the receipt.
         // The receipt-only transaction closes on success and ordinary error.
-        let measure_started = std::time::Instant::now();
         let (receipt, _) = artifact::VerifiedCompiledSources::with_resolved(
             &artifact::CompiledSourceExpectation {
                 layout: artifact::CompiledSourceLayout::ReverieWorkspace,
@@ -370,11 +370,6 @@ fn qualify_runtime() -> Result<QualifiedRuntime, String> {
                 artifact::verify_runtime_receipt(&receipt_path, &path, &expectation)
             },
         )?;
-        eprintln!(
-            "MEASURED compiled-source aggregate CPU {:.2} CPU-s wall {:.2} s",
-            source_runner.total_cpu_used().as_secs_f64(),
-            measure_started.elapsed().as_secs_f64()
-        );
         if receipt.source_before != source || receipt.source_after != source {
             return Err("receipt source root/lock/oracle paths differ from the exact current source snapshot".into());
         }
