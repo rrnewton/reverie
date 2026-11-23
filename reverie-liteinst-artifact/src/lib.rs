@@ -82412,8 +82412,9 @@ mod runner_cpu_budget_tests {
     /// tests use. `test` must be the exact listed case name (the
     /// gated runner matches it exactly, module path included); callers
     /// pass this thread's libtest name. When skips are forbidden
-    /// (`REVERIE_FORBID_SKIPS=1`, set by validation nodes that
-    /// forbid skips), the same case fails by name instead.
+    /// (`REVERIE_FORBID_SKIPS=1`; nothing sets it in-tree yet, so
+    /// today this is the contract validation nodes opt into), the
+    /// same case fails by name instead.
     fn report_skip_or_fail(test: &str, reason: &str, forbid_skips: bool) {
         if forbid_skips {
             panic!("{test} cannot run and REVERIE_FORBID_SKIPS forbids skips: {reason}");
@@ -82447,9 +82448,10 @@ mod runner_cpu_budget_tests {
     /// which creating a command cgroup is refused.
     #[derive(Debug, PartialEq, Eq)]
     enum DenialPlan {
-        /// /sys/fs/cgroup itself: not writable by this process.
-        RootItself,
-        /// A child of the root with cgroup.max.descendants = 0:
+        /// This process's own cgroup: not writable by this process,
+        /// which is itself the real-world denial.
+        OwnCgroup,
+        /// A child of the own cgroup with cgroup.max.descendants = 0:
         /// creation under it is refused even for root.
         LimitedChild,
         /// No cgroup v2 hierarchy at all: counted named skip.
@@ -82458,11 +82460,11 @@ mod runner_cpu_budget_tests {
         FailForbidden,
     }
 
-    fn denial_plan(is_cgroup_v2: bool, root_writable: bool, forbid_skips: bool) -> DenialPlan {
-        match (is_cgroup_v2, root_writable, forbid_skips) {
+    fn denial_plan(is_cgroup_v2: bool, own_writable: bool, forbid_skips: bool) -> DenialPlan {
+        match (is_cgroup_v2, own_writable, forbid_skips) {
             (false, _, true) => DenialPlan::FailForbidden,
             (false, _, false) => DenialPlan::SkipNoCgroupV2,
-            (true, false, _) => DenialPlan::RootItself,
+            (true, false, _) => DenialPlan::OwnCgroup,
             (true, true, _) => DenialPlan::LimitedChild,
         }
     }
@@ -82474,50 +82476,90 @@ mod runner_cpu_budget_tests {
         assert_eq!(denial_plan(false, true, false), DenialPlan::SkipNoCgroupV2);
         assert_eq!(denial_plan(false, false, true), DenialPlan::FailForbidden);
         assert_eq!(denial_plan(false, true, true), DenialPlan::FailForbidden);
-        // Unwritable v2 root: the denial is direct, forbidden or not.
-        assert_eq!(denial_plan(true, false, false), DenialPlan::RootItself);
-        assert_eq!(denial_plan(true, false, true), DenialPlan::RootItself);
-        // Writable v2 root (root, delegated subtree): manufacture the
-        // denial with a descendant limit — never a skip.
+        // Unwritable own cgroup: the denial is direct, forbidden or not.
+        assert_eq!(denial_plan(true, false, false), DenialPlan::OwnCgroup);
+        assert_eq!(denial_plan(true, false, true), DenialPlan::OwnCgroup);
+        // Writable own cgroup (root, delegated subtree): manufacture
+        // the denial with a descendant limit — never a skip.
         assert_eq!(denial_plan(true, true, false), DenialPlan::LimitedChild);
         assert_eq!(denial_plan(true, true, true), DenialPlan::LimitedChild);
+    }
+
+    /// Removes the manufactured limited cgroup on drop, on every
+    /// path including panics. A failed removal panics by name when
+    /// the test is not already panicking, and prints the leaked path
+    /// when it is, so a leak into the host's real tree is never silent.
+    struct LimitedCgroup {
+        path: PathBuf,
+    }
+
+    impl Drop for LimitedCgroup {
+        fn drop(&mut self) {
+            if let Err(error) = fs::remove_dir(&self.path) {
+                if std::thread::panicking() {
+                    eprintln!(
+                        "leaked manufactured limited cgroup {}: {error}",
+                        self.path.display()
+                    );
+                } else {
+                    panic!(
+                        "remove manufactured limited cgroup {}: {error}",
+                        self.path.display()
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn a_non_writable_cgroup_parent_falls_back_to_wall_only() {
         // The real-world permission-denied path: the parent IS a real
         // cgroup v2 directory (so the v2 check passes), but creating
-        // a child cgroup under it is refused. Where the root is not
-        // writable that is direct; where it is writable (root, or a
-        // delegated subtree) a child with cgroup.max.descendants = 0
-        // manufactures the same refusal, so this runs on every
-        // cgroup v2 host and never skips there. The only skip left is
-        // a host with no cgroup v2 hierarchy at all.
-        let root = PathBuf::from("/sys/fs/cgroup");
+        // a child cgroup under it is refused. The parent is this
+        // process's OWN cgroup, where the Runner really creates its
+        // cgroups — never the host root. Where the own cgroup is not
+        // writable that is itself the denial; where it is writable
+        // (root, or a delegated subtree) a child with
+        // cgroup.max.descendants = 0 manufactures the same refusal,
+        // so this runs on every cgroup v2 host and never skips there.
+        // The only skip left is a host with no cgroup v2 at all.
+        let own = current_cgroup_directory().ok();
         // SAFETY: an all-zero statfs is a valid output buffer for statfs.
         let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
         let root_cstr = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
         // SAFETY: statfs reads the NUL-terminated path, writes the buffer.
-        let is_cgroup_v2 = unsafe { libc::statfs(root_cstr.as_ptr(), &mut filesystem) } == 0
+        let is_cgroup_v2 = own.is_some()
+            && unsafe { libc::statfs(root_cstr.as_ptr(), &mut filesystem) } == 0
             && filesystem.f_type == 0x6367_7270;
-        // SAFETY: faccessat reads the NUL-terminated path only.
-        // AT_EACCESS checks the effective uid, as mkdir will use.
-        let root_writable = unsafe {
-            libc::faccessat(
-                libc::AT_FDCWD,
-                root_cstr.as_ptr(),
-                libc::W_OK,
-                libc::AT_EACCESS,
-            )
-        } == 0;
-        let mut limited_child: Option<PathBuf> = None;
-        let parent = match denial_plan(is_cgroup_v2, root_writable, skips_forbidden()) {
-            DenialPlan::RootItself => root.clone(),
+        let own_writable = own.as_ref().is_some_and(|own| {
+            let own_cstr = std::ffi::CString::new(own.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: faccessat reads the NUL-terminated path only.
+            // AT_EACCESS checks the effective uid, as mkdir will use.
+            let access = unsafe {
+                libc::faccessat(
+                    libc::AT_FDCWD,
+                    own_cstr.as_ptr(),
+                    libc::W_OK,
+                    libc::AT_EACCESS,
+                )
+            };
+            access == 0
+        });
+        let mut limited_child: Option<LimitedCgroup> = None;
+        let parent = match denial_plan(is_cgroup_v2, own_writable, skips_forbidden()) {
+            DenialPlan::OwnCgroup => own.clone().unwrap(),
             DenialPlan::LimitedChild => {
-                let child = root.join(format!("reverie-test-limited-{}", std::process::id()));
+                let child = own
+                    .clone()
+                    .unwrap()
+                    .join(format!("reverie-test-limited-{}", std::process::id()));
                 fs::create_dir(&child).unwrap();
+                // Guard first, so even a panic in the write below
+                // cannot leak the child.
+                limited_child = Some(LimitedCgroup {
+                    path: child.clone(),
+                });
                 fs::write(child.join("cgroup.max.descendants"), "0").unwrap();
-                limited_child = Some(child.clone());
                 child
             }
             DenialPlan::SkipNoCgroupV2 | DenialPlan::FailForbidden => {
@@ -82546,35 +82588,32 @@ mod runner_cpu_budget_tests {
         let output = runner
             .run("/bin/sh", &sh("printf wall-only"), &scratch.0)
             .unwrap();
-        let created = CommandCgroup::create(&parent);
-        // Remove the manufactured child before asserting, so a failed
-        // assertion cannot leak it into the real hierarchy. A removal
-        // failure fails by name here: a leaked cgroup in the host's
-        // real tree must not pass silently.
-        if let Some(child) = &limited_child {
-            fs::remove_dir(child).unwrap_or_else(|error| {
-                panic!(
-                    "remove manufactured limited cgroup {}: {error}",
-                    child.display()
-                )
-            });
-        }
+        // Settle `created` BEFORE the limited child goes: if the
+        // limit failed to refuse, it holds a live sub-cgroup whose
+        // presence would make removing the child fail with EBUSY and
+        // hide the real failure. Removing it first also keeps the
+        // guard's drop (end of scope, and on any panic above) able
+        // to succeed.
+        let created_is_unavailable = match CommandCgroup::create(&parent) {
+            Err(CgroupCreateError::Unavailable(_)) => true,
+            Err(CgroupCreateError::Other(error)) => {
+                panic!("expected typed Unavailable, got Other: {error}")
+            }
+            Ok(cgroup) => {
+                let _ = cgroup.remove();
+                false
+            }
+        };
         assert!(
             matches!(&bound, TotalCpuBound::WallBackstopOnly(_)),
             "expected wall-only fallback, got {bound:?}"
         );
         assert_eq!(output, b"wall-only");
         // The fallback carries a typed unavailable reason, not text.
-        match created {
-            Err(CgroupCreateError::Unavailable(_)) => {}
-            Err(CgroupCreateError::Other(error)) => {
-                panic!("expected typed Unavailable, got Other: {error}")
-            }
-            Ok(cgroup) => {
-                let _ = cgroup.remove();
-                panic!("expected typed Unavailable, got Ok")
-            }
-        }
+        assert!(created_is_unavailable, "expected typed Unavailable, got Ok");
+        // Explicit drop: a removal failure panics by name here rather
+        // than only printing on an unwinding path.
+        drop(limited_child);
     }
 
     #[test]
