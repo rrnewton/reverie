@@ -681,6 +681,18 @@ macro_rules! command_enum {
         }
 
         impl<$($lt,)*> $name<$($lt,)*> {
+            /// The command of every variant except `Other`, in declaration
+            /// order, generated from the same entries as the variants, so a
+            /// test can check that it covers every variant.
+            #[cfg(test)]
+            #[allow(dead_code)] // Only the tests of some enums use it.
+            pub(crate) const TYPED_COMMANDS: &'static [$type] = &[
+                $(
+                    $(#[$meta])*
+                    $id,
+                )*
+            ];
+
             /// Creates the enum from raw arguments.
             pub fn from_raw(cmd: $type, arg: usize) -> Self {
                 match cmd {
