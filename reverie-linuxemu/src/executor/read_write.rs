@@ -970,7 +970,7 @@ pub(super) fn private_pipe_owner(
     state
         .pipe_owners
         .get(&fd)
-        .filter(|owner| owner.pair_never_exported())
+        .filter(|owner| owner.is_pipe() && owner.pair_never_exported())
 }
 
 /// Linux raises SIGPIPE in the writing thread when a write fails because the

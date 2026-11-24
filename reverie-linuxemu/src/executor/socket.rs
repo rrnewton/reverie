@@ -52,9 +52,12 @@ pub(super) fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: socket returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, socket_type & libc::SOCK_CLOEXEC != 0, None)
+    insert_created_file(
+        state,
+        host_fd,
+        socket_type & libc::SOCK_CLOEXEC != 0,
+        pipe_owner::Provenance::Created,
+    )
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -585,7 +588,7 @@ pub(super) fn accept_socket(
     state: &LoadedStaticElf,
     args: &[u64; 6],
     flags: libc::c_int,
-) -> Result<std::fs::File, i64> {
+) -> Result<(std::fs::File, bool), i64> {
     let allowed_flags = libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
     if flags & !allowed_flags != 0 {
         return Err(negative_errno(libc::EINVAL));
@@ -633,8 +636,7 @@ pub(super) fn accept_socket(
     if accepted_fd < 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
-    // SAFETY: accept4 returned a new owned descriptor.
-    let accepted = unsafe { std::fs::File::from_raw_fd(accepted_fd) };
+    let accepted = adopt_created_host_fd(state, accepted_fd)?;
 
     if args[1] != 0 {
         let copy_length = guest_capacity
@@ -735,10 +737,11 @@ pub(super) fn socketpair(
     {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: socketpair initialized both owned descriptors on success.
-    let first = unsafe { std::fs::File::from_raw_fd(host_fds[0]) };
-    // SAFETY: socketpair initialized both owned descriptors on success.
-    let second = unsafe { std::fs::File::from_raw_fd(host_fds[1]) };
+    let [(first, first_created), (second, second_created)] =
+        match adopt_created_pair(state, host_fds) {
+            Ok(ends) => ends,
+            Err(error) => return error,
+        };
     let ends =
         [&first, &second].map(|end| file_identity_stat(end).map(|stat| (stat.st_dev, stat.st_ino)));
     let result = insert_file_pair(
@@ -747,7 +750,10 @@ pub(super) fn socketpair(
         args[3],
         [first, second],
         socket_type & libc::SOCK_CLOEXEC != 0,
-        None,
+        [
+            first_created.then_some(pipe_owner::Provenance::Created),
+            second_created.then_some(pipe_owner::Provenance::Created),
+        ],
     );
     // Pair-route bookkeeping models Unix socket queues only; a
     // host-made pair of any other family is just two host-backed files.
@@ -1422,24 +1428,49 @@ pub(super) fn translate_outgoing_rights(
     socket: RawFd,
 ) -> Result<(), i64> {
     let mut exported = Vec::new();
-    match check_outgoing_rights(control, state, transfers, &mut exported, socket) {
+    let refused = match check_outgoing_rights(control, state, transfers, &mut exported, socket) {
         // The refusal of a pidfd, or of an epoll or a Unix socket that may
         // leave the run, marks nothing as exported, as the typed refusal
         // promises (`UnsupportedOperation::Pidfd`); the caller releases the
         // rights in flight registered so far (`translate_outgoing_control`).
         Err(OutgoingRightRefusal::Pidfd(reason)) => {
             state.pidfd_refusal = Some(reason);
-            Err(negative_errno(libc::ENOSYS))
+            return Err(negative_errno(libc::ENOSYS));
+        }
+        // So does the refusal of a description with asynchronous signal
+        // mode on (`UnsupportedOperation::AsyncSignalMode`).
+        Err(OutgoingRightRefusal::AsyncSignalMode(reason)) => {
+            state.async_signal_refusal = Some(reason);
+            return Err(negative_errno(libc::ENOSYS));
         }
         // Otherwise each right that got past its own checks is marked as
         // exported, as a send exports it; a refusal by a later right leaves
         // those marked, conservatively.
-        Err(OutgoingRightRefusal::Errno(error)) => {
-            mark_exported_rights(state, &exported)?;
-            Err(error)
+        Err(OutgoingRightRefusal::Errno(error)) => Some(error),
+        Ok(()) => None,
+    };
+    match mark_exported_rights(state, &exported) {
+        Err(pipe_owner::ExportRefusal::AsyncSignalMode(reason)) => {
+            state.async_signal_refusal = Some(reason);
+            Err(negative_errno(libc::ENOSYS))
         }
-        Ok(()) => mark_exported_rights(state, &exported),
+        Err(pipe_owner::ExportRefusal::Errno(error)) => Err(error),
+        Ok(()) => match refused {
+            Some(error) => Err(error),
+            None => Ok(()),
+        },
     }
+}
+
+/// Whether the export refusal of a description with asynchronous signal mode
+/// on applies to `guest_fd` (`host_fd`): only inside the admission domain,
+/// where the run itself may have turned the mode on (`async_signal_mode`).
+/// Outside it the guest never turns the mode on, and a send is Linux's.
+fn export_checks_async(state: &LoadedStaticElf, guest_fd: libc::c_int, host_fd: RawFd) -> bool {
+    matches!(
+        classify_async_admission(state, guest_fd, host_fd),
+        AsyncAdmission::Record(_)
+    )
 }
 
 /// Why an outgoing `SCM_RIGHTS` message is refused.
@@ -1451,6 +1482,9 @@ enum OutgoingRightRefusal {
     /// socket while an epoll right is in flight (`SOCKET_EXPORT_REFUSAL`),
     /// which this backend refuses by name.
     Pidfd(&'static str),
+    /// A description with asynchronous signal mode on, which this backend
+    /// refuses by name (`pipe_owner::ASYNC_EXPORT_REFUSAL`).
+    AsyncSignalMode(&'static str),
 }
 
 impl From<i64> for OutgoingRightRefusal {
@@ -1497,12 +1531,18 @@ fn check_outgoing_rights(
                 // readiness. Refuse before host sendmsg sends anything.
                 return Err(OutgoingRightRefusal::Pidfd(PIDFD_RIGHTS_REFUSAL));
             }
-            if state
-                .pipe_owners
-                .get(&guest_fd)
-                .is_some_and(|owner| owner.export_refused())
-            {
-                return Err(negative_errno(libc::ENOSYS).into());
+            if let Some(record) = pipe_owner::description_record(state, guest_fd) {
+                if record.export_refused() {
+                    return Err(negative_errno(libc::ENOSYS).into());
+                }
+                // The early check; `mark_exported` repeats it under the lock.
+                if export_checks_async(state, guest_fd, host_fd)
+                    && record.async_export_refused(host_fd)
+                {
+                    return Err(OutgoingRightRefusal::AsyncSignalMode(
+                        pipe_owner::ASYNC_EXPORT_REFUSAL,
+                    ));
+                }
             }
             exported.push(guest_fd);
             if state
@@ -1553,13 +1593,25 @@ fn check_outgoing_rights(
 }
 
 /// Marks each of the guest descriptors `exported` as exported, before host
-/// sendmsg: a pipe's owner record, and the provenance of a native poll
+/// sendmsg: a description's record, all of them or none
+/// (`pipe_owner::mark_exported`), and then the provenance of a native poll
 /// description.
-fn mark_exported_rights(state: &LoadedStaticElf, exported: &[libc::c_int]) -> Result<(), i64> {
+fn mark_exported_rights(
+    state: &LoadedStaticElf,
+    exported: &[libc::c_int],
+) -> Result<(), pipe_owner::ExportRefusal> {
+    let records: Vec<_> = exported
+        .iter()
+        .filter_map(|&guest_fd| {
+            let record = pipe_owner::description_record(state, guest_fd)?;
+            let host_fd = host_fd(state, guest_fd)?;
+            Some((record, host_fd, export_checks_async(state, guest_fd, host_fd)))
+        })
+        .collect();
+    #[cfg(test)]
+    run_one_shot_test_hook(&RIGHTS_SCANNED_TEST_HOOK);
+    pipe_owner::mark_exported(&records)?;
     for &guest_fd in exported {
-        if let Some(owner) = state.pipe_owners.get(&guest_fd) {
-            owner.before_export()?;
-        }
         if let Some(description) = native_poll_description(state, guest_fd) {
             // Once an untracked receiver might control this description,
             // no known alias can prove its registration set. Invalidate
@@ -2110,6 +2162,11 @@ std::thread_local! {
     /// has yet to ask the host: where another process can connect the socket
     /// meanwhile.
     pub(crate) static SEND_BEGUN_TEST_HOOK: OneShotTestHook =
+        const { std::cell::RefCell::new(None) };
+    /// Runs once on the calling thread when a send has scanned the rights it
+    /// carries and has yet to lock their records to mark them exported:
+    /// where another thread can turn asynchronous signal mode on meanwhile.
+    pub(crate) static RIGHTS_SCANNED_TEST_HOOK: OneShotTestHook =
         const { std::cell::RefCell::new(None) };
 }
 

@@ -52,6 +52,10 @@ pub(super) fn ioctl(
     if args[1] as u32 == libc::FIONBIO as u32 {
         return fionbio(memory, state, guest_fd, host_fd, args[2]);
     }
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    if args[1] as u32 == libc::FIOASYNC as u32 {
+        return fioasync(memory, state, guest_fd, host_fd, args[2]);
+    }
     match args[1] as libc::c_ulong {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
@@ -133,7 +137,7 @@ fn fionbio(
             Err(error) => return error,
         }
     }
-    if let Some(owner) = state.pipe_owners.get(&guest_fd) {
+    if let Some(owner) = pipe_owner::description_record(state, guest_fd) {
         owner.set_nonblocking(host_fd, value)
     } else {
         set_fd_nonblocking(host_fd, value)

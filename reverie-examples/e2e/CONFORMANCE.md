@@ -128,6 +128,40 @@ A backend that cannot host a tool or a program must refuse by name
 (`REFUSED:`), never fail silently or pass vacuously. A refusal is its own
 scorecard verdict, separate from a mismatch.
 
+## Asynchronous signal mode
+
+`../tests/async_signal_mode.rs` runs one fixture under `noop` on every
+backend and asserts each backend's actual values against native Linux.
+Turning asynchronous signal mode on (`F_SETFL` with `O_ASYNC`, or
+`FIOASYNC`) makes the kernel signal the description's owner. KVM's Linux
+provider never gives a host description an owner, so it forwards the mode
+only where no process outside the run can own the description and the
+file's `fasync` picks no owner itself: the standard input its embedder
+declared, a description the run created and never sent out of it, and the
+memory devices without `fasync` (null, zero, full, mem and port). Turning
+the mode off is always forwarded, and a request that changes nothing is
+answered with 0. Every other request turning it on is refused by name
+(`UnsupportedOperation::AsyncSignalMode`, ENOSYS to the guest), where the
+other backends give Linux's answer. These are expected differences, each
+counted as a refusal on KVM and never as parity:
+
+| Case | Linux (ptrace, LiteInst, in-guest-trap) | KVM |
+|---|---|---|
+| `/dev/random` or `/dev/urandom`: `FIOASYNC` on; `F_SETFL` with `O_ASYNC` | 0; 0 | refused; refused |
+| `/dev/kmsg`: both (its operations are not audited on the supported host kernels) | `ENOTTY`; 0 | refused; refused |
+| an inherited or received pipe, FIFO or socket: both | 0; 0 | refused; refused |
+| an inherited regular file or directory (`> out.txt`): both | `ENOTTY`; 0 | refused; refused |
+| an inherited terminal or other character device: both | 0; 0 | refused; refused |
+| `O_ASYNC` already on outside that domain, `F_SETFL` changing another settable flag (`O_NONBLOCK` included) | 0 | refused |
+| a description the run sent in an `SCM_RIGHTS` message, through any alias, after a fork or exec: both | Linux's | refused |
+| sending a description of that domain while the mode is on | 0 | refused, nothing sent or marked |
+
+The fixture enforces the `/dev/urandom` and inherited standard input
+rows; the others are enforced by reverie-linuxemu's unit tests
+(`executor/async_signal_mode_tests.rs`), where kmsg's row is a table
+proof, as are mem's and port's, since a test may lack the privileges to
+open them.
+
 ## Corpus
 
 `corpus.tsv` is the base corpus for the recorder: single-threaded system

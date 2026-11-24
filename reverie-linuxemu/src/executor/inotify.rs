@@ -168,9 +168,12 @@ pub(super) fn inotify_init1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: inotify_init1 returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, flags & libc::IN_CLOEXEC != 0, None)
+    insert_created_file(
+        state,
+        host_fd,
+        flags & libc::IN_CLOEXEC != 0,
+        pipe_owner::Provenance::AnonymousKeeper,
+    )
 }
 
 /// The host kernel's verdict for an inotify_add_watch operand that cannot name

@@ -280,13 +280,17 @@ static int one(const char* path, unsigned minor_number) {
           (original | O_NONBLOCK | O_APPEND));
       CHECK(syscall(SYS_fcntl, fd, (long)F_SETFL, (long)O_RDONLY) == 0);
       CHECK(syscall(SYS_fcntl, alias, (long)F_GETFL, 0L) == original);
+      // KVM refuses asynchronous signal mode on random and urandom by name:
+      // their fasync signals an owner when the entropy pool becomes ready,
+      // and the description may have one outside the run. Nothing changes.
+      FAIL(
+          syscall(SYS_fcntl, alias, (long)F_SETFL, (long)(O_ASYNC | O_NONBLOCK)),
+          ENOSYS);
+      CHECK(syscall(SYS_fcntl, fd, (long)F_GETFL, 0L) == original);
       CHECK(
-          syscall(
-              SYS_fcntl, alias, (long)F_SETFL, (long)(O_ASYNC | O_NONBLOCK)) ==
-          0);
+          syscall(SYS_fcntl, alias, (long)F_SETFL, (long)O_NONBLOCK) == 0);
       CHECK(
-          syscall(SYS_fcntl, fd, (long)F_GETFL, 0L) ==
-          (original | O_ASYNC | O_NONBLOCK));
+          syscall(SYS_fcntl, fd, (long)F_GETFL, 0L) == (original | O_NONBLOCK));
       CHECK(syscall(SYS_fcntl, fd, (long)F_SETFL, 0L) == 0);
       CHECK(syscall(SYS_fcntl, alias, (long)F_GETFL, 0L) == original);
     }

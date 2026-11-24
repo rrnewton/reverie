@@ -778,10 +778,11 @@ impl ElfExecutor {
         self.state.file_retirement.drain_unlocked();
 
         let mut memory = memory.clone();
-        let accepted = match accept_socket(&mut memory, &self.state, request.args(), flags) {
-            Ok(file) => self.state.file_retirement.stage(file),
-            Err(error) => return Some(Ok(error)),
-        };
+        let (accepted, created) =
+            match accept_socket(&mut memory, &self.state, request.args(), flags) {
+                Ok((file, created)) => (self.state.file_retirement.stage(file), created),
+                Err(error) => return Some(Ok(error)),
+            };
 
         let mut shared_files = file_table.lock().expect("KVM file-table lock poisoned");
         if let Err(error) = shared_files.install(&mut self.state) {
@@ -793,6 +794,9 @@ impl ElfExecutor {
             flags & libc::SOCK_CLOEXEC != 0,
             None,
         );
+        if created {
+            grant_creation_record(&mut self.state, result, pipe_owner::Provenance::Created);
+        }
         if result >= 0
             && let Err(error) = shared_files.update_from_elf(&self.state)
         {

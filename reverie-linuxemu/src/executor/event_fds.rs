@@ -29,9 +29,12 @@ pub(super) fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: eventfd returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    let fd = insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None);
+    let fd = insert_created_file(
+        state,
+        host_fd,
+        flags & libc::EFD_CLOEXEC != 0,
+        pipe_owner::Provenance::AnonymousKeeper,
+    );
     if fd >= 0 {
         install_native_poll_description(
             state,
@@ -176,8 +179,10 @@ pub(super) fn signalfd(
         if host_fd < 0 {
             return io_error(std::io::Error::last_os_error());
         }
-        // SAFETY: eventfd returned a new owned descriptor.
-        let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+        let (file, created) = match adopt_created_host_fd(state, host_fd) {
+            Ok(adopted) => adopted,
+            Err(error) => return error,
+        };
         // Stage the only extra host descriptor before either guest-table or
         // signal-state insertion. Failure leaves no guest-visible descriptor.
         let carrier = match crate::signal::SignalFdCarrier::pin_eventfd(&file) {
@@ -191,6 +196,9 @@ pub(super) fn signalfd(
         let guest_fd = insert_file_with_flags(state, file, flags & libc::SFD_CLOEXEC != 0, None);
         if guest_fd < 0 {
             return guest_fd;
+        }
+        if created {
+            grant_creation_record(state, guest_fd, pipe_owner::Provenance::AnonymousKeeper);
         }
         (guest_fd as libc::c_int, carrier)
     } else {
@@ -731,9 +739,12 @@ pub(super) fn timerfd_create(
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: timerfd_create returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    insert_file_with_flags(state, file, flags & libc::TFD_CLOEXEC != 0, None)
+    insert_created_file(
+        state,
+        host_fd,
+        flags & libc::TFD_CLOEXEC != 0,
+        pipe_owner::Provenance::AnonymousKeeper,
+    )
 }
 
 // TODO-HUMAN-REVIEW(PR-235): Review host-backed KVM timerfd control semantics.

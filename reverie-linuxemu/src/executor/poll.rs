@@ -1519,9 +1519,12 @@ pub(super) fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: epoll_create1 returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
-    let fd = insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None);
+    let fd = insert_created_file(
+        state,
+        host_fd,
+        flags & libc::EPOLL_CLOEXEC != 0,
+        pipe_owner::Provenance::AnonymousKeeper,
+    );
     if fd >= 0 {
         let identity = Arc::new(EpollIdentity::default());
         {

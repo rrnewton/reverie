@@ -350,7 +350,7 @@ pub(super) fn pidfd_open(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 /// A new pidfd for the supervisor process, with `flags`.
-fn supervisor_pidfd(flags: libc::c_uint) -> Result<std::fs::File, i64> {
+fn supervisor_pidfd(flags: libc::c_uint) -> Result<RawFd, i64> {
     // SAFETY: pidfd_open takes no pointers.
     let host_fd = unsafe {
         libc::syscall(libc::SYS_pidfd_open, libc::getpid(), flags as libc::c_uint) as libc::c_int
@@ -358,8 +358,7 @@ fn supervisor_pidfd(flags: libc::c_uint) -> Result<std::fs::File, i64> {
     if host_fd < 0 {
         return Err(io_error(std::io::Error::last_os_error()));
     }
-    // SAFETY: pidfd_open returned a new owned descriptor.
-    Ok(unsafe { std::fs::File::from_raw_fd(host_fd) })
+    Ok(host_fd)
 }
 
 /// `pidfd_open(pid, flags)` for a guest process, the caller's own included:
@@ -384,7 +383,9 @@ fn guest_pidfd_open(state: &mut LoadedStaticElf, pid: libc::pid_t, flags: libc::
             return negative_errno(libc::ESRCH);
         }
         return match supervisor_pidfd(flags) {
-            Ok(file) => insert_file_with_flags(state, file, true, None),
+            Ok(host_fd) => {
+                insert_created_file(state, host_fd, true, pipe_owner::Provenance::AnonymousKeeper)
+            }
             Err(error) => error,
         };
     };
@@ -392,11 +393,11 @@ fn guest_pidfd_open(state: &mut LoadedStaticElf, pid: libc::pid_t, flags: libc::
         Ok(shadow) => shadow,
         Err(errno) => return negative_errno(errno),
     };
-    let file = match supervisor_pidfd(flags) {
-        Ok(file) => file,
+    let host_fd = match supervisor_pidfd(flags) {
+        Ok(host_fd) => host_fd,
         Err(error) => return error,
     };
-    let fd = insert_file_with_flags(state, file, true, None);
+    let fd = insert_created_file(state, host_fd, true, pipe_owner::Provenance::AnonymousKeeper);
     if fd >= 0 {
         let pidfd = Arc::new(GuestPidfd {
             target,

@@ -1137,6 +1137,7 @@ impl ElfExecutor {
         self.unsupported_refusal = None;
         self.state.signal_refusal = None;
         self.state.pidfd_refusal = None;
+        self.state.async_signal_refusal = None;
         take_receive_refused_for_descriptors();
         take_receive_refused_for_unwritable_buffer();
         take_run_failure();
@@ -1332,6 +1333,11 @@ impl ElfExecutor {
                     self.unsupported_refusal = Some(refusal);
                 }
                 if let Some(refusal) = pidfd_refusal_record(self.state.pidfd_refusal.take(), result)
+                {
+                    self.unsupported_refusal = Some(refusal);
+                }
+                if let Some(refusal) =
+                    async_signal_refusal_record(self.state.async_signal_refusal.take(), result)
                 {
                     self.unsupported_refusal = Some(refusal);
                 }

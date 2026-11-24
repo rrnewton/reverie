@@ -143,6 +143,17 @@ pub enum UnsupportedOperation {
     /// refusal's diagnostic names when the backend makes it. A backend that
     /// refuses one received nothing.
     UnwritableRecordBuffer,
+    /// Turning on asynchronous signal mode (`O_ASYNC` through `F_SETFL`, or
+    /// `FIOASYNC`) for a descriptor whose signals the backend cannot keep
+    /// inside the run: one whose host description may have an owner outside
+    /// it (an inherited or received description, or one that has left the
+    /// run), or a device whose `fasync` may pick or signal an owner itself,
+    /// such as a terminal. It also names the refusal to send, in an
+    /// `SCM_RIGHTS` message, a description on which the backend turned that
+    /// mode on. A backend that refuses one changed no status flag and
+    /// registered nothing, and a refused send sent nothing and marked
+    /// nothing; the refusal's diagnostic names the reason.
+    AsyncSignalMode,
 }
 
 /// A backend's refusal of an injected syscall, or of a `Guest` operation,

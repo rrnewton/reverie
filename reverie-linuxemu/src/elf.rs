@@ -1388,6 +1388,20 @@ pub struct LoadedStaticElf {
     /// the same syscall boundary as `signal_refusal`, as the typed refusal
     /// `UnsupportedOperation::Pidfd`. Never carried across fork or exec.
     pub(crate) pidfd_refusal: Option<&'static str>,
+    /// Why the call just executed was refused with ENOSYS for asynchronous
+    /// signal mode (`crate::executor::async_signal_mode`), if it was. Taken
+    /// at the same syscall boundary as `signal_refusal`, as the typed refusal
+    /// `UnsupportedOperation::AsyncSignalMode`. Never carried across fork or
+    /// exec.
+    pub(crate) async_signal_refusal: Option<&'static str>,
+    /// The standard input the embedder declared it made for the run
+    /// ([`Self::declare_owned_stdin`]): the stdin slot's identity
+    /// (`stdin_entry_id`) when it was declared, and the record descriptor 0
+    /// stands for while that slot is still in place. Fork and exec carry it.
+    pub(crate) declared_stdin: Option<(
+        std::sync::Arc<()>,
+        std::sync::Arc<crate::executor::pipe_owner::PipeOwner>,
+    )>,
 }
 
 impl LoadedStaticElf {
@@ -1462,6 +1476,29 @@ impl LoadedStaticElf {
             .as_ref()
             .is_some_and(|file| self.private_copy_gate.reach(file.as_raw_fd()));
         if reached { self.stdin.as_mut() } else { None }
+    }
+
+    /// Declares that this run's standard input, as installed now, is a
+    /// description its embedder made for the run, so that asynchronous
+    /// signal mode may be turned on for it while it is a pipe, a FIFO or a
+    /// regular file. The declaration covers that description, through
+    /// descriptor 0 and the aliases made from it, until one is sent out of
+    /// the run. By making it the embedder promises, for the life of the run,
+    /// that neither it nor any copy of the description it keeps will set an
+    /// owner or asynchronous signal mode on it, change its status flags, or
+    /// give it to another process: otherwise a process outside the run could
+    /// own it. A process with ptrace rights over the supervisor can still
+    /// take any descriptor it holds (`pidfd_getfd`), which this cannot see.
+    /// With no standard input installed it declares nothing.
+    pub fn declare_owned_stdin(&mut self) {
+        self.declared_stdin = self.stdin.is_some().then(|| {
+            (
+                self.stdin_entry_id.clone(),
+                std::sync::Arc::new(crate::executor::pipe_owner::PipeOwner::declared(
+                    self.pipe_owner_process.clone(),
+                )),
+            )
+        });
     }
 
     pub(crate) fn take_stdin(&mut self) -> Option<std::fs::File> {
@@ -1606,6 +1643,8 @@ impl LoadedStaticElf {
             file_retirement: FileRetirement::default(),
             signal_refusal: None,
             pidfd_refusal: None,
+            async_signal_refusal: None,
+            declared_stdin: self.declared_stdin.clone(),
             pipe_owners,
             guest_pidfds: pidfd_names,
             pidfd_holds: guest_pidfds.into_values().collect(),
@@ -1858,6 +1897,7 @@ impl LoadedStaticElf {
         self.file_retirement = previous.file_retirement;
         self.pipe_owner_process = previous.pipe_owner_process;
         self.pipe_owners = pipe_owners;
+        self.declared_stdin = previous.declared_stdin;
         self.guest_pidfds = guest_pidfds;
         self.fd_entry_ids = fd_entry_ids;
         self.epoll_domain = previous.epoll_domain;
@@ -2672,6 +2712,8 @@ fn load_executable(
         file_retirement: FileRetirement::default(),
         signal_refusal: None,
         pidfd_refusal: None,
+        async_signal_refusal: None,
+        declared_stdin: None,
         pipe_owners: Default::default(),
         guest_pidfds: Default::default(),
         pidfd_holds: Vec::new(),

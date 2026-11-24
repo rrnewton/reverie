@@ -751,6 +751,25 @@ pub(super) fn pidfd_refusal_record(
         })
 }
 
+/// The typed refusal, if any, that a call refused for asynchronous signal
+/// mode carries (`async_signal_mode`; the export refusal of `sendmsg`):
+/// `reason` is the one the call recorded, and the call answered ENOSYS,
+/// which Linux's fcntl, ioctl and sendmsg never answer for these requests.
+pub(super) fn async_signal_refusal_record(
+    reason: Option<&'static str>,
+    result: i64,
+) -> Option<reverie::UnsupportedRefusal> {
+    reason
+        .filter(|_| result == negative_errno(libc::ENOSYS))
+        .map(|reason| {
+            reverie::UnsupportedRefusal::new(
+                reverie::UnsupportedOperation::AsyncSignalMode,
+                reverie::Errno::ENOSYS,
+                reason,
+            )
+        })
+}
+
 /// Diagnostic for this backend's refusal of a signalfd read that would wait,
 /// with no covered signal pending for the caller or its process.
 pub(crate) const SIGNALFD_WAITING_READ_REFUSAL: &str =

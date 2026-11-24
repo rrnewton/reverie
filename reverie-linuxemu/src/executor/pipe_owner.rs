@@ -17,6 +17,14 @@
 //! guest-memory APIs or callbacks while holding the leaf mutex. It serializes
 //! owner admission, host F_SETFL, and pre-send escape marking across *all*
 //! aliases, including aliases in different forked descriptor tables.
+//!
+//! The same record, with its leaf mutex and its irreversible export mark,
+//! also stands for every other description this run created, and for the
+//! standard input its embedder declared (`Provenance`): the descriptions
+//! whose host file no process outside the run can own, which is what lets
+//! asynchronous signal mode be forwarded to them (`async_signal_mode`). Only
+//! a pipe's record configures the owner commands. Only `mark_exported` holds
+//! more than one leaf mutex at a time, each once, in address order.
 
 use super::*;
 
@@ -26,6 +34,50 @@ enum Phase {
     Managed,
     Escaped,
 }
+
+/// How the description a record stands for came to be in the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Provenance {
+    /// A pipe end this run created with pipe or pipe2, whose owner commands
+    /// this record configures.
+    Pipe,
+    /// Another description this run created by opening or making a file,
+    /// whose host type (`fstat`) decides what it is.
+    Created,
+    /// An anonymous-inode description this run created (an eventfd, a
+    /// signalfd's carrier, a timerfd, an inotify instance or an epoll set),
+    /// which has no file type of its own: this record is what says what it
+    /// is.
+    AnonymousKeeper,
+    /// The standard input its embedder declared it made for the run
+    /// (`LoadedStaticElf::declare_owned_stdin`).
+    Declared,
+}
+
+/// Why a record no longer admits asynchronous signal mode.
+pub(super) const ASYNC_EXPORTED_REFUSAL: &str = "KVM does not turn on asynchronous signal \
+     mode for a description that left the run in an SCM_RIGHTS message: a process outside \
+     the run may own it";
+/// Why a pipe whose owner is recorded here does not take asynchronous signal mode.
+pub(super) const ASYNC_OWNER_RECORDED_REFUSAL: &str = "KVM does not turn on asynchronous \
+     signal mode for a pipe with an owner recorded for it: it cannot deliver the signal";
+/// Why a description whose record is unusable does not take it.
+const ASYNC_RECORD_POISONED_REFUSAL: &str = "KVM does not turn on asynchronous signal mode \
+     for a description whose record a failed call left unusable";
+
+/// Why a send of rights stops at their records (`mark_exported`).
+pub(super) enum ExportRefusal {
+    /// Linux's own answer, or this backend's refusal by errno alone.
+    Errno(i64),
+    /// A description that still takes asynchronous signal mode in the run
+    /// has it on (`ASYNC_EXPORT_REFUSAL`).
+    AsyncSignalMode(&'static str),
+}
+
+/// Why a send of a description with asynchronous signal mode on is refused.
+pub(super) const ASYNC_EXPORT_REFUSAL: &str = "KVM does not send, in an SCM_RIGHTS message, \
+     a description on which it turned on asynchronous signal mode: the receiver could give \
+     it an owner outside the run";
 
 #[derive(Debug)]
 struct Configuration {
@@ -44,6 +96,7 @@ pub(crate) struct PipeOwner {
     /// An exported end can be given a host fasync owner, so a successful
     /// write can then raise a configured signal (SIGPIPE included).
     pair_exported: Arc<AtomicBool>,
+    provenance: Provenance,
 }
 
 impl PipeOwner {
@@ -52,10 +105,18 @@ impl PipeOwner {
         self.configuration.try_lock().is_ok()
     }
 
-    pub(super) fn new(creator: Arc<()>, pair_exported: Arc<AtomicBool>) -> Self {
+    /// The record of one end of a pipe this run created, or, for another
+    /// `provenance`, of a description of that kind (`pair_exported` is then
+    /// that description's own).
+    pub(super) fn new(
+        creator: Arc<()>,
+        pair_exported: Arc<AtomicBool>,
+        provenance: Provenance,
+    ) -> Self {
         Self {
             creator,
             pair_exported,
+            provenance,
             configuration: Mutex::new(Configuration {
                 phase: Phase::Fresh,
                 owner_type: 0, // F_OWNER_TID
@@ -64,28 +125,61 @@ impl PipeOwner {
         }
     }
 
-    /// Whether [`Self::before_export`] would refuse this pipe's export now,
-    /// which a sender checks before it marks any right as exported.
+    /// The record of a standard input its embedder declared
+    /// (`LoadedStaticElf::declare_owned_stdin`).
+    pub(crate) fn declared(creator: Arc<()>) -> Self {
+        Self::new(creator, Arc::default(), Provenance::Declared)
+    }
+
+    pub(super) fn provenance(&self) -> Provenance {
+        self.provenance
+    }
+
+    pub(super) fn is_pipe(&self) -> bool {
+        self.provenance == Provenance::Pipe
+    }
+
+    /// Whether [`mark_exported`] would refuse this pipe's export now, which
+    /// a sender checks before it marks any right as exported.
     pub(super) fn export_refused(&self) -> bool {
         self.configuration
             .lock()
             .map_or(true, |configuration| configuration.phase == Phase::Managed)
     }
 
-    pub(super) fn before_export(&self) -> Result<(), i64> {
-        let mut configuration = self
+    /// Whether this description still takes asynchronous signal mode and
+    /// has it on, as `host_fd`, which names it, shows: then it may not be
+    /// sent (`ASYNC_EXPORT_REFUSAL`). The early check of a send; the
+    /// authoritative one is [`mark_exported`]'s, under the lock.
+    pub(super) fn async_export_refused(&self, host_fd: RawFd) -> bool {
+        self.configuration.lock().map_or(true, |configuration| {
+            configuration.phase != Phase::Escaped && host_async_on(host_fd)
+        })
+    }
+
+    /// Runs `apply`, a status-flag change that may turn asynchronous signal
+    /// mode on, under the leaf mutex, while this description is still the
+    /// run's own: never exported and, for a pipe, with no owner recorded.
+    /// Otherwise runs nothing and returns why.
+    pub(super) fn with_async_on(&self, apply: impl FnOnce() -> i64) -> Result<i64, &'static str> {
+        let configuration = self
             .configuration
             .lock()
-            .map_err(|_| negative_errno(libc::ENOSYS))?;
-        if configuration.phase == Phase::Managed {
-            return Err(negative_errno(libc::ENOSYS));
+            .map_err(|_| ASYNC_RECORD_POISONED_REFUSAL)?;
+        match configuration.phase {
+            Phase::Fresh => Ok(apply()),
+            Phase::Managed => Err(ASYNC_OWNER_RECORDED_REFUSAL),
+            Phase::Escaped => Err(ASYNC_EXPORTED_REFUSAL),
         }
-        // This is irreversible, even if a later element or host send fails.
-        // The record is shared by every known alias; imported aliases never
-        // acquire a new positive witness by inode or host-fd resemblance.
-        configuration.phase = Phase::Escaped;
-        self.pair_exported.store(true, Ordering::SeqCst);
-        Ok(())
+    }
+
+    /// Runs `apply`, any other change of this description's status flags,
+    /// under the leaf mutex, so it serializes with admission and export.
+    pub(super) fn locked(&self, apply: impl FnOnce() -> i64) -> i64 {
+        match self.configuration.lock() {
+            Ok(_configuration) => apply(),
+            Err(_) => negative_errno(libc::ENOSYS),
+        }
     }
 
     /// Marks the pipe as no longer private to the guest without an export
@@ -111,19 +205,73 @@ impl PipeOwner {
         // fasync or overwrite unrelated flags with a stale F_GETFL snapshot.
         set_fd_nonblocking(host_fd, value)
     }
+}
 
-    pub(super) fn set_flags(&self, host_fd: RawFd, flags: i32) -> i64 {
-        let Ok(configuration) = self.configuration.lock() else {
-            return negative_errno(libc::ENOSYS);
-        };
-        if configuration.phase == Phase::Managed && flags & libc::O_ASYNC != 0 {
-            return negative_errno(libc::ENOSYS);
-        }
-        // Keep the lock through the native mutation: otherwise a forked
-        // sibling could enable fasync between owner admission and publication.
-        // SAFETY: caller owns this host fd and the third argument is an int.
-        zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+/// Whether the host description `host_fd` names has asynchronous signal
+/// mode on (`FASYNC`, which `F_GETFL` reports as `O_ASYNC`). A description
+/// whose flags cannot be read counts as on, so a check fails closed.
+pub(super) fn host_async_on(host_fd: RawFd) -> bool {
+    fd_status_flags(host_fd).map_or(true, |flags| flags & libc::O_ASYNC != 0)
+}
+
+/// The record of guest descriptor `fd`: its table entry's, or, for
+/// descriptor 0 while it is still the standard input the embedder declared,
+/// that declaration's. Aliases made from descriptor 0 copy this record into
+/// their own entries, so it outlives a later replacement of descriptor 0.
+pub(super) fn description_record(state: &LoadedStaticElf, fd: i32) -> Option<Arc<PipeOwner>> {
+    if let Some(record) = state.pipe_owners.get(&fd) {
+        return Some(record.clone());
     }
+    let (entry, record) = state.declared_stdin.as_ref()?;
+    (fd == libc::STDIN_FILENO
+        && state.stdin_copy().is_some()
+        && Arc::ptr_eq(entry, &state.stdin_entry_id))
+    .then(|| record.clone())
+}
+
+/// Marks the records of the rights a send carries as exported, before the
+/// host send, or refuses the send and marks none. Each right comes with a
+/// host descriptor that names its description and whether the description
+/// is of a kind that admits asynchronous signal mode. Each distinct record
+/// is locked once, all in address order, so a message naming one
+/// description twice, or two of its aliases, cannot wait on its own lock.
+/// Under the locks, a pipe with an owner recorded refuses as before, and an
+/// admitted description that is still the run's own refuses if it has the
+/// mode on: the re-check that the early scan (`async_export_refused`)
+/// cannot make authoritative, since another thread may turn the mode on
+/// after it. A description outside that domain is not checked: the guest
+/// never turns the mode on there, and its sends are Linux's. The marks are
+/// irreversible, even if the host send then fails.
+pub(super) fn mark_exported(
+    rights: &[(Arc<PipeOwner>, RawFd, bool)],
+) -> Result<(), ExportRefusal> {
+    let mut distinct: Vec<&(Arc<PipeOwner>, RawFd, bool)> = rights.iter().collect();
+    distinct.sort_by_key(|(record, _, _)| Arc::as_ptr(record) as usize);
+    distinct.dedup_by(|a, b| Arc::ptr_eq(&a.0, &b.0));
+    let mut guards = Vec::with_capacity(distinct.len());
+    for (record, _, _) in &distinct {
+        guards.push(
+            record
+                .configuration
+                .lock()
+                .map_err(|_| ExportRefusal::Errno(negative_errno(libc::ENOSYS)))?,
+        );
+    }
+    for (configuration, (_, host_fd, admitted)) in guards.iter().zip(&distinct) {
+        if configuration.phase == Phase::Managed {
+            return Err(ExportRefusal::Errno(negative_errno(libc::ENOSYS)));
+        }
+        if *admitted && configuration.phase != Phase::Escaped && host_async_on(*host_fd) {
+            return Err(ExportRefusal::AsyncSignalMode(ASYNC_EXPORT_REFUSAL));
+        }
+    }
+    // The record is shared by every known alias; imported aliases never
+    // acquire a new positive witness by inode or host-fd resemblance.
+    for (configuration, (record, _, _)) in guards.iter_mut().zip(&distinct) {
+        configuration.phase = Phase::Escaped;
+        record.pair_exported.store(true, Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 fn owner_pointer_valid(address: u64) -> bool {
@@ -182,7 +330,7 @@ pub(super) fn fcntl(
         }
         _ => None,
     };
-    let Some(owner) = state.pipe_owners.get(&guest_fd) else {
+    let Some(owner) = state.pipe_owners.get(&guest_fd).filter(|owner| owner.is_pipe()) else {
         return negative_errno(libc::ENOSYS);
     };
     if !Arc::ptr_eq(&owner.creator, &state.pipe_owner_process)

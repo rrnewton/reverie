@@ -659,8 +659,10 @@ pub(super) fn open_synthetic_proc(
     if descriptor < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: open returned a new descriptor owned by this call.
-    let exposed = unsafe { std::fs::File::from_raw_fd(descriptor) };
+    let (exposed, created) = match adopt_created_host_fd(state, descriptor) {
+        Ok(adopted) => adopted,
+        Err(error) => return error,
+    };
     // The writable construction handle never enters the guest table. Opening
     // the proc-fd link creates a fresh O_RDONLY or O_PATH description at offset
     // zero without sharing the construction description.
@@ -675,6 +677,9 @@ pub(super) fn open_synthetic_proc(
         None,
         IdentityTimestamps::ProcSnapshot,
     );
+    if created {
+        grant_creation_record(state, guest_fd, pipe_owner::Provenance::Created);
+    }
     if guest_fd >= 0 {
         let guest_fd = guest_fd as libc::c_int;
         state.proc_files.insert(guest_fd, inode);

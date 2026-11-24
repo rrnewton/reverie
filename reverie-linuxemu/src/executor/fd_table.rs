@@ -2158,6 +2158,99 @@ pub(super) fn insert_file_with_identity(
     i64::from(fd)
 }
 
+/// Whether `host_fd` names a descriptor this executor already holds: the
+/// supervisor's standard streams, its copy of the guest's standard input,
+/// or a guest descriptor's host file.
+fn holds_host_fd(state: &LoadedStaticElf, host_fd: RawFd) -> bool {
+    (0..=2).contains(&host_fd)
+        || state
+            .stdin
+            .as_ref()
+            .is_some_and(|stdin| stdin.as_raw_fd() == host_fd)
+        || state
+            .files
+            .copies()
+            .values()
+            .any(|file| file.as_raw_fd() == host_fd)
+}
+
+/// Takes ownership of `host_fd`, which a host call that creates a
+/// description just returned, and says whether it is this run's own new
+/// description. A result that names a descriptor this executor already holds
+/// is not: Linux returns a free descriptor, and only a forged answer, such
+/// as a seccomp filter on the supervisor that returns `SECCOMP_RET_ERRNO`
+/// with data 0 (kernel/seccomp.c:1279-1285), reports success with descriptor
+/// 0. Such a result is checked before anything owns it, so the held
+/// descriptor is never closed: the caller gets a copy of it, which carries no
+/// creation record, and a warning names it. A negative result from a call
+/// that reported success has no descriptor to copy.
+pub(super) fn adopt_created_host_fd(
+    state: &LoadedStaticElf,
+    host_fd: RawFd,
+) -> Result<(std::fs::File, bool), i64> {
+    if host_fd < 0 {
+        return Err(negative_errno(libc::EIO));
+    }
+    if !holds_host_fd(state, host_fd) {
+        // SAFETY: the creating call returned this new owned descriptor.
+        return Ok((unsafe { std::fs::File::from_raw_fd(host_fd) }, true));
+    }
+    tracing::warn!(
+        "a host call that creates a descriptor returned descriptor {host_fd}, which the \
+         executor already holds: the guest gets a copy of it, not a description of its own"
+    );
+    // SAFETY: host_fd names a live descriptor this executor holds; the copy
+    // is a new owned descriptor and the held one stays open.
+    let copy = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if copy < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+    Ok((unsafe { std::fs::File::from_raw_fd(copy) }, false))
+}
+
+/// Gives guest descriptor `fd`, if the insertion that returned it succeeded,
+/// the record of a description of `provenance` this run created.
+pub(super) fn grant_creation_record(
+    state: &mut LoadedStaticElf,
+    fd: i64,
+    provenance: pipe_owner::Provenance,
+) {
+    if fd >= 0
+        && let Ok(fd) = i32::try_from(fd)
+    {
+        state.pipe_owners.insert(
+            fd,
+            Arc::new(pipe_owner::PipeOwner::new(
+                state.pipe_owner_process.clone(),
+                Arc::default(),
+                provenance,
+            )),
+        );
+    }
+}
+
+/// Installs `host_fd`, a descriptor a host call that creates a description
+/// just returned, as a guest descriptor, with the creation record of
+/// `provenance` unless the result names a descriptor the executor already
+/// holds ([`adopt_created_host_fd`]).
+pub(super) fn insert_created_file(
+    state: &mut LoadedStaticElf,
+    host_fd: RawFd,
+    close_on_exec: bool,
+    provenance: pipe_owner::Provenance,
+) -> i64 {
+    let (file, created) = match adopt_created_host_fd(state, host_fd) {
+        Ok(adopted) => adopted,
+        Err(error) => return error,
+    };
+    let fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if created {
+        grant_creation_record(state, fd, provenance);
+    }
+    fd
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED: Model fcntl descriptor duplication in the guest table.
 // TODO-HUMAN-REVIEW(#91): Review minimum/error precedence and standard-fd ownership.
 // TODO-HUMAN-REVIEW(PR-136): Review fcntl duplicate object identity propagation.
@@ -2355,7 +2448,7 @@ pub(super) fn duplicate_fd(
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
     let source_native_poll = native_poll_description(state, old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
-    let source_pipe_owner = state.pipe_owners.get(&old_fd).cloned();
+    let source_pipe_owner = pipe_owner::description_record(state, old_fd);
     let source_pidfd = guest_pidfd(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
@@ -2494,29 +2587,45 @@ pub(super) fn pipe2(
     if unsafe { libc::pipe2(host_fds.as_mut_ptr(), host_flags) } != 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: pipe2 returned two new owned descriptors on success.
-    let read_end = unsafe { std::fs::File::from_raw_fd(host_fds[0]) };
-    // SAFETY: pipe2 returned two new owned descriptors on success.
-    let write_end = unsafe { std::fs::File::from_raw_fd(host_fds[1]) };
-    let creator = state.pipe_owner_process.clone();
+    let [(read_end, read_created), (write_end, write_created)] =
+        match adopt_created_pair(state, host_fds) {
+            Ok(ends) => ends,
+            Err(error) => return error,
+        };
     insert_file_pair(
         memory,
         state,
         address,
         [read_end, write_end],
         flags & libc::O_CLOEXEC != 0,
-        Some(creator),
+        [
+            read_created.then_some(pipe_owner::Provenance::Pipe),
+            write_created.then_some(pipe_owner::Provenance::Pipe),
+        ],
     )
 }
 
+/// [`adopt_created_host_fd`] for both descriptors a call that creates a pair
+/// returned.
+pub(super) fn adopt_created_pair(
+    state: &LoadedStaticElf,
+    host_fds: [RawFd; 2],
+) -> Result<[(std::fs::File, bool); 2], i64> {
+    let first = adopt_created_host_fd(state, host_fds[0])?;
+    let second = adopt_created_host_fd(state, host_fds[1])?;
+    Ok([first, second])
+}
+
 // TODO-HUMAN-REVIEW(PR-205): Review paired guest-descriptor rollback and identity cleanup.
+/// `provenance` gives each end the creation record of its kind, or none;
+/// both ends of a pipe share whether either was exported.
 pub(super) fn insert_file_pair(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     address: u64,
     files: [std::fs::File; 2],
     close_on_exec: bool,
-    pipe_creator: Option<Arc<()>>,
+    provenance: [Option<pipe_owner::Provenance>; 2],
 ) -> i64 {
     let [first_file, second_file] = files.map(|file| state.file_retirement.stage(file));
     let first_fd = insert_file_with_flags(state, first_file.into_file(), close_on_exec, None);
@@ -2530,14 +2639,15 @@ pub(super) fn insert_file_pair(
     }
 
     let fds = [first_fd as libc::c_int, second_fd as libc::c_int];
-    if let Some(creator) = pipe_creator {
-        let pair_exported = Arc::new(AtomicBool::new(false));
-        for fd in fds {
+    let pair_exported = Arc::new(AtomicBool::new(false));
+    for (fd, provenance) in fds.into_iter().zip(provenance) {
+        if let Some(provenance) = provenance {
             state.pipe_owners.insert(
                 fd,
                 Arc::new(pipe_owner::PipeOwner::new(
-                    creator.clone(),
+                    state.pipe_owner_process.clone(),
                     pair_exported.clone(),
+                    provenance,
                 )),
             );
         }

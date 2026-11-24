@@ -3085,6 +3085,31 @@ impl KvmBackend {
         Ok(())
     }
 
+    /// Declare that the standard input this backend was given
+    /// ([`Self::new_with_stdin`]) is a description the caller made for this
+    /// run, so that the guest may turn asynchronous signal mode (`O_ASYNC`,
+    /// `FIOASYNC`) on for it while it is a pipe, a FIFO or a regular file.
+    /// Without the declaration the guest's standard input counts as
+    /// inherited, and that mode is refused for it
+    /// (`reverie::UnsupportedOperation::AsyncSignalMode`), since a process
+    /// outside the run may own an inherited description.
+    ///
+    /// The declaration is a promise, for the life of the run: neither the
+    /// caller nor any copy of the description it keeps will set an owner or
+    /// asynchronous signal mode on it, change its status flags, or give it
+    /// to another process. The declaration covers the description, through
+    /// descriptor 0 and the aliases the guest makes from it, until the guest
+    /// sends one out of the run.
+    pub fn declare_owned_stdin(&mut self) -> Result<()> {
+        AbandonedRuns::admit(&self.abandoned_runs)?;
+        let loaded = self
+            .static_elf
+            .as_mut()
+            .ok_or(Error::StaticElfNotInstalled)?;
+        loaded.declare_owned_stdin();
+        Ok(())
+    }
+
     /// Reserve the host directory at the absolute path `path` for the Tool.
     ///
     /// This is the reservation's whole contract; the README and

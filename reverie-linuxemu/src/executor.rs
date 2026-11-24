@@ -146,6 +146,8 @@ mod socket;
 use socket::*;
 mod ioctl;
 use ioctl::*;
+mod async_signal_mode;
+use async_signal_mode::*;
 mod identity;
 use identity::*;
 mod stat;
@@ -576,6 +578,8 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         file_retirement: crate::elf::FileRetirement::default(),
         signal_refusal: None,
         pidfd_refusal: None,
+        async_signal_refusal: None,
+        declared_stdin: None,
         pipe_owners: Default::default(),
         guest_pidfds: Default::default(),
         pidfd_holds: Vec::new(),
@@ -631,6 +635,7 @@ mod tests {
     include!("executor/personality_tests.rs");
     include!("executor/pipe_owner_tests.rs");
     include!("executor/ioctl_nonblocking_tests.rs");
+    include!("executor/async_signal_mode_tests.rs");
     include!("executor/syncfs_tests.rs");
     include!("executor/inotify_tests.rs");
     include!("executor/shared_file_tests.rs");

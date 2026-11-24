@@ -45,10 +45,8 @@ pub(super) fn memfd_create(
     if host_fd < 0 {
         return io_error(std::io::Error::last_os_error());
     }
-    // SAFETY: memfd_create returned a new owned descriptor.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
     let close_on_exec = flags & libc::MFD_CLOEXEC != 0;
-    insert_file_with_flags(state, file, close_on_exec, None)
+    insert_created_file(state, host_fd, close_on_exec, pipe_owner::Provenance::Created)
 }
 
 pub(super) fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
@@ -543,16 +541,24 @@ fn open_file(
             host_flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64,
         )
     };
-    // SAFETY: openat2 returned a new owned descriptor on success.
-    let file = unsafe { std::fs::File::from_raw_fd(host_fd as RawFd) };
-    finish_open_file(
+    // A result naming a descriptor the executor holds is not a new file:
+    // it gets no mode change and no creation record (`adopt_created_host_fd`).
+    let (file, created_here) = match adopt_created_host_fd(state, host_fd as RawFd) {
+        Ok(adopted) => adopted,
+        Err(error) => return error,
+    };
+    let fd = finish_open_file(
         state,
         file,
-        uses_mode && created,
+        uses_mode && created && created_here,
         mode,
         guest_cloexec,
         admits_tool_directory,
-    )
+    );
+    if created_here {
+        grant_creation_record(state, fd, pipe_owner::Provenance::Created);
+    }
+    fd
 }
 
 /// Check the object an open reached, apply the guest's mode to a file this
@@ -622,6 +628,13 @@ pub(super) fn guest_fd_metadata(
 // TODO-HUMAN-REVIEW(PR-114): Review fresh open-file-description semantics.
 // TODO-HUMAN-REVIEW(PR-136): Review procfd object-identity propagation.
 pub(super) fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std::fs::File, i64> {
+    let reopened = open_host_fd_path_raw(source_host_fd, flags)?;
+    // SAFETY: openat returned a new owned descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(reopened) })
+}
+
+/// [`open_host_fd_path`]'s descriptor, before anything owns it.
+fn open_host_fd_path_raw(source_host_fd: RawFd, flags: u64) -> Result<RawFd, i64> {
     let proc_path =
         CString::new(format!("/proc/self/fd/{source_host_fd}")).expect("host fd path has no NUL");
     let host_flags = (flags | libc::O_CLOEXEC as u64) as libc::c_int;
@@ -639,8 +652,7 @@ pub(super) fn open_host_fd_path(source_host_fd: RawFd, flags: u64) -> Result<std
     if reopened < 0 {
         Err(io_error(std::io::Error::last_os_error()))
     } else {
-        // SAFETY: openat returned a new owned descriptor.
-        Ok(unsafe { std::fs::File::from_raw_fd(reopened as RawFd) })
+        Ok(reopened as RawFd)
     }
 }
 
@@ -736,8 +748,12 @@ pub(super) fn open_guest_fd_path(
     // status flags, and would prevent Linux-supported access-mode changes.
     // Resolve only the already-mapped host descriptor, so no supervisor-private
     // descriptor can be named by a guest path.
-    let file = match open_host_fd_path(source_host_fd, flags) {
-        Ok(file) => file,
+    // The fresh description is this run's own, with no owner, unless the
+    // result names a descriptor the executor holds (`adopt_created_host_fd`).
+    let (file, created) = match open_host_fd_path_raw(source_host_fd, flags)
+        .and_then(|fd| adopt_created_host_fd(state, fd))
+    {
+        Ok(adopted) => adopted,
         Err(error) => return error,
     };
     let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
@@ -745,6 +761,9 @@ pub(super) fn open_guest_fd_path(
         state
             .fd_object_inodes
             .insert(new_fd as libc::c_int, source_object_inode);
+    }
+    if created {
+        grant_creation_record(state, new_fd, pipe_owner::Provenance::Created);
     }
     if new_fd >= 0
         && let Some(inode) = source_proc_inode
@@ -1938,6 +1957,48 @@ fn refuse_o_path_descriptor(host_fd: RawFd) -> Result<(), i64> {
     }
 }
 
+/// Applies `flags`, the settable status flags of a guest `F_SETFL`, to the
+/// host description behind `guest_fd` (`host_fd`): for a signalfd, through
+/// its keeper, whose host carrier stays nonblocking; for an inotify
+/// instance, keeping its host O_NONBLOCK; otherwise as they are.
+fn apply_status_flags(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+    host_fd: RawFd,
+    flags: libc::c_int,
+    signalfd: bool,
+) -> i64 {
+    if signalfd {
+        // The guest's O_NONBLOCK belongs to the keeper, shared by
+        // every alias; the host keeper itself stays nonblocking.
+        let Some(carrier) = signalfd_carrier(state, guest_fd) else {
+            return negative_errno(libc::EBADF);
+        };
+        // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+        let result = zero_or_errno(unsafe {
+            libc::fcntl(host_fd, libc::F_SETFL, flags | libc::O_NONBLOCK)
+        });
+        if result == 0 {
+            carrier.set_guest_blocking(flags & libc::O_NONBLOCK == 0);
+        }
+        return result;
+    }
+    // An inotify instance's host description stays nonblocking
+    // (inotify.rs): the other flags apply, and the blocking mode the
+    // guest asks for is the Tool's to keep.
+    let host_flags = if flags & libc::O_NONBLOCK == 0 {
+        match host_fd_is_inotify(host_fd) {
+            Ok(true) => flags | libc::O_NONBLOCK,
+            Ok(false) => flags,
+            Err(error) => return error,
+        }
+    } else {
+        flags
+    };
+    // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+    zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, host_flags) })
+}
+
 pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
@@ -1946,7 +2007,7 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
     let source_native_poll = native_poll_description(state, guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
-    let source_pipe_owner = state.pipe_owners.get(&guest_fd).cloned();
+    let source_pipe_owner = pipe_owner::description_record(state, guest_fd);
     let source_pidfd = guest_pidfd(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
@@ -2053,38 +2114,21 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
                 // changes, including changes shared by descriptor aliases.
                 return negative_errno(libc::EINVAL);
             }
-            if source_signalfd_mask.is_some() {
-                // The guest's O_NONBLOCK belongs to the keeper, shared by
-                // every alias; the host keeper itself stays nonblocking.
-                let Some(carrier) = signalfd_carrier(state, guest_fd) else {
-                    return negative_errno(libc::EBADF);
-                };
-                // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
-                let result = zero_or_errno(unsafe {
-                    libc::fcntl(host_fd, libc::F_SETFL, flags | libc::O_NONBLOCK)
-                });
-                if result == 0 {
-                    carrier.set_guest_blocking(flags & libc::O_NONBLOCK == 0);
-                }
-                return result;
-            }
-            // An inotify instance's host description stays nonblocking
-            // (inotify.rs): the other flags apply, and the blocking mode the
-            // guest asks for is the Tool's to keep.
-            let host_flags = if flags & libc::O_NONBLOCK == 0 {
-                match host_fd_is_inotify(host_fd) {
-                    Ok(true) => flags | libc::O_NONBLOCK,
-                    Ok(false) => flags,
-                    Err(error) => return error,
-                }
-            } else {
-                flags
+            let signalfd = source_signalfd_mask.is_some();
+            let apply = |state: &LoadedStaticElf| {
+                apply_status_flags(state, guest_fd, host_fd, flags, signalfd)
             };
-            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
-            if let Some(owner) = source_pipe_owner {
-                owner.set_flags(host_fd, host_flags)
-            } else {
-                zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, host_flags) })
+            // A word carrying O_ASYNC may turn asynchronous signal mode on,
+            // which only the admission domain forwards (async_signal_mode).
+            if flags & libc::O_ASYNC != 0 {
+                return status_flags_async_on(state, guest_fd, host_fd, flags, apply);
+            }
+            // Keep the description's lock through the native mutation:
+            // otherwise a forked sibling could turn fasync on between owner
+            // admission or an export mark and this change.
+            match source_pipe_owner {
+                Some(owner) => owner.locked(|| apply(state)),
+                None => apply(state),
             }
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
