@@ -582,6 +582,11 @@ fn execute_basic_syscall_inner(
             // TODO-HUMAN-REVIEW(PR-235): Review self-only virtual pidfd translation.
             pidfd_open(state, args)
         }
+        _ if number == libc::SYS_pidfd_getfd as u64 => {
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(D133876931): Review cross-process descriptor duplication.
+            pidfd_getfd(state, args)
+        }
         _ if number == libc::SYS_socket as u64 => {
             // AUTONOMOUS-BOT-IMPLEMENTED
             socket(state, args)
@@ -1137,6 +1142,10 @@ impl ElfExecutor {
         self.unsupported_refusal = None;
         self.state.signal_refusal = None;
         self.state.pidfd_refusal = None;
+        // A `pidfd_getfd` capture belongs to the call that made it; the
+        // dispatch installs it in that same call (`execute_checked`).
+        debug_assert!(self.state.captured_getfd_install.is_none());
+        self.state.captured_getfd_install = None;
         take_receive_refused_for_descriptors();
         take_receive_refused_for_unwritable_buffer();
         take_run_failure();
@@ -1241,9 +1250,27 @@ impl ElfExecutor {
         // description even if another thread closes/reuses that guest fd after
         // the release. It may then lock seq and its ONE original target table.
         let mutating_file_table = mutates_file_table(request.number());
-        if !mutating_file_table {
+        // `pidfd_getfd` of another process locks that process's table:
+        // its capture runs with the caller's own table lock released, as
+        // the cross-process readers in `facts.rs` release theirs first,
+        // so two processes duplicating from each other cannot each hold
+        // their own table while waiting for the other's. The capture
+        // installs nothing: below, the dispatch takes the caller's lock
+        // again, installs the table as it is then, and only there
+        // allocates, inserts and publishes, so a sibling thread's
+        // change in the unlocked window is never overwritten by this
+        // task's older snapshot, on a failed call least of all.
+        let getfd_cross_process = request.number() == libc::SYS_pidfd_getfd as u64;
+        if !mutating_file_table || getfd_cross_process {
             shared_files.take();
-            drop(notifications.take());
+            // A getfd handler re-takes the caller's table for its
+            // self capture and the dispatch takes it again to
+            // install; keep this call's notification fence armed
+            // across the handler so both installs and their retirements
+            // stay inside it. Other released calls drop theirs here.
+            if !getfd_cross_process {
+                drop(notifications.take());
+            }
             self.state.file_retirement.drain_unlocked();
             #[cfg(test)]
             run_one_shot_test_hook(&TABLE_RELEASED_TEST_HOOK);
@@ -1283,7 +1310,7 @@ impl ElfExecutor {
             && request.args()[1] != 0)
             .then(|| installed_signal_action(&self.state, libc::SIGCHLD));
         let identity = self.admitted_signal_identity();
-        let action = execute_basic_syscall_with_read_context(
+        let mut action = execute_basic_syscall_with_read_context(
             &mut memory,
             &mut self.state,
             request,
@@ -1298,7 +1325,52 @@ impl ElfExecutor {
                     .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
             }
         }
-        if let Some(mut shared_files) = shared_files {
+        if getfd_cross_process {
+            // Install the capture the unlocked call made, if it made
+            // one, in the caller's table as it is now: take the lock
+            // again (with its notification deferral, as at the first
+            // install), install the current table, allocate and insert
+            // the duplicate there, and publish, all in this one hold.
+            // A call that captured nothing (every error and refusal)
+            // publishes nothing: its snapshot is stale by construction
+            // and the next call's install replaces it.
+            if let Some(captured) = self.state.captured_getfd_install.take() {
+                #[cfg(test)]
+                run_one_shot_test_hook(&GETFD_CAPTURED_TEST_HOOK);
+                let mut notifications = Some(memory.defer_notifications());
+                let mut shared_files = file_table.lock().expect("KVM file-table lock poisoned");
+                let installed = match shared_files.install(&mut self.state) {
+                    Ok(()) => {
+                        let pidfd_hold = captured.source.guest_pidfd.clone();
+                        let installed = duplicate_fd_at_or_above(
+                            &mut self.state,
+                            captured.file.as_raw_fd(),
+                            0,
+                            true,
+                            captured.source,
+                        );
+                        drop(captured.file);
+                        if installed >= 0 {
+                            // Hold a captured pidfd record until the
+                            // call has published it, as `pidfd_open`
+                            // holds its own: the table holds it from
+                            // this publication on.
+                            if let Some(pidfd) = pidfd_hold {
+                                self.state.pidfd_holds.push(pidfd);
+                            }
+                            shared_files.update_from_elf(&self.state)?;
+                        }
+                        installed
+                    }
+                    Err(error) => io_error(error),
+                };
+                drop(shared_files);
+                drop(notifications.take());
+                if let SyscallAction::Continue { result, .. } = &mut action {
+                    *result = installed;
+                }
+            }
+        } else if let Some(mut shared_files) = shared_files {
             shared_files.update_from_elf(&self.state)?;
         }
         // The mutating path has now updated and released its table guard.

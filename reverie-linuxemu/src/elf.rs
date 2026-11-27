@@ -395,6 +395,25 @@ pub struct TaskLifecycleState {
     pub pgid: i32,
     pub robust_list_head: u64,
     pub dumpable: bool,
+    /// This task's own permitted capability set (Linux: capabilities
+    /// are per task, and `capset` changes only its caller). It is
+    /// published from the task's actual credentials at every transition
+    /// that changes them: at birth, the set the task was born with (its
+    /// creator's, after a fork or thread clone; the full virtual-root
+    /// set only for a run's first task, as `register` records until its
+    /// executor publishes its loaded set), at `capset`, for the calling
+    /// task only, and at exec, the set the exec computes. Another
+    /// process's `pidfd_getfd` access check reads its target leader's:
+    /// `PTRACE_MODE_ATTACH_REALCREDS` requires the target's permitted
+    /// set to be a subset of the caller's, or the caller's effective
+    /// `CAP_SYS_PTRACE` (security/commoncap.c v6.17:164-182).
+    pub capability_permitted: u64,
+    /// The same task's effective and inheritable sets, published with
+    /// its permitted set at the same transitions: a foreign `capget`
+    /// reads all three from this record, as Linux reads the target
+    /// task's cred (kernel/capability.c v6.17:105-126).
+    pub capability_effective: u64,
+    pub capability_inheritable: u64,
     pub real_parent: Option<reverie::SignalTaskIdentity>,
     pub parent_death_signal: i32,
 }
@@ -408,6 +427,18 @@ pub struct TaskLifecycleTable {
         std::sync::Weak<std::sync::Mutex<crate::signal::ThreadSignalState>>,
     >,
     process_exits: std::collections::BTreeMap<(i32, u64), ProcessExitState>,
+    /// An exited process leader's (effective, permitted,
+    /// inheritable) capability sets, kept by (tgid,
+    /// process_generation) for a foreign `capget` of the unreaped
+    /// zombie: Linux finds the zombie task's cred until the reap
+    /// releases it (kernel/capability.c v6.17:105-126,
+    /// kernel/exit.c v6.17:1264). The exited leader's executor is
+    /// destroyed before its parent reaps it, so the sets live here,
+    /// outside both the task record and the exit record: a reap
+    /// that consumes the exit (`release_zombie_capabilities`, from
+    /// the wait paths) releases them, as does reuse of the numeric
+    /// pid (`register`). One entry per exited process.
+    zombie_capabilities: std::collections::BTreeMap<(i32, u64), (u64, u64, u64)>,
     pub(crate) parent_death: parent_death::ParentDeathState,
     /// Thread-group id of the root guest the table was created for.
     root_tgid: Option<i32>,
@@ -460,12 +491,20 @@ impl TaskLifecycleTable {
                 pgid,
                 robust_list_head: 0,
                 dumpable,
+                capability_permitted: crate::credentials::capability_mask(),
+                capability_effective: crate::credentials::capability_mask(),
+                capability_inheritable: 0,
                 real_parent: None,
                 parent_death_signal: 0,
             },
         );
         // A reused numeric TID never inherits the old task's signal endpoint.
         self.signal_targets.remove(&tid);
+        // Nor its zombie readback: a new lifetime at this pid has its
+        // own cred, and the released zombie's sets must not answer
+        // for it (or after it) if the reap cleanup was never run.
+        self.zombie_capabilities
+            .retain(|(exited_tgid, _), _| *exited_tgid != tid);
         generation
     }
 
@@ -543,6 +582,16 @@ impl TaskLifecycleTable {
         if task.generation != generation {
             return (status, false);
         }
+        if tid == task.tgid {
+            self.zombie_capabilities.insert(
+                (task.tgid, task.process_generation),
+                (
+                    task.capability_effective,
+                    task.capability_permitted,
+                    task.capability_inheritable,
+                ),
+            );
+        }
         let exit = self
             .process_exits
             .entry((task.tgid, task.process_generation))
@@ -607,6 +656,28 @@ impl TaskLifecycleTable {
         }
     }
 
+    /// Release an exited leader's retained capability sets once a
+    /// wait has consumed its exit (the guest's reap): after it, a
+    /// foreign `capget` of the reaped target finds no cred, so it
+    /// answers `ESRCH` as for a gone task.
+    pub(crate) fn release_zombie_capabilities(&mut self, tgid: i32, process_generation: u64) {
+        self.zombie_capabilities.remove(&(tgid, process_generation));
+    }
+
+    /// An exited process leader's retained capability sets and its
+    /// dumpable flag in one atomic read, for an access check that
+    /// must run while the process is a zombie. `None` when no
+    /// zombie record exists for the exact process identity.
+    pub(crate) fn zombie_capabilities(
+        &self,
+        tgid: i32,
+        process_generation: u64,
+    ) -> Option<(u64, u64, u64)> {
+        self.zombie_capabilities
+            .get(&(tgid, process_generation))
+            .copied()
+    }
+
     pub(crate) fn fail(&mut self, tid: i32, generation: u64) -> bool {
         let Some(task) = self.tasks.get(&tid).copied() else {
             return false;
@@ -622,7 +693,13 @@ impl TaskLifecycleTable {
         true
     }
 
-    pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32, pgid: i32) -> u64 {
+    pub(crate) fn reset_after_exec(
+        &mut self,
+        tid: i32,
+        tgid: i32,
+        pgid: i32,
+        capabilities: &crate::credentials::CapabilitySets,
+    ) -> u64 {
         if let Some(task) = self.tasks.get_mut(&tid) {
             self.process_exits
                 .remove(&(task.tgid, task.process_generation));
@@ -630,9 +707,22 @@ impl TaskLifecycleTable {
             task.pgid = pgid;
             task.robust_list_head = 0;
             task.dumpable = true;
+            // The exec's computed permitted set, published with the
+            // transition: an access check after the exec reads the new
+            // image's credentials, never the old one's.
+            task.capability_permitted = capabilities.permitted;
+            task.capability_effective = capabilities.effective;
+            task.capability_inheritable = capabilities.inheritable;
             task.generation
         } else {
-            self.register(tid, tgid, pgid, true)
+            let generation = self.register(tid, tgid, pgid, true);
+            self.set_capabilities(
+                tid,
+                capabilities.effective,
+                capabilities.permitted,
+                capabilities.inheritable,
+            );
+            generation
         }
     }
 
@@ -641,9 +731,10 @@ impl TaskLifecycleTable {
         tid: i32,
         tgid: i32,
         pgid: i32,
+        capabilities: &crate::credentials::CapabilitySets,
         signals: &SharedThreadSignalState,
     ) -> u64 {
-        let generation = self.reset_after_exec(tid, tgid, pgid);
+        let generation = self.reset_after_exec(tid, tgid, pgid, capabilities);
         self.signal_targets.insert(tid, signals.downgrade());
         generation
     }
@@ -658,6 +749,26 @@ impl TaskLifecycleTable {
 
     pub fn get(&self, tid: i32) -> Option<TaskLifecycleState> {
         self.tasks.get(&tid).copied()
+    }
+
+    /// The (effective, permitted, inheritable) sets a foreign
+    /// `capget(pid)` reads: the live task's published sets, or an
+    /// exited process leader's retained zombie sets until its reap
+    /// (`release_zombie_capabilities`, from a consuming wait) or
+    /// pid reuse releases them. A live task always wins, so a
+    /// reused pid never reads its predecessor's cred.
+    pub(crate) fn capabilities_for(&self, pid: i32) -> Option<(u64, u64, u64)> {
+        if let Some(task) = self.tasks.get(&pid) {
+            return Some((
+                task.capability_effective,
+                task.capability_permitted,
+                task.capability_inheritable,
+            ));
+        }
+        self.zombie_capabilities
+            .iter()
+            .rev()
+            .find_map(|((tgid, _), sets)| (*tgid == pid).then_some(*sets))
     }
 
     /// Exact live task identities in one process lifetime, in stable TID order.
@@ -733,6 +844,25 @@ impl TaskLifecycleTable {
             found = true;
         }
         found
+    }
+
+    /// Publish task `tid`'s own capability sets, as its birth or its
+    /// `capset` set them, for another process's access checks and
+    /// foreign `capget`s. Capabilities are per task in Linux: no
+    /// other task of the thread group changes, its leader's record
+    /// least of all.
+    pub(crate) fn set_capabilities(
+        &mut self,
+        tid: i32,
+        effective: u64,
+        permitted: u64,
+        inheritable: u64,
+    ) {
+        if let Some(task) = self.tasks.get_mut(&tid) {
+            task.capability_effective = effective;
+            task.capability_permitted = permitted;
+            task.capability_inheritable = inheritable;
+        }
     }
 }
 
@@ -1388,6 +1518,12 @@ pub struct LoadedStaticElf {
     /// the same syscall boundary as `signal_refusal`, as the typed refusal
     /// `UnsupportedOperation::Pidfd`. Never carried across fork or exec.
     pub(crate) pidfd_refusal: Option<&'static str>,
+    /// The descriptor this task's current `pidfd_getfd` captured, waiting
+    /// for the dispatch to install it under the caller's table lock at
+    /// the same syscall boundary (`CapturedGetfdInstall`). Never carried
+    /// across fork or exec: fork and exec start with none, and the
+    /// dispatch always takes it in the call that captured it.
+    pub(crate) captured_getfd_install: Option<crate::executor::CapturedGetfdInstall>,
 }
 
 impl LoadedStaticElf {
@@ -1606,6 +1742,7 @@ impl LoadedStaticElf {
             file_retirement: FileRetirement::default(),
             signal_refusal: None,
             pidfd_refusal: None,
+            captured_getfd_install: None,
             pipe_owners,
             guest_pidfds: pidfd_names,
             pidfd_holds: guest_pidfds.into_values().collect(),
@@ -1808,6 +1945,7 @@ impl LoadedStaticElf {
                 previous.tid,
                 previous.pid,
                 previous.pgid,
+                &capabilities,
                 &thread_signals,
             );
             (process_signals, thread_signals)
@@ -2672,6 +2810,7 @@ fn load_executable(
         file_retirement: FileRetirement::default(),
         signal_refusal: None,
         pidfd_refusal: None,
+        captured_getfd_install: None,
         pipe_owners: Default::default(),
         guest_pidfds: Default::default(),
         pidfd_holds: Vec::new(),

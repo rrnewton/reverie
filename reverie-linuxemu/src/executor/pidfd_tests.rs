@@ -581,6 +581,1207 @@ fn pidfd_open_names_another_process_as_linux_does() {
     );
 }
 
+/// `pidfd_getfd` duplicates a descriptor from the pidfd's process into the
+/// caller, sharing the open file description, with `FD_CLOEXEC` set (kernel
+/// `pidfd_getfd`, kernel/pid.c): flags are refused first, then a descriptor
+/// that is not a pidfd, then a target descriptor the target does not hold.
+#[test]
+fn pidfd_getfd_duplicates_a_child_descriptor() {
+    use std::os::fd::FromRawFd as _;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    let mut ends = [0; 2];
+    // SAFETY: pipe writes two owned descriptors into `ends`.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: both descriptors were just created by pipe and are unowned.
+    let (read_end, mut write_end) = unsafe {
+        (
+            std::fs::File::from_raw_fd(ends[0]),
+            std::fs::File::from_raw_fd(ends[1]),
+        )
+    };
+    use std::io::Write as _;
+    write_end.write_all(b"x").unwrap();
+    parent
+        .file_table
+        .lock()
+        .unwrap()
+        .files
+        .insert(20, read_end.try_clone().unwrap());
+    assert!(parent.state.insert_file(20, read_end).is_empty());
+    let _child = parent.fork_child(2, false, false).unwrap();
+    // The parent closes its own descriptor 20: what `pidfd_getfd` then
+    // duplicates can only come from the child's table, not the caller's.
+    assert_eq!(
+        pidfd_test_call(&mut parent, &memory, libc::SYS_close, [20, 0, 0, 0, 0, 0]),
+        0
+    );
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    assert!(pidfd >= 0, "pidfd_open of the child: {pidfd}");
+    let getfd = |parent: &mut ElfExecutor, pidfd: i64, target: i64, flags: u64| {
+        pidfd_test_call(
+            parent,
+            &memory,
+            libc::SYS_pidfd_getfd,
+            [pidfd as u64, target as u64, flags, 0, 0, 0],
+        )
+    };
+    assert_eq!(
+        getfd(&mut parent, pidfd, 20, 1),
+        negative_errno(libc::EINVAL)
+    );
+    assert_eq!(getfd(&mut parent, 999, 20, 0), negative_errno(libc::EBADF));
+    assert_eq!(
+        getfd(&mut parent, pidfd, 666, 0),
+        negative_errno(libc::EBADF)
+    );
+    let stolen = getfd(&mut parent, pidfd, 20, 0);
+    assert!(stolen >= 0, "pidfd_getfd of the child's pipe: {stolen}");
+    assert_eq!(
+        pidfd_test_call(
+            &mut parent,
+            &memory,
+            libc::SYS_fcntl,
+            [stolen as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+        ),
+        i64::from(libc::FD_CLOEXEC)
+    );
+    let host = pidfd_test_guest_fds(&parent)[&(stolen as i32)];
+    let mut byte = [0; 1];
+    // SAFETY: `host` is the parent's open duplicate of the child's pipe.
+    assert_eq!(unsafe { libc::read(host, byte.as_mut_ptr().cast(), 1) }, 1);
+    assert_eq!(byte, *b"x");
+}
+
+fn pidfd_test_getfd(
+    parent: &mut ElfExecutor,
+    memory: &GuestMemory,
+    pidfd: i64,
+    target: i64,
+) -> i64 {
+    pidfd_test_call(
+        parent,
+        memory,
+        libc::SYS_pidfd_getfd,
+        [pidfd as u64, target as u64, 0, 0, 0, 0],
+    )
+}
+
+/// The descriptor duplicated is the target's, even where the caller
+/// holds a different description at the same number: a descriptor only
+/// in the child's table, at a number the parent uses for another pipe.
+#[test]
+fn pidfd_getfd_reads_the_target_table_not_the_callers() {
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd as _;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, child) = pidfd_test_family(&root, 2);
+    let mut ends = [0; 2];
+    // SAFETY: pipe writes two owned descriptors into `ends`.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: both descriptors were just created by pipe and are unowned.
+    let (child_read, mut child_write) = unsafe {
+        (
+            std::fs::File::from_raw_fd(ends[0]),
+            std::fs::File::from_raw_fd(ends[1]),
+        )
+    };
+    child_write.write_all(b"c").unwrap();
+    drop(child_write);
+    child
+        .file_table
+        .lock()
+        .unwrap()
+        .files
+        .insert(42, child_read);
+    // The parent's own 42 is a different pipe, holding "p".
+    let mut parent_ends = [0; 2];
+    // SAFETY: pipe writes two owned descriptors into `parent_ends`.
+    assert_eq!(unsafe { libc::pipe(parent_ends.as_mut_ptr()) }, 0);
+    // SAFETY: both descriptors were just created by pipe and are unowned.
+    let (parent_read, mut parent_write) = unsafe {
+        (
+            std::fs::File::from_raw_fd(parent_ends[0]),
+            std::fs::File::from_raw_fd(parent_ends[1]),
+        )
+    };
+    parent_write.write_all(b"p").unwrap();
+    drop(parent_write);
+    assert!(parent.state.insert_file(42, parent_read).is_empty());
+
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let stolen = pidfd_test_getfd(&mut parent, &memory, pidfd, 42);
+    assert!(stolen >= 0, "pidfd_getfd of the child's 42: {stolen}");
+    let host = pidfd_test_guest_fds(&parent)[&(stolen as i32)];
+    let mut byte = [0; 1];
+    // SAFETY: `host` is the parent's duplicate of the child's pipe.
+    assert_eq!(unsafe { libc::read(host, byte.as_mut_ptr().cast(), 1) }, 1);
+    assert_eq!(byte, *b"c", "the target's description, not the caller's");
+}
+
+/// `pidfd_getfd` access: a nondumpable child is `EPERM` once the caller
+/// drops effective `CAP_SYS_PTRACE`, and is served again with it
+/// (executor.rs's robust-list pattern, through the shared predicate).
+#[test]
+fn pidfd_getfd_refuses_a_nondumpable_child_without_cap_sys_ptrace() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    assert_eq!(
+        prctl(
+            &mut child.state,
+            &[libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+        ),
+        0
+    );
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    parent.state.credentials.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 42),
+        negative_errno(libc::EPERM)
+    );
+    parent.state.credentials.capability_effective |= 1_u64 << CAP_SYS_PTRACE;
+    // With the capability the access check passes; the child holds no
+    // 42, so the answer is the descriptor check's `EBADF`.
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 42),
+        negative_errno(libc::EBADF)
+    );
+    // REALCREDS subset: a dumpable child whose permitted set the
+    // caller no longer covers is `EPERM` without effective
+    // `CAP_SYS_PTRACE`, even with matching ids.
+    assert_eq!(
+        prctl(
+            &mut child.state,
+            &[libc::PR_SET_DUMPABLE as u64, 1, 0, 0, 0, 0],
+        ),
+        0
+    );
+    parent.state.credentials.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+    parent.state.credentials.capability_permitted &= !(1_u64 << CAP_SYS_PTRACE);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 42),
+        negative_errno(libc::EPERM)
+    );
+}
+
+/// The REALCREDS permitted-subset half of the shared predicate
+/// (security/commoncap.c v6.17:173-182): with ids that do not match, a
+/// target whose permitted set is not covered by the caller's is refused
+/// even when it is dumpable.
+#[test]
+fn pidfd_ptrace_access_requires_the_permitted_subset() {
+    let full = crate::credentials::capability_mask();
+    // Same process always.
+    assert!(pidfd_ptrace_access_allowed(true, false, false, 0, 0, full));
+    // Dumpable alone never grants access.
+    assert!(!pidfd_ptrace_access_allowed(false, true, false, 0, 0, 0));
+    // Ids match + dumpable, with the target's permitted set covered.
+    assert!(pidfd_ptrace_access_allowed(
+        false, true, true, 0, full, full
+    ));
+    // Ids match and dumpable, but the caller dropped a permitted
+    // capability the target retains: the subset gate refuses.
+    assert!(!pidfd_ptrace_access_allowed(
+        false,
+        true,
+        true,
+        0,
+        full & !(1_u64 << CAP_SYS_PTRACE),
+        full
+    ));
+    // No id match and no capability: refused whatever the subsets are.
+    assert!(!pidfd_ptrace_access_allowed(
+        false, true, false, 0, full, full
+    ));
+    // Effective CAP_SYS_PTRACE substitutes for both halves.
+    assert!(pidfd_ptrace_access_allowed(
+        false,
+        false,
+        false,
+        1_u64 << CAP_SYS_PTRACE,
+        0,
+        full
+    ));
+}
+
+/// An exited child is `ESRCH`, before and after it is reaped (kernel
+/// `pidfd_getfd`, kernel/pid.c v6.17:857-858, 872-874), never `EBADF`.
+#[test]
+fn pidfd_getfd_of_an_exited_child_is_esrch() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    pidfd_test_exit(&mut parent, &mut child);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 3),
+        negative_errno(libc::ESRCH)
+    );
+    pidfd_test_reap(&mut parent, &memory, 2);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 3),
+        negative_errno(libc::ESRCH)
+    );
+}
+
+/// The self branch is the dup path: a pidfd for the caller's own
+/// process duplicates, and an inherited standard descriptor outside the
+/// files map (fd 1) duplicates too.
+#[test]
+fn pidfd_getfd_of_the_callers_own_process_and_standard_descriptor() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    let own_pid = parent.state.pid;
+    let pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    assert!(pidfd >= 0, "pidfd_open of the caller itself: {pidfd}");
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, pidfd, 1);
+    assert!(
+        duplicate >= 0,
+        "pidfd_getfd of the caller's inherited stdout: {duplicate}"
+    );
+    assert_eq!(
+        pidfd_test_call(
+            &mut parent,
+            &memory,
+            libc::SYS_fcntl,
+            [duplicate as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+        ),
+        i64::from(libc::FD_CLOEXEC)
+    );
+}
+
+/// A duplicated guest pidfd keeps its record: polling the duplicate
+/// reports the target's exit, as polling the original does.
+#[test]
+fn pidfd_getfd_duplicate_of_a_pidfd_keeps_its_record() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let own_pid = parent.state.pid;
+    let self_pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, self_pidfd, pidfd);
+    assert!(duplicate >= 0, "pidfd_getfd of a guest pidfd: {duplicate}");
+    assert_eq!(
+        pidfd_test_poll(&mut parent, &memory, duplicate),
+        0,
+        "the duplicate is not ready before the target exits"
+    );
+    pidfd_test_exit(&mut parent, &mut child);
+    assert_eq!(
+        pidfd_test_poll(&mut parent, &memory, duplicate),
+        PIDFD_TEST_EXITED,
+        "the duplicate's record reports the target's exit"
+    );
+}
+
+/// A duplicated synthetic `/proc` descriptor keeps its description:
+/// a read of the duplicate renders the seq content and reports the
+/// stable synthetic inode, not the empty backing memfd's.
+#[test]
+fn pidfd_getfd_duplicate_of_a_synthetic_proc_file_renders_its_content() {
+    const PATH: u64 = 0xe80;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    memory.write_raw(PATH, b"/proc/self/status\0").unwrap();
+    let status = pidfd_test_call(
+        &mut child,
+        &memory,
+        libc::SYS_openat,
+        [libc::AT_FDCWD as u64, PATH, libc::O_RDONLY as u64, 0, 0, 0],
+    );
+    assert!(status >= 0, "child opens /proc/self/status: {status}");
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, pidfd, status);
+    assert!(duplicate >= 0, "pidfd_getfd of the proc file: {duplicate}");
+    let read = pidfd_test_call(
+        &mut parent,
+        &memory,
+        libc::SYS_read,
+        [duplicate as u64, PIDFD_TEST_BYTE, 64, 0, 0, 0],
+    );
+    assert!(read > 0, "the duplicate renders content, not EOF: {read}");
+    // The stable synthetic inode survives: the duplicate carries the
+    // child's synthetic proc inode, not the backing memfd's.
+    assert_eq!(
+        parent.state.proc_files.get(&(duplicate as i32)).copied(),
+        child.state.proc_files.get(&(status as i32)).copied(),
+        "the duplicate carries the source's synthetic proc inode"
+    );
+    assert!(
+        child.state.proc_files.contains_key(&(status as i32)),
+        "the child's descriptor has a synthetic proc inode to carry"
+    );
+}
+
+/// A virtual signalfd in another process is refused by name: its
+/// duplicate would be the private backing eventfd, writable as a plain
+/// eventfd, which no guest may get.
+#[test]
+fn pidfd_getfd_of_a_virtual_signalfd_is_refused_by_name() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    memory
+        .write_raw(PIDFD_TEST_BYTE, &0_u64.to_ne_bytes())
+        .unwrap();
+    let signalfd = pidfd_test_call(
+        &mut child,
+        &memory,
+        libc::SYS_signalfd4,
+        [u64::MAX, PIDFD_TEST_BYTE, 8, 0, 0, 0],
+    );
+    assert!(signalfd >= 0, "child creates a signalfd: {signalfd}");
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, signalfd),
+        negative_errno(libc::ENOSYS)
+    );
+    assert!(
+        parent.take_unsupported_refusal().is_some(),
+        "the refusal is named, not a bare errno"
+    );
+}
+
+/// An ordinary eventfd in another process duplicates like any other
+/// descriptor, sharing its counter, though it carries a native poll
+/// binding; only an epoll is refused by name.
+#[test]
+fn pidfd_getfd_duplicates_a_child_eventfd_and_refuses_an_epoll() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let eventfd = pidfd_test_call(&mut child, &memory, libc::SYS_eventfd2, [7, 0, 0, 0, 0, 0]);
+    assert!(eventfd >= 0, "child creates an eventfd: {eventfd}");
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, pidfd, eventfd);
+    assert!(
+        duplicate >= 0,
+        "pidfd_getfd of the child's eventfd: {duplicate}"
+    );
+    let host = pidfd_test_guest_fds(&parent)[&(duplicate as i32)];
+    let mut count = [0; 8];
+    // SAFETY: `host` is the parent's duplicate of the child's eventfd.
+    assert_eq!(unsafe { libc::read(host, count.as_mut_ptr().cast(), 8) }, 8);
+    assert_eq!(u64::from_ne_bytes(count), 7, "the counter is shared");
+    let epoll = pidfd_test_call(&mut child, &memory, libc::SYS_epoll_create1, [0; 6]);
+    assert!(epoll >= 0, "child creates an epoll: {epoll}");
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, epoll),
+        negative_errno(libc::ENOSYS)
+    );
+    assert!(
+        parent.take_unsupported_refusal().is_some(),
+        "the epoll refusal is named"
+    );
+}
+
+/// A pidfd duplicated from another process keeps its record after the
+/// source process closes its own copy: the duplicate still names its
+/// target in the caller's table.
+#[test]
+fn pidfd_getfd_duplicate_of_a_foreign_pidfd_keeps_its_record() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let own_pid = parent.state.pid;
+    let childs_pidfd = pidfd_test_open(&mut child, &memory, i64::from(own_pid), 0);
+    assert!(childs_pidfd >= 0, "child opens a pidfd: {childs_pidfd}");
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, pidfd, childs_pidfd);
+    assert!(
+        duplicate >= 0,
+        "pidfd_getfd of the child's pidfd: {duplicate}"
+    );
+    assert_eq!(
+        pidfd_test_call(
+            &mut child,
+            &memory,
+            libc::SYS_close,
+            [childs_pidfd as u64, 0, 0, 0, 0, 0]
+        ),
+        0
+    );
+    let record = pidfd_test_record(&parent, duplicate);
+    assert_eq!(record.target().tgid.as_raw(), own_pid);
+    assert_eq!(
+        pidfd_test_poll(&mut parent, &memory, duplicate),
+        0,
+        "the duplicate's target still lives"
+    );
+}
+
+/// A child forked after its parent dropped its permitted set is born
+/// with that reduced set in its lifecycle record, so the parent's
+/// equally reduced set covers it and the answer for a missing
+/// descriptor is `EBADF`, not the `EPERM` a full-set record would give.
+#[test]
+fn pidfd_getfd_child_born_with_its_creators_permitted_set() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    parent.state.credentials.capability_effective = 0;
+    parent.state.credentials.capability_permitted = 0;
+    let child = parent.fork_child(2, false, false).unwrap();
+    assert_eq!(
+        child
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .get(child.state.tid)
+            .map(|task| task.capability_permitted),
+        Some(0),
+        "the child's record is its born set, not the full set"
+    );
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 42),
+        negative_errno(libc::EBADF)
+    );
+}
+
+/// `capset` publishes only the calling task's permitted set: a worker
+/// thread dropping its capabilities leaves its leader's lifecycle
+/// record (the one another process's access check reads) unchanged.
+#[test]
+fn capset_publishes_only_the_calling_tasks_permitted_set() {
+    const HEADER: u64 = 0x100;
+    const DATA: u64 = 0x200;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let parent = ElfExecutor::new(test_state(&root.0), false);
+    let mut worker = parent.thread_child(9).unwrap();
+    let mut header = [0; 8];
+    header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+    memory.write_raw(HEADER, &header).unwrap();
+    memory
+        .write_raw(DATA, &capability_data_bytes(0, 0, 0))
+        .unwrap();
+    assert_eq!(
+        capset(
+            &ProviderMemory(&memory),
+            &mut worker.state,
+            &[HEADER, DATA, 0, 0, 0, 0]
+        ),
+        0
+    );
+    let lifecycle = parent.state.task_lifecycle.lock().unwrap();
+    assert_eq!(
+        lifecycle
+            .get(worker.state.tid)
+            .map(|t| t.capability_permitted),
+        Some(0),
+        "the calling task's record follows its capset"
+    );
+    assert_eq!(
+        lifecycle
+            .get(parent.state.tid)
+            .map(|t| t.capability_permitted),
+        Some(parent.state.credentials.capability_permitted),
+        "the leader's record is not the worker's to rewrite"
+    );
+}
+
+/// An exec publishes the new image's computed permitted set in the
+/// lifecycle record: a task that dropped its set and then execs as
+/// root regains the bounding set, and the record says so.
+#[test]
+fn exec_publishes_the_new_images_permitted_set() {
+    let root = TestDir::new();
+    let mut previous = test_state(&root.0);
+    previous.credentials.capability_effective = 0;
+    previous.credentials.capability_permitted = 0;
+    previous
+        .task_lifecycle
+        .lock()
+        .unwrap()
+        .set_capabilities(previous.tid, 0, 0, 0);
+    let mut after_exec = test_state(&root.0);
+    after_exec.inherit_process_state(previous);
+    let full = crate::credentials::capability_mask();
+    assert_eq!(after_exec.credentials.capability_permitted, full);
+    assert_eq!(
+        after_exec
+            .task_lifecycle
+            .lock()
+            .unwrap()
+            .get(after_exec.tid)
+            .map(|t| t.capability_permitted),
+        Some(full),
+        "the record is the new image's set, not the dropped one"
+    );
+}
+
+/// The capture re-checks the target under its table lock: credentials
+/// the target gains (and a descriptor it opens) between the first
+/// check and the capture — its exec's window — are what the capture
+/// answers for, never the old authorization over the new descriptor.
+#[test]
+fn pidfd_getfd_rechecks_the_target_under_its_table() {
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd as _;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, child) = pidfd_test_family(&root, 2);
+    parent.state.credentials.capability_effective = 0;
+    parent.state.credentials.capability_permitted = 0;
+    let child = std::rc::Rc::new(std::cell::RefCell::new(child));
+    child
+        .borrow()
+        .state
+        .task_lifecycle
+        .lock()
+        .unwrap()
+        .set_capabilities(child.borrow().state.tid, 0, 0, 0);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let execing = child.clone();
+    GETFD_CHECKED_TEST_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move || {
+            let child = execing.borrow();
+            child.state.task_lifecycle.lock().unwrap().set_capabilities(
+                child.state.tid,
+                crate::credentials::capability_mask(),
+                crate::credentials::capability_mask(),
+                0,
+            );
+            let mut ends = [0; 2];
+            // SAFETY: pipe writes two owned descriptors into `ends`.
+            assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+            // SAFETY: both were just created by pipe and are unowned.
+            let (read_end, mut write_end) = unsafe {
+                (
+                    std::fs::File::from_raw_fd(ends[0]),
+                    std::fs::File::from_raw_fd(ends[1]),
+                )
+            };
+            write_end.write_all(b"x").unwrap();
+            drop(write_end);
+            child.file_table.lock().unwrap().files.insert(42, read_end);
+        }))
+    });
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 42),
+        negative_errno(libc::EPERM),
+        "the capture answers for the credentials at capture"
+    );
+    assert!(
+        GETFD_CHECKED_TEST_HOOK.with(|hook| hook.borrow().is_none()),
+        "the exec ran between the check and the capture"
+    );
+}
+
+/// A descriptor a sibling thread opens while a `pidfd_getfd` runs its
+/// unlocked capture survives the call — a failed call, which
+/// publishes nothing, and a successful one, whose allocation happens
+/// only under the table lock in the table as it is then.
+#[test]
+fn pidfd_getfd_keeps_a_siblings_change_in_the_unlocked_window() {
+    use std::io::Write as _;
+    use std::os::fd::FromRawFd as _;
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (parent, child) = pidfd_test_family(&root, 2);
+    let mut ends = [0; 2];
+    // SAFETY: pipe writes two owned descriptors into `ends`.
+    assert_eq!(unsafe { libc::pipe(ends.as_mut_ptr()) }, 0);
+    // SAFETY: both were just created by pipe and are unowned.
+    let (read_end, mut write_end) = unsafe {
+        (
+            std::fs::File::from_raw_fd(ends[0]),
+            std::fs::File::from_raw_fd(ends[1]),
+        )
+    };
+    write_end.write_all(b"x").unwrap();
+    drop(write_end);
+    child.file_table.lock().unwrap().files.insert(20, read_end);
+    let parent = std::rc::Rc::new(std::cell::RefCell::new(parent));
+    let pidfd = pidfd_test_open(&mut parent.borrow_mut(), &memory, 2, 0);
+    let mut thread = parent.borrow().thread_child(9).unwrap();
+    let sibling_fd = std::rc::Rc::new(std::cell::RefCell::new(-1_i64));
+    {
+        let sibling = parent.clone();
+        let opened = sibling_fd.clone();
+        TABLE_RELEASED_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let memory = pidfd_test_memory();
+                *opened.borrow_mut() = pidfd_test_call(
+                    &mut sibling.borrow_mut(),
+                    &memory,
+                    libc::SYS_eventfd2,
+                    [0; 6],
+                );
+            }))
+        });
+    }
+    // A failed call (reserved flags) publishes nothing.
+    assert_eq!(
+        pidfd_test_call(
+            &mut thread,
+            &memory,
+            libc::SYS_pidfd_getfd,
+            [pidfd as u64, 20, 1, 0, 0, 0]
+        ),
+        negative_errno(libc::EINVAL)
+    );
+    let opened = *sibling_fd.borrow();
+    assert!(opened >= 0, "the sibling opened its eventfd: {opened}");
+    assert!(
+        pidfd_test_call(
+            &mut parent.borrow_mut(),
+            &memory,
+            libc::SYS_fcntl,
+            [opened as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+        ) >= 0,
+        "the failed getfd kept the sibling's descriptor"
+    );
+    {
+        let sibling = parent.clone();
+        let opened = sibling_fd.clone();
+        TABLE_RELEASED_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let memory = pidfd_test_memory();
+                *opened.borrow_mut() = pidfd_test_call(
+                    &mut sibling.borrow_mut(),
+                    &memory,
+                    libc::SYS_eventfd2,
+                    [0; 6],
+                );
+            }))
+        });
+    }
+    let stolen = pidfd_test_getfd(&mut thread, &memory, pidfd, 20);
+    assert!(stolen >= 0, "the thread's getfd succeeds: {stolen}");
+    let opened = *sibling_fd.borrow();
+    assert_ne!(stolen, opened, "no two threads share a number");
+    assert!(
+        pidfd_test_call(
+            &mut parent.borrow_mut(),
+            &memory,
+            libc::SYS_fcntl,
+            [opened as u64, libc::F_GETFD as u64, 0, 0, 0, 0]
+        ) >= 0,
+        "the successful getfd kept the sibling's descriptor"
+    );
+    let host = pidfd_test_guest_fds(&thread)[&(stolen as i32)];
+    let mut byte = [0; 1];
+    // SAFETY: `host` is the thread's duplicate of the child's pipe.
+    assert_eq!(unsafe { libc::read(host, byte.as_mut_ptr().cast(), 1) }, 1);
+    assert_eq!(byte, *b"x");
+}
+
+/// A thread whose own leader has exited gets `ESRCH` for a pidfd of
+/// its own process, as any other caller does for that leader
+/// (kernel/pid.c v6.17:844-874): the group living on is not the
+/// pidfd's task living on.
+#[test]
+fn pidfd_getfd_of_own_process_after_its_leader_exits_is_esrch() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    let own_pid = parent.state.pid;
+    let self_pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    assert!(self_pidfd >= 0, "pidfd_open of itself: {self_pidfd}");
+    let mut thread = parent.thread_child(9).unwrap();
+    parent.retire_current_thread(reverie::ExitStatus::Exited(0), false);
+    assert_eq!(
+        pidfd_test_getfd(&mut thread, &memory, self_pidfd, 1),
+        negative_errno(libc::ESRCH)
+    );
+}
+
+/// Another process's inherited standard descriptor duplicates too:
+/// the foreign lookup resolves descriptors outside its files map.
+#[test]
+fn pidfd_getfd_duplicates_a_child_standard_descriptor() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, _child) = pidfd_test_family(&root, 2);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    let duplicate = pidfd_test_getfd(&mut parent, &memory, pidfd, 1);
+    assert!(
+        duplicate >= 0,
+        "pidfd_getfd of the child's inherited stdout: {duplicate}"
+    );
+    assert_eq!(
+        pidfd_test_call(
+            &mut parent,
+            &memory,
+            libc::SYS_fcntl,
+            [duplicate as u64, libc::F_GETFD as u64, 0, 0, 0, 0],
+        ),
+        i64::from(libc::FD_CLOEXEC)
+    );
+}
+
+/// A self `pidfd_getfd` of a signalfd whose last other alias a
+/// sibling thread closes between the capture and its installation
+/// still installs, with its mask and keeper: the capture owns both,
+/// and the installation never has to resolve the keeper from the
+/// closed source.
+#[test]
+fn pidfd_getfd_self_signalfd_survives_a_sibling_close_after_capture() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    memory
+        .write_raw(PIDFD_TEST_BYTE, &0_u64.to_ne_bytes())
+        .unwrap();
+    let signalfd = pidfd_test_call(
+        &mut parent,
+        &memory,
+        libc::SYS_signalfd4,
+        [u64::MAX, PIDFD_TEST_BYTE, 8, 0, 0, 0],
+    );
+    assert!(signalfd >= 0, "creates a signalfd: {signalfd}");
+    let own_pid = parent.state.pid;
+    let self_pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    assert!(self_pidfd >= 0, "pidfd_open of itself: {self_pidfd}");
+    let parent = std::rc::Rc::new(std::cell::RefCell::new(parent));
+    let mut thread = parent.borrow().thread_child(9).unwrap();
+    {
+        let closer = parent.clone();
+        GETFD_CAPTURED_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let memory = pidfd_test_memory();
+                assert_eq!(
+                    pidfd_test_call(
+                        &mut closer.borrow_mut(),
+                        &memory,
+                        libc::SYS_close,
+                        [signalfd as u64, 0, 0, 0, 0, 0]
+                    ),
+                    0,
+                    "the sibling closes the capture's source"
+                );
+            }))
+        });
+    }
+    let duplicate = pidfd_test_getfd(&mut thread, &memory, self_pidfd, signalfd);
+    assert!(
+        duplicate >= 0,
+        "pidfd_getfd of its own signalfd installs: {duplicate}"
+    );
+    assert!(
+        GETFD_CAPTURED_TEST_HOOK.with(|hook| hook.borrow().is_none()),
+        "the close ran between capture and installation"
+    );
+    assert!(
+        signalfd_mask(&thread.state, duplicate as i32).is_some(),
+        "the duplicate keeps its signalfd mask"
+    );
+    assert!(
+        signalfd_carrier(&thread.state, duplicate as i32).is_some(),
+        "the duplicate owns the captured keeper"
+    );
+}
+
+/// A self signalfd a sibling closes before the capture runs — after
+/// the dispatch released the table, before the capture re-takes it —
+/// is not captured at all: the capture installs the current table
+/// under its lock first, finds no such descriptor, and answers
+/// EBADF, never a mask-less duplicate of the backing eventfd and
+/// never a panic over the removed keeper.
+#[test]
+fn pidfd_getfd_self_signalfd_closed_before_capture_is_ebadf() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    memory
+        .write_raw(PIDFD_TEST_BYTE, &0_u64.to_ne_bytes())
+        .unwrap();
+    let signalfd = pidfd_test_call(
+        &mut parent,
+        &memory,
+        libc::SYS_signalfd4,
+        [u64::MAX, PIDFD_TEST_BYTE, 8, 0, 0, 0],
+    );
+    assert!(signalfd >= 0, "creates a signalfd: {signalfd}");
+    let own_pid = parent.state.pid;
+    let self_pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    let parent = std::rc::Rc::new(std::cell::RefCell::new(parent));
+    let mut thread = parent.borrow().thread_child(9).unwrap();
+    {
+        let closer = parent.clone();
+        TABLE_RELEASED_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let memory = pidfd_test_memory();
+                assert_eq!(
+                    pidfd_test_call(
+                        &mut closer.borrow_mut(),
+                        &memory,
+                        libc::SYS_close,
+                        [signalfd as u64, 0, 0, 0, 0, 0]
+                    ),
+                    0,
+                    "the sibling closes the source before the capture"
+                );
+            }))
+        });
+    }
+    assert_eq!(
+        pidfd_test_getfd(&mut thread, &memory, self_pidfd, signalfd),
+        negative_errno(libc::EBADF)
+    );
+    assert!(
+        TABLE_RELEASED_TEST_HOOK.with(|hook| hook.borrow().is_none()),
+        "the close ran in the released window"
+    );
+    assert!(
+        thread.state.captured_getfd_install.is_none(),
+        "nothing was captured from the closed source"
+    );
+}
+
+/// A sibling's signalfd mask update after a self capture but before
+/// its installation applies to the duplicate as well: its mask is the
+/// one mutable mask of the open file description. Updating the
+/// duplicate then changes the source's selection in the same object.
+#[test]
+fn pidfd_getfd_self_signalfd_keeps_a_siblings_mask_update_after_capture() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let mut parent = ElfExecutor::new(test_state(&root.0), false);
+    test_block_signal(&mut parent.state, libc::SIGUSR1);
+    test_block_signal(&mut parent.state, libc::SIGUSR2);
+    let mut usr1 = KernelSigset::default();
+    usr1.insert(libc::SIGUSR1);
+    memory.write_raw(PIDFD_TEST_BYTE, &usr1.to_bytes()).unwrap();
+    let signalfd = pidfd_test_call(
+        &mut parent,
+        &memory,
+        libc::SYS_signalfd4,
+        [u64::MAX, PIDFD_TEST_BYTE, 8, 0, 0, 0],
+    );
+    assert!(signalfd >= 0, "creates a signalfd: {signalfd}");
+    let own_pid = parent.state.pid;
+    let self_pidfd = pidfd_test_open(&mut parent, &memory, i64::from(own_pid), 0);
+    let table_probe = parent.file_table.clone();
+    let parent = std::rc::Rc::new(std::cell::RefCell::new(parent));
+    let mut thread = parent.borrow().thread_child(9).unwrap();
+    test_block_signal(&mut thread.state, libc::SIGUSR1);
+    test_block_signal(&mut thread.state, libc::SIGUSR2);
+    let capture_locked = std::rc::Rc::new(std::cell::Cell::new(false));
+    {
+        let locked = capture_locked.clone();
+        GETFD_SELF_CAPTURE_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                locked.set(matches!(
+                    table_probe.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+            }))
+        });
+    }
+    {
+        let updater = parent.clone();
+        GETFD_CAPTURED_TEST_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let memory = pidfd_test_memory();
+                let mut usr2 = KernelSigset::default();
+                usr2.insert(libc::SIGUSR2);
+                memory.write_raw(PIDFD_TEST_BYTE, &usr2.to_bytes()).unwrap();
+                assert_eq!(
+                    pidfd_test_call(
+                        &mut updater.borrow_mut(),
+                        &memory,
+                        libc::SYS_signalfd4,
+                        [signalfd as u64, PIDFD_TEST_BYTE, 8, 0, 0, 0]
+                    ),
+                    signalfd,
+                    "the sibling updates the source mask after capture"
+                );
+            }))
+        });
+    }
+    let duplicate = pidfd_test_getfd(&mut thread, &memory, self_pidfd, signalfd);
+    assert!(duplicate >= 0, "the duplicate installs: {duplicate}");
+    assert!(
+        capture_locked.get(),
+        "the capture held the caller's table lock"
+    );
+    assert!(
+        GETFD_SELF_CAPTURE_TEST_HOOK.with(|hook| hook.borrow().is_none()),
+        "the in-capture hook ran"
+    );
+    assert!(
+        GETFD_CAPTURED_TEST_HOOK.with(|hook| hook.borrow().is_none()),
+        "the update ran between capture and installation"
+    );
+    {
+        let process_signals = thread.state.process_signals.lock().unwrap();
+        let source = &process_signals.signalfd_masks[&(signalfd as i32)];
+        let copied = &process_signals.signalfd_masks[&(duplicate as i32)];
+        assert!(source.ptr_eq(copied), "aliases share one mask object");
+        assert!(copied.contains(libc::SIGUSR2));
+        assert!(!copied.contains(libc::SIGUSR1));
+    }
+    let thread_tid = thread.state.tid;
+    assert_eq!(
+        result_of(kill_signal(
+            &mut thread.state,
+            libc::SYS_tkill as u64,
+            &[thread_tid as u64, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+        )),
+        0
+    );
+    assert_eq!(
+        pidfd_test_call(
+            &mut thread,
+            &memory,
+            libc::SYS_read,
+            [duplicate as u64, PIDFD_TEST_INFO, 128, 0, 0, 0]
+        ),
+        128,
+        "the duplicate reads the newly selected signal"
+    );
+    let info: libc::signalfd_siginfo = read_struct(&memory, PIDFD_TEST_INFO);
+    assert_eq!(info.ssi_signo, libc::SIGUSR2 as u32);
+
+    memory.write_raw(PIDFD_TEST_BYTE, &usr1.to_bytes()).unwrap();
+    assert_eq!(
+        pidfd_test_call(
+            &mut thread,
+            &memory,
+            libc::SYS_signalfd4,
+            [duplicate as u64, PIDFD_TEST_BYTE, 8, 0, 0, 0]
+        ),
+        duplicate,
+        "updating the duplicate succeeds"
+    );
+    {
+        let process_signals = thread.state.process_signals.lock().unwrap();
+        let source = &process_signals.signalfd_masks[&(signalfd as i32)];
+        let copied = &process_signals.signalfd_masks[&(duplicate as i32)];
+        assert!(source.ptr_eq(copied), "updates retain one mask object");
+        assert!(source.contains(libc::SIGUSR1));
+        assert!(!source.contains(libc::SIGUSR2));
+    }
+}
+
+/// A foreign `capget` reads the target task's published capability
+/// sets, as Linux reads the target's cred: a child that dropped its
+/// sets by `capset` reads back dropped to its parent, and a pid with
+/// no live task answers ESRCH.
+#[test]
+fn capget_of_a_foreign_task_reads_its_published_capability_sets() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (parent, mut child) = pidfd_test_family(&root, 2);
+    let kept = 1_u64 << CAP_SYS_PTRACE;
+    let mut header = [0; 8];
+    header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+    header[4..].copy_from_slice(&child.state.pid.to_ne_bytes());
+    memory.write_raw(PIDFD_TEST_INFO, &header).unwrap();
+    memory
+        .write_raw(
+            PIDFD_TEST_INFO + 0x40,
+            &capability_data_bytes(kept, kept, 0),
+        )
+        .unwrap();
+    assert_eq!(
+        capset(
+            &ProviderMemory(&memory),
+            &mut child.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        0,
+        "the child drops its own sets"
+    );
+    memory
+        .write_raw(
+            PIDFD_TEST_INFO + 0x40,
+            &capability_data_bytes(u64::MAX, u64::MAX, u64::MAX),
+        )
+        .unwrap();
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        0,
+        "the parent's foreign capget succeeds"
+    );
+    let mut bytes = [0; 24];
+    memory.read_raw(PIDFD_TEST_INFO + 0x40, &mut bytes).unwrap();
+    assert_eq!(bytes, capability_data_bytes(kept, kept, 0));
+    header[4..].copy_from_slice(&999_999_i32.to_ne_bytes());
+    memory.write_raw(PIDFD_TEST_INFO, &header).unwrap();
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::ESRCH),
+        "a pid with no live task answers ESRCH"
+    );
+}
+
+/// A foreign `capget` of an exited but unreaped task still reads its
+/// sets, as Linux finds the zombie's cred until the reap
+/// (kernel/capability.c v6.17:105-126); after the exit is forgotten
+/// (the reap) it answers ESRCH.
+#[test]
+fn capget_of_a_zombie_task_reads_its_sets_until_the_reap() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (parent, child) = pidfd_test_family(&root, 2);
+    let kept = 1_u64 << CAP_SYS_PTRACE;
+    let (generation, process_generation) = {
+        let lifecycle = child.state.task_lifecycle.lock().unwrap();
+        let task = lifecycle.get(child.state.tid).unwrap();
+        (task.generation, task.process_generation)
+    };
+    {
+        let mut lifecycle = child.state.task_lifecycle.lock().unwrap();
+        lifecycle.set_capabilities(child.state.tid, kept, kept, 0);
+        lifecycle.exit(
+            child.state.tid,
+            generation,
+            reverie::ExitStatus::SUCCESS,
+            false,
+        );
+    }
+    let mut header = [0; 8];
+    header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+    header[4..].copy_from_slice(&child.state.pid.to_ne_bytes());
+    memory.write_raw(PIDFD_TEST_INFO, &header).unwrap();
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        0,
+        "the parent's capget of the zombie child succeeds"
+    );
+    let mut bytes = [0; 24];
+    memory.read_raw(PIDFD_TEST_INFO + 0x40, &mut bytes).unwrap();
+    assert_eq!(bytes, capability_data_bytes(kept, kept, 0));
+    // The child's executor dropping at task end unregisters its task,
+    // but the unreaped zombie's sets are kept until the waiter's reap.
+    // Run the exit cleanup exactly as ElfExecutor's Drop does:
+    {
+        let mut lifecycle = child.state.task_lifecycle.lock().unwrap();
+        lifecycle.remove(child.state.tid, generation);
+        lifecycle.forget_process_exit(child.state.pid, process_generation);
+    }
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        0,
+        "a zombie's sets survive its executor drop while unreaped"
+    );
+    let mut bytes = [0; 24];
+    memory.read_raw(PIDFD_TEST_INFO + 0x40, &mut bytes).unwrap();
+    assert_eq!(bytes, capability_data_bytes(kept, kept, 0));
+    parent
+        .state
+        .task_lifecycle
+        .lock()
+        .unwrap()
+        .release_zombie_capabilities(child.state.pid, process_generation);
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::ESRCH),
+        "after the reap the same capget answers ESRCH"
+    );
+}
+
+/// A foreign `pidfd_getfd` of an unreaped process whose leader has
+/// exited checks access before it answers `ESRCH`, as Linux does
+/// (kernel/pid.c v6.17:837-874): a caller that may not trace gets
+/// `EPERM`, while an authorized caller reaches the exit check and
+/// gets `ESRCH`.
+#[test]
+fn pidfd_getfd_of_an_exited_leader_denies_access_before_answering_gone() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    assert!(pidfd >= 0, "pidfd_open of the child: {pidfd}");
+    pidfd_test_exit(&mut parent, &mut child);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 3),
+        negative_errno(libc::ESRCH),
+        "an authorized caller reaches the exit check and gets ESRCH"
+    );
+
+    let root = TestDir::new();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let pidfd = pidfd_test_open(&mut parent, &memory, 2, 0);
+    assert!(pidfd >= 0, "pidfd_open of the child: {pidfd}");
+    parent.state.credentials.capability_effective = 0;
+    parent.state.credentials.capability_permitted = 0;
+    pidfd_test_exit(&mut parent, &mut child);
+    assert_eq!(
+        pidfd_test_getfd(&mut parent, &memory, pidfd, 3),
+        negative_errno(libc::EPERM),
+        "a caller that may not trace the unreaped zombie gets EPERM first"
+    );
+}
+
+/// End to end through the production wait path: the parent's
+/// `waitid` reap releases its child's zombie capability sets, so a
+/// foreign `capget` that read them while the child was a zombie
+/// answers `ESRCH` after the reap.
+#[test]
+fn capget_of_a_zombie_task_is_released_by_the_wait_that_reaps_it() {
+    let root = TestDir::new();
+    let memory = pidfd_test_memory();
+    let (mut parent, mut child) = pidfd_test_family(&root, 2);
+    let kept = 1_u64 << CAP_SYS_PTRACE;
+    child
+        .state
+        .task_lifecycle
+        .lock()
+        .unwrap()
+        .set_capabilities(child.state.tid, kept, kept, 0);
+    pidfd_test_exit(&mut parent, &mut child);
+    let mut header = [0; 8];
+    header[..4].copy_from_slice(&LINUX_CAPABILITY_VERSION_3.to_ne_bytes());
+    header[4..].copy_from_slice(&child.state.pid.to_ne_bytes());
+    memory.write_raw(PIDFD_TEST_INFO, &header).unwrap();
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        0,
+        "the parent's capget of the unreaped zombie reads its sets"
+    );
+    let mut bytes = [0; 24];
+    memory.read_raw(PIDFD_TEST_INFO + 0x40, &mut bytes).unwrap();
+    assert_eq!(bytes, capability_data_bytes(kept, kept, 0));
+    pidfd_test_reap(&mut parent, &memory, 2);
+    // waitid wrote its siginfo where the capget header was; restamp it.
+    memory.write_raw(PIDFD_TEST_INFO, &header).unwrap();
+    assert_eq!(
+        capget(
+            &mut ProviderMemory(&memory),
+            &parent.state,
+            &[PIDFD_TEST_INFO, PIDFD_TEST_INFO + 0x40, 0, 0, 0, 0]
+        ),
+        negative_errno(libc::ESRCH),
+        "the waitid reap released the zombie's sets"
+    );
+}
+
 /// A pidfd for another process is readable to select and pselect6 exactly
 /// when its process has exited, and never writable or exceptional.
 #[test]

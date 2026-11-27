@@ -607,6 +607,30 @@ pub(super) fn madvise_refusal_diagnostic(advice: libc::c_int) -> &'static str {
 pub(crate) const PIDFD_RIGHTS_REFUSAL: &str =
     "KVM does not send a pidfd for a guest process in an SCM_RIGHTS message";
 
+/// Diagnostic for this backend's refusal to duplicate a virtual signalfd
+/// from another process in `pidfd_getfd`: the signalfd's description is
+/// the private eventfd that backs it plus its mask in the owner's own
+/// process state, and the duplicate would be a writable plain eventfd in
+/// the caller. Fork refuses to cross a process with one for the same
+/// reason.
+pub(crate) const GETFD_SIGNALFD_REFUSAL: &str = "KVM does not duplicate a virtual signalfd \
+     from another process in pidfd_getfd";
+
+/// Diagnostic for this backend's refusal to duplicate a descriptor with
+/// a native poll binding (an epoll) from another process in
+/// `pidfd_getfd`: the binding's registrations live in the owner's epoll
+/// domain, which the caller's table cannot join here.
+pub(crate) const GETFD_EPOLL_REFUSAL: &str = "KVM does not duplicate an epoll from another \
+     process in pidfd_getfd";
+
+/// Diagnostic for this backend's refusal of `pidfd_getfd` on a pidfd
+/// whose descriptor has no guest-process record (a stand-in opened for
+/// the caller's own process outside any process family): the descriptor
+/// is a pidfd, so `EBADF` would misname it, and no record names a target
+/// table to duplicate from.
+pub(crate) const GETFD_WITHOUT_RECORD_REFUSAL: &str = "KVM does not duplicate through a \
+     pidfd with no guest-process record in pidfd_getfd";
+
 /// Diagnostic for this backend's refusal to send an epoll set in an
 /// `SCM_RIGHTS` message that may leave the run (`sends_into_the_run`): a
 /// receiver outside the run would hold the epoll where this backend cannot

@@ -383,17 +383,31 @@ pub(super) fn capget<M: GuestMemoryAccess<Error = crate::Error>>(
             negative_errno(libc::EINVAL)
         };
     }
-    if !is_capability_self(pid, state) {
+    // A foreign capget reads the target task's published sets, as
+    // Linux reads the target's cred (kernel/capability.c
+    // v6.17:105-126); an unreaped zombie leader's retained sets
+    // still answer, and a pid with neither record is gone.
+    // (capset stays self-only below, as in Linux.)
+    let sets = if is_capability_self(pid, state) {
+        Some((
+            state.credentials.capability_effective,
+            state.credentials.capability_permitted,
+            state.credentials.capability_inheritable,
+        ))
+    } else {
+        let lifecycle = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        lifecycle.capabilities_for(pid)
+    };
+    let Some((effective, permitted, inheritable)) = sets else {
         return negative_errno(libc::ESRCH);
-    }
+    };
     if args[1] == 0 {
         return 0;
     }
-    let bytes = capability_data_bytes(
-        state.credentials.capability_effective,
-        state.credentials.capability_permitted,
-        state.credentials.capability_inheritable,
-    );
+    let bytes = capability_data_bytes(effective, permitted, inheritable);
     match memory.write_exact(args[1], &bytes) {
         Ok(()) => 0,
         Err(_) => negative_errno(libc::EFAULT),
@@ -433,6 +447,21 @@ pub(super) fn capset<M: GuestMemoryAccess<Error = crate::Error>>(
     state.credentials.capability_inheritable = inheritable & mask;
     state.credentials.capability_ambient &=
         state.credentials.capability_permitted & state.credentials.capability_inheritable;
+    // Publish the calling task's new capability sets: another
+    // process's `pidfd_getfd` access check and foreign `capget`s
+    // read them from the lifecycle record, and Linux's `capset`
+    // changes this task's credentials only, no other thread's of its
+    // group.
+    state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_capabilities(
+            state.tid,
+            state.credentials.capability_effective,
+            state.credentials.capability_permitted,
+            state.credentials.capability_inheritable,
+        );
     0
 }
 

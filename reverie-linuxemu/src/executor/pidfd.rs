@@ -349,6 +349,384 @@ pub(super) fn pidfd_open(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     guest_pidfd_open(state, pid, flags)
 }
 
+/// Linux's ptrace-access predicate for `pidfd_getfd`
+/// (`PTRACE_MODE_ATTACH_REALCREDS`, kernel/ptrace.c v6.17:298-346 and
+/// security/commoncap.c v6.17:164-182), shared by every caller that
+/// checks it (this handler and the robust-list reader in `futex.rs`):
+/// the caller's own thread group is always allowed; otherwise the
+/// target must be dumpable or the caller must hold effective
+/// `CAP_SYS_PTRACE`, AND the caller's real ids must match the target's
+/// or the target's permitted set must be a subset of the caller's
+/// permitted set or the caller holds effective `CAP_SYS_PTRACE`. A
+/// dumpable target alone never grants access.
+pub(super) fn pidfd_ptrace_access_allowed(
+    same_process: bool,
+    target_dumpable: bool,
+    caller_ids_match: bool,
+    caller_effective: u64,
+    caller_permitted: u64,
+    target_permitted: u64,
+) -> bool {
+    if same_process {
+        return true;
+    }
+    let capable = caller_effective & (1_u64 << CAP_SYS_PTRACE) != 0;
+    // The mm gate, then the credential gate, then the commoncap
+    // permitted-subset gate, in the kernel's order.
+    if !target_dumpable && !capable {
+        return false;
+    }
+    if !caller_ids_match && !capable {
+        return false;
+    }
+    capable || target_permitted & !caller_permitted == 0
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(D133876931): Review cross-process descriptor duplication.
+/// `pidfd_getfd(pidfd, targetfd, flags)` (kernel `pidfd_getfd`,
+/// kernel/pid.c v6.17:828-884, 903-921): duplicate `targetfd` of the
+/// pidfd's process into the caller, sharing its open file description,
+/// with `FD_CLOEXEC` set. Linux's order: reserved flags (`EINVAL`), the
+/// pidfd itself (`EBADF`), the target task (`ESRCH` when it has gone,
+/// including a leader that exited while its group lives on), the
+/// ptrace-access check (`EPERM`), then the target descriptor (`EBADF`,
+/// or `ESRCH` for a task on its way out whose files are gone), and only
+/// then allocation (`EMFILE`). The permission check runs first under
+/// the lifecycle lock, and again with the descriptor read under the
+/// target table's lock (the table-then-lifecycle order an exec's table
+/// publication uses), so no exec of the target can change its
+/// credentials or its descriptors between the check the capture relies
+/// on and the capture itself, as Linux's `exec_update_lock` window
+/// across `ptrace_may_access` and `fget_task` excludes one
+/// (kernel/pid.c v6.17:833-842). The duplicate carries the source's
+/// executor records (its pidfd record, pipe owner, synthetic `/proc`
+/// description and stable inode, native poll binding, output alias), as
+/// a `dup` carries them: the guest gets the same open file description,
+/// not only its host file. A virtual signalfd and an epoll are refused
+/// by name instead: their records live in the owner's own process state
+/// and cannot cross. This handler only captures the description: the
+/// dispatch runs it with the caller's own table lock released (see
+/// `execute_checked`), so the target table is locked with no other
+/// table lock held, and completes the call by installing the capture
+/// in the caller's current table under that table's lock, where the
+/// lowest-free allocation and publication are one transaction a
+/// sibling thread's concurrent table change cannot be lost from. A
+/// call that captures nothing installs and publishes nothing.
+pub(super) fn pidfd_getfd(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let flags = args[2] as libc::c_uint;
+    if flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let pidfd = args[0] as libc::c_int;
+    let Some(record) = guest_pidfd(state, pidfd) else {
+        // A descriptor that is a host pidfd but has no guest-process
+        // record (a stand-in for the caller's own process outside any
+        // process family) is refused by name, not misnamed `EBADF`.
+        if let Some(host) = host_fd(state, pidfd)
+            && host_pidfd(host)
+        {
+            state.pidfd_refusal = Some(GETFD_WITHOUT_RECORD_REFUSAL);
+            return negative_errno(libc::ENOSYS);
+        }
+        return negative_errno(libc::EBADF);
+    };
+    let target = record.target();
+    let target_pid = target.tgid.as_raw();
+    let targetfd = args[1] as libc::c_int;
+
+    // One lifecycle window for the permission check and the target
+    // table: the caller's generation distinguishes its own process from
+    // an earlier process that held the same numeric pid.
+    enum TargetTable {
+        Own,
+        Foreign(Arc<Mutex<FileTableState>>),
+    }
+    let table = {
+        let lifecycle = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let caller_generation = lifecycle.get(state.tid).map(|task| task.process_generation);
+        // The leader task of the pidfd's exact process, if it still
+        // lives: a pidfd names its leader (`get_pid_task`), so a group
+        // whose leader has exited is gone for this call even where the
+        // caller is a surviving thread of it (kernel/pid.c
+        // v6.17:844-874).
+        let leader = lifecycle
+            .get(target_pid)
+            .filter(|task| task.tgid == target_pid && task.process_generation == target.generation);
+        if target_pid == state.pid && caller_generation == Some(target.generation) {
+            if leader.is_none() {
+                return negative_errno(libc::ESRCH);
+            }
+            TargetTable::Own
+        } else {
+            let task = match leader {
+                Some(task) => Some((task.dumpable, task.capability_permitted)),
+                None => lifecycle
+                    .zombie_capabilities(target_pid, target.generation)
+                    .map(|(_, permitted, _)| (true, permitted)),
+            };
+            let Some((dumpable, target_permitted)) = task else {
+                // No live leader task and no zombie record for the
+                // pidfd's exact process: reaped (kernel/pid.c
+                // v6.17:857-858, 872-874).
+                return negative_errno(libc::ESRCH);
+            };
+            // Every guest task holds the launcher's ids, so the id
+            // check matches; the capability half is the live one.
+            if !pidfd_ptrace_access_allowed(
+                false,
+                dumpable,
+                true,
+                state.credentials.capability_effective,
+                state.credentials.capability_permitted,
+                target_permitted,
+            ) {
+                return negative_errno(libc::EPERM);
+            }
+            if leader.is_none() {
+                // Access passed, but the leader is a zombie: the
+                // exit check answers ESRCH (kernel/pid.c
+                // v6.17:857-858).
+                return negative_errno(libc::ESRCH);
+            }
+            match lifecycle
+                .parent_death
+                .file_tables
+                .get(&(target_pid, target.generation))
+                .and_then(|table| table.upgrade())
+            {
+                Some(table) => TargetTable::Foreign(table),
+                None => return negative_errno(libc::ESRCH),
+            }
+        }
+    };
+
+    if matches!(table, TargetTable::Own) {
+        // Capture exactly what the `fcntl(fd, F_DUPFD_CLOEXEC, 0)` path
+        // installs, which also resolves inherited standard descriptors
+        // outside the files map and carries every record of the
+        // description. The host file and its records — the signalfd
+        // mask and keeper above all, which live in the shared process
+        // signal state, not in the snapshot — must be taken atomically
+        // against a sibling's close or dup2 of the source, so the
+        // capture runs under the caller's own table lock, the lock
+        // every table-mutating call of a sibling takes, after
+        // installing the table as it is then. (The dispatch released
+        // that lock for this call, so taking it here cannot
+        // self-deadlock, and no target table is involved.) Once
+        // captured, every record is strongly held, so the dispatch's
+        // later installation under the same lock needs no live source
+        // alias. An executor with no recorded table cannot have a
+        // record-bearing pidfd for its own process, so that state is
+        // unreachable in production and fails closed below rather than
+        // capture from an unprotected snapshot. A source a sibling already
+        // closed before the capture is not in the installed table and
+        // answers EBADF, as a close ordered before the call does.
+        fn capture_own(state: &mut LoadedStaticElf, targetfd: libc::c_int) -> i64 {
+            let Some(host) = host_fd(state, targetfd) else {
+                return negative_errno(libc::EBADF);
+            };
+            // SAFETY: `host` is a live descriptor of the caller's
+            // table; F_DUPFD_CLOEXEC returns a new owned descriptor
+            // of the same open file description.
+            let duplicated = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
+            if duplicated < 0 {
+                return io_error(std::io::Error::last_os_error());
+            }
+            // SAFETY: fcntl returned a new owned descriptor.
+            let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+            #[cfg(test)]
+            run_one_shot_test_hook(&GETFD_SELF_CAPTURE_TEST_HOOK);
+            // Mask and keeper in one hold of the signal state: the
+            // pair the description had at one instant.
+            let (signalfd_mask, signalfd_carrier) = signalfd_record(state, targetfd);
+            state.captured_getfd_install = Some(CapturedGetfdInstall {
+                file,
+                source: DuplicateFdSource {
+                    output_alias: output_alias(state, targetfd),
+                    proc_inode: state.proc_files.get(&targetfd).copied(),
+                    synthetic_proc_nofollow: state.synthetic_proc_nofollow_fds.contains(&targetfd),
+                    fdinfo: state.fdinfo_files.get(&targetfd).cloned(),
+                    object_inode: guest_fd_object_identity(state, targetfd),
+                    signalfd_mask,
+                    signalfd_carrier,
+                    native_poll: native_poll_description(state, targetfd),
+                    pipe_owner: state.pipe_owners.get(&targetfd).cloned(),
+                    guest_pidfd: guest_pidfd(state, targetfd),
+                },
+            });
+            // The dispatch installs the capture and answers with the
+            // descriptor it allocated; this value never reaches the
+            // guest.
+            0
+        }
+        // The caller's own recorded table (the dispatch's table, as
+        // the run recorded it for this exact process).
+        let own_table = {
+            let lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            lifecycle
+                .get(state.tid)
+                .filter(|task| task.tgid == state.pid)
+                .and_then(|task| {
+                    lifecycle
+                        .parent_death
+                        .file_tables
+                        .get(&(state.pid, task.process_generation))
+                        .and_then(|table| table.upgrade())
+                })
+        };
+        return match own_table {
+            Some(own_table) => {
+                let mut own_table = own_table.lock().expect("KVM file-table lock poisoned");
+                match own_table.install(state) {
+                    Ok(()) => capture_own(state, targetfd),
+                    Err(error) => io_error(error),
+                }
+            }
+            None => {
+                // Production executors register their table before a
+                // record-bearing pidfd can exist. Fail closed rather
+                // than capture a description without the lock that
+                // makes the capture atomic.
+                debug_assert!(
+                    false,
+                    "record-bearing self pidfd_getfd without a recorded caller table"
+                );
+                negative_errno(libc::EBADF)
+            }
+        };
+    }
+    let TargetTable::Foreign(table) = table else {
+        unreachable!("the own table returned above");
+    };
+    #[cfg(test)]
+    run_one_shot_test_hook(&GETFD_CHECKED_TEST_HOOK);
+    // Capture the description under the target table's lock, then let
+    // the lock go before the dispatch installs it in the caller's
+    // table. The capture re-checks the target's life and credentials
+    // with the target table held, in the table-then-lifecycle order an
+    // exec's publication uses: an exec of the target either published
+    // its new credentials and descriptors under this same table lock
+    // before the capture, or waits for it, so the check and the read
+    // see one image of the target, never an old authorization over a
+    // new image's descriptor.
+    let (duplicate, source) = {
+        let table = table.lock().expect("KVM file-table lock poisoned");
+        {
+            let lifecycle = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(task) = lifecycle.get(target_pid).filter(|task| {
+                task.tgid == target_pid && task.process_generation == target.generation
+            }) else {
+                return negative_errno(libc::ESRCH);
+            };
+            if !pidfd_ptrace_access_allowed(
+                false,
+                task.dumpable,
+                true,
+                state.credentials.capability_effective,
+                state.credentials.capability_permitted,
+                task.capability_permitted,
+            ) {
+                return negative_errno(libc::EPERM);
+            }
+        }
+        if table.signalfd_fds.contains(&targetfd) {
+            state.pidfd_refusal = Some(GETFD_SIGNALFD_REFUSAL);
+            return negative_errno(libc::ENOSYS);
+        }
+        let slot = table.slots.get(&targetfd);
+        // Only an epoll is refused here. An ordinary eventfd carries a
+        // native poll binding too, and duplicates as Linux duplicates
+        // it, with its binding carried below.
+        if slot.is_some_and(|slot| {
+            matches!(
+                slot.native_poll
+                    .as_ref()
+                    .map(|binding| &binding.description),
+                Some(NativePollDescription::Epoll(_))
+            )
+        }) {
+            state.pidfd_refusal = Some(GETFD_EPOLL_REFUSAL);
+            return negative_errno(libc::ENOSYS);
+        }
+        let (host, open_standard) = match super::facts::table_host_fd(&table, targetfd) {
+            Ok(found) => found,
+            Err(_) => return negative_errno(libc::EBADF),
+        };
+        // SAFETY: `host` is a live descriptor of the target table;
+        // F_DUPFD_CLOEXEC returns a new owned descriptor of the same
+        // open file description.
+        let duplicated = unsafe { libc::fcntl(host, libc::F_DUPFD_CLOEXEC, 0) };
+        if duplicated < 0 {
+            // A host duplication failure (EMFILE, ENOMEM) is the host's
+            // own answer, not a missing target descriptor.
+            return io_error(std::io::Error::last_os_error());
+        }
+        // SAFETY: fcntl returned a new owned descriptor.
+        let duplicate = unsafe { std::fs::File::from_raw_fd(duplicated) };
+        // An eventfd that crosses to another process is exported as
+        // one sent by `SCM_RIGHTS` is: a writer outside its owner's
+        // process controls its readiness, so no alias may be admitted
+        // to a native poll interest set on its provenance alone.
+        let native_poll = slot
+            .and_then(|slot| slot.native_poll.as_ref())
+            .map(|binding| binding.description.clone());
+        if let Some(NativePollDescription::EventFd(eventfd)) = &native_poll {
+            eventfd.escaped.store(true, Ordering::SeqCst);
+        }
+        let source = DuplicateFdSource {
+            output_alias: output_alias_from_sets(
+                targetfd,
+                &table.stdout_alias_fds,
+                &table.stderr_alias_fds,
+                open_standard,
+            ),
+            proc_inode: slot.and_then(|slot| slot.proc_inode),
+            synthetic_proc_nofollow: table.synthetic_proc_nofollow_fds.contains(&targetfd),
+            fdinfo: slot.and_then(|slot| slot.fdinfo.clone()),
+            object_inode: slot
+                .and_then(|slot| slot.object_inode.clone())
+                .unwrap_or_else(|| {
+                    // No recorded identity: fall back to the synthetic
+                    // identity a descriptor without one gets, as
+                    // `guest_fd_object_identity` does. The description
+                    // itself is still shared.
+                    Arc::new(GuestFileIdentity {
+                        inode: synthetic_guest_fd_inode(targetfd, false),
+                        timestamps: IdentityTimestamps::Host,
+                    })
+                }),
+            signalfd_mask: None,
+            signalfd_carrier: None,
+            native_poll,
+            pipe_owner: slot.and_then(|slot| slot.pipe_owner.clone()),
+            guest_pidfd: slot.and_then(|slot| slot.guest_pidfd.clone()),
+        };
+        (duplicate, source)
+    };
+    // The dispatch installs the capture exactly as a dup installs, at
+    // the caller's lowest free descriptor under its table lock. The
+    // captured records stay strongly held in the capture until that
+    // publication, so the source closing its last copy meanwhile
+    // cannot erase the duplicate's identity.
+    state.captured_getfd_install = Some(CapturedGetfdInstall {
+        file: duplicate,
+        source,
+    });
+    // The dispatch answers with the descriptor it allocated; this
+    // value never reaches the guest.
+    0
+}
+
 /// A new pidfd for the supervisor process, with `flags`.
 fn supervisor_pidfd(flags: libc::c_uint) -> Result<std::fs::File, i64> {
     // SAFETY: pidfd_open takes no pointers.

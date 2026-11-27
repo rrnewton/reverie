@@ -978,7 +978,7 @@ pub(super) fn pselect6(
         let readiness = if let Some(mask) = signalfd {
             // Readable from this thread's queues, never the eventfd keeper's
             // always-writable bit.
-            [signalfd_readable(state, *mask), false, false]
+            [signalfd_readable(state, mask.snapshot()), false, false]
         } else {
             [READ, WRITE, EXCEPT].map(|mask| entry.revents & mask != 0)
         };
@@ -1126,7 +1126,7 @@ pub(super) fn select(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
             // Readable from this thread's queues. A Linux signalfd is
             // read-only and never reports the eventfd keeper's unconditional
             // POLLOUT readiness.
-            [signalfd_readable(state, *mask), false, false]
+            [signalfd_readable(state, mask.snapshot()), false, false]
         } else {
             [
                 poll_fd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0,
@@ -1346,7 +1346,7 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
         if let Some(mask) = mask
             && events & libc::POLLIN != 0
         {
-            signal_mask.union_with(**mask);
+            signal_mask.union_with(mask.snapshot());
             polls_signalfds = true;
         }
     }
@@ -1411,7 +1411,7 @@ fn poll_with_timeout<M: GuestMemoryAccess<Error = crate::Error>>(
                 // Readable from this thread's queues (fs/signalfd.c,
                 // signalfd_poll), never from the keeper alone, which another
                 // thread's read may already have emptied.
-                poll_fd.revents = if signalfd_readable(state, **mask) {
+                poll_fd.revents = if signalfd_readable(state, mask.snapshot()) {
                     libc::POLLIN & guest_events[index]
                 } else {
                     0

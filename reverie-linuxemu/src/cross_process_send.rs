@@ -155,7 +155,7 @@ impl ProcessSignalRegistry {
                         .signalfd_carriers
                         .get(fd)
                         .cloned()
-                        .map(|carrier| (carrier, **mask))
+                        .map(|carrier| (carrier, mask.snapshot()))
                         .ok_or(UnsentSignal::Errno(Errno::EBADF))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
