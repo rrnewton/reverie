@@ -88,6 +88,19 @@ pub(super) fn preflight_wait_shared_outputs(
     Ok(())
 }
 
+fn release_reaped_capabilities(
+    state: &LoadedStaticElf,
+    selected: &crate::executor::process_signal_publication::child_wait::SelectedChildWait,
+) {
+    if selected.receipt.is_some() {
+        state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .release_zombie_capabilities(selected.child.tgid.as_raw(), selected.child.generation);
+    }
+}
+
 pub(super) fn wait4_result(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
@@ -130,6 +143,7 @@ pub(super) fn wait4_result(
     let status = selected.status.into_raw();
     // Selection already consumed the exact family edge. Preserve that receipt
     // through either output fault: status is nonpartial and precedes bulk usage.
+    release_reaped_capabilities(state, &selected);
     state.consumed_child_wait = selected.receipt;
     if args[1] != 0 && memory.user().put_user_i32(args[1], status).is_err() {
         return Ok(negative_errno(libc::EFAULT));
@@ -350,6 +364,7 @@ pub(super) fn waitid_result(
     };
     let child_pid = selected.child.tgid.as_raw();
     let status = selected.status;
+    release_reaped_capabilities(state, &selected);
     state.consumed_child_wait = selected.receipt;
     let (si_code, si_status) = match status {
         ExitStatus::Exited(code) => (libc::CLD_EXITED, code),

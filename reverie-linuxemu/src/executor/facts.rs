@@ -154,7 +154,7 @@ fn descriptor_source(
 /// is a standard descriptor the guest has neither replaced nor closed
 /// (`is_open_standard`), whose standard output and error are the
 /// supervisor's own. `EBADF` when the table does not hold `fd`.
-fn table_host_fd(
+pub(super) fn table_host_fd(
     table: &FileTableState,
     fd: libc::c_int,
 ) -> std::result::Result<(RawFd, bool), reverie::FactError> {
@@ -2822,7 +2822,19 @@ mod signal_sets_tests {
             .task_lifecycle
             .lock()
             .unwrap()
-            .reset_after_exec_with_signals(other, other, other, &replaced_thread);
+            .reset_after_exec_with_signals(
+                other,
+                other,
+                other,
+                &crate::credentials::CapabilitySets {
+                    effective: crate::credentials::capability_mask(),
+                    permitted: crate::credentials::capability_mask(),
+                    inheritable: 0,
+                    bounding: crate::credentials::capability_mask(),
+                    ambient: 0,
+                },
+                &replaced_thread,
+            );
         assert_eq!(executor.signal_sets(other), Ok(before));
         // The second: the process's state replaced, its handlers reset.
         let replaced_process =

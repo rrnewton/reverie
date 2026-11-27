@@ -2764,7 +2764,7 @@ pub(super) fn rt_sigaction(
                 .signalfd_masks
                 .iter()
                 .filter(|(_, mask)| mask.contains(signal))
-                .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, **mask)))
+                .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, mask.snapshot())))
                 .collect()
         } else {
             Vec::new()
@@ -3165,7 +3165,7 @@ fn own_process(
 /// Whether host descriptor `fd` is a pidfd, or anything else the host's
 /// `pidfd_send_signal` takes as one (a `/proc/<pid>` directory). The host
 /// answers signal 0, which sends nothing, with EBADF for anything else.
-fn host_pidfd(fd: RawFd) -> bool {
+pub(super) fn host_pidfd(fd: RawFd) -> bool {
     // SAFETY: signal 0 sends nothing, and the call reads no siginfo when the
     // pointer is null.
     let result = unsafe {

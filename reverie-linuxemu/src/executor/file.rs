@@ -1946,6 +1946,7 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
     let source_fdinfo = state.fdinfo_files.get(&guest_fd).cloned();
     let source_native_poll = native_poll_description(state, guest_fd);
     let source_signalfd_mask = signalfd_mask(state, guest_fd);
+    let source_signalfd_carrier = signalfd_carrier(state, guest_fd);
     let source_pipe_owner = state.pipe_owners.get(&guest_fd).cloned();
     let source_pidfd = guest_pidfd(state, guest_fd);
     let Some(host_fd) = host_fd(state, guest_fd) else {
@@ -1972,7 +1973,8 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
                 synthetic_proc_nofollow: source_synthetic_proc_nofollow,
                 fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
-                signalfd_mask: source_signalfd_mask,
+                signalfd_mask: source_signalfd_mask.clone(),
+                signalfd_carrier: source_signalfd_carrier.clone(),
                 native_poll: source_native_poll,
                 pipe_owner: source_pipe_owner,
                 guest_pidfd: source_pidfd,
@@ -1990,6 +1992,7 @@ pub(super) fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u
                 fdinfo: source_fdinfo,
                 object_inode: source_object_inode,
                 signalfd_mask: source_signalfd_mask,
+                signalfd_carrier: source_signalfd_carrier,
                 native_poll: source_native_poll,
                 pipe_owner: source_pipe_owner,
                 guest_pidfd: source_pidfd,
@@ -2255,7 +2258,7 @@ pub(super) fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
             state.closed_standard_fds.insert(fd);
         }
         state.cloexec_fds.remove(&fd);
-        replace_signalfd_mask(state, fd, None);
+        replace_signalfd_mask(state, fd, None, None);
         state.proc_files.remove(&fd);
         state.synthetic_proc_nofollow_fds.remove(&fd);
         state.fdinfo_files.remove(&fd);
@@ -2274,7 +2277,7 @@ pub(super) fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         };
         state.closed_standard_fds.insert(fd);
         state.cloexec_fds.remove(&fd);
-        replace_signalfd_mask(state, fd, None);
+        replace_signalfd_mask(state, fd, None, None);
         state.fd_object_inodes.remove(&fd);
         cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);

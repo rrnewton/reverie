@@ -71,6 +71,7 @@ use crate::signal::KernelSigset;
 use crate::signal::ProcessSignalState;
 use crate::signal::SIGINFO_SIZE;
 use crate::signal::SS_AUTODISARM;
+use crate::signal::SharedSignalFdMask;
 #[cfg(any(test, feature = "test-support", feature = "native-test-support"))]
 use crate::signal::SharedThreadSignalState;
 use crate::signal::SignalTrapFields;
@@ -580,6 +581,7 @@ pub fn native_loaded_state(cwd: &std::path::Path) -> LoadedStaticElf {
         file_retirement: crate::elf::FileRetirement::default(),
         signal_refusal: None,
         pidfd_refusal: None,
+        captured_getfd_install: None,
         pipe_owners: Default::default(),
         guest_pidfds: Default::default(),
         pidfd_holds: Vec::new(),
@@ -32476,7 +32478,7 @@ mod tests {
         for fd in aliases {
             assert!(masks[&(fd as i32)].contains(libc::SIGUSR1));
             assert!(
-                Arc::ptr_eq(&masks[&(signal_fd as i32)], &masks[&(fd as i32)]),
+                masks[&(signal_fd as i32)].ptr_eq(&masks[&(fd as i32)]),
                 "alias {fd} must retain the shared signalfd description",
             );
         }

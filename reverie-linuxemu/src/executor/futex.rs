@@ -189,13 +189,17 @@ pub(super) fn get_robust_list(
         return negative_errno(libc::ESRCH);
     };
 
-    // Every task has the fixed virtual-root credentials. Match the remaining
-    // ptrace access predicates: same-thread-group reads are always allowed;
-    // cross-process reads require either a dumpable target or CAP_SYS_PTRACE.
-    if target.tgid != state.pid
-        && !target.dumpable
-        && state.credentials.capability_effective & (1_u64 << CAP_SYS_PTRACE) == 0
-    {
+    // The one ptrace-access predicate (`pidfd_ptrace_access_allowed`),
+    // not a copy of it. Every task holds the launcher's ids, so the id
+    // check matches.
+    if !pidfd_ptrace_access_allowed(
+        target.tgid == state.pid,
+        target.dumpable,
+        true,
+        state.credentials.capability_effective,
+        state.credentials.capability_permitted,
+        target.capability_permitted,
+    ) {
         return negative_errno(libc::EPERM);
     }
 

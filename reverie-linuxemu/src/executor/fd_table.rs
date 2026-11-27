@@ -1496,6 +1496,26 @@ std::thread_local! {
     /// fails as a refused `setrlimit` would (`restore_soft_limit`).
     pub(crate) static RESTORE_FAILS_TEST_HOOK: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
+    /// Runs once on the calling thread inside `pidfd_getfd` after its
+    /// first access check, before it locks the target table: where a
+    /// target exec can change its credentials and descriptors between
+    /// the check and the capture the re-check under the table lock
+    /// must catch.
+    pub(crate) static GETFD_CHECKED_TEST_HOOK: OneShotTestHook =
+        const { std::cell::RefCell::new(None) };
+    /// Runs once on the calling thread inside the dispatch between a
+    /// `pidfd_getfd` capture and its installation under the caller's
+    /// table lock: where a sibling's close can remove the capture's
+    /// source record (a signalfd's keeper above all) before the
+    /// captured duplicate is published.
+    pub(crate) static GETFD_CAPTURED_TEST_HOOK: OneShotTestHook =
+        const { std::cell::RefCell::new(None) };
+    /// Runs once inside a self `pidfd_getfd` capture, after its host
+    /// duplicate and before its signalfd record is read: the caller's
+    /// table lock is held there, so a test can prove a sibling's close
+    /// or mask update cannot interleave (its table try_lock fails).
+    pub(crate) static GETFD_SELF_CAPTURE_TEST_HOOK: OneShotTestHook =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// Runs `hook` once, if this thread installed it.
@@ -1880,6 +1900,9 @@ pub(super) fn mutates_file_table(number: u64) -> bool {
             // AUTONOMOUS-BOT-IMPLEMENTED
             // TODO-HUMAN-REVIEW(PR-235): Review pidfd descriptor-table serialization.
             || number == libc::SYS_pidfd_open as u64
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(D133876931): Review cross-process descriptor duplication.
+            || number == libc::SYS_pidfd_getfd as u64
             || number == libc::SYS_socket as u64
             || number == libc::SYS_socketpair as u64
             // AUTONOMOUS-BOT-IMPLEMENTED
@@ -2161,13 +2184,41 @@ pub(super) fn insert_file_with_identity(
 // AUTONOMOUS-BOT-IMPLEMENTED: Model fcntl descriptor duplication in the guest table.
 // TODO-HUMAN-REVIEW(#91): Review minimum/error precedence and standard-fd ownership.
 // TODO-HUMAN-REVIEW(PR-136): Review fcntl duplicate object identity propagation.
+/// A descriptor `pidfd_getfd` captured from its source table (the
+/// caller's own snapshot or another process's table), waiting for the
+/// dispatch to install it in the caller's current table under that
+/// table's lock (`execute_checked`): an owned host duplicate of the
+/// source description and the source's records for it. The strong
+/// records in `source` (its pidfd record above all) keep the
+/// description's identity alive from capture to publication, whatever
+/// the source process closes meanwhile, as Linux's `fget_task` holds
+/// the file until `receive_fd` installs it.
+pub(crate) struct CapturedGetfdInstall {
+    pub(super) file: std::fs::File,
+    pub(super) source: DuplicateFdSource,
+}
+
+impl std::fmt::Debug for CapturedGetfdInstall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CapturedGetfdInstall")
+            .field("file", &self.file)
+            .finish_non_exhaustive()
+    }
+}
+
 pub(super) struct DuplicateFdSource {
     pub(super) output_alias: Option<OutputAlias>,
     pub(super) proc_inode: Option<u64>,
     pub(super) synthetic_proc_nofollow: bool,
     pub(super) fdinfo: Option<Arc<FdinfoDescription>>,
     pub(super) object_inode: Arc<GuestFileIdentity>,
-    pub(super) signalfd_mask: Option<Arc<KernelSigset>>,
+    pub(super) signalfd_mask: Option<SharedSignalFdMask>,
+    /// The signalfd description's readiness keeper, captured with its
+    /// mask: the duplicate's ownership of the description, which an
+    /// install must not have to resolve from a source alias another
+    /// thread may have closed since the capture.
+    pub(super) signalfd_carrier: Option<crate::signal::SignalFdCarrier>,
     pub(super) native_poll: Option<NativePollDescription>,
     pub(super) pipe_owner: Option<Arc<pipe_owner::PipeOwner>>,
     pub(super) guest_pidfd: Option<Arc<GuestPidfd>>,
@@ -2222,7 +2273,30 @@ pub(super) fn signalfd_carrier(
         .cloned()
 }
 
-pub(super) fn signalfd_mask(state: &LoadedStaticElf, fd: libc::c_int) -> Option<Arc<KernelSigset>> {
+/// A signalfd's mask and readiness keeper together, under one hold of
+/// the process signal state: a capture gets the pair its source had at
+/// one instant, never a mask its keeper has already gone from.
+pub(super) fn signalfd_record(
+    state: &LoadedStaticElf,
+    fd: libc::c_int,
+) -> (
+    Option<SharedSignalFdMask>,
+    Option<crate::signal::SignalFdCarrier>,
+) {
+    let process_signals = state
+        .process_signals
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (
+        process_signals.signalfd_masks.get(&fd).cloned(),
+        process_signals.signalfd_carriers.get(&fd).cloned(),
+    )
+}
+
+pub(super) fn signalfd_mask(
+    state: &LoadedStaticElf,
+    fd: libc::c_int,
+) -> Option<SharedSignalFdMask> {
     state
         .process_signals
         .lock()
@@ -2232,32 +2306,50 @@ pub(super) fn signalfd_mask(state: &LoadedStaticElf, fd: libc::c_int) -> Option<
         .cloned()
 }
 
+/// Installs (or removes, for `None`) `fd`'s signalfd mask and keeper.
+/// Returns true when a mask was installed that no other descriptor in
+/// the maps represented: its keeper was absent while signals may have
+/// been published, so its readiness needs a refresh by the caller.
 pub(super) fn replace_signalfd_mask(
     state: &LoadedStaticElf,
     fd: libc::c_int,
-    mask: Option<Arc<KernelSigset>>,
-) {
+    mask: Option<SharedSignalFdMask>,
+    carrier: Option<crate::signal::SignalFdCarrier>,
+) -> bool {
     let mut process_signals = state
         .process_signals
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(mask) = mask {
-        // Dup retains the same open description. Resolve its keeper while the
-        // source alias is still live; no new host clone is needed for an alias.
-        let carrier = process_signals
+        // Dup retains the same open description. Its keeper was
+        // captured with the mask wherever the source alias need not
+        // still be live at installation (a `pidfd_getfd` capture: a
+        // sibling may close the last alias in between); an ordinary
+        // dup under the table lock resolves it from the live source
+        // alias instead, and no new host clone is needed either way.
+        let carrier = carrier.unwrap_or_else(|| {
+            process_signals
+                .signalfd_masks
+                .iter()
+                .find_map(|(source, current)| {
+                    current
+                        .ptr_eq(&mask)
+                        .then(|| process_signals.signalfd_carriers.get(source).cloned())
+                        .flatten()
+                })
+                .expect("live signalfd source owns its readiness keeper")
+        });
+        let represented = process_signals
             .signalfd_masks
             .iter()
-            .find_map(|(source, current)| {
-                Arc::ptr_eq(current, &mask)
-                    .then(|| process_signals.signalfd_carriers.get(source).cloned())
-                    .flatten()
-            })
-            .expect("live signalfd source owns its readiness keeper");
+            .any(|(&other, current)| other != fd && current.ptr_eq(&mask));
         process_signals.signalfd_masks.insert(fd, mask);
         process_signals.signalfd_carriers.insert(fd, carrier);
+        !represented
     } else {
         process_signals.signalfd_masks.remove(&fd);
         process_signals.signalfd_carriers.remove(&fd);
+        false
     }
 }
 
@@ -2302,7 +2394,12 @@ pub(super) fn duplicate_fd_at_or_above(
         install_native_poll_description(state, fd, description);
     }
     state.fd_object_inodes.insert(fd, source.object_inode);
-    replace_signalfd_mask(state, fd, source.signalfd_mask);
+    // A signalfd reinstalled after its last alias closed was absent
+    // from the maps its readiness is refreshed from; a signal
+    // published in that window never marked its keeper, so refresh
+    // now, still under the signal transaction, as a publication does.
+    let refresh = replace_signalfd_mask(state, fd, source.signalfd_mask, source.signalfd_carrier)
+        .then(|| refresh_signalfd_readiness_from_carriers_locked(state, None));
     if close_on_exec {
         state.cloexec_fds.insert(fd);
     } else {
@@ -2327,7 +2424,10 @@ pub(super) fn duplicate_fd_at_or_above(
     }
     drop(_transaction);
     state.file_retirement.retire(retired);
-    i64::from(fd)
+    match refresh {
+        Some(Err(error)) => error,
+        _ => i64::from(fd),
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review dup object-identity propagation.
@@ -2355,6 +2455,7 @@ pub(super) fn duplicate_fd(
     let source_fdinfo = state.fdinfo_files.get(&old_fd).cloned();
     let source_native_poll = native_poll_description(state, old_fd);
     let source_signalfd_mask = signalfd_mask(state, old_fd);
+    let source_signalfd_carrier = signalfd_carrier(state, old_fd);
     let source_pipe_owner = state.pipe_owners.get(&old_fd).cloned();
     let source_pidfd = guest_pidfd(state, old_fd);
     let Some(old_host_fd) = host_fd(state, old_fd) else {
@@ -2405,7 +2506,12 @@ pub(super) fn duplicate_fd(
             install_native_poll_description(state, new_fd, description);
         }
         state.fd_object_inodes.insert(new_fd, source_object_inode);
-        replace_signalfd_mask(state, new_fd, source_signalfd_mask);
+        replace_signalfd_mask(
+            state,
+            new_fd,
+            source_signalfd_mask,
+            source_signalfd_carrier.clone(),
+        );
         cleanup_fd_object_inodes(state);
         if close_on_exec {
             state.cloexec_fds.insert(new_fd);
@@ -2453,7 +2559,12 @@ pub(super) fn duplicate_fd(
             state
                 .fd_object_inodes
                 .insert(new_fd as libc::c_int, source_object_inode);
-            replace_signalfd_mask(state, new_fd as libc::c_int, source_signalfd_mask);
+            replace_signalfd_mask(
+                state,
+                new_fd as libc::c_int,
+                source_signalfd_mask,
+                source_signalfd_carrier,
+            );
             if let Some(description) = source_fdinfo {
                 state.fdinfo_files.insert(new_fd as i32, description);
             }

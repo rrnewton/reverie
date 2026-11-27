@@ -128,31 +128,29 @@ pub(super) fn signalfd(
             return negative_errno(libc::EINVAL);
         }
         // A signalfd mask belongs to the open file description. Descriptor
-        // aliases share this exact Arc, while independently created signalfds
-        // receive distinct Arcs even when their masks happen to be equal.
-        Some(
-            process_signals
-                .signalfd_masks
-                .iter()
-                .filter_map(|(&fd, candidate)| Arc::ptr_eq(candidate, &description).then_some(fd))
-                .collect::<Vec<_>>(),
-        )
+        // aliases share this exact mutable mask object, while independently
+        // created signalfds receive distinct objects even when their masks
+        // happen to be equal.
+        let aliases = process_signals
+            .signalfd_masks
+            .iter()
+            .filter_map(|(&fd, candidate)| candidate.ptr_eq(&description).then_some(fd))
+            .collect::<Vec<_>>();
+        Some((description, aliases))
     } else {
         None
     };
 
-    if let Some(alias_fds) = update_aliases {
+    if let Some((description, alias_fds)) = update_aliases {
         let ready = {
-            let mut process_signals = state
+            let process_signals = state
                 .process_signals
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let description = Arc::new(mask);
-            for &fd in &alias_fds {
-                process_signals
-                    .signalfd_masks
-                    .insert(fd, description.clone());
-            }
+            // Mutate the description's mask in place: aliases already in
+            // the map and an in-flight captured duplicate share this
+            // same object, as Linux aliases share signalfd_ctx.
+            description.replace(mask);
             shared_queue_covers(&process_signals, mask)
         };
         for fd in alias_fds {
@@ -205,7 +203,7 @@ pub(super) fn signalfd(
         process_signals.signalfd_carriers.insert(guest_fd, carrier);
         process_signals
             .signalfd_masks
-            .insert(guest_fd, Arc::new(mask));
+            .insert(guest_fd, SharedSignalFdMask::new(mask));
         shared_queue_covers(&process_signals, mask)
     };
     let file = state
@@ -423,7 +421,7 @@ fn refresh_signalfd_readiness_from_files_locked(
             .signalfd_masks
             .iter()
             .filter(|(_, mask)| signal.is_none_or(|signal| mask.contains(signal)))
-            .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, **mask)))
+            .map(|(&fd, mask)| (fd, shared_queue_covers(&process_signals, mask.snapshot())))
             .collect::<Vec<_>>()
     };
     for (fd, ready) in readiness {
@@ -455,7 +453,7 @@ pub(super) fn refresh_signalfd_readiness_from_carriers_locked(
                     .get(fd)
                     .cloned()
                     .ok_or_else(|| negative_errno(libc::EBADF))?;
-                Ok((carrier, shared_queue_covers(&process, **mask)))
+                Ok((carrier, shared_queue_covers(&process, mask.snapshot())))
             })
             .collect::<Result<Vec<_>, i64>>()?
     };
@@ -622,7 +620,7 @@ pub(super) fn signalfd_read_stream(
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .signalfd_masks
         .get(&fd)
-        .map(|mask| **mask)?;
+        .map(|mask| mask.snapshot())?;
     let file = state.files.get(&fd)?;
     if let Err(error) = ensure_read_capable(file).and_then(|()| ensure_readable(file)) {
         return Some(error);

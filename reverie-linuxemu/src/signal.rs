@@ -259,6 +259,43 @@ impl PartialEq for SignalFdCarrier {
 }
 impl Eq for SignalFdCarrier {}
 
+/// The mutable mask of one signalfd open file description, shared by
+/// every descriptor alias and by an in-flight duplicate capture.
+/// Linux mutates this mask in the shared `signalfd_ctx`, so an update
+/// after a duplicate has been captured but before it is installed
+/// still applies to that duplicate.
+#[derive(Clone, Debug)]
+pub(crate) struct SharedSignalFdMask(Arc<Mutex<KernelSigset>>);
+
+impl SharedSignalFdMask {
+    pub(crate) fn new(mask: KernelSigset) -> Self {
+        Self(Arc::new(Mutex::new(mask)))
+    }
+
+    pub(crate) fn snapshot(&self) -> KernelSigset {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub(crate) fn contains(&self, signal: i32) -> bool {
+        self.snapshot().contains(signal)
+    }
+
+    pub(crate) fn replace(&self, mask: KernelSigset) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = mask;
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl PartialEq for SharedSignalFdMask {
+    fn eq(&self, other: &Self) -> bool {
+        self.snapshot() == other.snapshot()
+    }
+}
+impl Eq for SharedSignalFdMask {}
+
 /// A thread waiting in a host poll that includes signalfds. Their eventfd
 /// keepers show only the process's shared queue, so a covered signal queued
 /// for this thread alone wakes the wait through `wake` instead.
@@ -312,7 +349,7 @@ impl Eq for SignalFdWaiter {}
 pub struct ProcessSignalState {
     pub(crate) dispositions: BTreeMap<i32, KernelSigaction>,
     pub(crate) shared_pending: StandardPendingSignals,
-    pub(crate) signalfd_masks: BTreeMap<i32, Arc<KernelSigset>>,
+    pub(crate) signalfd_masks: BTreeMap<i32, SharedSignalFdMask>,
     pub(crate) signalfd_carriers: BTreeMap<i32, SignalFdCarrier>,
     pub(crate) pending_generations: PendingSignalGenerations,
     pub(crate) dequeue_enabled: bool,

@@ -696,6 +696,18 @@ impl ElfExecutor {
             .get(state.tid)
             .expect("registered KVM task exists")
             .process_generation;
+        // A task registers with the capability sets it was born with
+        // (its creator's, after a fork), not always the full set.
+        state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .set_capabilities(
+                state.tid,
+                state.credentials.capability_effective,
+                state.credentials.capability_permitted,
+                state.credentials.capability_inheritable,
+            );
         let next_pid =
             reverie::task_ids::next_task_id(state.pid, state.ids_per_task).unwrap_or(i32::MAX);
         let sigchld_auto_reap = Arc::new(AtomicBool::new(sigchld_auto_reaps(&state)));
@@ -1348,6 +1360,15 @@ impl ElfExecutor {
                 state.dumpable,
                 &state.thread_signals,
             );
+            // The child is born with its creator's capability sets,
+            // which its inherited credentials carry: publish those,
+            // not the full ones a first task registers with.
+            lifecycle.set_capabilities(
+                state.tid,
+                state.credentials.capability_effective,
+                state.credentials.capability_permitted,
+                state.credentials.capability_inheritable,
+            );
             if let Err(errno) = lifecycle.inherit_real_parent(
                 state.tid,
                 generation,
@@ -1549,6 +1570,14 @@ impl ElfExecutor {
                 state.pgid,
                 state.dumpable,
                 &state.thread_signals,
+            );
+            // The new thread is born with its creator's capability
+            // sets, as a forked child is: publish its own sets.
+            lifecycle.set_capabilities(
+                state.tid,
+                state.credentials.capability_effective,
+                state.credentials.capability_permitted,
+                state.credentials.capability_inheritable,
             );
             if let Err(errno) = lifecycle.inherit_real_parent(
                 state.tid,
