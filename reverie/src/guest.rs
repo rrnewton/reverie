@@ -399,6 +399,42 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// thread.
     fn memory(&self) -> Self::Memory;
 
+    /// Store the longest prefix of `bytes` at guest `address` with the
+    /// forced access of the guest's own `/proc/<task>/mem` write: through
+    /// page protections, breaking copy-on-write, stopping at the first
+    /// byte that forced access cannot reach. An unbacked mapping, or a
+    /// mapping even the forced access cannot write (for example a shared
+    /// mapping without write permission), stops the store there, and so
+    /// does a backend-owned page that is not guest memory, even where a
+    /// host mapping backs it.
+    /// Returns the stored length; `Err` only when no byte could be
+    /// stored, the backend itself failed, or the backend has no such
+    /// store (`ENOSYS`, the default).
+    ///
+    /// An empty `bytes` stores nothing: a backend that provides this
+    /// store returns `Ok(0)` without accessing guest memory, at any
+    /// address. The default is not such a backend and returns `ENOSYS`
+    /// even for empty input, so that answer remains its capability
+    /// refusal. A non-`ENOSYS` `Err` is backend-diagnostic, not a
+    /// guest-visible errno: the Tool normalizes it itself (Linux's
+    /// `mem_rw` answers `EIO` when its first forced access copies no
+    /// byte). The store always forces; host `/proc/<task>/mem` force
+    /// policy is deliberately not probed.
+    ///
+    /// This is a system-call service, not a memory-access operation: a
+    /// Tool calls it only for one descriptor it has already bound to the
+    /// caller's own address space, and owns every access decision and
+    /// guest-visible errno around it. Ordinary [`Self::memory`] writes,
+    /// including a backend's private-page Tool-write guard where it has
+    /// one, are unchanged and cannot reach this store.
+    fn write_proc_mem_prefix(
+        &mut self,
+        _address: u64,
+        _bytes: &[u8],
+    ) -> Result<usize, crate::Errno> {
+        Err(crate::Errno::ENOSYS)
+    }
+
     /// Execute one synchronous syscall on behalf of the Tool, on the calling
     /// operating-system thread. This is a host operation, not guest injection:
     /// the syscall number, six arguments, result and errno pass through unchanged.
@@ -1769,6 +1805,10 @@ where
         self.inner.memory()
     }
 
+    fn write_proc_mem_prefix(&mut self, address: u64, bytes: &[u8]) -> Result<usize, crate::Errno> {
+        self.inner.write_proc_mem_prefix(address, bytes)
+    }
+
     unsafe fn tool_syscall(&self, number: Sysno, args: [usize; 6]) -> Result<usize, Errno> {
         // SAFETY: forwarding preserves the caller's syscall and safety obligations.
         unsafe { self.inner.tool_syscall(number, args) }
@@ -2250,6 +2290,10 @@ where
 
     fn memory(&self) -> Self::Memory {
         self.inner.memory()
+    }
+
+    fn write_proc_mem_prefix(&mut self, address: u64, bytes: &[u8]) -> Result<usize, crate::Errno> {
+        self.inner.write_proc_mem_prefix(address, bytes)
     }
 
     unsafe fn tool_syscall(&self, number: Sysno, args: [usize; 6]) -> Result<usize, Errno> {

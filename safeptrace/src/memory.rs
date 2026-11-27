@@ -61,6 +61,77 @@ impl Stopped {
             .map_err(|err| Errno::new(err as i32))
         })
     }
+
+    /// Store a prefix of `buf` at `addr` for a guest write through its
+    /// own `/proc/<task>/mem`, as that file's kernel write performs
+    /// through `access_remote_vm` with `FOLL_FORCE`. The caller is the
+    /// one syscall-service path that has bound the descriptor to this
+    /// task's own address space; this is not a `MemoryAccess` operation
+    /// and no ordinary Tool memory write can reach it.
+    ///
+    /// The store first tries `MemoryAccess::write`: the ordinary vectored
+    /// store, except that an eight-byte buffer already takes that trait's
+    /// one-word `PTRACE_POKEDATA` path. Only the tail that first store
+    /// cannot take falls back to word-at-a-time
+    /// `PTRACE_PEEKDATA`/`PTRACE_POKEDATA`, which take the same forced
+    /// path, including its copy-on-write break; splicing each
+    /// overlapping word first preserves bytes outside the range in its
+    /// first and last words. Words are naturally aligned, so no forced
+    /// store can cross from a backed page into an unbacked one. The
+    /// fallback's read-modify-write can still lose a concurrent host
+    /// writer's bytes beside each end of a protected range; that
+    /// residual is the price of forcing through this interface.
+    pub fn write_proc_mem_prefix(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let address = addr.as_raw();
+        address.checked_add(buf.len()).ok_or(Errno::EFAULT)?;
+        let mut done = <Self as MemoryAccess>::write(self, addr, buf)
+            .unwrap_or(0)
+            .min(buf.len());
+        while done < buf.len() {
+            let at = address + done;
+            let aligned = at & !(mem::size_of::<u64>() - 1);
+            let offset = at - aligned;
+            let take = (mem::size_of::<u64>() - offset).min(buf.len() - done);
+            let Some(word) = Addr::<u64>::from_raw(aligned) else {
+                return if done == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(done)
+                };
+            };
+            let bytes = if take == mem::size_of::<u64>() {
+                buf[done..done + take]
+                    .try_into()
+                    .expect("a full word slice is eight bytes")
+            } else {
+                match self.read_u64(word) {
+                    Ok(current) => {
+                        let mut spliced = current.to_ne_bytes();
+                        spliced[offset..offset + take].copy_from_slice(&buf[done..done + take]);
+                        spliced
+                    }
+                    Err(_) if done > 0 => return Ok(done),
+                    Err(error) => return Err(error),
+                }
+            };
+            let Some(destination) = AddrMut::<u64>::from_raw(aligned) else {
+                return if done == 0 {
+                    Err(Errno::EFAULT)
+                } else {
+                    Ok(done)
+                };
+            };
+            match self.write_u64(destination, u64::from_ne_bytes(bytes)) {
+                Ok(()) => done += take,
+                Err(_) if done > 0 => return Ok(done),
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(done)
+    }
 }
 
 impl MemoryAccess for Stopped {
@@ -591,6 +662,264 @@ mod test {
                 true
             },
             |_| {},
+        );
+        unmap_pages(mapping, total);
+        assert!(passed);
+    }
+
+    fn filled_memfd_page() -> i32 {
+        let page = page_size();
+        let fd = unsafe { libc::memfd_create(c"safeptrace-proc-mem".as_ptr(), 0) };
+        assert!(fd >= 0, "memfd_create");
+        assert_eq!(unsafe { libc::ftruncate(fd, page as libc::off_t) }, 0);
+        let bytes = vec![0xa5u8; page];
+        assert_eq!(
+            unsafe { libc::pwrite(fd, bytes.as_ptr().cast(), bytes.len(), 0) },
+            bytes.len() as libc::ssize_t
+        );
+        fd
+    }
+
+    fn map_file_page(fd: i32, protection: i32, flags: i32) -> (*mut u8, usize) {
+        let length = page_size();
+        let mapping =
+            unsafe { libc::mmap(core::ptr::null_mut(), length, protection, flags, fd, 0) };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        (mapping.cast(), length)
+    }
+
+    fn read_file_prefix(fd: i32) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        assert_eq!(
+            unsafe { libc::pread(fd, bytes.as_mut_ptr().cast(), bytes.len(), 0) },
+            bytes.len() as libc::ssize_t
+        );
+        bytes
+    }
+
+    fn close_fd(fd: i32) {
+        assert_eq!(unsafe { libc::close(fd) }, 0);
+    }
+
+    fn mapping_flags(child: Pid, address: usize) -> String {
+        let maps = std::fs::read_to_string(format!("/proc/{}/maps", child.as_raw())).unwrap();
+        for line in maps.lines() {
+            let mut fields = line.split_ascii_whitespace();
+            let Some(range) = fields.next() else {
+                continue;
+            };
+            let Some((start, end)) = range.split_once('-') else {
+                continue;
+            };
+            let start = usize::from_str_radix(start, 16).unwrap();
+            let end = usize::from_str_radix(end, 16).unwrap();
+            if (start..end).contains(&address) {
+                return fields.next().unwrap().to_owned();
+            }
+        }
+        panic!("no mapping covers {address:#x}");
+    }
+
+    #[test]
+    fn proc_mem_store_breaks_cow_on_a_readonly_private_file_page() {
+        let fd = filled_memfd_page();
+        let (mapping, length) = map_file_page(fd, libc::PROT_READ, libc::MAP_PRIVATE);
+        let passed = fork_helper(
+            (mapping as usize, fd),
+            move |child, value| {
+                let (address, file) = value;
+                let mut memory = Stopped::new_unchecked(child);
+                assert_eq!(
+                    mapping_flags(child, address),
+                    "r--p",
+                    "mapping flags for the private readonly file page"
+                );
+                let payload = b"forced-cow";
+                let result =
+                    memory.write_proc_mem_prefix(AddrMut::from_raw(address + 3).unwrap(), payload);
+                assert_eq!(result, Ok(payload.len()), "forced store return value");
+                let mut expected = [0xa5; 32];
+                expected[3..3 + payload.len()].copy_from_slice(payload);
+                assert_eq!(
+                    native_write_readback(&memory, address),
+                    Some(expected),
+                    "bytes read back after the COW store"
+                );
+                assert_eq!(
+                    read_file_prefix(file),
+                    [0xa5; 32],
+                    "backing file bytes unchanged after the COW store"
+                );
+                true
+            },
+            |_| {},
+        );
+        unmap_pages(mapping, length);
+        close_fd(fd);
+        assert!(passed);
+    }
+
+    #[test]
+    fn proc_mem_store_crosses_writable_and_readonly_pages_to_an_unmapped_page() {
+        let page = page_size();
+        let (mapping, total) = map_pages(3);
+        unsafe { core::ptr::write_bytes(mapping, 0xa5, total) };
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let mut memory = Stopped::new_unchecked(child);
+                let source: Vec<_> = (0..page + 8).map(|i| (19 + i * 37) as u8).collect();
+                let offset = page - 3;
+                let copied = memory
+                    .write_proc_mem_prefix(AddrMut::from_raw(address + offset).unwrap(), &source);
+                assert_eq!(copied, Ok(page + 3));
+                assert_user_copy_bytes(&memory, address, 2 * page, offset, &source, page + 3);
+                true
+            },
+            move |_| {
+                assert_eq!(
+                    unsafe { libc::mprotect(mapping.add(page).cast(), page, libc::PROT_READ) },
+                    0
+                );
+                assert_eq!(
+                    unsafe { libc::munmap(mapping.add(2 * page).cast(), page) },
+                    0
+                );
+            },
+        );
+        unmap_pages(mapping, total);
+        assert!(passed);
+    }
+
+    #[test]
+    fn proc_mem_store_preserves_bytes_outside_an_unaligned_range() {
+        let (mapping, total) = map_pages(1);
+        unsafe { core::ptr::write_bytes(mapping, 0xa5, total) };
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let mut memory = Stopped::new_unchecked(child);
+                let payload = b"spliced-word";
+                let result =
+                    memory.write_proc_mem_prefix(AddrMut::from_raw(address + 3).unwrap(), payload);
+                let mut expected = [0xa5; 32];
+                expected[3..3 + payload.len()].copy_from_slice(payload);
+                result == Ok(payload.len())
+                    && native_write_readback(&memory, address) == Some(expected)
+            },
+            move |address| {
+                assert_eq!(
+                    unsafe {
+                        libc::mprotect(*address as *mut libc::c_void, total, libc::PROT_READ)
+                    },
+                    0
+                );
+            },
+        );
+        unmap_pages(mapping, total);
+        assert!(passed);
+    }
+
+    #[test]
+    fn proc_mem_store_refuses_a_shared_readonly_file_page() {
+        let fd = filled_memfd_page();
+        let path = CString::new(format!("/proc/self/fd/{fd}")).unwrap();
+        let readonly_fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY) };
+        assert!(readonly_fd >= 0, "reopen the memfd read-only");
+        let (mapping, length) = map_file_page(readonly_fd, libc::PROT_READ, libc::MAP_SHARED);
+        let passed = fork_helper(
+            (mapping as usize, fd),
+            move |child, value| {
+                let (address, file) = value;
+                let mut memory = Stopped::new_unchecked(child);
+                assert_eq!(
+                    mapping_flags(child, address),
+                    "r--s",
+                    "mapping flags for the shared readonly file page"
+                );
+                let result = memory.write_proc_mem_prefix(
+                    AddrMut::from_raw(address).unwrap(),
+                    b"must-not-be-stored",
+                );
+                assert!(
+                    result.is_err(),
+                    "forced store must be refused on a shared readonly page, got {result:?}"
+                );
+                assert_eq!(
+                    native_write_readback(&memory, address),
+                    Some([0xa5; 32]),
+                    "bytes read back after the refused store"
+                );
+                assert_eq!(
+                    read_file_prefix(file),
+                    [0xa5; 32],
+                    "backing file bytes unchanged after the refused store"
+                );
+                true
+            },
+            |_| {},
+        );
+        unmap_pages(mapping, length);
+        close_fd(readonly_fd);
+        close_fd(fd);
+        assert!(passed);
+    }
+
+    #[test]
+    fn proc_mem_store_refuses_an_unmapped_first_byte() {
+        let (mapping, total) = map_pages(1);
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let mut memory = Stopped::new_unchecked(child);
+                memory
+                    .write_proc_mem_prefix(AddrMut::from_raw(address).unwrap(), b"unmapped")
+                    .is_err()
+            },
+            move |address| {
+                assert_eq!(
+                    unsafe { libc::munmap(*address as *mut libc::c_void, total) },
+                    0
+                );
+            },
+        );
+        unmap_pages(mapping, total);
+        assert!(passed);
+    }
+
+    #[test]
+    fn proc_mem_store_empty_and_wrapping_ranges_make_no_access() {
+        let mut memory = Stopped::new_unchecked(Pid::from_raw(-1));
+        assert_eq!(
+            memory.write_proc_mem_prefix(AddrMut::from_raw(usize::MAX).unwrap(), &[]),
+            Ok(0)
+        );
+        assert_eq!(
+            memory.write_proc_mem_prefix(AddrMut::from_raw(usize::MAX - 3).unwrap(), b"12345678",),
+            Err(Errno::EFAULT)
+        );
+    }
+
+    #[test]
+    fn proc_mem_store_unaligned_word_stops_at_an_unmapped_page() {
+        let page = page_size();
+        let (mapping, total) = map_pages(2);
+        unsafe { core::ptr::write_bytes(mapping, 0xa5, total) };
+        let passed = fork_helper(
+            mapping as usize,
+            move |child, address| {
+                let mut memory = Stopped::new_unchecked(child);
+                let payload = b"12345678";
+                let result = memory
+                    .write_proc_mem_prefix(AddrMut::from_raw(address + page - 3).unwrap(), payload);
+                let mut expected = [0xa5; 32];
+                expected[29..].copy_from_slice(&payload[..3]);
+                result == Ok(3)
+                    && native_write_readback(&memory, address + page - 32) == Some(expected)
+            },
+            move |_| {
+                assert_eq!(unsafe { libc::munmap(mapping.add(page).cast(), page) }, 0);
+            },
         );
         unmap_pages(mapping, total);
         assert!(passed);

@@ -20328,6 +20328,62 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 }
 
+/// The native base-page size. A fixed backend mapping made with a smaller
+/// logical size still spans this whole page in the guest.
+fn native_page_size() -> usize {
+    // SAFETY: sysconf takes a plain name and writes nothing.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    if page > 0 {
+        page as usize
+    } else {
+        cp::TRAMPOLINE_SIZE
+    }
+}
+
+/// Whether the SIGTRAP repair page is this backend's page in `tid`'s address
+/// space right now: sealed, or unsealed with its canary intact in the mapping
+/// pre-init made. Pending and unavailable spaces have no backend page there.
+fn proc_mem_scratch_owned(state: u8, tid: Pid) -> bool {
+    match state {
+        SCRATCH_SEALED => true,
+        SCRATCH_UNSEALED => scratch_canary_intact(tid) && scratch_mapping_owned(tid),
+        _ => false,
+    }
+}
+
+/// The prefix of `[address, address + length)` before the first byte of a
+/// page this backend owns in the guest. The trampoline is always owned; the
+/// SIGTRAP repair page only while `scratch_owned`, and the reserved input
+/// page only while its authenticated `reserved_input` layout is set. Those
+/// pages are host mappings, not guest memory, so a guest's own
+/// `/proc/<task>/mem` store treats them as unbacked and stops there.
+fn proc_mem_prefix_len_before_owned_pages(
+    address: usize,
+    length: usize,
+    native_page: usize,
+    scratch_owned: bool,
+    reserved_input: Option<reverie::reserved_input::ReservedInputLayout>,
+) -> usize {
+    let mut ranges = [(cp::TRAMPOLINE_BASE, native_page), (0, 0), (0, 0)];
+    let mut count = 1;
+    if scratch_owned {
+        ranges[count] = (cp::SCRATCH_BASE, native_page);
+        count += 1;
+    }
+    if let Some(layout) = reserved_input {
+        ranges[count] = (layout.base as usize, layout.page_bytes);
+        count += 1;
+    }
+    let end = address.saturating_add(length);
+    let mut prefix = length;
+    for (page_start, page_size) in &ranges[..count] {
+        if address < page_start + page_size && *page_start < end {
+            prefix = prefix.min(page_start.saturating_sub(address));
+        }
+    }
+    prefix
+}
+
 #[async_trait]
 impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
     type Memory = crate::tool_memory::ToolMemory;
@@ -20504,6 +20560,38 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
 
     fn memory(&self) -> Self::Memory {
         crate::tool_memory::ToolMemory::new(self.assume_stopped())
+    }
+
+    fn write_proc_mem_prefix(&mut self, address: u64, bytes: &[u8]) -> Result<usize, Errno> {
+        if bytes.is_empty() {
+            return Ok(0);
+        }
+        // This is the guest's bound mem-file write, not a Tool memory write,
+        // so it does not go through ToolMemory. It nevertheless stops at
+        // the pages this backend owns in this address space right now,
+        // which are not guest memory.
+        let address = usize::try_from(address).map_err(|_| Errno::EIO)?;
+        let scratch_owned = proc_mem_scratch_owned(
+            self.sigtrap_scratch_state.load(Ordering::SeqCst),
+            self.tid(),
+        );
+        let reserved_input = match (self.input_control(), self.reserved_input_task) {
+            (Some(control), Some(identity)) => control.layout(identity),
+            _ => None,
+        };
+        let allowed = proc_mem_prefix_len_before_owned_pages(
+            address,
+            bytes.len(),
+            native_page_size(),
+            scratch_owned,
+            reserved_input,
+        );
+        if allowed == 0 {
+            return Err(Errno::EIO);
+        }
+        let addr = AddrMut::<u8>::from_raw(address).ok_or(Errno::EIO)?;
+        self.assume_stopped()
+            .write_proc_mem_prefix(addr, &bytes[..allowed])
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
@@ -21424,6 +21512,9 @@ mod exec_owner_tests;
 #[cfg(test)]
 #[path = "task_set_blocked_signals_tests.rs"]
 mod set_blocked_signals_tests;
+#[cfg(test)]
+#[path = "task_write_proc_mem_tests.rs"]
+mod write_proc_mem_tests;
 
 #[cfg(test)]
 mod tests {
@@ -21463,6 +21554,101 @@ mod tests {
         assert!(!may_set_blocked_signals(true, true, false, false));
         assert!(!may_set_blocked_signals(true, false, true, false));
         assert!(!may_set_blocked_signals(true, false, false, true));
+    }
+
+    #[test]
+    fn proc_mem_prefix_stops_at_owned_runtime_private_pages() {
+        use reverie::reserved_input::InputAbi;
+        use reverie::reserved_input::RESERVED_INPUT_BASE;
+        use reverie::reserved_input::ReservedInputLayout;
+
+        use super::proc_mem_prefix_len_before_owned_pages;
+        use crate::cp;
+
+        let trampoline = cp::TRAMPOLINE_BASE;
+        let scratch = cp::SCRATCH_BASE;
+        let input = RESERVED_INPUT_BASE as usize;
+        let reserved = ReservedInputLayout {
+            base: RESERVED_INPUT_BASE,
+            page_bytes: 0x4000,
+            abi: InputAbi::Aarch64,
+        };
+        let prefix = |address, length, native_page, scratch_owned, reserved_input| {
+            proc_mem_prefix_len_before_owned_pages(
+                address,
+                length,
+                native_page,
+                scratch_owned,
+                reserved_input,
+            )
+        };
+
+        // The trampoline is always owned, for its whole native page.
+        for native_page in [0x1000, 0x4000, 0x1_0000] {
+            assert_eq!(prefix(trampoline - 8, 8, native_page, false, None), 8);
+            assert_eq!(prefix(trampoline - 3, 8, native_page, false, None), 3);
+            assert_eq!(prefix(trampoline, 8, native_page, false, None), 0);
+            assert_eq!(
+                prefix(
+                    trampoline + cp::TRAMPOLINE_SIZE,
+                    8,
+                    native_page,
+                    false,
+                    None
+                ),
+                if native_page > cp::TRAMPOLINE_SIZE {
+                    0
+                } else {
+                    8
+                }
+            );
+            assert_eq!(
+                prefix(trampoline + native_page, 8, native_page, false, None),
+                8
+            );
+            // A range spanning the whole trampoline into scratch still stops
+            // at the trampoline's first byte.
+            assert_eq!(
+                prefix(trampoline - 3, native_page + 8, native_page, true, None),
+                3
+            );
+        }
+
+        // Scratch is clipped only while owned, for its whole native page.
+        assert_eq!(prefix(scratch, 8, 0x1000, false, None), 8);
+        assert_eq!(prefix(scratch + 1, 8, 0x1000, false, None), 8);
+        assert_eq!(prefix(scratch + cp::SCRATCH_SIZE, 8, 0x4000, true, None), 0);
+        assert_eq!(prefix(scratch + 0x4000, 8, 0x4000, true, None), 8);
+
+        // The reserved input page is clipped only while its layout is set,
+        // for the layout's own native-page extent.
+        assert_eq!(prefix(input - 3, 8, 0x4000, false, None), 8);
+        assert_eq!(prefix(input, 8, 0x4000, false, None), 8);
+        assert_eq!(prefix(input - 3, 8, 0x4000, false, Some(reserved)), 3);
+        assert_eq!(prefix(input, 8, 0x4000, false, Some(reserved)), 0);
+        assert_eq!(
+            prefix(
+                input + reserved.page_bytes - 1,
+                8,
+                0x4000,
+                false,
+                Some(reserved)
+            ),
+            0
+        );
+        assert_eq!(
+            prefix(
+                input + reserved.page_bytes,
+                8,
+                0x4000,
+                false,
+                Some(reserved)
+            ),
+            8
+        );
+
+        assert_eq!(prefix(trampoline, 0, 0x1000, false, None), 0);
+        assert_eq!(prefix(usize::MAX - 3, 8, 0x1000, false, None), 8);
     }
 
     /// The seccomp decision's caching, with planted status reads: under the

@@ -171,6 +171,20 @@ fn tool_syscall_default_preserves_native_success_and_errno() {
     }
 }
 
+/// The same fake takes `Guest::write_proc_mem_prefix`'s default: a backend
+/// with no forced store refuses with `ENOSYS`, empty input included, so an
+/// empty call remains a capability probe rather than a successful store.
+#[test]
+fn write_proc_mem_prefix_default_is_enosys_even_when_empty() {
+    let mut guest = TestGuest::default();
+    for bytes in [&[][..], &b"x"[..]] {
+        assert_eq!(
+            <TestGuest as Guest<()>>::write_proc_mem_prefix(&mut guest, 0, bytes),
+            Err(Errno::ENOSYS)
+        );
+    }
+}
+
 /// The same fake takes `Guest::descriptor_status`'s default: a backend that
 /// states nothing does not provide the fact, for any descriptor.
 #[test]

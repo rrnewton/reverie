@@ -19,6 +19,10 @@
 //! write there fails too, and a forced one could replace the `ud2` that
 //! guards the untraced stub (<https://github.com/rrnewton/reverie/issues/1523>).
 //!
+//! The guest's own `/proc/<task>/mem` writes are not served through this
+//! layer at all: they take `Guest::write_proc_mem_prefix`, whose ptrace
+//! implementation stops before this backend's runtime-private pages.
+//!
 //! A scalar the kernel would publish with `put_user` (at most eight bytes) is
 //! one store: on a fault nothing is written. A copy that crosses into a
 //! non-writable page would instead leave its writable prefix behind, so
