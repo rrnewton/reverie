@@ -133,6 +133,22 @@ pub struct BackendCapabilities {
     /// call) by inspecting it directly.
     pub tool_shares_guest_descriptor_table: bool,
 
+    /// The transport between a guest thread's tool and the run's global
+    /// tool carries live descriptor tables in memory, as the same Rust
+    /// objects, rather than encoding each request (which can carry no
+    /// table). A tool may therefore hand its descriptor table to the
+    /// global tool and receive a captured descriptor back. False is
+    /// fail-closed: the tool must not send a live table, because an
+    /// encoding transport would deliver none and the global tool would
+    /// have to refuse the run at that thread's first naming. Only a
+    /// backend whose tool and global tool run in one process over an
+    /// in-memory channel states true; a transport that encodes in any
+    /// build (for example under debug assertions) states false even if
+    /// another build passes objects directly. Absent from an older
+    /// serialized value, which reads as false.
+    #[serde(default)]
+    pub global_rpc_carries_live_tables: bool,
+
     /// After a successful `execve`, the backend starts the tool afresh in the
     /// new image, and the tool rediscovers the guest's live descriptors from
     /// the process rather than keeping its own model. Descriptor state that only
@@ -470,6 +486,9 @@ impl BackendCapabilities {
     /// through ptrace, so the kernel does most of the work.
     pub const PTRACE: Self = Self {
         tool_shares_guest_descriptor_table: false,
+        // Ptrace encodes its RPC requests under debug assertions, so a
+        // live table cannot be promised to reach the global tool.
+        global_rpc_carries_live_tables: false,
         rediscovers_descriptors_after_exec: false,
         loopback_pollers_yield_to_peers: false,
         guest_clock_reads_bypass_backend: false,
@@ -601,6 +620,9 @@ impl BackendCapabilities {
     /// `reverie-kvm`: guest threads run in a virtual machine that the backend
     /// drives, and the backend implements many syscalls itself.
     pub const KVM: Self = Self {
+        // The tool and the global tool run in this one process and the
+        // channel between them passes requests as objects in memory.
+        global_rpc_carries_live_tables: true,
         needs_killed_thread_rpc_cancellation: true,
         runs_exit_robust_list: false,
         // Guest threads run on the backend's vCPUs: no Linux task exits with
@@ -647,6 +669,7 @@ mod tests {
     fn ptrace_table() -> serde_json::Value {
         serde_json::json!({
             "tool_shares_guest_descriptor_table": false,
+            "global_rpc_carries_live_tables": false,
             "rediscovers_descriptors_after_exec": false,
             "loopback_pollers_yield_to_peers": false,
             "guest_clock_reads_bypass_backend": false,
@@ -825,6 +848,7 @@ mod tests {
                 // Signals 1 to 31 but SIGCHLD (17) and SIGSTOP, SIGTSTP,
                 // SIGTTIN and SIGTTOU (19 to 22).
                 "publishable_parent_death_signals": 0x7fc2_ffff_u64,
+                "global_rpc_carries_live_tables": true,
                 "rcb_clock_contract": null,
             }))
         );
