@@ -787,7 +787,14 @@ const REFUSED_VFORK: u32 = 1 << 4;
 /// `ENOTSUP` because process forks are not allowed; the Tool never sees these
 /// calls. It records which of five kinds were refused, not how many times or
 /// in what order: repeats of a kind between two takes merge into one.
+///
+/// With `coordinator-rpc` it is also wire data: each process's statistics
+/// report carries the set it took at exit (`stats::LiteinstProcessStats`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "coordinator-rpc",
+    derive(serde::Serialize, serde::Deserialize)
+)]
 pub struct RefusedProcessCreations {
     /// A `clone` whose flags held `CLONE_THREAD` (a thread). Of `clone`'s
     /// flags only that bit is kept.
@@ -811,11 +818,13 @@ impl RefusedProcessCreations {
     }
 }
 
-/// Takes the set of fork-like call kinds refused in this process since the
-/// last take, so that a Tool can report them; taking clears the set, so each
-/// kind is reported once per take. A forked child starts with its parent's
-/// set. Nothing calls this yet; a Tool that reports refusals is its first
-/// caller.
+/// Takes the set of fork-like call kinds refused in this process image since
+/// the last take; taking clears the set. A forked child starts with its
+/// parent's set. An `execve` replaces the image and loses a set not yet taken.
+///
+/// With `coordinator-rpc`, the statistics exit report is its consumer: each
+/// process's report takes the set once, at Tool exit. Any other caller empties
+/// the set that report carries, so the report would read "nothing refused".
 pub fn take_refused_process_creations() -> RefusedProcessCreations {
     // A caller may ask often; almost always nothing was refused.
     if REFUSED_PROCESS_CREATIONS.load(Ordering::Acquire) == 0 {

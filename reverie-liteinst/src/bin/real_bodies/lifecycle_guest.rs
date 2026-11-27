@@ -1559,6 +1559,21 @@ fn nested_hook() {
     assert_eq!((traps, hooks), (1, 2));
 }
 
+/// Run with process forks refused (the launcher sets the fork switch off):
+/// the runtime answers `fork` itself with `ENOTSUP`, so no child exists, and
+/// the process's exit report must name the refused kind.
+fn refused_fork_stats() {
+    let child = unsafe { libc::syscall(libc::SYS_fork) };
+    let errno = std::io::Error::last_os_error().raw_os_error();
+    assert_eq!(child, -1, "fork was not refused: {child}");
+    assert_eq!(
+        errno,
+        Some(libc::ENOTSUP),
+        "fork refused with another errno"
+    );
+    println!("refused fork stats: fork=ENOTSUP");
+}
+
 fn hooked_fork_stats() {
     let site = core::ptr::addr_of!(reverie_liteinst_lifecycle_fork_site);
     // The first call traps, installs the hook and forks inside it.
@@ -3043,6 +3058,7 @@ pub fn main() {
         Some("restart-read") => restart_read(),
         Some("nested-hook") => nested_hook(),
         Some("hooked-fork-stats") => hooked_fork_stats(),
+        Some("refused-fork-stats") => refused_fork_stats(),
         Some("address-randomization") => address_randomization(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
     }
