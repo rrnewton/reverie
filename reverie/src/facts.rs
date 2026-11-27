@@ -1123,6 +1123,133 @@ fn exact_hex_at_least(text: &[u8], width: usize) -> Option<u64> {
     (format!("{value:0width$x}").as_bytes() == text).then_some(value)
 }
 
+/// What `stat` reports of one open descriptor: the fields of
+/// `struct stat` that name the file and its kind, as Linux shows them
+/// for `/proc/<pid>/fd/<fd>`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct DescriptorMetadata {
+    /// `st_mode`, file-type and permission bits together.
+    pub mode: u32,
+    /// `st_rdev`, the device a special file names.
+    pub rdev: u64,
+    /// `st_dev`, the device holding the file.
+    pub device: u64,
+    /// `st_ino`.
+    pub inode: u64,
+    /// `st_size`.
+    pub len: u64,
+}
+
+impl DescriptorMetadata {
+    /// The facts `stat` reported of one descriptor.
+    pub fn new(mode: u32, rdev: u64, device: u64, inode: u64, len: u64) -> Self {
+        Self {
+            mode,
+            rdev,
+            device,
+            inode,
+            len,
+        }
+    }
+
+    /// Whether the descriptor names a regular file (`S_ISREG`).
+    pub fn is_file(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFREG
+    }
+
+    /// Whether the descriptor names a directory (`S_ISDIR`).
+    pub fn is_dir(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFDIR
+    }
+
+    /// Whether the descriptor names a fifo (`S_ISFIFO`).
+    pub fn is_fifo(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFIFO
+    }
+
+    /// Whether the descriptor names a socket (`S_ISSOCK`).
+    pub fn is_socket(&self) -> bool {
+        self.mode & libc::S_IFMT == libc::S_IFSOCK
+    }
+}
+
+/// A backend's synchronous descriptor facts and duplication, for the
+/// descriptor tables of one run: the link, `fdinfo` and `stat` facts
+/// above by descriptor-table task, duplication of a descriptor into
+/// the caller's own table, and open-file-description identity.
+///
+/// A backend whose guest threads are host tasks answers from the
+/// host kernel's state for them; a backend that runs the guest's
+/// syscalls itself answers from the descriptor tables it keeps.
+/// The provider a run answers through is the run's identity for
+/// these facts: two runs whose tasks share numbers are told apart by
+/// holding different providers, never by the numbers alone.
+///
+/// Every method is synchronous and runs no guest code: it reads
+/// state the backend already holds, while the calling thread is
+/// stopped in its callback. An answer of `None` (or an `Err` where
+/// the operation itself failed) states only that the fact could not
+/// be read; a backend with no host descriptor behind a guest
+/// descriptor refuses duplication by error.
+pub trait DescriptorProvider: Send + Sync {
+    /// The link target naming what descriptor `fd` in task `task`'s
+    /// table refers to, as `/proc/<pid>/fd/<fd>` shows it
+    /// (`anon_inode:[eventfd]`, `pipe:[…]`, an absolute path). The
+    /// read's own error is preserved (a closed descriptor is
+    /// `ENOENT`).
+    fn link(&self, task: crate::Pid, fd: std::os::fd::RawFd)
+    -> std::io::Result<std::path::PathBuf>;
+
+    /// The `fdinfo` text of descriptor `fd` in task `task`'s table,
+    /// as `/proc/<pid>/fdinfo/<fd>` prints it: `Ok(None)` when the
+    /// descriptor is not open, `Err` when the read itself failed
+    /// otherwise.
+    fn fdinfo(&self, task: crate::Pid, fd: std::os::fd::RawFd) -> std::io::Result<Option<String>>;
+
+    /// [`DescriptorMetadata`] of descriptor `fd` in task `task`'s
+    /// table, with [`DescriptorProvider::fdinfo`]'s error shape.
+    fn metadata(
+        &self,
+        task: crate::Pid,
+        fd: std::os::fd::RawFd,
+    ) -> std::io::Result<Option<DescriptorMetadata>>;
+
+    /// Duplicates descriptor `fd` from the table of thread `task`
+    /// in process `process` into the caller's own table, preserving
+    /// its open file description.
+    fn duplicate(
+        &self,
+        process: crate::Pid,
+        task: crate::Pid,
+        fd: std::os::fd::RawFd,
+    ) -> std::io::Result<std::os::fd::OwnedFd>;
+
+    /// Whether descriptors `left` and `right` in task `task`'s own
+    /// table share one open file description. An error means the
+    /// comparison could not be made, never that they differ.
+    fn fds_share_description(
+        &self,
+        task: crate::Pid,
+        left: std::os::fd::RawFd,
+        right: std::os::fd::RawFd,
+    ) -> std::io::Result<bool>;
+
+    /// Visits the descriptor numbers open in process `process`'s
+    /// table, in no promised order, stopping when `visit` returns
+    /// `false`. Listing and per-entry failures are the enumeration's
+    /// own errors, preserved so no descriptor is lost to a silent
+    /// skip.
+    fn visit_fds(
+        &self,
+        process: crate::Pid,
+        visit: &mut dyn FnMut(std::os::fd::RawFd) -> bool,
+    ) -> std::io::Result<()>;
+
+    /// Whether guest task `task` of this run still exists.
+    fn task_exists(&self, task: crate::Pid) -> bool;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
