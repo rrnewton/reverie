@@ -1,3 +1,4 @@
+load("@fbcode//hermetic_infra/reverie/constraints:liteinst-runtime-flags.bzl", "LITEINST_RUNTIME_FLAGS_CONSTRAINT", "LITEINST_RUNTIME_SELECT_RUSTC_FLAGS")
 load(
     "@fbcode//hermetic_infra/reverie/fb-only:defs.bzl",
     "DOWNSTREAM_TEST_VISIBILITY",
@@ -10,7 +11,9 @@ load(
 )
 load("@fbcode//hermetic_infra/reverie/fb-only/rpc_compat:defs.bzl", "rpc_transport_library")
 load("@fbcode_macros//build_defs:cpp_library.bzl", "cpp_library")
-load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup")
+load("@fbcode_macros//build_defs:export_files.bzl", "buck_export_file")
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_filegroup", "buck_genrule")
+load("@fbcode_macros//build_defs:python_binary.bzl", "python_binary")
 load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
 load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
 load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
@@ -96,6 +99,10 @@ rust_library(
         },
         "cargo_toml_dir": "reverie",
     },
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     test_deps = [
         "fbsource//third-party/rust:serde_json",
         "fbsource//third-party/rust:tracing-subscriber",
@@ -250,6 +257,10 @@ rust_library(
         "edge_features": [],
     },
     features = ["nightly"],
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     test_deps = [
         "fbsource//third-party/rust:num_cpus",
         "fbsource//third-party/rust:raw-cpuid",
@@ -556,6 +567,19 @@ _PTRACE_TEST_EXTRA_SRCS = {
     "link_path": ["reverie-kvm/tests/fixtures/link_path.c"],
 }
 
+# LeakSanitizer's suppressions for these tests in an AddressSanitizer build;
+# the file says why each entry is not a leak in Reverie.
+buck_export_file(
+    name = "ptrace-test-lsan-suppressions",
+    src = "reverie-ptrace/tests/lsan-suppressions.txt",
+)
+
+# The environment of each test, and of the gated test that runs it.
+_PTRACE_TEST_ENV = {
+    "CARGO_MANIFEST_DIR": "$(location :ptrace-test-fixtures)",
+    "LSAN_OPTIONS": "suppressions=$(location :ptrace-test-lsan-suppressions)",
+}
+
 [
     rust_unittest(
         name = "reverie-ptrace-{}-test".format(test.replace("_", "-")),
@@ -570,7 +594,7 @@ _PTRACE_TEST_EXTRA_SRCS = {
         autocargo = {"ignore_rule": True},
         crate = test,
         crate_root = "reverie-ptrace/tests/{}.rs".format(test),
-        env = {"CARGO_MANIFEST_DIR": "$(location :ptrace-test-fixtures)"},
+        env = dict(_PTRACE_TEST_ENV),
         # The library's features, which Cargo gives the package's test crates.
         features = ["nightly"],
         labels = run_gated_only(),
@@ -602,7 +626,7 @@ _PTRACE_TEST_EXTRA_SRCS = {
 [
     gated_test(
         name = "reverie-ptrace-{}-test-gated".format(test.replace("_", "-")),
-        env = {"CARGO_MANIFEST_DIR": "$(location :ptrace-test-fixtures)"},
+        env = dict(_PTRACE_TEST_ENV),
         labels = ["buck2_run_from_project_root"],
         test = "//hermetic_infra/reverie:reverie-ptrace-{}-test".format(test.replace("_", "-")),
     )
@@ -636,6 +660,10 @@ rust_library(
         },
         "cargo_toml_dir": "reverie-syscalls",
     },
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     deps = [
         "fbsource//third-party/rust:bitflags",
         "fbsource//third-party/rust:derive_more",
@@ -660,9 +688,14 @@ rust_library(
         },
         "cargo_toml_dir": "reverie-memory",
     },
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     test_deps = ["fbsource//third-party/rust:libc"],
     deps = [
         "fbsource//third-party/rust:syscalls",
+        "fbsource//third-party/rust:zerocopy",
     ],
 )
 
@@ -757,6 +790,10 @@ rust_library(
         },
         "cargo_toml_dir": "reverie-proc-grammar",
     },
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     deps = [],
 )
 
@@ -838,6 +875,117 @@ rust_unittest(
     },
     resources = [":proc-grammar-sources"],
     deps = ["fbsource//third-party/rust:syn"],
+)
+
+# Pure model of Linux mount namespaces and mount tables. A leaf:
+# no dependencies, no I/O; identity, time, presentation, and host
+# performance are injected by its consumers. Its dependency guards
+# (linux-ns-model/tests/dependency_guard.rs and
+# scripts/check-linux-ns-model-deps.py) keep it that way.
+rust_library(
+    name = "linux-ns-model",
+    srcs = glob(["linux-ns-model/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "package": {
+                "description": "Pure model of Linux mount namespaces and mount tables: bind and unmount admission, propagation, and rendering, with identity, time, presentation, and host performance injected by the consumer.",
+            },
+        },
+        "cargo_toml_dir": "linux-ns-model",
+    },
+    deps = [],
+)
+
+rust_unittest(
+    name = "linux-ns-model-bind-umount-cases-test",
+    srcs = [
+        "linux-ns-model/tests/bind_umount_cases.rs",
+        "linux-ns-model/tests/common/mod.rs",
+    ],
+    autocargo = {"ignore_rule": True},
+    crate = "bind_umount_cases",
+    crate_root = "linux-ns-model/tests/bind_umount_cases.rs",
+    deps = [
+        ":linux-ns-model",
+    ],
+)
+
+rust_unittest(
+    name = "linux-ns-model-transition-contract-test",
+    srcs = [
+        "linux-ns-model/tests/common/mod.rs",
+        "linux-ns-model/tests/transition_contract.rs",
+    ],
+    autocargo = {"ignore_rule": True},
+    crate = "transition_contract",
+    crate_root = "linux-ns-model/tests/transition_contract.rs",
+    deps = [
+        ":linux-ns-model",
+    ],
+)
+
+# The crate's sources (and manifest) laid out as under
+# CARGO_MANIFEST_DIR, for tests/dependency_guard.rs, which scans
+# them.
+buck_filegroup(
+    name = "linux-ns-model-sources",
+    srcs = {src.removeprefix("linux-ns-model/"): src for src in glob(["linux-ns-model/src/**"])}
+    | {
+        "Cargo.toml": "linux-ns-model/Cargo.toml",
+        "README.md": "linux-ns-model/README.md",
+    },
+)
+
+rust_unittest(
+    name = "linux-ns-model-dependency-guard-test",
+    srcs = ["linux-ns-model/tests/dependency_guard.rs"],
+    autocargo = {"ignore_rule": True},
+    crate = "dependency_guard",
+    crate_root = "linux-ns-model/tests/dependency_guard.rs",
+    env = {
+        "CARGO_MANIFEST_DIR": "$(location :linux-ns-model-sources)",
+    },
+    resources = [":linux-ns-model-sources"],
+    deps = [],
+)
+
+# Runs the same bind/unmount sequences on the real kernel in a
+# rootless user namespace; gated like the other host-dependent
+# suites.
+rust_unittest(
+    name = "linux-ns-model-kernel-differential-test",
+    srcs = [
+        "linux-ns-model/tests/common/mod.rs",
+        "linux-ns-model/tests/kernel_differential.rs",
+    ],
+    autocargo = {"ignore_rule": True},
+    crate = "kernel_differential",
+    crate_root = "linux-ns-model/tests/kernel_differential.rs",
+    # Run by :linux-ns-model-kernel-differential-test-gated (fb-only/gated_tests).
+    labels = run_gated_only(),
+    target_compatible_with = [
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    deps = [
+        "fbsource//third-party/rust:libc",
+        ":linux-ns-model",
+    ],
+)
+
+gated_test(
+    name = "linux-ns-model-kernel-differential-test-gated",
+    test = "//hermetic_infra/reverie:linux-ns-model-kernel-differential-test",
+)
+
+# The workspace-wide half of the dependency guards (forward
+# closure + incoming edges), run by hand in a git checkout; in
+# fbsource the cquery forms quoted in the script are the guard.
+python_binary(
+    name = "check-linux-ns-model-deps",
+    srcs = ["scripts/check-linux-ns-model-deps.py"],
+    labels = ["autodeps2_generated"],
+    main_module = "hermetic_infra.reverie.scripts.check-linux-ns-model-deps",
 )
 
 rust_library(
@@ -1357,6 +1505,44 @@ gated_test(
     test = "//hermetic_infra/reverie:reverie-kvm-static-elf-test",
 )
 
+# The four static_elf cases #[ignore]d under fbcode_build because the
+# pool they were written against lacked /dev/kvm and exact PMU branch
+# counts (the commit that added the ignores records exactly that want),
+# run here and only here: each is gated on writable /dev/kvm plus the
+# PMU probe, and require_gates makes a host without them FAIL these
+# cases by name, never a green run with zero executed. On a host the
+# probes misread, REVERIE_REQUIRE_KVM=1 makes the case itself fail by
+# name. Their capable home is this target on a KVM+PMU host.
+_KVM_STATIC_ELF_IGNORED_CASES = [
+    "cpuid_dispatch::cpuid_and_both_timestamp_forms_share_one_real_dispatcher_without_cross_charges",
+    "cpuid_dispatch::cpuid_tool_returns_exact_full_registers_flags_stack_and_one_rpc_per_instruction",
+    "storage_fd_syscalls_consume_low_words_on_kvm",
+    "timestamp_callbacks_observe_retired_branches_without_counting_rpc_work",
+]
+
+gated_test(
+    name = "reverie-kvm-static-elf-ignored-test-gated",
+    env = {
+        "CARGO_BIN_EXE_reverie-kvm-broker-test-launcher": "$(location :reverie-kvm-broker-test-launcher)",
+        "CARGO_MANIFEST_DIR": "$(location :kvm-signal-abi-fixtures)",
+        "MALLOC_CONF": "background_thread:false",
+        "REVERIE_KVM_TEST_BROKER_LAUNCHER": "$(location :reverie-kvm-broker-test-launcher)",
+        "REVERIE_REQUIRE_KVM": "1",
+    },
+    gates = {
+        case: (
+            "writable:/dev/kvm+pmu",
+            "needs writable /dev/kvm and exact PMU branch counts: the case drives the KVM backend and observes retired-branch time, and this target requires KVM (REVERIE_REQUIRE_KVM=1). The upstream cases carry this same want in their #[ignore] reason under fbcode_build. The case runs wherever /dev/kvm opens for writing and the PMU probe measures an exact counter; this target passes require_gates, so anywhere else it fails by name",
+        )
+        for case in _KVM_STATIC_ELF_IGNORED_CASES
+    },
+    only_cases = _KVM_STATIC_ELF_IGNORED_CASES,
+    pmu_probe = True,
+    require_gates = True,
+    run_ignored_cases = _KVM_STATIC_ELF_IGNORED_CASES,
+    test = "//hermetic_infra/reverie:reverie-kvm-static-elf-test",
+)
+
 # reverie-kvm as Cargo builds it for its integration tests: our Cargo CI enables
 # `native-test-support` in it, reverie-kvm-core and reverie-linuxemu
 # (scripts/stable-features.sh), and reverie-kvm's dev-dependencies turn on
@@ -1801,6 +1987,57 @@ rust_library(
     ],
 )
 
+# reverie-inguest as Cargo builds it for the production hermit binary with
+# `exec-stop-launcher`: reverie-liteinst's dependency (`coordinator-rpc`,
+# `launcher`, `rcb-clock`) unified with hermit's direct dependency
+# (`exec-stop` and `loader-private-runtime`, the latter implying
+# `exec-private-init` and `fixed-syscall-gates`) into one crate. Only the
+# production hermit build uses it, directly and through
+# :reverie-liteinst-exec-stop-private below; a binary must hold one
+# reverie-inguest, as at :reverie-inguest-exec-stop. No test-only feature
+# (producer, fixture, probe or observation) is enabled, and the musl-only
+# `private-libc-exports` stays with the private image's own build.
+rust_library(
+    name = "reverie-inguest-exec-stop-private",
+    srcs = glob(["reverie-inguest/src/**/*.rs"]) + ["reverie-inguest/src/guest/tool_region_keyed_oracle_probe.S"],
+    autocargo = {"ignore_rule": True},
+    crate = "reverie_inguest",
+    crate_root = "reverie-inguest/src/lib.rs",
+    features = [
+        "coordinator-rpc",
+        "exec-private-init",
+        "exec-stop",
+        "fixed-syscall-gates",
+        "launcher",
+        "loader-private-runtime",
+        "rcb-clock",
+    ],
+    named_deps = {"reverie": ":reverie"},
+    # As :reverie-inguest-liteinst: its per-image symbols need a static link.
+    preferred_linkage = "static",
+    target_compatible_with = [
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    unittests = False,
+    visibility = ["//hermetic_infra/hermit/hermit-cli:"],
+    deps = [
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:syscalls",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        ":reverie-loader",
+        ":reverie-memory",
+        ":reverie-rpc-transport",
+        ":reverie-syscalls",
+        ":safeptrace",
+    ],
+)
+
 # reverie-inguest with the features reverie-liteinst's Cargo dependency
 # declares: `launcher` (which implies `coordinator-rpc`) and `rcb-clock`.
 rust_library(
@@ -1823,6 +2060,10 @@ rust_library(
     # contracts (guest/tool_region_constructor.rs), so a shared object of this
     # library cannot provide them; link it statically into each final image.
     preferred_linkage = "static",
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     unittests = False,
     deps = [
         "fbsource//third-party/rust:bincode",
@@ -2226,6 +2467,10 @@ rpc_transport_library(
     env = {"CARGO_CRATE_NAME": "reverie_rpc_transport"},
     features = [],
     named_deps = {"reverie": ":reverie"},
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     test_deps = [
         "fbsource//third-party/rust:tokio",
     ],
@@ -2645,6 +2890,10 @@ _LITEINST_TEST_TREE = glob([
 ]) + [
     "Cargo.toml",
     "scripts/m1_contract.rs",
+    # In its own Buck package (reverie-signal/BUCK), so the glob above
+    # does not stage its manifest; the workspace root Cargo.toml names
+    # it as a member, and the artifact tests read every member manifest.
+    "reverie-signal/Cargo.toml",
 ]
 
 # With every workspace member's manifest (experimental/ is its own package), as
@@ -2798,6 +3047,39 @@ rust_library(
     ],
 )
 
+# reverie-liteinst built against :reverie-inguest-exec-stop-private, for
+# the production hermit build only, so that binary holds the single
+# reverie-inguest that its Cargo build with `exec-stop-launcher` holds.
+# As :reverie-liteinst, the crate itself stays trap-only: hermit's
+# `liteinst` feature forwards no reverie-liteinst feature.
+rust_library(
+    name = "reverie-liteinst-exec-stop-private",
+    srcs = glob(["reverie-liteinst/src/**/*.rs"]),
+    autocargo = {"ignore_rule": True},
+    crate = "reverie_liteinst",
+    crate_root = "reverie-liteinst/src/lib.rs",
+    # As :reverie-liteinst: selected_backing() needs the final image's link.
+    preferred_linkage = "static",
+    target_compatible_with = [
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    unittests = False,
+    visibility = ["//hermetic_infra/hermit/hermit-cli:"],
+    deps = [
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        ":reverie",
+        ":reverie-inguest-exec-stop-private",  # @manual name:reverie_inguest
+        ":reverie-rpc-transport",
+    ],
+)
+
 # reverie-liteinst with Cargo's default `liteinst` feature: site patching
 # over the vendored liteinst trampoline builder and iced-x86. :reverie-liteinst
 # above builds the same crate without it (trap-only); the in-guest preloads
@@ -2813,6 +3095,10 @@ rust_library(
     features = ["liteinst"],
     # As :reverie-liteinst: selected_backing() needs the final image's link.
     preferred_linkage = "static",
+    rustc_flags = select({
+        "DEFAULT": [],
+        LITEINST_RUNTIME_FLAGS_CONSTRAINT: LITEINST_RUNTIME_SELECT_RUSTC_FLAGS,
+    }),
     target_compatible_with = [
         "ovr_config//cpu:x86_64",
         "ovr_config//os:linux",
@@ -2968,6 +3254,50 @@ gated_test(
     name = "reverie-liteinst-preload-glibc-compat-test-gated",
     labels = ["buck2_run_from_project_root"],
     test = "//hermetic_infra/reverie:reverie-liteinst-preload-glibc-compat-test",
+)
+
+# The fbcode link wraps libstdc++/libatomic/libmvec in
+# --push-state,--no-as-needed into every Rust cdylib, so no
+# target-level linker flag on :reverie-liteinst-preload can drop
+# them, and it links libgcc_s for an unwinder this preload already
+# bundles statically, so no undefined symbol needs it either. This
+# fbsource-only post-link step removes exactly those
+# four DT_NEEDED entries and refuses if the cdylib ever gains an
+# undefined symbol that could belong to one of them. The
+# open-source link has no such wrap; its artifact is unchanged.
+# Each of the four libraries may appear at most once: a duplicate
+# still fails the hermit fbpkg build, and that failure is this step
+# asking for a re-check, not a defect to silence. An absent library
+# needs no removal. Every entry left after the removal must be in
+# the artifact's allowed glibc set, so a newly linked library fails
+# here by name instead of riding through unstripped.
+rust_binary(
+    name = "preload-needed-strip",
+    srcs = glob(["fb-only/preload-needed-strip/**/*.rs"]),
+    autocargo = {"ignore_rule": True},
+    crate_root = "fb-only/preload-needed-strip/main.rs",
+    target_compatible_with = ["fbcode//opensource/macros:broken-in-oss"],
+    # The artifact qualifier's lib.rs is a test-only source so the
+    # unit tests can include_str! it and fail if this tool's local
+    # ALLOWED_NEEDED copy drifts from it (as _PTRACE_TEST_EXTRA_SRCS
+    # stages reverie-kvm's guest source for link_path.rs above); the
+    # shipped binary never sees it and gains no dependency on it.
+    test_srcs = ["reverie-liteinst-artifact/src/lib.rs"],
+)
+
+buck_genrule(
+    name = "reverie-liteinst-preload-stripped",
+    out = "libreverie_liteinst.so",
+    cmd = "$(exe :preload-needed-strip) $(location :reverie-liteinst-preload[cdylib]) $OUT",
+    target_compatible_with = [
+        "fbcode//opensource/macros:broken-in-oss",
+        "ovr_config//cpu:x86_64",
+        "ovr_config//os:linux",
+    ],
+    visibility = [
+        "//hermetic_infra/hermit/fb-only:",
+        "//hermetic_infra/hermit/hermit-cli:",
+    ],
 )
 
 # :reverie-liteinst-preload over the allocator-fixture sitepatch variant
@@ -3281,7 +3611,16 @@ buck_filegroup(
 # every first-party backend, so they run through gated tests
 # (fb-only/gated_tests). As in our Cargo CI's host-dependent job, they require
 # /dev/kvm (REVERIE_REQUIRE_KVM) rather than pass without it.
-_EXAMPLES_TESTS = [f.removeprefix("reverie-examples/tests/").removesuffix(".rs") for f in glob(["reverie-examples/tests/*.rs"])]
+# tests/e2e_run_ledger.rs and tests/e2e_compare_coverage.rs run
+# reverie-examples/e2e/run.sh and its comparator (e2e/compare.rs, the
+# reverie-e2e-compare [[bin]]), which this file does not build
+# (reverie-examples/e2e/** is excluded above), so they are excluded here by
+# name: no target provides CARGO_BIN_EXE_reverie-e2e-compare or a
+# CARGO_MANIFEST_DIR holding e2e/. Cargo runs them with the workspace tests.
+_EXAMPLES_TESTS = [
+    f.removeprefix("reverie-examples/tests/").removesuffix(".rs")
+    for f in glob(["reverie-examples/tests/*.rs"], exclude = ["reverie-examples/tests/e2e_compare_coverage.rs", "reverie-examples/tests/e2e_run_ledger.rs"])
+]
 
 # Tests that find libreverie_examples.so beside their own executable (Cargo's
 # target/<profile>/deps), which a Buck test executable never has: their gated

@@ -897,7 +897,7 @@ ingest_dag_gate() {
         if [[ $counts_file == *counts-test-* ]]; then
             # Counted nextest node: side files are part of its evidence.
             local side
-            for side in skips.txt flaky.txt universe; do
+            for side in skips.txt flaky.txt universe universe-names.txt; do
                 if [[ ! -f ${counts_path%.json}.$side ]]; then
                     printf 'count evidence refused: missing %s side file for %s\n' \
                         "$side" "$name" >>"$LOG_FILE"
@@ -962,6 +962,7 @@ run_validation_dag() {
         "$ROOT_DIR"/target/validate/counts-*.skips.txt \
         "$ROOT_DIR"/target/validate/counts-*.flaky.txt \
         "$ROOT_DIR"/target/validate/counts-*.universe \
+        "$ROOT_DIR"/target/validate/counts-*.universe-names.txt \
         "$ROOT_DIR/target/validate/binaries-metadata.json" \
         "$ROOT_DIR/target/validate/list-full.json"
     printf 'Running validation DAG (ci/dag/validate.json; log: %s)\n' "$LOG_FILE"
@@ -1003,6 +1004,38 @@ run_validation_dag() {
         failures=$((failures + 1))
         printf 'FAIL: Test partition coverage (nodes cover %s, workspace lists %s; log: %s)\n' \
             "$DAG_UNIVERSE_TOTAL" "${listed:-unknown}" "$LOG_FILE" >&2
+        # Name the tests behind the counts: workspace tests in no
+        # node's universe-names side file, and covered names the
+        # workspace no longer lists.
+        local partition_diff=
+        if [[ -f $ROOT_DIR/target/validate/list-full.json ]]; then
+            partition_diff=$(python3 -c '
+import glob, json, os, sys
+data = json.load(open(sys.argv[1]))
+workspace = set()
+for binary_id, suite in data["rust-suites"].items():
+    for test in suite["testcases"]:
+        workspace.add(binary_id + " " + test)
+covered = set()
+for path in glob.glob(os.path.join(sys.argv[2], "counts-test-*.universe-names.txt")):
+    for line in open(path):
+        line = line.strip()
+        if line:
+            covered.add(line)
+for name in sorted(workspace - covered):
+    print("UNCOVERED " + name)
+for name in sorted(covered - workspace):
+    print("NOT-LISTED " + name)
+' "$ROOT_DIR/target/validate/list-full.json" \
+                "$ROOT_DIR/target/validate" 2>>"$LOG_FILE") || partition_diff=
+        fi
+        if [[ -n $partition_diff ]]; then
+            printf '%s\n' "$partition_diff" >&2
+            printf '%s\n' "$partition_diff" >>"$LOG_FILE"
+        else
+            printf 'FAIL: Test partition coverage could not enumerate the uncovered tests (log: %s)\n' \
+                "$LOG_FILE" >&2
+        fi
         record_ledger_gate "Test partition coverage" 2 0 null null null
     fi
     local flaky_total
@@ -1022,6 +1055,8 @@ run_validation_dag() {
 
 run_validation_serial() {
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
+run_check "E2E compare workflow pin" "$ROOT_DIR/scripts/check-e2e-compare.rs" "$ROOT_DIR"
+run_check "E2E compare workflow pin self-test" "$ROOT_DIR/scripts/check-e2e-compare.rs" --self-test
 run_check "Catalogue history append-only" "$ROOT_DIR/scripts/check-catalog-bindings-append-only.rs"
 run_check "Build workspace" cargo build --workspace --features "$STABLE_FEATURES"
 run_check "LiteInst allocator fixtures" build_liteinst_allocator_fixtures
@@ -1038,7 +1073,8 @@ export -n REVERIE_LITEINST_PRELOAD REVERIE_LITEINST_TEST_RUNTIME_MANIFEST \
 run_test_check "Documentation tests" cargo test --workspace --doc --features "$STABLE_FEATURES"
 # Every backend this host has, against the ledger for its environment; a
 # backend whose inputs are missing is refused by name, and a host with no
-# ledger gets its verdicts reported, not judged (reverie-examples/e2e/README.md).
+# ledger fails by name (NO LEDGER) before the build
+# (reverie-examples/e2e/README.md).
 run_check "Reverie-layer cross-backend e2e" "$ROOT_DIR/reverie-examples/e2e/run.sh"
 run_clippy() {
     cargo clippy --workspace --all-targets --features "$STABLE_FEATURES" -- -D warnings || return $?
@@ -1048,7 +1084,9 @@ run_clippy() {
 }
 run_check "Clippy" run_clippy
 # The Rustfmt gate lives in one script, scripts/rustfmt-gate.sh, shared
-# with the DAG node and the nightly workflow so the copies cannot drift.
+# with the DAG node and the nightly and extended workflows so the copies
+# cannot drift. It runs the formatter pinned in ci/rustfmt-toolchain.toml,
+# not the stable toolchain's rustfmt, and refuses (exit 2) without it.
 run_check "Rustfmt" "$ROOT_DIR/scripts/rustfmt-gate.sh"
 }
 

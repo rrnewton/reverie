@@ -24,6 +24,13 @@
 //! (`run.sh` builds what this needs and picks the ledger.) `--report-only`
 //! prints the verdicts without judging them, with no ledger; `--write-ledger
 //! FILE` also writes every verdict other than `match` as a ledger row.
+//! `--require-compared BACKENDS` requires every corpus cell to be compared
+//! (`match` or `mismatch`) on each listed backend, judged from the verdicts
+//! alone, whatever the ledger accepts and also under `--report-only`: a
+//! `refused` or `no_result` verdict, or a native baseline that is `unstable`
+//! or `no_result` (so no backend ran the cell), fails the run, naming each
+//! cell and backend. A listed backend that `--backends` does not name is a
+//! usage error.
 //!
 //! Each program runs natively twice (plain ptrace syscall stops); if the runs
 //! disagree, the program has no stable baseline (`unstable`). Each backend's
@@ -39,6 +46,10 @@
 //! comment above the row says why. Every verdict other than `match` needs a
 //! row, and every row naming a cell and backend that ran must match its
 //! verdict: an unexpected difference and a stale row both fail.
+//!
+//! Every program runs in the C locale, natively and on every backend,
+//! whatever the host's locale ([`LOCALE`]), so that the results do not depend
+//! on which locale files the host maps where.
 
 use std::fs;
 use std::path::Path;
@@ -59,6 +70,17 @@ const PTRACE_ENVIRONMENT: [(&str, &str); 2] = [
     ("ASAN_OPTIONS", "detect_leaks=0"),
     ("LSAN_OPTIONS", "detect_leaks=0"),
 ];
+
+/// The locale every recorder run gets, replacing the host's. In a UTF-8
+/// locale glibc maps locale files (`gconv-modules.cache`, `SYS_LC_MESSAGES`),
+/// and the loader leaves a hole where it unmapped `/etc/ld.so.cache`, so
+/// whether they land in that hole depends on the cache's size in pages. Each
+/// mapping is a line of `/proc/self/maps`, and a read of it returns whole
+/// lines up to one page, so the byte counts a program reads there, natively
+/// and on a backend that adds mappings of its own, moved when a rewrite of
+/// the host's cache changed its size in pages. The C locale maps no locale
+/// file.
+const LOCALE: [(&str, &str); 1] = [("LC_ALL", "C")];
 
 struct Cell {
     name: String,
@@ -252,6 +274,7 @@ fn record(
     let _ = fs::remove_file(output);
     let mut child = Command::new(recorder)
         .envs(PTRACE_ENVIRONMENT)
+        .envs(LOCALE)
         .arg("--backend")
         .arg(backend)
         .arg("--output")
@@ -293,16 +316,30 @@ fn record(
 
 fn read_corpus(path: &Path) -> Vec<Cell> {
     let text = fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    text.lines()
+    parse_corpus(&text)
+}
+
+/// The corpus's cells, one per line that is neither blank nor a comment: a
+/// name, then the command. Coverage looks a cell up by name, so a name that
+/// appears twice would let one cell's verdict answer for the other; it is
+/// refused by name.
+fn parse_corpus(text: &str) -> Vec<Cell> {
+    let mut cells: Vec<Cell> = Vec::new();
+    for line in text
+        .lines()
         .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
-        .map(|line| {
-            let mut fields = line.split('\t').map(str::to_owned);
-            let name = fields.next().expect("a cell name");
-            let argv: Vec<String> = fields.collect();
-            assert!(!argv.is_empty(), "cell {name} has no command");
-            Cell { name, argv }
-        })
-        .collect()
+    {
+        let mut fields = line.split('\t').map(str::to_owned);
+        let name = fields.next().expect("a cell name");
+        let argv: Vec<String> = fields.collect();
+        assert!(!argv.is_empty(), "cell {name} has no command");
+        assert!(
+            !cells.iter().any(|cell| cell.name == name),
+            "corpus cell {name} appears twice"
+        );
+        cells.push(Cell { name, argv });
+    }
+    cells
 }
 
 fn read_ledger(path: &Path) -> Vec<Row> {
@@ -348,6 +385,39 @@ fn row_matches(row: &Row, cell: &str, backend: &str, outcome: &Outcome) -> bool 
 /// The issue a measured row links until its own issue is filed.
 const TRACKING_ISSUE: &str = "https://github.com/rrnewton/hermit/issues/4485";
 
+/// The required comparisons that did not happen, each `(cell, backend,
+/// why)`: every cell of `cells` must have a `match` or `mismatch` verdict on
+/// every backend of `required`. `verdicts` holds each `(cell, backend,
+/// verdict)` the run gave, including a cell's `native` verdict when its
+/// baseline failed and no backend ran it.
+fn coverage_gaps(
+    cells: &[Cell],
+    required: &[String],
+    verdicts: &[(String, String, &str)],
+) -> Vec<(String, String, String)> {
+    let verdict = |cell: &str, backend: &str| {
+        verdicts
+            .iter()
+            .find(|(c, b, _)| c == cell && b == backend)
+            .map(|(_, _, verdict)| *verdict)
+    };
+    let mut gaps = Vec::new();
+    for cell in cells {
+        for backend in required {
+            let why = match verdict(cell.name.as_str(), backend.as_str()) {
+                Some("match" | "mismatch") => continue,
+                Some(other) => other.to_owned(),
+                None => match verdict(cell.name.as_str(), "native") {
+                    Some(native) => format!("native baseline {native}; no backend ran"),
+                    None => "not run".to_owned(),
+                },
+            };
+            gaps.push((cell.name.clone(), backend.clone(), why));
+        }
+    }
+    gaps
+}
+
 fn main() {
     let mut recorder = None;
     let mut backends = Vec::new();
@@ -356,6 +426,7 @@ fn main() {
     let mut artifacts = None;
     let mut report_only = false;
     let mut write_ledger = None;
+    let mut require_compared: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         if flag == "--report-only" {
@@ -372,7 +443,21 @@ fn main() {
             "--corpus" => corpus = Some(PathBuf::from(value)),
             "--expected" => expected = Some(PathBuf::from(value)),
             "--artifacts" => artifacts = Some(PathBuf::from(value)),
+            "--require-compared" => {
+                require_compared = value.split(',').map(str::to_owned).collect()
+            }
             _ => panic!("unknown flag {flag}"),
+        }
+    }
+    // A coverage rule over a backend this run does not compare could not be
+    // met: a usage error, before anything runs.
+    for backend in &require_compared {
+        if !backends.contains(backend) {
+            eprintln!(
+                "reverie e2e: --require-compared lists {backend}, which --backends does not name ({})",
+                backends.join(",")
+            );
+            std::process::exit(2);
         }
     }
     let recorder = recorder.expect("--recorder");
@@ -390,6 +475,7 @@ fn main() {
 
     let mut used = vec![false; ledger.len()];
     let mut ran: Vec<(String, String)> = Vec::new();
+    let mut verdicts: Vec<(String, String, &str)> = Vec::new();
     let mut unexpected = 0;
     let mut counts = std::collections::BTreeMap::<(String, &str), usize>::new();
     for cell in &cells {
@@ -459,6 +545,7 @@ fn main() {
                 ));
             }
             ran.push((cell.name.clone(), backend.clone()));
+            verdicts.push((cell.name.clone(), backend.clone(), outcome.verdict));
             *counts
                 .entry((backend.clone(), outcome.verdict))
                 .or_default() += 1;
@@ -517,11 +604,151 @@ fn main() {
             path.display()
         );
     }
+    // Coverage, from the verdicts alone and before the report-only return:
+    // every corpus cell compared on every --require-compared backend.
+    if !require_compared.is_empty() {
+        let gaps = coverage_gaps(&cells, &require_compared, &verdicts);
+        for (cell, backend, why) in &gaps {
+            println!("COVERAGE\t{cell}\t{backend}\t{why}");
+        }
+        let required = cells.len() * require_compared.len();
+        println!(
+            "reverie e2e: coverage: {} of {required} required comparisons made ({})",
+            required - gaps.len(),
+            require_compared.join(",")
+        );
+        if cells.is_empty() {
+            println!("reverie e2e: coverage: the corpus names no cell");
+            std::process::exit(1);
+        }
+        if !gaps.is_empty() {
+            std::process::exit(1);
+        }
+    }
     if report_only {
         println!("reverie e2e: report only; nothing was judged");
         return;
     }
     if unexpected > 0 || stale > 0 {
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    /// A corpus cell name that appears twice is refused by name: coverage
+    /// looks cells up by name, so one cell's verdict would answer for the
+    /// other.
+    #[test]
+    #[should_panic(expected = "corpus cell alpha appears twice")]
+    fn a_duplicate_corpus_cell_is_refused() {
+        parse_corpus("alpha\t/bin/true\nbeta\t/bin/true\nalpha\t/bin/false\n");
+    }
+
+    /// Every recorder run, native or not, gets the C locale and the
+    /// sanitizer settings, whatever this process's environment holds: a
+    /// stand-in recorder writes the values it got into its record.
+    #[test]
+    fn every_recorder_run_gets_the_c_locale() {
+        let dir = std::env::temp_dir().join(format!("reverie-e2e-compare-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let recorder = dir.join("recorder");
+        // Called as: --backend BACKEND --output RECORD -- PROGRAM ARGS...
+        fs::write(
+            &recorder,
+            "#!/bin/sh\nprintf 'exit 0\\nthread 0\\nLC_ALL=%s\\nASAN_OPTIONS=%s\\n%s\\n' \
+             \"${LC_ALL-unset}\" \"${ASAN_OPTIONS-unset}\" \"$2 $6\" > \"$4\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&recorder, fs::Permissions::from_mode(0o755)).unwrap();
+        let cell = Cell {
+            name: "awk".to_owned(),
+            argv: vec!["/bin/awk".to_owned(), "BEGIN{print 1}".to_owned()],
+        };
+        for backend in ["native", "ptrace"] {
+            let output = dir.join(format!("{backend}.txt"));
+            let got = record(&recorder, backend, &cell, &output)
+                .unwrap_or_else(|(_, why)| panic!("{backend}: {why}"));
+            assert_eq!(
+                got.threads,
+                [[
+                    "LC_ALL=C".to_owned(),
+                    "ASAN_OPTIONS=detect_leaks=0".to_owned(),
+                    format!("{backend} /bin/awk"),
+                ]]
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn cells(names: &[&str]) -> Vec<Cell> {
+        names
+            .iter()
+            .map(|name| Cell {
+                name: (*name).to_owned(),
+                argv: vec!["/bin/true".to_owned()],
+            })
+            .collect()
+    }
+
+    fn required(backends: &[&str]) -> Vec<String> {
+        backends
+            .iter()
+            .map(|backend| (*backend).to_owned())
+            .collect()
+    }
+
+    /// Only `match` and `mismatch` count as compared; `refused` and
+    /// `no_result` are gaps, named with their verdict.
+    #[test]
+    fn coverage_counts_only_match_and_mismatch() {
+        let verdicts = [
+            ("a".to_owned(), "ptrace".to_owned(), "match"),
+            ("a".to_owned(), "liteinst".to_owned(), "refused"),
+            ("a".to_owned(), "in-guest-trap".to_owned(), "no_result"),
+            ("b".to_owned(), "ptrace".to_owned(), "mismatch"),
+            ("b".to_owned(), "liteinst".to_owned(), "match"),
+            ("b".to_owned(), "in-guest-trap".to_owned(), "mismatch"),
+        ];
+        let gaps = coverage_gaps(
+            &cells(&["a", "b"]),
+            &required(&["ptrace", "liteinst", "in-guest-trap"]),
+            &verdicts,
+        );
+        assert_eq!(
+            gaps,
+            [
+                ("a".to_owned(), "liteinst".to_owned(), "refused".to_owned()),
+                (
+                    "a".to_owned(),
+                    "in-guest-trap".to_owned(),
+                    "no_result".to_owned(),
+                ),
+            ]
+        );
+    }
+
+    /// A cell whose native baseline failed ran on no backend: a gap on
+    /// every listed backend, naming the baseline's verdict.
+    #[test]
+    fn coverage_names_every_backend_when_the_native_baseline_fails() {
+        let verdicts = [("a".to_owned(), "native".to_owned(), "unstable")];
+        let gaps = coverage_gaps(
+            &cells(&["a"]),
+            &required(&["ptrace", "liteinst"]),
+            &verdicts,
+        );
+        let why = "native baseline unstable; no backend ran".to_owned();
+        assert_eq!(
+            gaps,
+            [
+                ("a".to_owned(), "ptrace".to_owned(), why.clone()),
+                ("a".to_owned(), "liteinst".to_owned(), why),
+            ]
+        );
     }
 }

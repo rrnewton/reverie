@@ -8,6 +8,8 @@
 
 use std::io;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
+use std::os::unix::io::FromRawFd;
 
 use syscalls::Errno;
 
@@ -18,6 +20,7 @@ use super::clone::clone_with_pid;
 use super::container::ChildContext;
 use super::error::Context;
 use super::error::Error;
+use super::error::MAX_ERROR_WIRE_BYTES;
 use super::fd::Fd;
 use super::fd::pipe;
 use super::id_map::make_id_map;
@@ -57,16 +60,22 @@ impl Command {
 
         // Create a pipe to send back errors to the parent process if `execve`
         // fails.
-        let (reader, mut writer) = launch.allocate(pipe, Errno::into_raw)?;
+        let (reader, writer) = launch.allocate(pipe, Errno::into_raw)?;
 
-        let child = self.spawn_launched(prepared, launch, |err| {
-            send_error(&mut writer, err);
+        // The child writes an error to its own copy of the writer, by number.
+        // The parent's copy is closed under the launch lock, as soon as clone
+        // returns (`spawn_launched`). Closed only after the lock, a launch
+        // that another thread began in between could clone a child that
+        // inherits it; that child holds it until its own exec or exit, and
+        // the read below waits for every copy to close.
+        let writer_fd = writer.as_raw_fd();
+        let child = self.spawn_launched(prepared, launch, Some(writer), move |err| {
+            // SAFETY: the child's copy of the writer is open at `writer_fd`;
+            // it is not closed here, as the child exits next.
+            let mut fd = std::mem::ManuallyDrop::new(unsafe { Fd::from_raw_fd(writer_fd) });
+            send_error(&mut fd, err);
             1
         })?;
-
-        // Close the writer end. Otherwise, the following read will hang
-        // forever.
-        drop(writer);
 
         recv_error(reader)?;
 
@@ -84,7 +93,7 @@ impl Command {
         self.container.validate_pinned_clone()?;
         self.validate_requested_pid()?;
         let prepared = self.prepare();
-        self.spawn_launched(prepared, Launch::begin(), onfail)
+        self.spawn_launched(prepared, Launch::begin(), None, onfail)
     }
 
     /// Refuses a requested process ID beside a namespace (`Command::pid`),
@@ -108,10 +117,15 @@ impl Command {
         }
     }
 
+    /// `close_after_clone`, if any, is the parent's copy of a descriptor the
+    /// child alone keeps: it is closed while the launch lock is still held,
+    /// right after clone returns, so no other thread's launch can clone a
+    /// child that inherits it.
     fn spawn_launched<F>(
         &mut self,
         prepared: Prepared,
         launch: Launch,
+        close_after_clone: Option<Fd>,
         mut onfail: F,
     ) -> Result<Child, Error>
     where
@@ -172,6 +186,7 @@ impl Command {
         // The child exists, so it cannot inherit what the parent opens from
         // here on. The waits below for the child's startup must not hold the
         // lock: the child's setup may wait on a thread that needs it.
+        drop(close_after_clone);
         drop(launch);
         let (pid, [stdin, stdout, stderr], [child_stdin, child_stdout, child_stderr], seccomp_fd) =
             launched?;
@@ -343,24 +358,40 @@ unsafe fn execvpe_zeroed_tail(
 
 /// Sends an error and closes the pipe. Ignore any errors if this fails.
 pub fn send_error(fd: &mut Fd, err: Error) {
-    // Writes up to PIPE_BUF (4096) should be atomic. There's also nothing we
-    // can do with an error if this fails.
-    let bytes: [u8; 8] = err.into();
-    let _ = fd.write(&bytes);
+    // Writes up to PIPE_BUF (4096) should be atomic. The encoded error,
+    // mount name included, is bounded well below that. There's also
+    // nothing we can do with an error if this fails.
+    let mut bytes = [0u8; MAX_ERROR_WIRE_BYTES];
+    let frame = err.encode_wire(&mut bytes);
+    let _ = fd.write(frame);
 }
 
 /// Tries to receive an error code from the pipe. If the other end of the
 /// pipe is closed before sending an error, then `Ok(())` is returned.
 pub fn recv_error(mut fd: Fd) -> Result<(), Error> {
     use std::io::Read;
-    let mut err = [0u8; 8];
+    let mut frame = [0u8; MAX_ERROR_WIRE_BYTES];
+    let mut used = 0;
     loop {
-        match fd.read(&mut err) {
-            Ok(0) => return Ok(()),
-            Ok(8) => return Err(Error::from(err)),
+        match fd.read(&mut frame[used..]) {
+            Ok(0) => {
+                if used == 0 {
+                    return Ok(());
+                }
+                return Err(Error::decode_wire(&frame[..used]).unwrap_or_else(|| {
+                    panic!("execve pipe: got a malformed error frame of {used} bytes")
+                }));
+            }
             Ok(n) => {
-                // Sends up to PIPE_BUF (4096) should be atomic.
-                panic!("execve pipe: got unexpected number of bytes {}", n);
+                used += n;
+                if used == frame.len() {
+                    // A full buffer is only valid as one maximum frame;
+                    // decode now instead of blocking for a close that an
+                    // over-long writer would delay.
+                    return Err(Error::decode_wire(&frame).unwrap_or_else(|| {
+                        panic!("execve pipe: got a malformed error frame of {used} bytes")
+                    }));
+                }
             }
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(err) => {

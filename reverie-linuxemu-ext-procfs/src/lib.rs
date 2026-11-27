@@ -13,12 +13,12 @@
 //! This crate is an extension crate (renamed from `reverie-procfs`
 //! at Slice 2 S2-R4): compositions whose tool serves `/proc`
 //! never link it, so they pay zero compile time or binary size
-//! for it. [`register`] claims the maps path on a standalone
+//! for it. `register` (x86_64 only) claims the maps path on a standalone
 //! composition's extension table; without a registration the
 //! core refuses it by name. (`/proc/self/status` is core
 //! mechanics: the core serves its readable seq description
 //! unconditionally, so this crate claims maps only.) The
-//! rendering itself ([`render`]) is pure functions over the
+//! rendering itself (`render`, x86_64 only) is pure functions over the
 //! core's facts snapshot.
 //!
 //! The remaining helpers are likewise pure functions over
@@ -41,15 +41,30 @@
 pub mod fdinfo;
 pub mod fixed;
 pub mod mountinfo;
+#[cfg(target_arch = "x86_64")]
 pub mod render;
 pub mod sanitize;
 pub mod task;
 
+pub use fdinfo::Fdinfo;
+pub use fdinfo::FdinfoKind;
+pub use fdinfo::FdinfoLock;
+pub use fdinfo::LockKind;
+pub use fdinfo::TimerfdLines;
+pub use fdinfo::render as render_fdinfo;
+pub use fixed::FixedFile;
+pub use fixed::FixedMachine;
+pub use fixed::NR_IRQS;
+pub use fixed::SOFTIRQS;
+pub use mountinfo::MOUNT_PEER_PREFIXES;
+pub use mountinfo::MountInfoRow;
+pub use mountinfo::parse_fdinfo_mount_id;
+pub use mountinfo::parse_mountinfo;
+#[cfg(target_arch = "x86_64")]
 pub use render::extension_table;
+#[cfg(target_arch = "x86_64")]
 pub use render::register;
-
 pub use sanitize::render_system_stat;
-
 pub use task::CommName;
 pub use task::StatFields;
 pub use task::StatusCapabilities;
@@ -61,23 +76,6 @@ pub use task::render_stat;
 pub use task::render_status;
 pub use task::stat_flags;
 pub use task::stat_state;
-
-pub use fixed::FixedFile;
-pub use fixed::FixedMachine;
-pub use fixed::NR_IRQS;
-pub use fixed::SOFTIRQS;
-
-pub use fdinfo::Fdinfo;
-pub use fdinfo::FdinfoKind;
-pub use fdinfo::FdinfoLock;
-pub use fdinfo::LockKind;
-pub use fdinfo::TimerfdLines;
-pub use fdinfo::render as render_fdinfo;
-
-pub use mountinfo::MOUNT_PEER_PREFIXES;
-pub use mountinfo::MountInfoRow;
-pub use mountinfo::parse_fdinfo_mount_id;
-pub use mountinfo::parse_mountinfo;
 
 /// One memory mapping as `/proc/<pid>/maps` reports it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

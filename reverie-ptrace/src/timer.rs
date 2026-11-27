@@ -234,6 +234,17 @@ pub(crate) enum StepUnit {
     Requeue(Signal),
 }
 
+/// What an observer of a timer step's stop asks the stepping to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepObservation {
+    /// Step on toward the target.
+    Continue,
+    /// Stop stepping after this step and hand its stop on, with the steps
+    /// kept for `Timer::continue_stepping` as for any interrupted step
+    /// (`Timer::disregard_stop`). Only a step's final stop is honoured.
+    Pause,
+}
+
 /// What a stop handed to a step's observer is to the step that reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StepStop {
@@ -1236,7 +1247,7 @@ impl Timer {
         &mut self,
         task: Stopped,
         step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<StepObservation, TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
@@ -1255,7 +1266,7 @@ impl Timer {
         task: Stopped,
         unfinished: Unfinished,
         step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<StepObservation, TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match self.inner_mut_noinit() {
@@ -1961,6 +1972,32 @@ impl TimerImpl {
         })
     }
 
+    /// Logs the just-armed event's absolute target and programming at
+    /// debug level, so an offline join can reconstruct the arm without
+    /// inferring it from a later notification (which a short stop may
+    /// cancel before it ever fires).
+    fn debug_armed(&self, stage: &'static str, margin: u64) {
+        let (target, offset) = match self.event {
+            ActiveEvent::Precise {
+                clock_target,
+                offset,
+            } => (clock_target, offset),
+            ActiveEvent::Imprecise { clock_min } => (clock_min, 0),
+        };
+        debug!(
+            guest_tid = self.guest_tid.as_raw(),
+            target,
+            offset,
+            margin,
+            stage,
+            halved = self.halved.is_some(),
+            overflow_period = ?self.overflow_period,
+            overflow_point = ?self.overflow_point,
+            status = ?self.timer_status,
+            "timer event armed"
+        );
+    }
+
     pub fn request_event(&mut self, evt: TimerEventRequest) -> Result<(), Errno> {
         let config = get_pmu_config();
         let (delivery, margin, staged) = match evt {
@@ -1991,6 +2028,11 @@ impl TimerImpl {
         self.armed_programming = None;
         self.first_stage = None;
         self.halved = None;
+        let stage = match evt {
+            TimerEventRequest::Imprecise(_) => "imprecise",
+            _ if staged => "first",
+            _ => "whole",
+        };
         if self.initial_command != InitialCommand::Ordinary {
             self.event_margin = margin;
             self.overflow_point = None;
@@ -1998,6 +2040,7 @@ impl TimerImpl {
             self.held_initial_event = Some(self.event);
             self.set_status(EventStatus::Scheduled);
             debug_assert!(!self.send_artificial_signal);
+            self.debug_armed(stage, margin);
             return Ok(());
         }
         if matches!(evt, TimerEventRequest::Imprecise(_)) {
@@ -2017,6 +2060,7 @@ impl TimerImpl {
                 programmings: self.timer.programmings(),
             });
         }
+        self.debug_armed(stage, margin);
         Ok(())
     }
 
@@ -2088,6 +2132,7 @@ impl TimerImpl {
                 programmings: self.timer.programmings(),
             });
         }
+        self.debug_armed(if first_stage { "first" } else { "rearm" }, margin);
         Ok(())
     }
 
@@ -2493,6 +2538,27 @@ impl TimerImpl {
             }
             _ => None,
         };
+        if self.reads_clock_at(event)
+            && let ActiveEvent::Precise {
+                clock_target,
+                offset,
+            } = self.event
+        {
+            // This stop decides (cancels) the scheduled precise event
+            // unless it is disregarded, which restores it. Logging the
+            // deciding stop here is the only record when it cancels
+            // the event before any notification fires.
+            debug!(
+                guest_tid = self.guest_tid.as_raw(),
+                target = clock_target,
+                offset,
+                clock = missed.as_ref().map(|missed| missed.clock),
+                margin = self.event_margin,
+                status = ?self.timer_status,
+                stop = ?event,
+                "precise timer event cancelled by stop (unless disregarded)"
+            );
+        }
         // This stop is the request's one allowed stop, unless it is
         // disregarded, which takes this count back. If the counter has
         // already passed the programmed overflow, either this is the timer's
@@ -2725,6 +2791,20 @@ impl TimerImpl {
     /// [`TimerImpl::retire`], which records only a Scheduled event, does not
     /// record it again either way.
     fn cancel_at_disregarded_stop(&mut self, missed: Option<MissedTarget>) {
+        if let ActiveEvent::Precise {
+            clock_target,
+            offset,
+        } = self.event
+        {
+            debug!(
+                guest_tid = self.guest_tid.as_raw(),
+                target = clock_target,
+                offset,
+                clock = missed.as_ref().map(|missed| missed.clock),
+                margin = self.event_margin,
+                "precise timer event cancelled at disregarded stop"
+            );
+        }
         self.commit_missed(missed);
         self.timer_status = EventStatus::Cancelled;
     }
@@ -3029,7 +3109,7 @@ impl TimerImpl {
         task: Stopped,
         unfinished: Unfinished,
         step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<StepObservation, TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         match unfinished {
@@ -3301,7 +3381,7 @@ impl TimerImpl {
         &mut self,
         task: Stopped,
         step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<StepObservation, TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         // Ensure any new timer signals don't mess with us while single-stepping
@@ -3373,7 +3453,7 @@ impl TimerImpl {
         mut current: ClockCounter,
         target_instr: u64,
         step: &mut (dyn FnMut(Stopped, StepRequest) -> Result<Running, TraceError> + Send),
-        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<(), TraceError> + Send),
+        observe: &mut (dyn FnMut(&Wait, StepStop) -> Result<StepObservation, TraceError> + Send),
         waits: &std::sync::Arc<PtracerWaitOwner>,
     ) -> Result<Stopped, HandleFailure> {
         let target_rcb = current.target_rcb;
@@ -3588,7 +3668,7 @@ impl TimerImpl {
             if let Wait::Stopped(_, event) = &wait
                 && is_syscall_stop(event)
             {
-                observe(&wait, StepStop::Passing)?;
+                let _ = observe(&wait, StepStop::Passing)?;
                 let Wait::Stopped(entered, _) = wait else {
                     unreachable!("matched a stop");
                 };
@@ -3637,7 +3717,7 @@ impl TimerImpl {
                     return Err(HandleFailure::GuestSigtrap(stopped, "precise timer"));
                 }
                 let sig = *sig;
-                observe(&wait, StepStop::Passing)?;
+                let _ = observe(&wait, StepStop::Passing)?;
                 let Wait::Stopped(stopped, _) = wait else {
                     unreachable!("matched a stop");
                 };
@@ -3672,7 +3752,8 @@ impl TimerImpl {
                 let mask = stopped.getsigmask()?;
                 stopped.setsigmask(mask & !requeued)?;
             }
-            observe(&wait, StepStop::Final)?;
+            let pause_after_step = observe(&wait, StepStop::Final)? == StepObservation::Pause
+                && matches!(wait, Wait::Stopped(_, TraceEvent::Signal(Signal::SIGTRAP)));
             // A notification of this timer's own that reaches the thread
             // during its steps is consumed, and the stepping goes on from
             // where the stop found it (`own_notification_during_steps`).
@@ -3866,6 +3947,22 @@ impl TimerImpl {
                 return Ok(task);
             }
             current.single_step_with_clock(clock);
+            if pause_after_step {
+                crate::task::WATCH_PAUSES_IN_TIMER_STEPS
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // The observer asked for this step's stop to be handed on
+                // (a gdb watch hit): keep how far the steps have come for
+                // its handler, which continues them if the stop does not
+                // decide the event (`Timer::disregard_stop`).
+                self.interrupted = Some(Interruption::At(InterruptedSteps {
+                    steps: current,
+                    target_instr,
+                }));
+                return Err(HandleFailure::Event(Box::new(Wait::Stopped(
+                    task,
+                    TraceEvent::Signal(Signal::SIGTRAP),
+                ))));
+            }
         }
         #[cfg(target_arch = "aarch64")]
         restore_breakpoints(breakpoints.regs(), &task);
@@ -5428,6 +5525,7 @@ mod tests {
     use super::runs_in_place;
     #[cfg(target_arch = "x86_64")]
     use super::uncounted_step_may_miscount;
+    use crate::regs::RegAccess;
 
     /// A load-exclusive unit whose two ends differ in count, as
     /// [`crate::branch_step::exclusive_sequence`] decodes a compare-and-swap:
@@ -5771,7 +5869,7 @@ mod tests {
                     _ => task.step(None),
                 }
             };
-        let mut observe = |_: &Wait, _: StepStop| Ok(());
+        let mut observe = |_: &Wait, _: StepStop| Ok(super::StepObservation::Continue);
         let waits = std::sync::Arc::new(super::PtracerWaitOwner::default());
         waits.bind_stopped(&task);
         let result = futures::executor::block_on(inner.attempt_single_step(
@@ -5805,6 +5903,19 @@ mod tests {
         };
         assert_eq!(site, "precise timer");
         let info = stopped.getsiginfo().expect("read the siginfo");
+        if info.si_signo != signal {
+            // On failure name the signal's source as well as its number, and
+            // the stopping PC for the fault signals these tests queue
+            // The assertion below is unchanged.
+            let pc = stopped
+                .getregs()
+                .map(|regs| format!(" pc={:#x}", regs.ip()))
+                .unwrap_or_default();
+            eprintln!(
+                "ended_at_the_guests_sigtrap: stop signo={} si_code={} expected={}{}",
+                info.si_signo, info.si_code, signal, pc
+            );
+        }
         assert_eq!(info.si_signo, signal, "the stop the sequence ended at");
         if signal == libc::SIGTRAP {
             assert_eq!(info.si_code, libc::TRAP_TRACE);
@@ -6451,7 +6562,7 @@ mod tests {
                     _ => task.step(None),
                 }
             };
-        let mut observe = |_: &Wait, _: super::StepStop| Ok(());
+        let mut observe = |_: &Wait, _: super::StepStop| Ok(super::StepObservation::Continue);
         let waits = std::sync::Arc::new(super::PtracerWaitOwner::default());
         waits.bind_stopped(&task);
         if end_an_event_first {
@@ -8913,9 +9024,10 @@ mod tests {
 
     // Umask 01 already counts every conditional branch on these cores
     // (perfmon skylake_core.json, skylakex_core.json, cascadelakex_core.json).
-    // Alder Lake (hybrid) and model 0x86 keep their entries; that is the scope
-    // of https://github.com/rrnewton/reverie/issues/965, not a claim that
-    // their counting is right.
+    // Model 0x86 keeps its entry; that is the scope of
+    // https://github.com/rrnewton/reverie/issues/965, not a claim that
+    // its counting is right. Intel client hybrid models have no profile
+    // and are refused by the no-profile test below.
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn models_outside_the_umask_11_correction_keep_their_event() {
@@ -8927,7 +9039,6 @@ mod tests {
             (0x9E, 100),
             (0xA5, 100),
             (0xA6, 100),
-            (0x9A, 125),
             (0x86, 100),
         ] {
             let config = PmuConfig::from_family_model(0x06, model);
@@ -8940,13 +9051,20 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_cpu_with_no_profile_is_refused_with_its_family_and_model() {
-        assert!(matches!(
-            PmuConfig::for_family_model(0x06, 0x01),
-            Err(crate::validation::PmuValidationError::UnsupportedCpu {
-                family: 0x06,
-                model: 0x01
-            })
-        ));
+        // Every Intel client hybrid model refuses the same way until a
+        // core-type-aware profile exists.
+        for model in [0x01, 0x97, 0x9A, 0xB7, 0xBA, 0xBF] {
+            assert!(
+                matches!(
+                    PmuConfig::for_family_model(0x06, model),
+                    Err(crate::validation::PmuValidationError::UnsupportedCpu {
+                        family: 0x06,
+                        model: refused
+                    }) if refused == model
+                ),
+                "model {model:#x}"
+            );
+        }
         assert!(PmuConfig::for_family_model(0x1A, 0x11).is_ok());
     }
 

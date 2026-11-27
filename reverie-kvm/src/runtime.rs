@@ -757,6 +757,20 @@ trait GuestSyscallExecutor<T: Tool>:
         Err(reverie::FactError::NotProvided)
     }
 
+    /// The issuing task's `Guest::memory_map_overlaps(tid, start, end)`:
+    /// by default, from [`Self::memory_map`], as the trait's own default.
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> std::result::Result<bool, reverie::FactError> {
+        if end <= start {
+            return Ok(false);
+        }
+        Ok(self.memory_map(tid)?.overlaps(start, end))
+    }
+
     /// [`Self::complete_injection`]'s answer, when it is known at once without
     /// awaiting anything, so that the common injection, one that staged no
     /// process action, is completed without the boxed future and the
@@ -1788,6 +1802,16 @@ where
 
     fn memory_map(&self, tid: Pid) -> std::result::Result<reverie::MemoryMap, reverie::FactError> {
         self.executor.memory_map(&self.memory, tid.as_raw())
+    }
+
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> std::result::Result<bool, reverie::FactError> {
+        self.executor
+            .memory_map_overlaps(&self.memory, tid.as_raw(), start, end)
     }
 
     fn ordinary_injection_allowed(&self, request: &SyscallRequest) -> bool {
@@ -3027,6 +3051,16 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
         // incomplete; its limits are documented on the executor's facts
         // module.
         self.executor.memory_map(tid)
+    }
+
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> std::result::Result<bool, reverie::FactError> {
+        // As `memory_map`, from the executor's record of the address space.
+        self.executor.memory_map_overlaps(tid, start, end)
     }
 }
 
@@ -6005,12 +6039,6 @@ impl KvmBackend {
                                 match unknown_syscall_disposition(
                                     subscriptions.unknown_syscall_policy(),
                                 ) {
-                                    // The rejecting decode always fails here,
-                                    // with the error this path raised before
-                                    // the policy existed.
-                                    UnknownSyscallDisposition::Abort => {
-                                        PendingCall::Known(request.into_syscall()?)
-                                    }
                                     UnknownSyscallDisposition::Answer(result) => {
                                         self.check_entry_owner()?;
                                         // SAFETY: as the handled-result write
@@ -6023,16 +6051,21 @@ impl KvmBackend {
                                         continue;
                                     }
                                     UnknownSyscallDisposition::AskTool => PendingCall::Unknown(raw),
+                                    UnknownSyscallDisposition::Execute => PendingCall::Unknown(raw),
                                 }
                             }
                         };
-                        // An unknown number reaches here only when the policy
-                        // traps it to the Tool, which is its subscription.
+                        // An unknown number is subscribed only when the
+                        // policy traps it to the Tool; under Execute it
+                        // falls through to the executor below.
                         let subscribed = match pending {
                             PendingCall::Known(syscall) => {
                                 subscribed_syscalls.contains(syscall.number())
                             }
-                            PendingCall::Unknown(_) => true,
+                            PendingCall::Unknown(_) => matches!(
+                                unknown_syscall_disposition(subscriptions.unknown_syscall_policy()),
+                                UnknownSyscallDisposition::AskTool
+                            ),
                         };
                         let result = if subscribed {
                             // Same restart protocol as the process-syscall
@@ -8194,15 +8227,10 @@ impl KvmBackend {
                     DecodedSyscall::Known(syscall) => (PendingCall::Known(syscall), None),
                     DecodedSyscall::Unknown(raw) => {
                         match unknown_syscall_disposition(subscriptions.unknown_syscall_policy()) {
-                            // The rejecting decode always fails here, with
-                            // the error this path raised before the policy
-                            // existed.
-                            UnknownSyscallDisposition::Abort => {
-                                (PendingCall::Known(request.into_syscall()?), None)
-                            }
                             UnknownSyscallDisposition::Answer(result) => {
                                 (PendingCall::Unknown(raw), Some(result))
                             }
+                            UnknownSyscallDisposition::Execute => (PendingCall::Unknown(raw), None),
                             UnknownSyscallDisposition::AskTool => (PendingCall::Unknown(raw), None),
                         }
                     }
@@ -8217,14 +8245,22 @@ impl KvmBackend {
                 let backend_owned = is_backend_owned_syscall(request.number(), thread_ownership)
                     && !executor.is_tool_visible_read(&request);
                 // An unknown number is never backend-owned (the owned set is
-                // futex/read/readv/ppoll); unanswered, it is here only
-                // because the policy traps it to the Tool.
+                // futex/read/readv/ppoll); unanswered, it reaches the Tool
+                // only under AskTool, and the executor under Execute.
                 let subscribed = !backend_owned
                     && match pending {
                         PendingCall::Known(syscall) => {
                             subscribed_syscalls.contains(syscall.number())
                         }
-                        PendingCall::Unknown(_) => answered.is_none(),
+                        PendingCall::Unknown(_) => {
+                            answered.is_none()
+                                && matches!(
+                                    unknown_syscall_disposition(
+                                        subscriptions.unknown_syscall_policy()
+                                    ),
+                                    UnknownSyscallDisposition::AskTool
+                                )
+                        }
                     };
                 let (
                     mut result,

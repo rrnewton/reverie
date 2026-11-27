@@ -83,9 +83,15 @@ impl PmuProfile {
                 0x8E | 0x9E => (0x5101c4, 100),               // Intel Kabylake
                 0xA5 | 0xA6 => (0x5101c4, 100),               // Intel Cometlake
                 0x8D => (0x5111c4, 100),                      // Intel Tiger Lake
-                0x9A => (0x5101c4, 125),                      // Intel Alder Lake
-                0x8F => (0x5111c4, 125),                      // Intel Sapphire Rapids
-                0x86 => (0x5101c4, 100),                      // Intel Icelake
+                // Intel client hybrid models (Alder Lake 0x97/0x9A and
+                // Raptor Lake 0xB7/0xBA/0xBF) are deliberately absent:
+                // their performance and efficiency cores encode
+                // BR_INST_RETIRED differently, and this table has no
+                // core-type-aware profile for them. They therefore take
+                // the same named unsupported-CPU refusal as any other
+                // model with no profile.
+                0x8F => (0x5111c4, 125), // Intel Sapphire Rapids
+                0x86 => (0x5101c4, 100), // Intel Icelake
                 // Intel Emerald Rapids (Raptor Cove; Linux INTEL_EMERALDRAPIDS_X).
                 // Intel's perfmon tables encode BR_INST_RETIRED as Sapphire
                 // Rapids does (EMR emeraldrapids_core.json v1.25 and SPR
@@ -111,13 +117,15 @@ impl PmuProfile {
             // Traced 2026-10-16, one guest at a time at host load ~270, the
             // skid past a programmed notification was 23-114 RCBs at the
             // median and at most 816 over ~7,000 notifications. Under full
-            // validation load, though, the 1K margin was overrun by 15-881
-            // RCBs 17 times in 7 days, a skid of up to ~1,881. 2K covers
-            // those with ~6% headroom. Block steps make the margin cheap to
-            // step: on a chaos spin guest each event costs ~2.9 stops per
-            // margin RCB, so 2K steps ~5,800 stops (134 ms) against 2,900
-            // (68 ms) at 1K. Rarer larger overshoots are reported and
-            // delivered at the observed counter.
+            // validation load, though, 7 days of logs showed the 1K margin
+            // overrun 19 times. 17 of them were by 15-881 RCBs, a skid of up
+            // to ~1,881, which 2K covers with ~6% headroom. The other 2 were
+            // by 2,704 and 7,327 RCBs, notifications about 16 µs late; 2K
+            // does not cover them, and they need their own investigation.
+            // Block steps make the margin cheap to step: on a chaos spin
+            // guest each event costs ~2.9 stops per margin RCB, so 2K steps
+            // ~5,800 stops (134 ms) against 2,900 (68 ms) at 1K. Rarer larger
+            // overshoots are reported and delivered at the observed counter.
             0x1A if model_id == 0x11 => (AMD_RCB_EVENT, AMD_EPYC_9D85_SKID_MARGIN),
             // Family 19h model A0h uses the same 1K margin. Under the 10K guard, one
             // chaos run with a 1 ms timeslice spent 48 CPU-s single stepping in a
@@ -134,10 +142,10 @@ impl PmuProfile {
         // on every Intel family-6 entry above through Comet Lake and C4/11 as
         // BR_INST_RETIRED.COND from Ice Lake on; Linux perf 5b0764a53235
         // defines AMD D1 as retired conditional branches on Zen 1 to 6.
-        // Alder Lake is hybrid (its E-cores count C4/7E) and 0x86 has no
-        // C4/01 definition, so what their selectors count is not established.
+        // Model 0x86 has no C4/01 definition, so what its selector
+        // counts is not established.
         let metric = match (family_id, model_id) {
-            (0x06, 0x9A | 0x86) => None,
+            (0x06, 0x86) => None,
             _ => Some(RcbMetric::ConditionalBranchesRetiredUserV1),
         };
 

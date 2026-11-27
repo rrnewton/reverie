@@ -1235,15 +1235,38 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// none, and a successful `execve` disarms them, as Linux does. The
     /// backend refuses, changing nothing, more watches than
     /// [`BackendCapabilities::hardware_watchpoints`](crate::BackendCapabilities::hardware_watchpoints),
-    /// a length or alignment the hardware cannot watch, and, with any watch,
-    /// a thread that blocks or ignores SIGTRAP: Linux reports a hit by
-    /// forcing a SIGTRAP on the thread, which unblocks it and resets its
-    /// action to the default (`force_sig_info_to_task`). A thread can still
-    /// block or ignore SIGTRAP after its watches are armed; what its next hit
-    /// then changes, and what the backend puts back, is
-    /// [`WatchHit::sigtrap`](crate::WatchHit::sigtrap). A backend puts back
-    /// only what it knows, so a Tool that must not change the guest checks
-    /// each hit.
+    /// a length or alignment the hardware cannot watch, and any watch this
+    /// call newly arms on a thread that blocks or ignores SIGTRAP: Linux
+    /// reports a hit by forcing a SIGTRAP on the thread, which unblocks it
+    /// and resets its action to the default (`force_sig_info_to_task`).
+    /// Replacing the watches with a subset of them, or with none, is never
+    /// refused for that state — it arms nothing the thread does not already
+    /// hold. A thread can still block or ignore SIGTRAP after its watches
+    /// are armed; what its next hit then changes, and what the backend puts
+    /// back, is [`WatchHit::sigtrap`](crate::WatchHit::sigtrap). A backend
+    /// puts back only what it knows, so a Tool that must not change the
+    /// guest checks each hit.
+    ///
+    /// The thread's debug registers may be shared with a debugger the
+    /// backend serves (reverie-ptrace's GDB server): watches the debugger
+    /// sets occupy slots of the same registers, arm beside these — the
+    /// Tool's first, so a hit's `slot` keeps naming its place in `specs` —
+    /// and stay armed across this call. While the debugger holds a watch
+    /// on the thread, every hit's
+    /// [`WatchHit::sigtrap`](crate::WatchHit::sigtrap) is
+    /// [`SigtrapAtHit::Unknown`](crate::SigtrapAtHit::Unknown): the
+    /// backend repairs what a hit reset for the debugger's watches, but
+    /// does not claim that outcome as known to the Tool. A call can therefore be refused
+    /// with [`WatchError::TooMany`](crate::WatchError::TooMany) for a
+    /// request that alone would fit, when the debugger's watches hold the
+    /// remaining slots; the error names this call's count, not the
+    /// combined one. A failed arming that restores the watches both owners
+    /// had reports [`WatchError::Failed`](crate::WatchError::Failed) with
+    /// `disarmed` saying whether that restore left no watch armed (so
+    /// `false` exactly where it restored a nonempty set). Re-arming for
+    /// the debugger's change does not
+    /// refill a watch's stack budget (`WatchSpec::backtraces`); only this
+    /// call does.
     ///
     /// A thread that glibc's `pthread_create` starts runs with every signal
     /// blocked until its start code restores its mask with an
@@ -1576,6 +1599,39 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// anything, while this thread stays stopped.
     fn memory_map(&self, _tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
         Err(crate::FactError::NotProvided)
+    }
+
+    /// Whether a mapping that [`Guest::memory_map`] lists for thread `tid`
+    /// overlaps the addresses `[start, end)`, as
+    /// [`MemoryMap::overlaps`](crate::MemoryMap::overlaps) answers for that
+    /// list. A tool that only needs to know whether a range it acted on
+    /// reaches a listed mapping asks this instead of reading the whole list.
+    /// A range with `end` at or below `start` overlaps nothing, and the
+    /// default answers it without asking for the list.
+    ///
+    /// The default asks [`Guest::memory_map`] and looks, so it answers, and
+    /// fails, exactly as that list does. A backend that keeps the address
+    /// space itself may instead answer from the part of it around the range,
+    /// which can cost far less than listing every mapping. Such an answer is
+    /// the default's wherever [`Guest::memory_map`] would give a list. Where
+    /// that list fails only because some mapping's fields cannot be stated,
+    /// such as a mapped file whose name cannot be read, the backend may still
+    /// answer, counting that mapping as listed, as it would be if its fields
+    /// could be stated. Read an incomplete list's
+    /// `false` with the same care as the list (see [`Guest::memory_map`]).
+    ///
+    /// Like [`Guest::memory_map`], the call is synchronous and describes the
+    /// moment of the call.
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> Result<bool, crate::FactError> {
+        if end <= start {
+            return Ok(false);
+        }
+        Ok(self.memory_map(tid)?.overlaps(start, end))
     }
 }
 
@@ -2034,6 +2090,15 @@ where
 
     fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
         self.inner.memory_map(tid)
+    }
+
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> Result<bool, crate::FactError> {
+        self.inner.memory_map_overlaps(tid, start, end)
     }
 }
 
@@ -2549,5 +2614,14 @@ where
 
     fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
         self.inner.memory_map(tid)
+    }
+
+    fn memory_map_overlaps(
+        &self,
+        tid: Pid,
+        start: u64,
+        end: u64,
+    ) -> Result<bool, crate::FactError> {
+        self.inner.memory_map_overlaps(tid, start, end)
     }
 }

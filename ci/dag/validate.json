@@ -31,6 +31,54 @@
     },
     {
       "group": "check",
+      "job": "e2e_compare_pin",
+      "desc": "E2E compare workflow pin",
+      "description": "Runs scripts/check-e2e-compare.rs: .github/workflows/e2e-compare.yml must equal its pinned text and pass its structural checks, and every reverie-examples/e2e/ledgers/ubuntu-*.tsv must pass the ledger lint.",
+      "labels": [
+        "full"
+      ],
+      "cmd": "./scripts/check-e2e-compare.rs .",
+      "deps": [],
+      "env": {},
+      "timeout": 600,
+      "cpu_timeout": 120,
+      "priority": 60,
+      "hint": {
+        "resources": {},
+        "est_duration_s": 10,
+        "rss_baseline_bytes": 1000000000,
+        "hard_mem_max_bytes": 16000000000,
+        "classification": "cpu-bound",
+        "preferred_inner_jobs": 4
+      },
+      "jobs_flag": ""
+    },
+    {
+      "group": "check",
+      "job": "e2e_compare_pin_self_test",
+      "desc": "E2E compare workflow pin self-test",
+      "description": "Runs scripts/check-e2e-compare.rs --self-test: every mutant of the workflow and of a synthetic ledger must be refused by name, the workflow mutants by the structural checks alone, and the case count is pinned.",
+      "labels": [
+        "full"
+      ],
+      "cmd": "./scripts/check-e2e-compare.rs --self-test",
+      "deps": [],
+      "env": {},
+      "timeout": 600,
+      "cpu_timeout": 120,
+      "priority": 60,
+      "hint": {
+        "resources": {},
+        "est_duration_s": 10,
+        "rss_baseline_bytes": 1000000000,
+        "hard_mem_max_bytes": 16000000000,
+        "classification": "cpu-bound",
+        "preferred_inner_jobs": 4
+      },
+      "jobs_flag": ""
+    },
+    {
+      "group": "check",
       "job": "catalog_bindings_append_only",
       "desc": "Catalogue history append-only",
       "description": "Runs scripts/check-catalog-bindings-append-only.rs: the content-catalogue history tables in reverie-liteinst-artifact/src/lib.rs (bindings, binding seals, rejected-prior) must keep every row of the merge-base with origin/<landing branch> unchanged. Without a resolvable merge-base it fails; it never skips.",
@@ -81,7 +129,7 @@
       "group": "lint",
       "job": "rustfmt",
       "desc": "Rustfmt",
-      "description": "scripts/rustfmt-gate.sh: cargo fmt --all -- --check over the whole workspace, plus a direct rustfmt --check of every file reached only through include! under reverie-liteinst/src/bin (derived at run time; the same script as validate.sh and the nightly workflow).",
+      "description": "scripts/rustfmt-gate.sh: with the formatter pinned in ci/rustfmt-toolchain.toml (refused, exit 2, when absent or of another identity), cargo fmt --all -- --check over the whole workspace, plus a direct rustfmt --check of every file reached only through include! under reverie-liteinst/src/bin (derived at run time; the same script as validate.sh and the nightly and extended workflows).",
       "labels": [
         "full"
       ],
@@ -113,7 +161,7 @@
       "deps": [],
       "env": {},
       "timeout": 600,
-      "cpu_timeout": 4200,
+      "cpu_timeout": 6700,
       "priority": 90,
       "hint": {
         "resources": {
@@ -240,11 +288,11 @@
       "group": "test",
       "job": "liteinst_a",
       "desc": "Tests: LiteInst binaries A",
-      "description": "Counted nextest over reverie-liteinst binaries strace, generic_bootstrap, standalone_constructor, tool_tls, fixed_arena, the lib tests, and the zero-case guest binaries. Binary lists in the two LiteInst nodes partition the package; validate.sh refuses if node totals drift from the workspace list.",
+      "description": "Counted nextest over reverie-liteinst binaries strace, generic_bootstrap, standalone_constructor, aarch64_trap_install (zero cases off aarch64), tool_tls, fixed_arena, the lib tests, and the zero-case guest binaries. Binary lists in the two LiteInst nodes partition the package; validate.sh refuses if node totals drift from the workspace list.",
       "labels": [
         "full"
       ],
-      "cmd": "source target/validate/liteinst-fixtures/bundle/fixture.env && ./scripts/libtest-counts.rs run-nextest target/validate/counts-test-liteinst_a.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(reverie-liteinst) & (binary(=strace) | binary(=generic_bootstrap) | binary(=standalone_constructor) | binary(=tool_tls) | binary(=fixed_arena) | binary(=reverie_liteinst) | binary(=reverie-liteinst-trap-count-guest) | binary(=reverie-liteinst-strace) | binary(=reverie-liteinst-spoof-guest) | binary(=reverie-liteinst-rpc-tool-guest) | binary(=reverie-liteinst-lifecycle-guest))) & $REVERIE_NEXTEST_SKIP_FILTER\"",
+      "cmd": "source target/validate/liteinst-fixtures/bundle/fixture.env && ./scripts/libtest-counts.rs run-nextest target/validate/counts-test-liteinst_a.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(reverie-liteinst) & (binary(=strace) | binary(=generic_bootstrap) | binary(=standalone_constructor) | binary(=aarch64_trap_install) | binary(=tool_tls) | binary(=fixed_arena) | binary(=reverie_liteinst) | binary(=reverie-liteinst-trap-count-guest) | binary(=reverie-liteinst-strace) | binary(=reverie-liteinst-spoof-guest) | binary(=reverie-liteinst-rpc-tool-guest) | binary(=reverie-liteinst-lifecycle-guest))) & $REVERIE_NEXTEST_SKIP_FILTER\"",
       "deps": [
         "build.test_binaries",
         "fixtures.liteinst"
@@ -273,11 +321,11 @@
       "group": "test",
       "job": "liteinst_b",
       "desc": "Tests: LiteInst binaries B",
-      "description": "Counted nextest over the remaining reverie-liteinst binaries (allocator, mapping, region, rpc_tool, lifecycle and guest controls).",
+      "description": "Counted nextest over the remaining reverie-liteinst binaries (allocator, mapping, region, rpc_tool, lifecycle, grouped admission and its spike binary, and guest controls).",
       "labels": [
         "full"
       ],
-      "cmd": "./scripts/libtest-counts.rs run-nextest target/validate/counts-test-liteinst_b.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(reverie-liteinst) & (binary(=native_unpublished) | binary(=allocator_contract) | binary(=region_stacks) | binary(=mapping_integrity) | binary(=lifecycle) | binary(=rpc_tool) | binary(=fixed_gates) | binary(=private_prepare) | binary(=grouped_admission) | binary(=concurrent_patching) | binary(=nop_window) | binary(=reverie-liteinst-fork-guest) | binary(=reverie-liteinst-exec-guest) | binary(=reverie-liteinst-allocator-private-control) | binary(=reverie-liteinst-allocator-install-control) | binary(=reverie-liteinst-allocator-host-control))) & $REVERIE_NEXTEST_SKIP_FILTER\"",
+      "cmd": "./scripts/libtest-counts.rs run-nextest target/validate/counts-test-liteinst_b.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(reverie-liteinst) & (binary(=native_unpublished) | binary(=allocator_contract) | binary(=region_stacks) | binary(=mapping_integrity) | binary(=lifecycle) | binary(=rpc_tool) | binary(=fixed_gates) | binary(=private_prepare) | binary(=grouped_admission) | binary(=reverie-liteinst-grouped-admission-spike) | binary(=concurrent_patching) | binary(=nop_window) | binary(=reverie-liteinst-fork-guest) | binary(=reverie-liteinst-exec-guest) | binary(=reverie-liteinst-allocator-private-control) | binary(=reverie-liteinst-allocator-install-control) | binary(=reverie-liteinst-allocator-host-control))) & $REVERIE_NEXTEST_SKIP_FILTER\"",
       "deps": [
         "build.test_binaries",
         "fixtures.liteinst"
@@ -511,11 +559,11 @@
       "group": "test",
       "job": "core",
       "desc": "Tests: core + transport + support crates",
-      "description": "Counted nextest over the remaining workspace packages (core, safeptrace, rpc-transport, process, loader, memory, syscalls, test-support, util, and the zero-test experimental packages, whose listings keep the node totals exact).",
+      "description": "Counted nextest over the remaining workspace packages (core, safeptrace, rpc-transport, process, loader, memory, syscalls, test-support, util, proc-grammar, linux-ns-model, and the zero-test experimental packages, whose listings keep the node totals exact).",
       "labels": [
         "full"
       ],
-      "cmd": "./scripts/libtest-counts.rs run-nextest target/validate/counts-test-core.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(safeptrace) | package(reverie-core) | package(reverie-rpc-transport) | package(reverie-process) | package(reverie-linuxemu-ext-procfs) | package(reverie-loader) | package(reverie-test-support) | package(reverie-syscalls) | package(reverie-memory) | package(reverie-util) | package(reverie-signal) | package(nostd-print) | package(reverie-linux-provider) | package(reverie-rpc) | package(riptrace-rpc)) & $REVERIE_NEXTEST_SKIP_FILTER\"",
+      "cmd": "./scripts/libtest-counts.rs run-nextest target/validate/counts-test-core.json -- cargo nextest run --binaries-metadata target/validate/binaries-metadata.json -E \"(package(safeptrace) | package(reverie-core) | package(reverie-rpc-transport) | package(reverie-process) | package(reverie-linuxemu-ext-procfs) | package(reverie-loader) | package(reverie-test-support) | package(reverie-syscalls) | package(reverie-memory) | package(reverie-util) | package(reverie-signal) | package(nostd-print) | package(reverie-linux-provider) | package(reverie-rpc) | package(riptrace-rpc) | package(reverie-proc-grammar) | package(linux-ns-model)) & $REVERIE_NEXTEST_SKIP_FILTER\"",
       "deps": [
         "build.test_binaries",
         "fixtures.liteinst"
@@ -571,7 +619,7 @@
       "group": "e2e",
       "job": "cross_backend",
       "desc": "Reverie-layer cross-backend e2e",
-      "description": "reverie-examples/e2e/run.sh: every backend this host has, judged against the ledger for its environment (report-only without one).",
+      "description": "reverie-examples/e2e/run.sh: every backend this host has, judged against the ledger for its environment (without one it fails by name: NO LEDGER).",
       "labels": [
         "full"
       ],

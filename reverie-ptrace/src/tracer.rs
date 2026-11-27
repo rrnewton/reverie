@@ -1491,6 +1491,7 @@ pub(crate) fn record_capacity_body_dropped_for_test(tid: Pid, status: Option<Exi
 #[cfg(test)]
 pub(crate) fn record_fatal_task_for_test(task: &Arc<FatalTaskStop>) {
     tests::fatal_capacity_tests::record_registered(task);
+    tests::fatal_parent_kill_tests::record_registered(task);
     FATAL_REAP_OBSERVATIONS.with(|slot| {
         if let Some(observations) = slot.borrow_mut().as_mut() {
             observations.push(Arc::clone(task));
@@ -2350,7 +2351,20 @@ impl HeldRootStop {
         slot: &Arc<StdMutex<Option<Self>>>,
         task: &Stopped,
     ) -> Result<(), TraceError> {
-        let replacement = Self::from_event(task, &Event::Exit);
+        Self::supersede_with_event(slot, task, &Event::Exit)
+    }
+
+    /// Replaces the held stop with `task`'s stop at `event`, where the
+    /// tracer itself completed a stop the kernel did not produce (a
+    /// gdb step a backend seccomp stop finished): the held stop is
+    /// consumed and the new one armed, in one transition, so the run
+    /// loop's lease check pairs with the stop it is handed.
+    pub(crate) fn supersede_with_event(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<(), TraceError> {
+        let replacement = Self::from_event(task, event);
         let mut held = slot.lock().unwrap();
         match held.as_ref() {
             None => {
@@ -4145,6 +4159,7 @@ const SECCOMP_FILTER_MAX_INSTRUCTIONS: usize = 4096;
 fn seccomp_filter(
     events: &Subscription,
     observes_sigreturns: bool,
+    trace_signal_state: bool,
 ) -> Result<seccomp::Filter, Error> {
     use reverie::process::seccomp::Action;
 
@@ -4171,6 +4186,20 @@ fn seccomp_filter(
                 .filter(|syscall| subscribed.binary_search(syscall).is_err())
                 .map(|syscall| (syscall, Action::Allow)),
         );
+    }
+    if trace_signal_state {
+        // A gdb session's own bookkeeping: the mask- and action-setting
+        // syscalls stop whether the Tool subscribes or not, so no mask
+        // or disposition change can stale the backend's records. An
+        // unsubscribed one is run untouched at its stop
+        // (`handle_seccomp`); a subscribed one reaches the Tool as
+        // before. Named after the policy's Allow fill above: the
+        // builder's map keeps the last action set for a number, so
+        // these traces replace its Allow.
+        builder.syscalls([
+            (Sysno::rt_sigprocmask, Action::Trace(0)),
+            (Sysno::rt_sigaction, Action::Trace(0)),
+        ]);
     }
     builder
         // The guest's rt_sigreturn is never shown to handle_syscall_event. It
@@ -4482,8 +4511,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         command.seccomp(seccomp_filter(
             &events,
             cfg!(target_arch = "x86_64")
-                && T::observes_sigreturns(&config)
-                && self.gdbserver.is_none(),
+                && (T::observes_sigreturns(&config) || self.gdbserver.is_some()),
+            cfg!(target_arch = "x86_64") && self.gdbserver.is_some(),
         )?);
 
         // Command::spawn holds the launch lock from the child's first pipe
@@ -4764,6 +4793,7 @@ where
     let seccomp_filter = seccomp_filter(
         &events,
         cfg!(target_arch = "x86_64") && L::observes_sigreturns(&config),
+        false,
     )?;
 
     // While the pipes are made, no transient open of another thread may be
@@ -6927,25 +6957,30 @@ mod tests {
         format!("/tmp/reverie-1091-held-{pid}")
     }
 
-    /// Blocks (no await: the exit future must not claim the exit stop first)
-    /// until the thread is in its exit stop: in a tracing stop with
+    /// Whether the thread is in its exit stop: in a tracing stop with
     /// PF_SIGNALED (0x400) in its stat flags, set by the fatal signal before
-    /// do_exit reports that stop. False after five seconds.
-    fn block_until_exit_stop(pid: Pid, tid: Pid) -> bool {
+    /// do_exit reports that stop.
+    fn in_exit_stop(pid: Pid, tid: Pid) -> bool {
         let stat = format!("/proc/{pid}/task/{tid}/stat");
+        std::fs::read_to_string(stat).ok().is_some_and(|stat| {
+            let fields: Vec<&str> = stat
+                .rsplit_once(')')
+                .map_or(Vec::new(), |(_, rest)| rest.split_whitespace().collect());
+            fields.first() == Some(&"t")
+                && fields
+                    .get(6)
+                    .and_then(|flags| flags.parse::<u64>().ok())
+                    .is_some_and(|flags| flags & 0x400 != 0)
+        })
+    }
+
+    /// Blocks (no await: the exit future must not claim the exit stop first)
+    /// until the thread is in its exit stop ([`in_exit_stop`]). False after
+    /// five seconds.
+    fn block_until_exit_stop(pid: Pid, tid: Pid) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let in_exit_stop = std::fs::read_to_string(&stat).ok().is_some_and(|stat| {
-                let fields: Vec<&str> = stat
-                    .rsplit_once(')')
-                    .map_or(Vec::new(), |(_, rest)| rest.split_whitespace().collect());
-                fields.first() == Some(&"t")
-                    && fields
-                        .get(6)
-                        .and_then(|flags| flags.parse::<u64>().ok())
-                        .is_some_and(|flags| flags & 0x400 != 0)
-            });
-            if in_exit_stop {
+            if in_exit_stop(pid, tid) {
                 return true;
             }
             if Instant::now() > deadline {

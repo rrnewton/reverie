@@ -1,3 +1,11 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ * All rights reserved.
+ *
+ * This source code is licensed under the BSD-style license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
 //! Shared, fail-closed constructor and diagnostic artifact qualification.
 //! No Cargo invocation is implicit in consumer verification. Producer commands
 //! are bounded separately from the enclosing validation DAG's CPU/memory/PID containment.
@@ -18,6 +26,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -320,6 +329,145 @@ pub fn verify_guest_receipt(
     Ok(receipt)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test override for this thread's producer CPU reading, so a test
+    /// can state the calling thread's work exactly while child CPU
+    /// below remains real cgroup accounting.
+    static PRODUCER_THREAD_CPU_OVERRIDE: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn set_producer_thread_cpu_for_test(value: Option<Duration>) {
+    PRODUCER_THREAD_CPU_OVERRIDE.with(|cell| cell.set(value));
+}
+
+/// This thread's own CPU since it started. The delta from a budget's
+/// creation, plus each reader thread's delta added when the Runner
+/// joins it, is the producer work no command cgroup can see: file
+/// hashing, ELF parsing and the proof itself. Only the producer's own
+/// threads are measured; unrelated threads sharing the process are not
+/// charged.
+fn producer_thread_cpu() -> Result<Duration> {
+    #[cfg(test)]
+    if let Some(value) = PRODUCER_THREAD_CPU_OVERRIDE.with(|cell| cell.get()) {
+        return Ok(value);
+    }
+    fn timeval(value: &libc::timeval) -> Result<Duration> {
+        let seconds = u64::try_from(value.tv_sec)
+            .map_err(|_| "producer thread CPU accounting unavailable: negative rusage seconds")?;
+        let micros = u64::try_from(value.tv_usec)
+            .map_err(|_| "producer thread CPU accounting unavailable: negative rusage micros")?;
+        require(
+            micros < 1_000_000,
+            "producer thread CPU accounting unavailable: rusage micros out of range",
+        )?;
+        Ok(Duration::from_secs(seconds) + Duration::from_micros(micros))
+    }
+    // SAFETY: an all-zero rusage is a valid output buffer for getrusage.
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    // SAFETY: `usage` is writable and RUSAGE_THREAD names this thread.
+    if unsafe { libc::getrusage(libc::RUSAGE_THREAD, &mut usage) } != 0 {
+        return Err(format!(
+            "producer thread CPU accounting unavailable: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(timeval(&usage.ru_utime)? + timeval(&usage.ru_stime)?)
+}
+
+/// One aggregate CPU budget shared by every Runner a producer attaches
+/// it to. Used CPU is the child commands' cgroup CPU, plus the CPU of
+/// the producer's own threads: the attaching thread's
+/// `getrusage(RUSAGE_THREAD)` delta since creation and each reader
+/// thread's delta added when the Runner joins it. Work this process
+/// spawns outside a Runner (an outer Cargo build, for one) and
+/// unrelated threads sharing the process are not counted. Cloning
+/// shares the same budget and baseline; attach it only from the
+/// thread that created it, whose delta is the one measured.
+#[derive(Clone)]
+pub struct ProducerCpuBudget {
+    state: Arc<Mutex<ProducerCpuState>>,
+    creator: std::thread::ThreadId,
+}
+
+struct ProducerCpuState {
+    budget: Duration,
+    child_cpu_used: Duration,
+    reader_cpu_used: Duration,
+    thread_cpu_baseline: Duration,
+}
+
+impl ProducerCpuBudget {
+    pub fn new(cpu_budget: Duration) -> Result<Self> {
+        require(!cpu_budget.is_zero(), "CPU budget must be positive")?;
+        Ok(Self {
+            state: Arc::new(Mutex::new(ProducerCpuState {
+                budget: cpu_budget,
+                child_cpu_used: Duration::ZERO,
+                reader_cpu_used: Duration::ZERO,
+                thread_cpu_baseline: producer_thread_cpu()?,
+            })),
+            creator: std::thread::current().id(),
+        })
+    }
+
+    pub fn budget(&self) -> Duration {
+        self.lock()
+            .map(|state| state.budget)
+            .unwrap_or(Duration::ZERO)
+    }
+
+    /// Aggregate CPU used against this budget right now: accounted
+    /// child CPU, joined reader-thread CPU, and the creating thread's
+    /// CPU delta since the budget was created. Refuses from any other
+    /// thread: that thread's delta against the creator's baseline
+    /// would be meaningless.
+    pub fn used(&self) -> Result<Duration> {
+        require(
+            std::thread::current().id() == self.creator,
+            "producer CPU budget used from a thread other than its creator",
+        )?;
+        let state = self.lock()?;
+        Ok(state.child_cpu_used
+            + state.reader_cpu_used
+            + producer_thread_cpu()?.saturating_sub(state.thread_cpu_baseline))
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ProducerCpuState>> {
+        self.state
+            .lock()
+            .map_err(|_| "producer CPU budget state poisoned".to_owned())
+    }
+
+    fn add_child(&self, used: Duration) -> Result<Duration> {
+        {
+            let mut state = self.lock()?;
+            state.child_cpu_used += used;
+        }
+        self.used()
+    }
+
+    fn add_reader(&self, used: Duration) -> Result<Duration> {
+        {
+            let mut state = self.lock()?;
+            state.reader_cpu_used += used;
+        }
+        self.used()
+    }
+}
+
+/// Whether [`Runner::bound_total_cpu_or_wall_backstop`] accounted CPU.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TotalCpuBound {
+    /// Commands run CPU-accounted under the aggregate budget.
+    Accounted,
+    /// CPU accounting is unavailable for the reason named; commands run
+    /// under the Runner's wall backstop only.
+    WallBackstopOnly(String),
+}
+
 /// One shared absolute wall deadline; each stream has its own strict byte
 /// ceiling. Every child is placed in a fresh process group. An overflow, CPU
 /// budget or wall deadline kill reaches that group, and a CPU-budgeted command's
@@ -354,6 +502,20 @@ pub struct Runner {
     /// The CPU budget of every command not given its own through
     /// `run_cpu_bounded`; `None` leaves them bounded by the wall deadline only.
     every_command_cpu: Option<Duration>,
+    /// Aggregate CPU budget shared with any sibling Runners, set through
+    /// [`Runner::bound_total_cpu`]; `None` leaves the run bounded by the
+    /// wall deadline and any per-command budgets only.
+    total_cpu_budget: Option<ProducerCpuBudget>,
+    /// Aggregate CPU at the last command boundary, for message formatting
+    /// without another rusage read on an error path.
+    total_cpu_used: Duration,
+    /// Why CPU accounting fell back to the wall backstop alone, when the
+    /// caller chose that fallback through
+    /// [`Runner::bound_total_cpu_or_wall_backstop`].
+    total_cpu_fallback: Option<String>,
+    /// When this Runner was created, for naming measured wall time in
+    /// aggregate-budget refusals.
+    started: Instant,
     /// A substitute `cargo` program for this Runner, set through
     /// [`Self::set_cargo_program`]; `None` spawns the `cargo` found on
     /// PATH, exactly as before. It exists so a test can inject a stand-in
@@ -389,6 +551,10 @@ impl Runner {
             command_cpu: Vec::new(),
             wall_budget: budget,
             every_command_cpu: None,
+            total_cpu_budget: None,
+            total_cpu_used: Duration::ZERO,
+            total_cpu_fallback: None,
+            started: Instant::now(),
             #[cfg(test)]
             cargo_program: None,
             #[cfg(test)]
@@ -436,6 +602,159 @@ impl Runner {
         Ok(())
     }
 
+    /// Bound the aggregate CPU of every command this Runner runs from
+    /// here on by a fresh [`ProducerCpuBudget`]. See
+    /// [`Runner::bound_shared_total_cpu`].
+    pub fn bound_total_cpu(&mut self, cpu_budget: Duration) -> Result<()> {
+        let budget = ProducerCpuBudget::new(cpu_budget)?;
+        self.bound_shared_total_cpu(budget)
+    }
+
+    /// Bound this Runner by a (possibly shared) aggregate CPU budget.
+    /// Each later command is CPU-accounted as in
+    /// [`Runner::run_cpu_bounded`] (not started where that cannot be
+    /// accounted) under a per-command cap of the aggregate remainder at
+    /// its start. The aggregate is checked at every command start and
+    /// after every command: child cgroup CPU plus the producer's own
+    /// threads' CPU delta, shared by every Runner holding a clone of the same
+    /// budget. A command that finishes with aggregate use exactly at
+    /// the budget passes; the next is refused as exhausted. The wall
+    /// deadline stays the backstop, so callers size it generously
+    /// (several times the CPU budget): cost is judged by CPU, and wall
+    /// only stops a hang. Set at most once, before the work it bounds.
+    pub fn bound_shared_total_cpu(&mut self, budget: ProducerCpuBudget) -> Result<()> {
+        require(
+            self.total_cpu_budget.is_none() && self.total_cpu_fallback.is_none(),
+            "producer total CPU budget is already set",
+        )?;
+        self.total_cpu_used = budget.used()?;
+        self.total_cpu_budget = Some(budget);
+        Ok(())
+    }
+
+    /// [`Runner::bound_total_cpu`], except that where this process
+    /// cannot account command CPU (cgroup creation or open fails, or
+    /// this thread's rusage cannot be read while creating the
+    /// budget), commands instead run under the wall backstop alone
+    /// and the returned [`TotalCpuBound::WallBackstopOnly`] names why,
+    /// for the caller to log. This is the codebase's named fallback
+    /// for build environments without cgroup write access; the strict
+    /// setters above refuse there instead. The fallback covers only
+    /// budget attachment: reader threads still read their own rusage
+    /// for every command, budgeted or not, and a failure there fails
+    /// the command by name in both modes.
+    pub fn bound_total_cpu_or_wall_backstop(
+        &mut self,
+        cpu_budget: Duration,
+    ) -> Result<TotalCpuBound> {
+        require(!cpu_budget.is_zero(), "CPU budget must be positive")?;
+        match ProducerCpuBudget::new(cpu_budget) {
+            Ok(budget) => self.bound_shared_total_cpu_or_wall_backstop(budget),
+            Err(error) => Ok(self.total_cpu_wall_fallback(error)),
+        }
+    }
+
+    /// [`Runner::bound_shared_total_cpu`] with the named wall-only
+    /// fallback of [`Runner::bound_total_cpu_or_wall_backstop`].
+    pub fn bound_shared_total_cpu_or_wall_backstop(
+        &mut self,
+        budget: ProducerCpuBudget,
+    ) -> Result<TotalCpuBound> {
+        require(
+            self.total_cpu_budget.is_none() && self.total_cpu_fallback.is_none(),
+            "producer total CPU budget is already set",
+        )?;
+        match self.probe_cpu_accounting()? {
+            None => {
+                self.bound_shared_total_cpu(budget)?;
+                Ok(TotalCpuBound::Accounted)
+            }
+            Some(reason) => Ok(self.total_cpu_wall_fallback(reason)),
+        }
+    }
+
+    fn total_cpu_wall_fallback(&mut self, reason: String) -> TotalCpuBound {
+        self.total_cpu_fallback = Some(reason.clone());
+        TotalCpuBound::WallBackstopOnly(reason)
+    }
+
+    /// Whether a fresh command cgroup can be created and removed under
+    /// this process's cgroup: `Ok(None)` when it can, `Ok(Some(reason))`
+    /// when creation or open proves accounting unavailable, and an
+    /// ordinary error for anything else (including a failed remove).
+    fn probe_cpu_accounting(&self) -> Result<Option<String>> {
+        let parent = match self.cgroup_parent() {
+            Ok(parent) => parent,
+            Err(error) => return Ok(Some(error)),
+        };
+        match CommandCgroup::create(&parent) {
+            Ok(cgroup) => {
+                cgroup.remove()?;
+                Ok(None)
+            }
+            Err(CgroupCreateError::Unavailable(reason)) => Ok(Some(reason)),
+            Err(CgroupCreateError::Other(error)) => Err(error),
+        }
+    }
+
+    /// Aggregate CPU at the last command boundary: accounted child CPU,
+    /// joined reader-thread CPU, and the creating thread's CPU delta
+    /// since the budget was created.
+    pub fn total_cpu_used(&self) -> Duration {
+        self.total_cpu_used
+    }
+
+    /// The one formatter for every bound refusal's detail. It names the
+    /// bound that tripped, total CPU against its budget (or the command
+    /// CPU where no total is set, or why accounting fell back to wall),
+    /// and run wall against the backstop. Call sites prefix the program.
+    fn bound_failure(
+        &self,
+        bound: &str,
+        command_cpu: Option<(Duration, Duration)>,
+        command_wall: Duration,
+    ) -> String {
+        let command_phrase = command_cpu.map(|(used, budget)| {
+            format!(
+                "command CPU {:.2} of {:.2} CPU-s",
+                used.as_secs_f64(),
+                budget.as_secs_f64()
+            )
+        });
+        let total_phrase = self.total_cpu_budget.as_ref().map(|budget| {
+            format!(
+                "total CPU {:.2} of {:.2} CPU-s across Runner-accounted child \
+                 commands plus this producer's own threads since the budget was created",
+                self.total_cpu_used.as_secs_f64(),
+                budget.budget().as_secs_f64()
+            )
+        });
+        let cpu = if let Some(reason) = &self.total_cpu_fallback {
+            format!("CPU accounting unavailable: {reason}; CPU unbounded")
+        } else if bound != "producer total CPU" && bound != "producer wall" {
+            match command_phrase {
+                Some(phrase) => phrase,
+                None => match total_phrase {
+                    Some(phrase) => phrase,
+                    None => "CPU unbounded".to_owned(),
+                },
+            }
+        } else if let Some(phrase) = total_phrase {
+            phrase
+        } else if let Some(phrase) = command_phrase {
+            phrase
+        } else {
+            "CPU unbounded".to_owned()
+        };
+        format!(
+            "{bound} bound tripped ({cpu}; wall {:.2} s of {} s backstop; \
+             command wall {:.2} s)",
+            self.started.elapsed().as_secs_f64(),
+            self.wall_budget.as_secs(),
+            command_wall.as_secs_f64()
+        )
+    }
+
     fn run_with_combined_limit(
         &mut self,
         program: &str,
@@ -476,17 +795,50 @@ impl Runner {
             combined_limit != Some(0),
             "command aggregate byte limit must be positive",
         )?;
+        if let Some(total) = &self.total_cpu_budget {
+            self.total_cpu_used = total.used()?;
+        }
         require(
             Instant::now() < self.deadline,
             format!(
-                "producer wall deadline exhausted ({} s wall backstop for this producer run)",
-                self.wall_budget.as_secs()
+                "{program} not started: {}",
+                self.bound_failure(
+                    "producer wall",
+                    cpu_budget.map(|b| (Duration::ZERO, b)),
+                    Duration::ZERO
+                )
             ),
         )?;
+        // An aggregate budget caps this command at its remainder (or the
+        // command's own smaller budget) and refuses to start spent. The
+        // aggregate read at this start includes the producer's own
+        // threads' CPU since the budget was created.
+        let (cpu_budget, total_binding) = match (cpu_budget, &self.total_cpu_budget) {
+            (own, Some(total)) => {
+                let budget = total.budget();
+                require(
+                    self.total_cpu_used < budget,
+                    format!(
+                        "{program} not started: producer total CPU budget exhausted ({})",
+                        self.bound_failure(
+                            "producer total CPU",
+                            own.map(|b| (Duration::ZERO, b)),
+                            Duration::ZERO
+                        )
+                    ),
+                )?;
+                let remaining = budget - self.total_cpu_used;
+                match own {
+                    Some(own) if own < remaining => (Some(own), false),
+                    _ => (Some(remaining), true),
+                }
+            }
+            (own, None) => (own, false),
+        };
         let cgroup = match cpu_budget {
             Some(_) => Some(
                 self.cgroup_parent()
-                    .and_then(|parent| CommandCgroup::create(&parent))
+                    .and_then(|parent| CommandCgroup::create(&parent).map_err(|e| e.into_string()))
                     .map_err(|e| {
                         format!("{program} not started: producer CPU accounting unavailable: {e}")
                     })?,
@@ -586,15 +938,18 @@ impl Runner {
             let combined_bytes = Arc::clone(&combined_bytes);
             let stop_reading = Arc::clone(&stop_reading);
             let cap = self.max_stream_bytes;
-            readers.push(thread::spawn(move || -> Result<Vec<u8>> {
-                read_child_stream(
+            readers.push(thread::spawn(move || -> Result<(Vec<u8>, Duration)> {
+                let thread_start = producer_thread_cpu()?;
+                let bytes = read_child_stream(
                     &mut *pipe,
                     &stop_reading,
                     &overflow,
                     &combined_bytes,
                     combined_limit,
                     cap,
-                )
+                )?;
+                let thread_used = producer_thread_cpu()?.saturating_sub(thread_start);
+                Ok((bytes, thread_used))
             }));
         }
         let mut bounds_failure: Option<String> = None;
@@ -616,7 +971,7 @@ impl Runner {
                     Err(e) => accounting_failure = Some(e),
                 }
             }
-            let cpu_exceeded = cpu_used.is_some_and(|(used, budget)| used >= budget);
+            let cpu_exceeded = cpu_used.is_some_and(|(used, budget)| used > budget);
             if killed_at.is_none()
                 && (overflow.load(Ordering::Acquire)
                     || accounting_failure.is_some()
@@ -629,17 +984,14 @@ impl Runner {
                 } else if let Some(e) = accounting_failure {
                     format!("killed: producer CPU accounting failed ({e})")
                 } else if let Some((used, budget)) = cpu_used.filter(|_| cpu_exceeded) {
-                    cpu_budget_failure(used, budget, wall)
+                    if total_binding {
+                        self.total_cpu_used += used;
+                        self.bound_failure("producer total CPU", Some((used, budget)), wall)
+                    } else {
+                        self.bound_failure("producer CPU", Some((used, budget)), wall)
+                    }
                 } else {
-                    let cpu = cpu_used
-                        .map(|(used, _)| format!(", CPU used {:.2} CPU-s", used.as_secs_f64()))
-                        .unwrap_or_default();
-                    format!(
-                        "exceeded the producer wall deadline ({} s wall backstop for this \
-                         producer run; command wall {:.2} s{cpu})",
-                        self.wall_budget.as_secs(),
-                        wall.as_secs_f64()
-                    )
+                    self.bound_failure("producer wall", cpu_used, wall)
                 });
                 if let Some(e) = kill_command(&cgroup) {
                     bounds_failure = Some(format!(
@@ -690,14 +1042,15 @@ impl Runner {
             thread::sleep(Duration::from_millis(50));
         };
         stop_reading.store(true, Ordering::Release);
-        let stdout = readers
+        let (stdout, stdout_reader_cpu) = readers
             .remove(0)
             .join()
             .map_err(|_| "stdout reader panicked")??;
-        let stderr = readers
+        let (stderr, stderr_reader_cpu) = readers
             .remove(0)
             .join()
             .map_err(|_| "stderr reader panicked")??;
+        let reader_cpu = stdout_reader_cpu + stderr_reader_cpu;
         if overflow.load(Ordering::Acquire) {
             bounds_failure = Some(format!("exceeded {byte_limit_description}"));
         }
@@ -714,13 +1067,47 @@ impl Runner {
             },
             None => None,
         };
+        if let Some(total) = &self.total_cpu_budget {
+            match total.add_child(measured_cpu.unwrap_or(Duration::ZERO)) {
+                Ok(aggregate) => self.total_cpu_used = aggregate,
+                Err(error) => {
+                    bounds_failure.get_or_insert(error);
+                }
+            }
+            match total.add_reader(reader_cpu) {
+                Ok(aggregate) => self.total_cpu_used = aggregate,
+                Err(error) => {
+                    bounds_failure.get_or_insert(error);
+                }
+            }
+        }
+        if bounds_failure.is_none()
+            && self
+                .total_cpu_budget
+                .as_ref()
+                .is_some_and(|total| self.total_cpu_used > total.budget())
+        {
+            bounds_failure = Some(self.bound_failure(
+                "producer total CPU",
+                cpu_budget.zip(measured_cpu).map(|(b, u)| (u, b)),
+                start.elapsed(),
+            ));
+        }
         // A command that passed its budget and finished within one poll still
         // exceeded it.
         // (A guard rather than a nested `if`: this file is also built as
         // edition 2024, where clippy asks for a let chain edition 2021 lacks.)
         match (&bounds_failure, measured_cpu, cpu_budget) {
             (None, Some(used), Some(budget)) if used > budget => {
-                bounds_failure = Some(cpu_budget_failure(used, budget, start.elapsed()));
+                bounds_failure = Some(self.bound_failure(
+                    if total_binding {
+                        "producer total CPU"
+                    } else {
+                        "producer CPU"
+                    },
+                    Some((used, budget)),
+                    start.elapsed(),
+                ));
             }
             _ => {}
         }
@@ -828,15 +1215,6 @@ struct CommandCgroup {
     reads: std::cell::Cell<u64>,
 }
 
-fn cpu_budget_failure(used: Duration, budget: Duration, wall: Duration) -> String {
-    format!(
-        "exceeded the producer CPU budget (used {:.2} of {:.2} CPU-s, command wall {:.2} s)",
-        used.as_secs_f64(),
-        budget.as_secs_f64(),
-        wall.as_secs_f64()
-    )
-}
-
 #[cfg(test)]
 thread_local! {
     /// `read_at` operations and bytes performed through `field` on this
@@ -846,40 +1224,66 @@ thread_local! {
     static FIELD_READ_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
+/// Why creating a command cgroup failed. Callers deciding on a
+/// wall-only fallback match on this type, never on message text.
+#[derive(Debug)]
+enum CgroupCreateError {
+    /// Creation or open proved CPU accounting unavailable here.
+    Unavailable(String),
+    /// Any other failure; accounting may well exist.
+    Other(String),
+}
+
+impl CgroupCreateError {
+    fn into_string(self) -> String {
+        match self {
+            CgroupCreateError::Unavailable(message) | CgroupCreateError::Other(message) => message,
+        }
+    }
+}
+
 impl CommandCgroup {
-    fn create(parent: &Path) -> Result<Self> {
+    fn create(parent: &Path) -> std::result::Result<Self, CgroupCreateError> {
+        use CgroupCreateError::Other;
+        use CgroupCreateError::Unavailable;
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let directory = fs::File::open(parent)
-            .map_err(|e| format!("cannot open cgroup {}: {e}", parent.display()))?;
+            .map_err(|e| Unavailable(format!("cannot open cgroup {}: {e}", parent.display())))?;
         // SAFETY: an all-zero statfs is a valid output buffer for fstatfs.
         let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
         // SAFETY: `directory` is an open descriptor and `filesystem` is writable.
         if unsafe { libc::fstatfs(directory.as_raw_fd(), &mut filesystem) } != 0 {
-            return Err(format!(
+            return Err(Unavailable(format!(
                 "cannot inspect {}: {}",
                 parent.display(),
                 std::io::Error::last_os_error()
-            ));
+            )));
         }
         const CGROUP2_SUPER_MAGIC: libc::c_long = 0x6367_7270;
-        require(
-            filesystem.f_type == CGROUP2_SUPER_MAGIC,
-            format!("{} is not a cgroup v2 directory", parent.display()),
-        )?;
+        if filesystem.f_type != CGROUP2_SUPER_MAGIC {
+            return Err(Unavailable(format!(
+                "{} is not a cgroup v2 directory",
+                parent.display()
+            )));
+        }
         let path = parent.join(format!(
             "reverie-producer-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&path)
-            .map_err(|e| format!("cannot create command cgroup {}: {e}", path.display()))?;
-        let opened = (|| {
+        fs::create_dir(&path).map_err(|e| {
+            Unavailable(format!(
+                "cannot create command cgroup {}: {e}",
+                path.display()
+            ))
+        })?;
+        let opened = (|| -> std::result::Result<Self, CgroupCreateError> {
             let open = |name: &str, write: bool| {
                 OpenOptions::new()
                     .read(!write)
                     .write(write)
                     .open(path.join(name))
-                    .map_err(|e| format!("cannot open {}/{name}: {e}", path.display()))
+                    .map_err(|e| Unavailable(format!("cannot open {}/{name}: {e}", path.display())))
             };
             let cgroup = Self {
                 path: path.clone(),
@@ -891,10 +1295,11 @@ impl CommandCgroup {
                 #[cfg(test)]
                 reads: std::cell::Cell::new(0),
             };
-            require(
-                cgroup.usage()?.is_zero() && !cgroup.populated()?,
-                "fresh command cgroup is not empty",
-            )?;
+            let empty =
+                cgroup.usage().map_err(Other)?.is_zero() && !cgroup.populated().map_err(Other)?;
+            if !empty {
+                return Err(Other("fresh command cgroup is not empty".to_owned()));
+            }
             Ok(cgroup)
         })();
         opened.inspect_err(|_| {
@@ -1263,8 +1668,7 @@ fn require_consumer_declaration<'e, 'a>(
                 "consumer-checkout layout requires a declared consumer source declaration",
             )?;
             require(
-                expected.image_kind != FixedImageKind::Detcore
-                    || declaration.leaf.is_some(),
+                expected.image_kind != FixedImageKind::Detcore || declaration.leaf.is_some(),
                 "consumer-checkout leaf image requires a declared leaf package",
             )?;
             Ok(Some(declaration))
@@ -1287,9 +1691,7 @@ fn declared_workspace_files<'a>(
         FixedImageKind::Detcore => declaration.leaf_workspace_files,
     }
 }
-fn producer_manifest_relative<'a>(
-    declaration: &ConsumerSourceDeclaration<'a>,
-) -> Result<&'a str> {
+fn producer_manifest_relative<'a>(declaration: &ConsumerSourceDeclaration<'a>) -> Result<&'a str> {
     let producers: Vec<_> = declaration
         .runtime_packages
         .iter()
@@ -1572,8 +1974,8 @@ const COMPILED_RV_LOCATION_FILES: [&str; 7] = [
 const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     (
         "reverie-liteinst-artifact/src/preparation_identity.rs",
-        55168,
-        "a49de665049d98780ed59832387cb8017687527f961c822105fd0e47aa11f822",
+        54917,
+        "93a27a389f3995ce27daae2fdd812c95e2eef77d343e9f8b511d92be1b901988",
     ),
     // Bind the signal-mask gate and every changed native-source premise of it.
     (
@@ -1658,8 +2060,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "Cargo.toml",
-        769,
-        "e81be8f287b2e40d783525204fbca6c4dec2c8cb9f6817ff7dbed2ba53c6fd11",
+        791,
+        "f4c2f3f57486b4e023b61bf1a695a16677e7144d8da7d8ff2ccbff8967ab87f8",
     ),
     (
         "reverie-liteinst-artifact/Cargo.toml",
@@ -1788,8 +2190,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-syscalls/Cargo.toml",
-        1292,
-        "e67f31883496075dcb2ef3b1183d09cb1d3140e024d0c64f866f12332d4c61b9",
+        1218,
+        "586434630c0c530dad5e0c8e7703e5569018315d09a64927eaf87a42c91a5a99",
     ),
     (
         "reverie-syscalls/src/lib.rs",
@@ -1818,8 +2220,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-liteinst/src/lib.rs",
-        40823,
-        "4017332b6de2a6e32bb31b816dfc2b72f16b69200916cdfedde3ed978d17cf0e",
+        40843,
+        "27053ebd4996230b8fb19bfb21e0a56c431e73317efea7dae7591e84443d774b",
     ),
     (
         "reverie-liteinst-preload/Cargo.toml",
@@ -1878,8 +2280,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie-inguest/src/guest/host.rs",
-        436063,
-        "0db96a23e2662b3d434231d031d8bef88421afd741a0a42d69b37738468e651e",
+        442120,
+        "e1a22c7e739eaf5005295b0f859692c98b9f6e113695b2677cc37868edc10bc9",
     ),
     (
         "reverie-inguest/src/guest/host_linux.rs",
@@ -1893,8 +2295,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/Cargo.toml",
-        2372,
-        "d6b88aa1724c0a7da989fcbc2eafb22e68d5643b93c48ecaee6e8dc531280d36",
+        2307,
+        "a7d2730332627befd545a97571c8e7bf26d3fcccdc35a64a63fe1c2377ad7216",
     ),
     (
         "reverie/src/tool_configuration.rs",
@@ -1923,8 +2325,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     // at its target, with any instruction offset, as a late delivery.
     (
         "reverie/src/pmu_config.rs",
-        79136,
-        "58f6a6e0fdaa52173cbd4e252574e5868e8e2973712621f93b98e36eec1a7649",
+        80031,
+        "bcbe9c0182cec89f26761b4aaa261b1463335cc1179ccd5a83acab72316bdec6",
     ),
     (
         "reverie/src/in_guest_rcb.rs",
@@ -1933,8 +2335,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/pmu.rs",
-        8175,
-        "9ca37a8ef80bc02e2282f8f823fba954ad9d86a7be26aa5968347cd44305cba6",
+        8655,
+        "3f64b1db169aba5aacbea920f43b625ff1f8c464d0b8591848c8ef985494ae22",
     ),
     (
         "reverie-inguest/src/guest/clock.rs",
@@ -1953,8 +2355,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/guest.rs",
-        110256,
-        "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
+        113811,
+        "d44d64e7a5470fd7bb1f87d7a95e195ba6c1cff5e96896d3211c476b292d1755",
     ),
     (
         "reverie/src/pidfd_self.rs",
@@ -2025,8 +2427,8 @@ const CONTENT_REVERIE_CATALOG: [(&str, u64, &str); 88] = [
     ),
     (
         "reverie/src/tool.rs",
-        90715,
-        "ad286d81cf90fac13b4b377741f5e3fdc6e28c577a34ff4eea24480dab86fdc3",
+        90821,
+        "a01f3361fecbb93e230709842872250f4f998876c779a217e9b39d4083159a88",
     ),
 ];
 // Native Detcore's fixed-gate publication ordering is a separately declared
@@ -2226,6 +2628,69 @@ fn content_reverie_inventory(
     root: &Path,
 ) -> Result<(Vec<DeclaredSourceFile>, BTreeMap<String, FileIdentity>)> {
     content_reverie_inventory_for_image(root, FixedImageKind::Standalone)
+}
+
+/// The Reverie root that holds the lib.rs these tests were compiled from,
+/// for tests that read or copy reviewed Reverie sources. The parent of the
+/// run-time CARGO_MANIFEST_DIR comes first: Cargo sets it when it runs a test
+/// in the Reverie workspace, and the Buck unittest target points it into its
+/// staged sources. A host that compiles this file through `#[path]` from
+/// outside the workspace, such as a rust-script producer whose
+/// CARGO_MANIFEST_DIR is its own generated package, falls back to the root
+/// that `file!()` names: directly when the spelling is absolute, otherwise
+/// found above CARGO_MANIFEST_DIR or the current directory. A candidate is
+/// taken only when its lib.rs is byte-identical to the compiled one, so a
+/// wrong root fails by name instead of lending another tree's sources.
+#[cfg(test)]
+fn reverie_workspace_root() -> PathBuf {
+    let mut spelled = PathBuf::new();
+    for component in Path::new(file!()).components() {
+        match component {
+            std::path::Component::ParentDir => {
+                assert!(spelled.pop(), "{} escapes its root", file!())
+            }
+            std::path::Component::CurDir => {}
+            component => spelled.push(component.as_os_str()),
+        }
+    }
+    let manifest_dir = std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from);
+    let compiled_file = if spelled.is_absolute() {
+        Some(spelled)
+    } else {
+        manifest_dir
+            .iter()
+            .cloned()
+            .chain(std::env::current_dir().ok())
+            .find_map(|start| {
+                start
+                    .ancestors()
+                    .map(|ancestor| ancestor.join(&spelled))
+                    .find(|file| file.is_file())
+            })
+    };
+    let depth = BUCK_QUALIFIER_SOURCE.split('/').count();
+    let candidates: Vec<PathBuf> = manifest_dir
+        .iter()
+        .filter_map(|dir| dir.parent())
+        .chain(
+            compiled_file
+                .iter()
+                .filter_map(|file| file.ancestors().nth(depth)),
+        )
+        .map(Path::to_path_buf)
+        .collect();
+    let compiled = qualifier_source_sha256();
+    candidates
+        .iter()
+        .find(|root| {
+            file_sha256(&root.join(BUCK_QUALIFIER_SOURCE)).is_ok_and(|digest| digest == compiled)
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no Reverie root holds the compiled {BUCK_QUALIFIER_SOURCE}; tried {candidates:?}"
+            )
+        })
 }
 fn clean_absolute_source_root(root: &Path) -> Result<()> {
     let normalized: PathBuf = root.components().collect();
@@ -2467,9 +2932,7 @@ fn symlink_reaches_closure_source(path: &Path, depth: usize, budget: &mut usize)
                 path.display()
             )
         })?;
-        return Ok(
-            has_closure_source_extension(path) || has_closure_source_extension(&target),
-        );
+        return Ok(has_closure_source_extension(path) || has_closure_source_extension(&target));
     }
     if !metadata.is_dir() {
         return Ok(false);
@@ -2570,8 +3033,7 @@ fn content_reverie_inventory_for_path(
     image_kind: FixedImageKind,
     package_dirs: &BTreeSet<String>,
 ) -> Result<(Vec<DeclaredSourceFile>, BTreeMap<String, FileIdentity>)> {
-    let (catalog_inventory, catalog_files) =
-        content_reverie_inventory_for_image(root, image_kind)?;
+    let (catalog_inventory, catalog_files) = content_reverie_inventory_for_image(root, image_kind)?;
     let closure = scan_reverie_closure_files(root, package_dirs)?;
     let mut inventory: BTreeMap<String, DeclaredSourceFile> = catalog_inventory
         .into_iter()
@@ -2738,8 +3200,7 @@ fn buck_reverie_content_matches(inventory: &[DeclaredSourceFile]) -> Result<()> 
             )?;
         } else if entry.relative == CONTENT_FIXED_GATE.0 {
             require(
-                entry.size == CONTENT_FIXED_GATE.1
-                    && entry.sha256 == CONTENT_FIXED_GATE.2,
+                entry.size == CONTENT_FIXED_GATE.1 && entry.sha256 == CONTENT_FIXED_GATE.2,
                 format!(
                     "declared Buck Reverie source differs from reviewed catalog: {}",
                     entry.relative
@@ -2954,8 +3415,8 @@ fn compiled_leaf_package(
             "0.5.7",
         ),
         FixedImageKind::Detcore => {
-            let leaf = declared_leaf
-                .ok_or("compiled leaf image requires a declared leaf package")?;
+            let leaf =
+                declared_leaf.ok_or("compiled leaf image requires a declared leaf package")?;
             (
                 leaf.name,
                 leaf.target,
@@ -3605,9 +4066,9 @@ fn content_reverie_package_dirs(
             };
             require(
                 !relative.is_empty()
-                    && Path::new(relative).components().all(|component| {
-                        matches!(component, std::path::Component::Normal(_))
-                    }),
+                    && Path::new(relative)
+                        .components()
+                        .all(|component| matches!(component, std::path::Component::Normal(_))),
                 "content Reverie package directory is not a logical relative path",
             )?;
             dirs.insert(relative.to_owned());
@@ -3637,8 +4098,7 @@ fn content_leaf_manifest_and_lock_pin(
         .collect();
     require(
         selected.len() == 1
-            && selected[0]["manifest_path"].as_str()
-                == root.join(leaf.manifest_relative).to_str()
+            && selected[0]["manifest_path"].as_str() == root.join(leaf.manifest_relative).to_str()
             && selected[0]["version"] == leaf.version
             && selected[0]["source"].is_null(),
         "content leaf leaf manifest/version/source differs",
@@ -3734,8 +4194,7 @@ fn content_leaf_manifest_and_lock_pin_path(
         .collect();
     require(
         selected.len() == 1
-            && selected[0]["manifest_path"].as_str()
-                == root.join(leaf.manifest_relative).to_str()
+            && selected[0]["manifest_path"].as_str() == root.join(leaf.manifest_relative).to_str()
             && selected[0]["version"] == leaf.version
             && selected[0]["source"].is_null(),
         "content leaf leaf manifest/version/source differs",
@@ -3832,8 +4291,7 @@ fn content_compiler_manifest_path(
             compiler_root.source_path("reverie-liteinst-preload/Cargo.toml")?
         }
         FixedImageKind::Detcore => {
-            let leaf = declared_leaf
-                .ok_or("compiler manifest requires a declared leaf package")?;
+            let leaf = declared_leaf.ok_or("compiler manifest requires a declared leaf package")?;
             exact_source_file(workspace_root, leaf.manifest_relative)?.path
         }
     };
@@ -4249,9 +4707,8 @@ impl VerifiedCompiledSources {
         // path layout — path spelling only, refused below for any
         // source-carrying graph — records the compiled closure and
         // runs no proof.
-        let declaration = require_consumer_declaration(expected)?.ok_or(
-            "consumer-checkout layout requires a declared consumer source declaration",
-        )?;
+        let declaration = require_consumer_declaration(expected)?
+            .ok_or("consumer-checkout layout requires a declared consumer source declaration")?;
         require(
             source_pin_is_full(expected.reverie_pin),
             "compiled source requires an independent full Reverie pin",
@@ -4458,11 +4915,7 @@ impl VerifiedCompiledSources {
                 .ok_or("content leaf missing")?
                 .clone(),
             FixedImageKind::Detcore => {
-                let leaf_source: Option<&str> = if path_sourced {
-                    None
-                } else {
-                    Some(&source)
-                };
+                let leaf_source: Option<&str> = if path_sourced { None } else { Some(&source) };
                 let leaf = compiled_leaf_package(
                     &metadata,
                     &root,
@@ -4533,8 +4986,7 @@ impl VerifiedCompiledSources {
         // witness must match the recorded authority exactly.
         let constraint_set: BTreeSet<&str> = expected.constraints.iter().copied().collect();
         require(
-            !expected.constraints.is_empty()
-                && constraint_set.len() == expected.constraints.len(),
+            !expected.constraints.is_empty() && constraint_set.len() == expected.constraints.len(),
             "Buck constraints must be a nonempty duplicate-free declared set",
         )?;
         let mut constraints: Vec<String> = expected
@@ -4569,8 +5021,7 @@ impl VerifiedCompiledSources {
                     .all(|extra| workspace_relatives.contains(extra))
                 && workspace_relatives.iter().all(|relative| {
                     expected.workspace_extra_files.contains(relative)
-                        || (relative.starts_with(&leaf_src_prefix)
-                            && relative.ends_with(".rs"))
+                        || (relative.starts_with(&leaf_src_prefix) && relative.ends_with(".rs"))
                 }),
             "Buck workspace files must be the declared leaf sources and extra files",
         )?;
@@ -4606,8 +5057,7 @@ impl VerifiedCompiledSources {
         let profile_bzl = FileIdentity::read(expected.profile_bzl)?;
         require(
             profile_bzl.path.file_name().is_some()
-                && profile_bzl.path.file_name()
-                    == Path::new(expected.profile_relative).file_name(),
+                && profile_bzl.path.file_name() == Path::new(expected.profile_relative).file_name(),
             "Buck profile input is not the declared profile .bzl",
         )?;
         let (workspace_inventory, workspace_files) =
@@ -4744,8 +5194,12 @@ impl VerifiedCompiledSources {
                 .standalone_metadata
                 .as_ref()
                 .ok_or("standalone build lacks fresh factory metadata")?;
-            let binding =
-                standalone_current_build_sources(&self.record, metadata, runner, self.consumer.as_ref())?;
+            let binding = standalone_current_build_sources(
+                &self.record,
+                metadata,
+                runner,
+                self.consumer.as_ref(),
+            )?;
             current_build_evidence_in_scope(
                 &self.record,
                 command,
@@ -4936,11 +5390,8 @@ impl VerifiedCompiledSources {
                 workspace_inventory,
                 workspace_sha256,
             );
-            let reverie: (&Path, &[DeclaredSourceFile], &str) = (
-                &self.record.reverie_root,
-                reverie_inventory,
-                reverie_sha256,
-            );
+            let reverie: (&Path, &[DeclaredSourceFile], &str) =
+                (&self.record.reverie_root, reverie_inventory, reverie_sha256);
             if self.record.layout == CompiledSourceLayout::PathCheckout {
                 verify_declared_content_path(
                     self.record.image_kind,
@@ -4949,12 +5400,7 @@ impl VerifiedCompiledSources {
                     compiler_root,
                 )?;
             } else {
-                verify_declared_content(
-                    self.record.image_kind,
-                    workspace,
-                    reverie,
-                    compiler_root,
-                )?;
+                verify_declared_content(self.record.image_kind, workspace, reverie, compiler_root)?;
             }
         }
         if let CompiledSourceAuthority::BuckDeclaredContent {
@@ -5340,12 +5786,7 @@ fn standalone_current_build_sources(
             for relative in declared_files {
                 workspace_files.insert(
                     relative.clone(),
-                    compiled_blob_file(
-                        &sources.workspace_root,
-                        workspace_head,
-                        relative,
-                        runner,
-                    )?,
+                    compiled_blob_file(&sources.workspace_root, workspace_head, relative, runner)?,
                 );
             }
         }
@@ -5386,9 +5827,7 @@ fn standalone_current_build_sources(
             }
         }
         CompiledSourceAuthority::BuckDeclaredContent { .. } => {
-            return Err(
-                "standalone build source binding does not accept Buck leaf sources".into(),
-            );
+            return Err("standalone build source binding does not accept Buck leaf sources".into());
         }
     }
     let manifest_relative = sources
@@ -9409,6 +9848,32 @@ const FIXED_ARENA_OPERANDS_12: &[FixedArenaOperand] = &[
     },
 ];
 
+// Hand-derived from a real ELF (scripts/detcore-alloc-recipe.py derives only
+// the alloc-family rows): libreverie_liteinst.so from
+// scripts/build-liteinst-test-runtime.rs --for-ci on stable Rust 1.99.1
+// (58cf8f9c3 2026-10-13), ELF SHA256
+// 962d59423a3615ada4e7a4a7a77b05c31aa0b434a246995840854812f91d0867;
+// fixed_setup_bitmap_range at VA 0x118340, 217 bytes, body SHA256
+// 29a3f26bd4ebab85dc09740018e391f2514e7b5b75bc8cbd46fac6764d3a4666. All
+// constant operands and internal branches are literal.
+const FIXED_ARENA_BYTES_13: &[u8] = &[
+    0xb0, 0x01, 0x48, 0x39, 0xf2, 0x0f, 0x86, 0xcd, 0x00, 0x00, 0x00, 0x84, 0xc9, 0x74, 0x69, 0x89,
+    0xd1, 0x29, 0xf1, 0x4c, 0x8d, 0x46, 0x01, 0xf6, 0xc1, 0x01, 0x74, 0x17, 0x41, 0xb9, 0x01, 0x00,
+    0x00, 0x00, 0x89, 0xf1, 0x49, 0xd3, 0xe1, 0x48, 0xc1, 0xee, 0x06, 0x4c, 0x09, 0x4c, 0xf7, 0x08,
+    0x4c, 0x89, 0xc6, 0x4c, 0x39, 0xc2, 0x0f, 0x84, 0x9c, 0x00, 0x00, 0x00, 0x0f, 0x1f, 0x40, 0x00,
+    0x41, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xf1, 0x49, 0xd3, 0xe0, 0x48, 0x89, 0xf1, 0x48, 0xc1,
+    0xe9, 0x06, 0x4c, 0x09, 0x44, 0xcf, 0x08, 0x48, 0x8d, 0x4e, 0x01, 0x41, 0xb8, 0x01, 0x00, 0x00,
+    0x00, 0x49, 0xd3, 0xe0, 0x48, 0xc1, 0xe9, 0x06, 0x4c, 0x09, 0x44, 0xcf, 0x08, 0x48, 0x83, 0xc6,
+    0x02, 0x48, 0x39, 0xf2, 0x75, 0xca, 0xeb, 0x60, 0x48, 0x89, 0xf1, 0x48, 0xc1, 0xe9, 0x06, 0x48,
+    0x8b, 0x4c, 0xcf, 0x08, 0x48, 0x0f, 0xa3, 0xf1, 0x73, 0x03, 0x31, 0xc0, 0xc3, 0x48, 0x8d, 0x4a,
+    0xff, 0x48, 0x39, 0xce, 0x74, 0x42, 0x41, 0xb8, 0x02, 0x00, 0x00, 0x00, 0x49, 0x29, 0xd0, 0x48,
+    0xff, 0xc6, 0x66, 0x66, 0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xf1, 0x48, 0xd3, 0xe0, 0x48, 0x89, 0xf1, 0x48, 0xc1, 0xe9,
+    0x06, 0x48, 0x85, 0x44, 0xcf, 0x08, 0x0f, 0x94, 0xc0, 0x75, 0x0d, 0x49, 0x8d, 0x0c, 0x30, 0x48,
+    0xff, 0xc6, 0x48, 0x83, 0xf9, 0x01, 0x75, 0xd8, 0xc3,
+];
+const FIXED_ARENA_OPERANDS_13: &[FixedArenaOperand] = &[];
+
 const FIXED_ARENA_TEMPLATES: &[FixedArenaTemplate] = &[
     FixedArenaTemplate {
         role: "fixed_arena_setup",
@@ -9474,6 +9939,11 @@ const FIXED_ARENA_TEMPLATES: &[FixedArenaTemplate] = &[
         role: "fixed_arena_backing",
         bytes: FIXED_ARENA_BYTES_12,
         operands: FIXED_ARENA_OPERANDS_12,
+    },
+    FixedArenaTemplate {
+        role: "fixed_setup_bitmap_range",
+        bytes: FIXED_ARENA_BYTES_13,
+        operands: FIXED_ARENA_OPERANDS_13,
     },
 ];
 
@@ -20649,10 +21119,7 @@ fn no_scope_build_features(build: &CurrentBuildEvidence) -> Result<NoScopeCohort
         require(
             build.command.cwd.as_path() == nested
                 && build.command.arguments
-                    == standalone_current_build_arguments(
-                        &build.target_directory,
-                        &wrapper.name,
-                    )?
+                    == standalone_current_build_arguments(&build.target_directory, &wrapper.name)?
                 && build.target_directory.is_absolute()
                 && [
                     producer_relative.as_str(),
@@ -20764,9 +21231,7 @@ fn validate_buck_build_evidence(
                 Some(stage_id) => arguments[6] == format!("id={stage_id}"),
                 None => arguments[6]
                     .strip_prefix("id=")
-                    .is_some_and(|stage| {
-                        !stage.is_empty() && !stage.contains(char::is_whitespace)
-                    }),
+                    .is_some_and(|stage| !stage.is_empty() && !stage.contains(char::is_whitespace)),
             },
         "Buck build witness command is not the exact declared buck2 build invocation",
     )?;
@@ -24324,6 +24789,24 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         column: 27,
     },
     DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_251_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_naked_bitmap_269_location",
+        location: true,
+        hex: "",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
         key: "fixed_scalar_native_record_location",
         location: true,
         hex: "",
@@ -24901,9 +25384,7 @@ fn location_data_differs(
         }
         None => format!("expected={line}:{column}"),
     };
-    format!(
-        "whole physical Detcore readonly data differs: key={key} {detail} address={address:#x}"
-    )
+    format!("whole physical Detcore readonly data differs: key={key} {detail} address={address:#x}")
 }
 
 // Caller enters this binder only after canonical loader authentication and
@@ -30592,6 +31073,45 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         ],
         transfers: &[(8, 1)],
     },
+    // Stable Rust 1.99.1 (58cf8f9c3 2026-10-13), rust-toolchain.toml channel 1.99.1.
+    // Profile liteinst-runtime; features allocator-fixture. Hand-derived from a
+    // real ELF (scripts/detcore-alloc-recipe.py derives only the alloc-family
+    // rows) built by ci/build-liteinst-allocator-fixtures.rs, whose Detcore leaf
+    // command is: cargo build --locked --offline --manifest-path <Hermit>/Cargo.toml -p detcore-liteinst --lib --profile liteinst-runtime --features allocator-fixture. ELF
+    // SHA256 4c7ff58ac7164eba3512aebb67392d0195d0e0cf13f6956d9ba67037806d3134.
+    // fixed_setup_bitmap_range _RNvNtNtNtCsfhI59vbc6Q6_15reverie_inguest5guest11tool_region5arena18fixed_bitmap_range at VA 0x13be3a0, 282 bytes; complete body SHA256 544a0b636ffd06ff6e12518abfa4fd7642949ae34925b2ed68b84a162dcc0077.
+    // Location operands bind the setup143:27 profile; the null panic GOT operand binds panic_null_reference_constructed.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "504989f04889fe40f6c6070f85ea0000004885f60f84f3000000b0014c39c20f86d400000084c9746e89d14429c1498d7801f6c101741841b9010000004489c149d3e149c1e8064e094cc6084989f84839fa0f84a10000000f1f840000000000bf010000004489c148d3e74c89c148c1e90648097cce08498d4801bf0100000048d3e748c1e90648097cce084983c0024c39c275cbeb624c89c148c1e906488b4cce084c0fa3c1730431c059c3488d4aff4939c87443bf020000004829d749ffc06666666666662e0f1f840000000000b8010000004489c148d3e04c89c148c1e906488544ce080f94c0750d4a8d0c0749ffc04883f90175d759c3488d15f6ad2300bf08000000ff1513282500488d3de4ad2300ff15765e2500",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 254,
+                next: 258,
+                key: "fixed_naked_bitmap_251_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 265,
+                next: 269,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 272,
+                next: 276,
+                key: "fixed_naked_bitmap_269_location",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 278,
+                next: 282,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(263, 1), (276, 3)],
+    },
 ];
 
 // Distinct from every historical TLS-bearing241B recipe. Measured in the true
@@ -33331,6 +33851,25 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         incoming: FIXED_NAKED_STABLE_STANDALONE_INCOMING,
         setup_bitmap_template: None,
     },
+    // The same pinned tuples with the Rust 1.99.1 bitmap body: identical
+    // cohort and incoming edges, discriminated from the 85 pair above
+    // only by the bitmap witness's exact template identity. The native
+    // row is bitmap checked by hand; composition, allocator and TLS
+    // not machine-observed on the native producer yet.
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: true,
+        cohort: FIXED_NAKED_PINNED_NATIVE_COHORT,
+        incoming: FIXED_NAKED_PINNED_NATIVE_INCOMING,
+        setup_bitmap_template: Some(118),
+    },
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_PINNED_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_PINNED_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(118),
+    },
 ];
 // Exclusive end of the source-owned appended template identities
 // (78..END). The contiguous range is a deliberate over-approximation:
@@ -33350,8 +33889,9 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
 // stable 0x100 alloc template at 111 (dh-r5tic) follows the same
 // rule: it can only add refusals through this over-approximation. So
 // does the generated stable native 0xf8 alloc template at 116, and its
-// generated 0xf8 FnOnce template at 117.
-const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 118;
+// generated 0xf8 FnOnce template at 117. So does the stable Rust 1.99.1
+// bitmap template at 118.
+const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 119;
 
 fn fixed_naked_publication_present(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
@@ -33386,6 +33926,11 @@ fn fixed_naked_composition(
                     }
                 && spec.cohort.iter().all(|&(role, index)| {
                     witnesses.get(role).is_some_and(|w| {
+                        w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
+                    })
+                })
+                && spec.setup_bitmap_template.is_none_or(|index| {
+                    witnesses.get("fixed_setup_bitmap_range").is_some_and(|w| {
                         w.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(index)
                     })
                 })
@@ -40649,13 +41194,15 @@ mod tests {
     // declaration the factories require (production code hard-codes
     // none of them). Const names mirror the deleted production
     // constants so fixture bodies stay unchanged.
-    const BUCK_TARGET: &str =
-        "//hermetic_infra/hermit:detcore-liteinst-liteinst-runtime[cdylib]";
+    const BUCK_TARGET: &str = "//hermetic_infra/hermit:detcore-liteinst-liteinst-runtime[cdylib]";
     const BUCK_PLATFORM: &str = "ovr_config//platform/linux:x86_64-fbcode";
-    const BUCK_CONSTRAINTS: [&str; 3] = [
+    const BUCK_CONSTRAINTS: [&str; 6] = [
+        "fbcode//hermetic_infra/reverie/constraints:liteinst-runtime-flags[applied]",
+        "fbcode_macros//config/constraints:ld-as-needed-default-enabled",
         "ovr_config//build_mode/constraints:opt",
         "ovr_config//cpu:x86_64",
         "ovr_config//os:linux",
+        "ovr_config//rust:debug-assertions[on]",
     ];
     const BUCK_PROFILE_BZL_NAME: &str = "liteinst-runtime-profile.bzl";
     const BUCK_LEAF_SOURCE: &str = "detcore-liteinst/src/lib.rs";
@@ -41833,6 +42380,81 @@ mod tests {
             "e81be8f287b2e40d783525204fbca6c4dec2c8cb9f6817ff7dbed2ba53c6fd11",
         ),
         (
+            "reverie/src/pmu_config.rs",
+            80031,
+            "bcbe9c0182cec89f26761b4aaa261b1463335cc1179ccd5a83acab72316bdec6",
+        ),
+        (
+            "reverie/src/pmu.rs",
+            8462,
+            "de1fc186e000181ab776086b8266a4c668f626cc1d63dc5c9c1c5066d6d062d8",
+        ),
+        (
+            "reverie-liteinst/src/lib.rs",
+            40843,
+            "27053ebd4996230b8fb19bfb21e0a56c431e73317efea7dae7591e84443d774b",
+        ),
+        (
+            "reverie-liteinst-artifact/src/preparation_identity.rs",
+            55154,
+            "ba2d1a6486e17762199053fa44e5f51ddd4b8da1a9c13e957ab331cca3234006",
+        ),
+        (
+            "reverie/src/pmu.rs",
+            8462,
+            "88754c17f24ed582aa24bbc485c8eca5ee0b5a25ad191b2811107c918eecee39",
+        ),
+        (
+            "Cargo.toml",
+            791,
+            "f4c2f3f57486b4e023b61bf1a695a16677e7144d8da7d8ff2ccbff8967ab87f8",
+        ),
+        (
+            "reverie-inguest/src/guest/host.rs",
+            433056,
+            "80d6e9d1fdac196a7d745d567a6437e154bf05fae64e29b0ee7094fc9eb1c083",
+        ),
+        (
+            "reverie/src/pmu.rs",
+            8655,
+            "3f64b1db169aba5aacbea920f43b625ff1f8c464d0b8591848c8ef985494ae22",
+        ),
+        (
+            "reverie-syscalls/Cargo.toml",
+            1218,
+            "586434630c0c530dad5e0c8e7703e5569018315d09a64927eaf87a42c91a5a99",
+        ),
+        (
+            "reverie/Cargo.toml",
+            2307,
+            "a7d2730332627befd545a97571c8e7bf26d3fcccdc35a64a63fe1c2377ad7216",
+        ),
+        (
+            "reverie-liteinst-artifact/src/preparation_identity.rs",
+            54917,
+            "93a27a389f3995ce27daae2fdd812c95e2eef77d343e9f8b511d92be1b901988",
+        ),
+        (
+            "reverie/src/guest.rs",
+            111782,
+            "917155dfdb48fbf274034279acae8b46d9bd17c65a59bce3e95f7850cf6a31bf",
+        ),
+        (
+            "reverie/src/tool.rs",
+            90821,
+            "a01f3361fecbb93e230709842872250f4f998876c779a217e9b39d4083159a88",
+        ),
+        (
+            "reverie-inguest/src/guest/host.rs",
+            442120,
+            "e1a22c7e739eaf5005295b0f859692c98b9f6e113695b2677cc37868edc10bc9",
+        ),
+        (
+            "reverie/src/guest.rs",
+            113811,
+            "d44d64e7a5470fd7bb1f87d7a95e195ba6c1cff5e96896d3211c476b292d1755",
+        ),
+        (
             "reverie-inguest/src/guest/host.rs",
             436063,
             "0db96a23e2662b3d434231d031d8bef88421afd741a0a42d69b37738468e651e",
@@ -41917,12 +42539,52 @@ mod tests {
             "9af856c6a23ccd4bc9c816735b4c4e34994cba0c5a4d89b3f4318a0a67d89d2a",
         ),
         (
-            126,
-            "79cd73adaa49c1a324a3e0900bf619b4929ceb4fce778ac6916fc4244a18d3fe",
+            127,
+            "96c519432b88b8bc36cd3c43f9acbe09d0465ffb6958325e6559088d13768719",
         ),
         (
-            127,
-            "73df6b0a20491d1e12d5929473df9ea26ca15f0d63248da25cb4a940ff2c2422",
+            130,
+            "a6853a704331cf5fb2bb2976d5d272989327279d873796d5763babbeddb64dbe",
+        ),
+        (
+            131,
+            "2e7b53d03ae842ca4e75e746169177a3da0118bd9d267342b9dd3fe3a2797b8d",
+        ),
+        (
+            132,
+            "7847cc152486848eb1600144c5faf231a77540fc128d21c3267e2469f1d16e6e",
+        ),
+        (
+            133,
+            "29c649b1a16e8cced13bb1298fa37adf5139ff6f1699d195a6ed974cdeb3470a",
+        ),
+        (
+            135,
+            "13483e340a7ee10118f823c874b4a5fa2bde15f863fd6986a168cf9fd88a9b92",
+        ),
+        (
+            136,
+            "2d1ca5b56429f8ec1a4ec9e3238dfaacf570ad3ab7fd89c9bd44d5e7c8438af0",
+        ),
+        (
+            137,
+            "671f9209f8febd2d2223d647f5f474242ae842e5c371be32e6c5b7c8d3441f5f",
+        ),
+        (
+            138,
+            "debdff30482aa7f6c4d133a5c666a581c89b6e9c5770e80e06014ccf255ed275",
+        ),
+        (
+            139,
+            "f5defae641a19ac27d023fefccc7c35b5fdeead5eeaa25974ca11ac4ecf45996",
+        ),
+        (
+            140,
+            "6073abcdd7adfe13f2cf986956a715aab75eafda8d0f4d341177e33404aff95c",
+        ),
+        (
+            142,
+            "bb7a93a62f83f7277422f7cb23bc3eb75b3b75b33b9b9830dcfd72859b47b85a",
         ),
     ];
 
@@ -42139,7 +42801,11 @@ mod tests {
         fs::write(&profile, b"data-only profile flags").unwrap();
         let mut workspace_shas: Vec<String> = workspace_files
             .iter()
-            .map(|relative| FileIdentity::read(&workspace.join(relative)).unwrap().sha256)
+            .map(|relative| {
+                FileIdentity::read(&workspace.join(relative))
+                    .unwrap()
+                    .sha256
+            })
             .collect();
         let workspace_expected: Vec<ExpectedSourceFile<'_>> = workspace_files
             .iter()
@@ -42201,9 +42867,8 @@ mod tests {
                 .is_err(),
             "incomplete declared Reverie file set"
         );
-        // Buck literals are exact: a target/platform that merely contains or
-        // extends the canonical spelling, and any constraint subset or
-        // superset, refuse.
+        // Buck target/platform literals are exact: a spelling that merely
+        // contains or extends the canonical one refuses.
         for bad_target in [
             "//hermetic_infra/hermit:detcore-liteinst",
             "//hermetic_infra/hermit:detcore-liteinst[cdylib]",
@@ -42229,24 +42894,27 @@ mod tests {
                 "non-canonical Buck platform {bad_platform}"
             );
         }
-        let subset: &[&str] = &["ovr_config//cpu:x86_64", "ovr_config//os:linux"];
-        let superset: &[&str] = &[
-            "ovr_config//build_mode/constraints:opt",
-            "ovr_config//cpu:x86_64",
-            "ovr_config//os:linux",
-            "ovr_config//os:linux-extra",
-        ];
-        let wrong_opt: &[&str] = &[
-            "ovr_config//build_mode:opt",
-            "ovr_config//cpu:x86_64",
-            "ovr_config//os:linux",
-        ];
-        for bad_constraints in [subset, superset, wrong_opt] {
+        // Constraints are consumer-declared here, not pinned: the
+        // factory records the declared set sorted and refuses only an
+        // empty or duplicated declaration, by name. The exact six the
+        // liteinst-runtime alias carries are pinned by the consumer
+        // (the finalizer, the packaged verifier and their cross-check);
+        // this fixture declares that same six so the recording below
+        // is exercised on the real set. Name the refusal, not just
+        // any error: downstream checks (the reviewed-catalog content
+        // match) also refuse this fixture, so a bare is_err would
+        // stay green with the declared-set check deleted.
+        let empty: &[&str] = &[];
+        let duplicated: &[&str] = &["ovr_config//cpu:x86_64", "ovr_config//cpu:x86_64"];
+        for bad_constraints in [empty, duplicated] {
             let mut bad = expectation!(&pin, &reverie_files);
             bad.constraints = bad_constraints;
+            let err = VerifiedCompiledSources::resolve_buck(&bad)
+                .err()
+                .unwrap_or_else(|| panic!("accepted Buck constraints {bad_constraints:?}"));
             assert!(
-                VerifiedCompiledSources::resolve_buck(&bad).is_err(),
-                "non-canonical Buck constraints {bad_constraints:?}"
+                err == "Buck constraints must be a nonempty duplicate-free declared set",
+                "non-canonical Buck constraints {bad_constraints:?} refused as: {err}"
             );
         }
         // Inventory completeness: an on-disk .rs under detcore-liteinst/src
@@ -42269,12 +42937,11 @@ mod tests {
         fs::remove_dir(nested.parent().unwrap()).unwrap();
         // Junk Reverie content refuses by name against the reviewed
         // catalogue digests: declared presence alone never authorizes bytes.
-        let junk_error = match VerifiedCompiledSources::resolve_buck(&expectation!(
-            &pin, &reverie_files
-        )) {
-            Ok(_) => panic!("junk Reverie content must refuse"),
-            Err(error) => error,
-        };
+        let junk_error =
+            match VerifiedCompiledSources::resolve_buck(&expectation!(&pin, &reverie_files)) {
+                Ok(_) => panic!("junk Reverie content must refuse"),
+                Err(error) => error,
+            };
         assert!(
             junk_error.contains("reviewed catalog"),
             "junk Reverie content must refuse by name: {junk_error}"
@@ -42296,8 +42963,7 @@ mod tests {
             ),
             (
                 "reverie-inguest/src/guest/tool_region_arena.rs",
-                include_bytes!("../../reverie-inguest/src/guest/tool_region_arena.rs")
-                    .as_slice(),
+                include_bytes!("../../reverie-inguest/src/guest/tool_region_arena.rs").as_slice(),
             ),
             (
                 "reverie-inguest/src/guest/tool_region.rs",
@@ -42305,8 +42971,7 @@ mod tests {
             ),
             (
                 "reverie-inguest/src/guest/tool_region_keyed.rs",
-                include_bytes!("../../reverie-inguest/src/guest/tool_region_keyed.rs")
-                    .as_slice(),
+                include_bytes!("../../reverie-inguest/src/guest/tool_region_keyed.rs").as_slice(),
             ),
             (
                 "reverie-liteinst-preload/src/lib.rs",
@@ -42383,6 +43048,7 @@ mod tests {
             workspace_inventory,
             imported_sha,
             target,
+            constraints: recorded_constraints,
             ..
         } = &sources.record.authority
         else {
@@ -42390,6 +43056,18 @@ mod tests {
         };
         assert_eq!(imported_sha, &imported);
         assert_eq!(target, BUCK_TARGET);
+        // The declared constraints are recorded sorted, verbatim: the
+        // six this fixture declares, no more and no fewer.
+        let mut declared_constraints = BUCK_CONSTRAINTS.to_vec();
+        declared_constraints.sort_unstable();
+        assert_eq!(
+            recorded_constraints
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            declared_constraints,
+            "recorded Buck constraints are the declared set, sorted"
+        );
         assert!(
             workspace_inventory
                 .windows(2)
@@ -42610,12 +43288,7 @@ mod tests {
             .push(buck_command(good_args(), 0, &link_stdout));
         let link_bound = sources.with_buck_build(&buck_runner, &elf).unwrap();
         assert_eq!(
-            link_bound
-                .current_build
-                .as_ref()
-                .unwrap()
-                .artifact()
-                .path,
+            link_bound.current_build.as_ref().unwrap().artifact().path,
             FileIdentity::read(&elf).unwrap().path,
             "stdout-derived symlink canonicalizes to the real ELF"
         );
@@ -42679,7 +43352,11 @@ mod tests {
         drop(workspace_expected);
         workspace_shas = workspace_files
             .iter()
-            .map(|relative| FileIdentity::read(&workspace.join(relative)).unwrap().sha256)
+            .map(|relative| {
+                FileIdentity::read(&workspace.join(relative))
+                    .unwrap()
+                    .sha256
+            })
             .collect();
         let workspace_expected_changed: Vec<ExpectedSourceFile<'_>> = workspace_files
             .iter()
@@ -44165,14 +44842,89 @@ mod tests {
                 "1e5c2f2b861c13ab08a1ef5f64827eedfdfa7929b3075711bbb01622aa56d986",
             ),
             (
+                "reverie/src/pmu_config.rs",
+                79136,
+                "58f6a6e0fdaa52173cbd4e252574e5868e8e2973712621f93b98e36eec1a7649",
+            ),
+            (
+                "reverie/src/pmu.rs",
+                8175,
+                "9ca37a8ef80bc02e2282f8f823fba954ad9d86a7be26aa5968347cd44305cba6",
+            ),
+            (
+                "reverie-liteinst/src/lib.rs",
+                40823,
+                "4017332b6de2a6e32bb31b816dfc2b72f16b69200916cdfedde3ed978d17cf0e",
+            ),
+            (
+                "reverie-liteinst-artifact/src/preparation_identity.rs",
+                55168,
+                "a49de665049d98780ed59832387cb8017687527f961c822105fd0e47aa11f822",
+            ),
+            (
+                "reverie/src/pmu.rs",
+                8462,
+                "de1fc186e000181ab776086b8266a4c668f626cc1d63dc5c9c1c5066d6d062d8",
+            ),
+            (
+                "Cargo.toml",
+                769,
+                "e81be8f287b2e40d783525204fbca6c4dec2c8cb9f6817ff7dbed2ba53c6fd11",
+            ),
+            (
                 "reverie-inguest/src/guest/host.rs",
                 426999,
                 "b70381d892784ffe85fa93652b9e46620170bc0cb2f433bd4f2bf77cdcaaa402",
             ),
             (
+                "reverie/src/pmu.rs",
+                8462,
+                "88754c17f24ed582aa24bbc485c8eca5ee0b5a25ad191b2811107c918eecee39",
+            ),
+            (
+                "reverie-syscalls/Cargo.toml",
+                1292,
+                "e67f31883496075dcb2ef3b1183d09cb1d3140e024d0c64f866f12332d4c61b9",
+            ),
+            (
+                "reverie/Cargo.toml",
+                2372,
+                "d6b88aa1724c0a7da989fcbc2eafb22e68d5643b93c48ecaee6e8dc531280d36",
+            ),
+            (
+                "reverie-liteinst-artifact/src/preparation_identity.rs",
+                55154,
+                "ba2d1a6486e17762199053fa44e5f51ddd4b8da1a9c13e957ab331cca3234006",
+            ),
+            (
+                "reverie/src/guest.rs",
+                110256,
+                "bc36728d33e68881868a2a450e3317d6a29bb838180287894dcfe6bcc0084bac",
+            ),
+            (
+                "reverie/src/tool.rs",
+                90715,
+                "ad286d81cf90fac13b4b377741f5e3fdc6e28c577a34ff4eea24480dab86fdc3",
+            ),
+            (
+                "reverie-inguest/src/guest/host.rs",
+                433056,
+                "80d6e9d1fdac196a7d745d567a6437e154bf05fae64e29b0ee7094fc9eb1c083",
+            ),
+            (
+                "reverie/src/guest.rs",
+                111782,
+                "917155dfdb48fbf274034279acae8b46d9bd17c65a59bce3e95f7850cf6a31bf",
+            ),
+            (
                 "reverie-inguest/src/launcher/mod.rs",
                 144269,
                 "def24cd44c55b43e78759a1f87aac9eb227bb98b1f178b5aaa700a10249ed646",
+            ),
+            (
+                "reverie-inguest/src/guest/host.rs",
+                436063,
+                "0db96a23e2662b3d434231d031d8bef88421afd741a0a42d69b37738468e651e",
             ),
         ];
         // A re-bind records its previous tuple above, for every path, not only these.
@@ -44554,7 +45306,14 @@ mod tests {
             {"name":"hermit-liteinst-runtime-artifact", "manifest_path":root.join("liteinst-runtime-build/runtime/Cargo.toml"),
              "dependencies":[{"name":"reverie-liteinst-preload", "source":source.rsplit_once('#').unwrap().0, "kind":null, "rename":null, "path":null}]}
         ]});
-        content_manifest_and_lock_pin(&pin_metadata, &root, &source, &rv_one, &test_consumer_declaration()).unwrap();
+        content_manifest_and_lock_pin(
+            &pin_metadata,
+            &root,
+            &source,
+            &rv_one,
+            &test_consumer_declaration(),
+        )
+        .unwrap();
         for index in 0..2 {
             for (field, value) in [
                 ("name", serde_json::json!("wrong-dependency")),
@@ -44569,7 +45328,14 @@ mod tests {
                 let mut bad = pin_metadata.clone();
                 bad["packages"][index]["dependencies"][0][field] = value;
                 assert!(
-                    content_manifest_and_lock_pin(&bad, &root, &source, &rv_one, &test_consumer_declaration()).is_err(),
+                    content_manifest_and_lock_pin(
+                        &bad,
+                        &root,
+                        &source,
+                        &rv_one,
+                        &test_consumer_declaration()
+                    )
+                    .is_err(),
                     "declared manifest dependency {index}/{field}"
                 );
             }
@@ -44578,7 +45344,16 @@ mod tests {
                 "{}/./liteinst-runtime-build/Cargo.toml",
                 root.display()
             ));
-            assert!(content_manifest_and_lock_pin(&bad, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+            assert!(
+                content_manifest_and_lock_pin(
+                    &bad,
+                    &root,
+                    &source,
+                    &rv_one,
+                    &test_consumer_declaration()
+                )
+                .is_err()
+            );
         }
         for wrong in [
             lock_bytes.replacen(pin, "047e802e861094bbf827c4fc1bb067c18de7d8dd", 1),
@@ -44594,9 +45369,25 @@ mod tests {
             format!("{lock_bytes}{lock_bytes}"),
         ] {
             fs::write(&lock, wrong).unwrap();
-            assert!(content_manifest_and_lock_pin(&pin_metadata, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+            assert!(
+                content_manifest_and_lock_pin(
+                    &pin_metadata,
+                    &root,
+                    &source,
+                    &rv_one,
+                    &test_consumer_declaration()
+                )
+                .is_err()
+            );
             fs::write(&lock, &lock_bytes).unwrap();
-            content_manifest_and_lock_pin(&pin_metadata, &root, &source, &rv_one, &test_consumer_declaration()).unwrap();
+            content_manifest_and_lock_pin(
+                &pin_metadata,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration(),
+            )
+            .unwrap();
         }
         fs::write(&lock, &lock_bytes).unwrap();
         let (workspace_inventory, _) = declared_inventory(&root, &CONTENT_WORKSPACE_FILES).unwrap();
@@ -44709,39 +45500,100 @@ mod tests {
         .map(|name| format!("[[package]]\nname = \"{name}\"\n"))
         .collect::<String>();
         fs::write(&lock, &path_lock_bytes).unwrap();
-        content_manifest_and_lock_pin(&path_metadata, &root, &source, &rv_one, &test_consumer_declaration()).unwrap();
+        content_manifest_and_lock_pin(
+            &path_metadata,
+            &root,
+            &source,
+            &rv_one,
+            &test_consumer_declaration(),
+        )
+        .unwrap();
         // Red: a path dependency outside the verified root is real skew.
         let mut outside = path_metadata.clone();
         outside["packages"][0]["dependencies"][0]["path"] =
             serde_json::json!(root.join("elsewhere/reverie-liteinst-artifact"));
-        assert!(content_manifest_and_lock_pin(&outside, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &outside,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a sourceless lock entry whose package resolves elsewhere.
         let mut stray = path_metadata.clone();
         stray["packages"][2]["manifest_path"] =
             serde_json::json!(root.join("elsewhere/reverie-inguest/Cargo.toml"));
-        assert!(content_manifest_and_lock_pin(&stray, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &stray,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a renamed path dependency refuses (rename must be null
         // in both forms).
         let mut renamed = path_metadata.clone();
         renamed["packages"][0]["dependencies"][0]["rename"] = serde_json::json!("alias");
-        assert!(content_manifest_and_lock_pin(&renamed, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &renamed,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a git source together with an at-root path is neither form.
         let mut both = path_metadata.clone();
         both["packages"][0]["dependencies"][0]["source"] =
             serde_json::json!(source.rsplit_once('#').unwrap().0);
-        assert!(content_manifest_and_lock_pin(&both, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &both,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a mixed layout (first dependency by path, second by git)
         // is two source authorities for one pin.
         let mut mixed = path_metadata.clone();
         mixed["packages"][1]["dependencies"][0]["source"] =
             serde_json::json!(source.rsplit_once('#').unwrap().0);
         mixed["packages"][1]["dependencies"][0]["path"] = serde_json::Value::Null;
-        assert!(content_manifest_and_lock_pin(&mixed, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &mixed,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a sourceless lock entry while metadata reports a git
         // source for the same package is not path-bound.
         let mut gitmeta = path_metadata.clone();
         gitmeta["packages"][2]["source"] = serde_json::json!(source);
-        assert!(content_manifest_and_lock_pin(&gitmeta, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &gitmeta,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         // Red: a [patch]-redirected graph (manifests declare git
         // sources, Cargo resolves path packages, lock entries are
         // sourceless) must not slip into the git form and skip the
@@ -44751,13 +45603,18 @@ mod tests {
         let mut patched = path_metadata.clone();
         for package in patched["packages"].as_array_mut().unwrap() {
             for dependency in package["dependencies"].as_array_mut().into_iter().flatten() {
-                dependency["source"] =
-                    serde_json::json!(source.rsplit_once('#').unwrap().0);
+                dependency["source"] = serde_json::json!(source.rsplit_once('#').unwrap().0);
                 dependency["path"] = serde_json::Value::Null;
             }
         }
-        let patched_err =
-            content_manifest_and_lock_pin(&patched, &root, &source, &rv_one, &test_consumer_declaration()).unwrap_err();
+        let patched_err = content_manifest_and_lock_pin(
+            &patched,
+            &root,
+            &source,
+            &rv_one,
+            &test_consumer_declaration(),
+        )
+        .unwrap_err();
         assert!(
             patched_err.contains("content lock source differs"),
             "patch-redirect refusal must come from the lock layout arm: {patched_err}"
@@ -44768,7 +45625,16 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(path_metadata["packages"][2].clone());
-        assert!(content_manifest_and_lock_pin(&dup, &root, &source, &rv_one, &test_consumer_declaration()).is_err());
+        assert!(
+            content_manifest_and_lock_pin(
+                &dup,
+                &root,
+                &source,
+                &rv_one,
+                &test_consumer_declaration()
+            )
+            .is_err()
+        );
         fs::remove_dir_all(root).expect("remove path-form fixture repository");
     }
 
@@ -44806,27 +45672,55 @@ mod tests {
         git(&root, &["add", "-A"]);
         git(
             &root,
-            &["update-index", "--add", "--cacheinfo", &format!("160000,{pin},reverie")],
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{pin},reverie"),
+            ],
         );
         git(&root, &["commit", "-qm", "fixture hermit"]);
         let binding = CompilerRootBinding::resolve(&root.join("reverie"), &pin).unwrap();
-        let mut runner =
-            Runner::new(case.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
-        require_reverie_checkout_at_pin(&root, &binding, &pin, true, Path::new("reverie"), &mut runner).unwrap();
+        let mut runner = Runner::new(case.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        require_reverie_checkout_at_pin(
+            &root,
+            &binding,
+            &pin,
+            true,
+            Path::new("reverie"),
+            &mut runner,
+        )
+        .unwrap();
         // Another revision whose catalogued file is byte-identical: an
         // uncatalogued file changes HEAD only. Must refuse.
         fs::write(rv.join("uncatalogued"), "other revision\n").unwrap();
         git(&rv, &["add", "-A"]);
         git(&rv, &["commit", "-qm", "other revision"]);
         assert!(
-            require_reverie_checkout_at_pin(&root, &binding, &pin, true, Path::new("reverie"), &mut runner).is_err(),
+            require_reverie_checkout_at_pin(
+                &root,
+                &binding,
+                &pin,
+                true,
+                Path::new("reverie"),
+                &mut runner
+            )
+            .is_err(),
             "a checkout at another revision must not certify as the pin"
         );
         // Back at the pin but dirty: compiled identity refuses.
         git(&rv, &["checkout", "-q", &pin]);
         fs::write(rv.join("catalogued"), "dirty\n").unwrap();
         assert!(
-            require_reverie_checkout_at_pin(&root, &binding, &pin, true, Path::new("reverie"), &mut runner).is_err(),
+            require_reverie_checkout_at_pin(
+                &root,
+                &binding,
+                &pin,
+                true,
+                Path::new("reverie"),
+                &mut runner
+            )
+            .is_err(),
             "a dirty checkout at the pin must refuse"
         );
         fs::write(rv.join("catalogued"), "same bytes\n").unwrap();
@@ -44841,20 +45735,42 @@ mod tests {
         );
         git(&root, &["commit", "-qm", "wrong gitlink"]);
         assert!(
-            require_reverie_checkout_at_pin(&root, &binding, &pin, true, Path::new("reverie"), &mut runner).is_err(),
+            require_reverie_checkout_at_pin(
+                &root,
+                &binding,
+                &pin,
+                true,
+                Path::new("reverie"),
+                &mut runner
+            )
+            .is_err(),
             "a gitlink at another revision must refuse"
         );
         // No .git at the root: the path form fails closed (named
         // refusal), while the git form runs no git command at all.
         fs::remove_dir_all(rv.join(".git")).unwrap();
-        let closed = require_reverie_checkout_at_pin(&root, &binding, &pin, true, Path::new("reverie"), &mut runner)
-            .expect_err("path form without Git metadata must refuse");
+        let closed = require_reverie_checkout_at_pin(
+            &root,
+            &binding,
+            &pin,
+            true,
+            Path::new("reverie"),
+            &mut runner,
+        )
+        .expect_err("path form without Git metadata must refuse");
         assert!(
             closed.contains("no Git metadata"),
             "refusal must name the missing Git metadata: {closed}"
         );
-        require_reverie_checkout_at_pin(&root, &binding, &pin, false, Path::new("reverie"), &mut runner)
-            .expect("git form runs no checkout check");
+        require_reverie_checkout_at_pin(
+            &root,
+            &binding,
+            &pin,
+            false,
+            Path::new("reverie"),
+            &mut runner,
+        )
+        .expect("git form runs no checkout check");
         fs::remove_dir_all(&case).expect("remove pin-head fixture");
     }
 
@@ -44924,11 +45840,21 @@ mod tests {
         .collect::<String>();
         let lock = lock + "[[package]]\nname = \"detcore-liteinst\"\nversion = \"0.5.7\"\n";
         fs::write(root.join("Cargo.lock"), &lock).unwrap();
-        content_leaf_manifest_and_lock_pin(&build(&moved_source), &root, &moved_source, test_leaf_decl()).unwrap();
+        content_leaf_manifest_and_lock_pin(
+            &build(&moved_source),
+            &root,
+            &moved_source,
+            test_leaf_decl(),
+        )
+        .unwrap();
         let third_source = cargo_git_source(third, pin);
-        let refusal =
-            content_leaf_manifest_and_lock_pin(&build(&moved_source), &root, &third_source, test_leaf_decl())
-                .expect_err("a third repository must refuse the moved consumer's spelling");
+        let refusal = content_leaf_manifest_and_lock_pin(
+            &build(&moved_source),
+            &root,
+            &third_source,
+            test_leaf_decl(),
+        )
+        .expect_err("a third repository must refuse the moved consumer's spelling");
         assert!(
             refusal.contains(
                 "content leaf dependency differs from independent full pin: reverie-core"
@@ -45240,8 +46166,12 @@ mod tests {
         let workspace = root.join("consumer");
         fs::create_dir_all(&workspace).unwrap();
         symlink(&canonical, workspace.join("reverie")).unwrap();
-        let binding =
-            CompilerRootBinding::resolve_path(&workspace.join("reverie"), &workspace, Path::new("reverie")).unwrap();
+        let binding = CompilerRootBinding::resolve_path(
+            &workspace.join("reverie"),
+            &workspace,
+            Path::new("reverie"),
+        )
+        .unwrap();
         let binding_json = serde_json::to_value(&binding).unwrap();
         assert!(binding_json["cargo_home"].is_null());
         assert_eq!(
@@ -45343,8 +46273,7 @@ mod tests {
             },
             manifest: FileIdentity {
                 path: root.join("Cargo.toml"),
-                sha256: "d55feb0aab4ae13f8817cfb85404ce3904b00ed268cd5fec84c16027cc6da630"
-                    .into(),
+                sha256: "d55feb0aab4ae13f8817cfb85404ce3904b00ed268cd5fec84c16027cc6da630".into(),
             },
             reverie_pin: "2".repeat(40),
             reverie_root: root,
@@ -45366,8 +46295,7 @@ mod tests {
         // to identical bytes; only the path-spelled form emits the
         // field, so previously valid git-spelled records and their
         // hashes are unchanged.
-        const PARENT_BYTES: &[u8] =
-            include_bytes!("declared_content_parent_record.json");
+        const PARENT_BYTES: &[u8] = include_bytes!("declared_content_parent_record.json");
         assert_eq!(PARENT_BYTES.len(), 1589);
         assert_eq!(
             sha256(PARENT_BYTES),
@@ -45415,8 +46343,7 @@ mod tests {
             },
             manifest: FileIdentity {
                 path: root.join("Cargo.toml"),
-                sha256: "d55feb0aab4ae13f8817cfb85404ce3904b00ed268cd5fec84c16027cc6da630"
-                    .into(),
+                sha256: "d55feb0aab4ae13f8817cfb85404ce3904b00ed268cd5fec84c16027cc6da630".into(),
             },
             reverie_pin: "2".repeat(40),
             reverie_root: checkout,
@@ -45508,10 +46435,8 @@ mod tests {
         // Genericity proof: a different consumer's names pass the same
         // mechanism. The declaration below shares no package, target,
         // directory or version spelling with the test consumer above.
-        let scratch = std::env::temp_dir().join(format!(
-            "consumer-decl-controls-{}",
-            std::process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("consumer-decl-controls-{}", std::process::id()));
         fs::create_dir_all(scratch.join("consumer-leaf/src")).unwrap();
         fs::write(scratch.join("consumer-leaf/Cargo.toml"), "fixture\n").unwrap();
         fs::write(scratch.join("consumer-leaf/src/lib.rs"), "// fixture\n").unwrap();
@@ -45607,7 +46532,8 @@ mod tests {
         fs::create_dir_all(&workspace).unwrap();
         symlink(&canonical, workspace.join("reverie")).unwrap();
         let logical = workspace.join("reverie");
-        let binding = CompilerRootBinding::resolve_path(&logical, &workspace, Path::new("reverie")).unwrap();
+        let binding =
+            CompilerRootBinding::resolve_path(&logical, &workspace, Path::new("reverie")).unwrap();
         assert_eq!(binding.logical_root, logical);
         assert_eq!(binding.canonical_root, canonical);
         assert_eq!(binding.cargo_home, None);
@@ -45617,24 +46543,39 @@ mod tests {
         );
         // Only the exact <workspace>/reverie spelling opens the path gate;
         // the Cargo-home gate refuses that spelling in return.
-        assert!(CompilerRootBinding::resolve_path(&canonical, &workspace, Path::new("reverie")).is_err());
-        assert!(CompilerRootBinding::resolve_path(&workspace.join("other"), &workspace, Path::new("reverie")).is_err());
-        assert!(CompilerRootBinding::resolve_path(
-            &PathBuf::from(format!("{}/./reverie", workspace.display())),
-            &workspace
-        , Path::new("reverie"))
-        .is_err());
+        assert!(
+            CompilerRootBinding::resolve_path(&canonical, &workspace, Path::new("reverie"))
+                .is_err()
+        );
+        assert!(
+            CompilerRootBinding::resolve_path(
+                &workspace.join("other"),
+                &workspace,
+                Path::new("reverie")
+            )
+            .is_err()
+        );
+        assert!(
+            CompilerRootBinding::resolve_path(
+                &PathBuf::from(format!("{}/./reverie", workspace.display())),
+                &workspace,
+                Path::new("reverie")
+            )
+            .is_err()
+        );
         let pin = "347e802e861094bbf827c4fc1bb067c18de7d8dd";
         fs::create_dir_all(root.join("cargo-home")).unwrap();
-        assert!(CompilerRootBinding::resolve_cargo_home(
-            &logical,
-            pin,
-            &root.join("cargo-home")
-        )
-        .is_err());
+        assert!(
+            CompilerRootBinding::resolve_cargo_home(&logical, pin, &root.join("cargo-home"))
+                .is_err()
+        );
         let git_source = format!("git+https://github.com/rrnewton/reverie.git?rev={pin}#{pin}");
         for (name, target, kind) in [
-            ("reverie-inguest", "reverie_inguest", &["cdylib", "rlib"][..]),
+            (
+                "reverie-inguest",
+                "reverie_inguest",
+                &["cdylib", "rlib"][..],
+            ),
             ("reverie-syscalls", "reverie_syscalls", &["lib"][..]),
             ("reverie-liteinst", "reverie_liteinst", &["rlib"][..]),
             (
@@ -45763,16 +46704,27 @@ mod tests {
             {"name": "reverie-liteinst-preload",
              "manifest_path": logical.join("reverie-liteinst-preload/Cargo.toml")}
         ]});
-        content_manifest_and_lock_pin_path(&pin_metadata, &workspace, &logical, &test_consumer_declaration()).unwrap();
+        content_manifest_and_lock_pin_path(
+            &pin_metadata,
+            &workspace,
+            &logical,
+            &test_consumer_declaration(),
+        )
+        .unwrap();
         // The landed 4-arg pin accepts these path manifest
         // dependencies under `logical`, but refuses at the lock stage:
         // `pin_metadata` names only reverie-liteinst-artifact and
         // reverie-liteinst-preload, so the sourceless lock entries for
         // reverie-inguest (checked first), reverie-syscalls and
         // reverie-liteinst are not path-bound to the verified root.
-        let lock_refusal =
-            content_manifest_and_lock_pin(&pin_metadata, &workspace, &git_source, &logical, &test_consumer_declaration())
-                .expect_err("landed pin must refuse unbound sourceless lock entries");
+        let lock_refusal = content_manifest_and_lock_pin(
+            &pin_metadata,
+            &workspace,
+            &git_source,
+            &logical,
+            &test_consumer_declaration(),
+        )
+        .expect_err("landed pin must refuse unbound sourceless lock entries");
         assert!(
             lock_refusal.contains("content lock source differs from independent full pin"),
             "refusal must be at the lock stage: {lock_refusal}"
@@ -45792,7 +46744,13 @@ mod tests {
                 let mut bad = pin_metadata.clone();
                 bad["packages"][index]["dependencies"][0][field] = value;
                 assert!(
-                    content_manifest_and_lock_pin_path(&bad, &workspace, &logical, &test_consumer_declaration()).is_err(),
+                    content_manifest_and_lock_pin_path(
+                        &bad,
+                        &workspace,
+                        &logical,
+                        &test_consumer_declaration()
+                    )
+                    .is_err(),
                     "path manifest dependency {index}/{field}"
                 );
             }
@@ -45811,10 +46769,23 @@ mod tests {
             standalone_lock.replace("name = \"reverie-syscalls\"", "name = \"lookalike\""),
         ] {
             fs::write(&standalone_lock_path, wrong).unwrap();
-            assert!(content_manifest_and_lock_pin_path(&pin_metadata, &workspace, &logical, &test_consumer_declaration())
-                .is_err());
+            assert!(
+                content_manifest_and_lock_pin_path(
+                    &pin_metadata,
+                    &workspace,
+                    &logical,
+                    &test_consumer_declaration()
+                )
+                .is_err()
+            );
             fs::write(&standalone_lock_path, &standalone_lock).unwrap();
-            content_manifest_and_lock_pin_path(&pin_metadata, &workspace, &logical, &test_consumer_declaration()).unwrap();
+            content_manifest_and_lock_pin_path(
+                &pin_metadata,
+                &workspace,
+                &logical,
+                &test_consumer_declaration(),
+            )
+            .unwrap();
         }
         for relative in [
             "Cargo.toml",
@@ -45868,7 +46839,8 @@ mod tests {
             {"name": "reverie-rpc-transport",
              "manifest_path": logical.join("reverie-rpc-transport/Cargo.toml")}
         ]});
-        content_leaf_manifest_and_lock_pin_path(&runtime, &workspace, &logical, test_leaf_decl()).unwrap();
+        content_leaf_manifest_and_lock_pin_path(&runtime, &workspace, &logical, test_leaf_decl())
+            .unwrap();
         // The fbsource workspace spelling (`reverie-core = { workspace
         // = true }`, path declared in workspace.dependencies) reports
         // no rename for the same exact package; `reverie-core`'s lib
@@ -45876,38 +46848,50 @@ mod tests {
         // rename and this one name one crate.
         let mut unrenamed = runtime.clone();
         unrenamed["packages"][0]["dependencies"][0]["rename"] = serde_json::json!(null);
-        content_leaf_manifest_and_lock_pin_path(&unrenamed, &workspace, &logical, test_leaf_decl()).unwrap();
+        content_leaf_manifest_and_lock_pin_path(&unrenamed, &workspace, &logical, test_leaf_decl())
+            .unwrap();
         // Any other rename still refuses by name, package identity exact.
         let mut junk_rename = runtime.clone();
         junk_rename["packages"][0]["dependencies"][0]["rename"] = serde_json::json!("junk");
-        let refusal =
-            content_leaf_manifest_and_lock_pin_path(&junk_rename, &workspace, &logical, test_leaf_decl())
-                .expect_err("a junk reverie-core rename must refuse");
+        let refusal = content_leaf_manifest_and_lock_pin_path(
+            &junk_rename,
+            &workspace,
+            &logical,
+            test_leaf_decl(),
+        )
+        .expect_err("a junk reverie-core rename must refuse");
         assert!(
-            refusal
-                .contains("content leaf dependency differs from path package: reverie-core"),
+            refusal.contains("content leaf dependency differs from path package: reverie-core"),
             "the refusal must name the mismatched dependency: {refusal}"
         );
-        assert!(content_leaf_manifest_and_lock_pin(&runtime, &workspace, &git_source, test_leaf_decl())
-            .is_err());
+        assert!(
+            content_leaf_manifest_and_lock_pin(&runtime, &workspace, &git_source, test_leaf_decl())
+                .is_err()
+        );
         for (index, field, value) in [
-            (
-                0,
-                "path",
-                serde_json::json!(logical.join("reverie-core")),
-            ),
+            (0, "path", serde_json::json!(logical.join("reverie-core"))),
             (
                 0,
                 "source",
                 serde_json::json!(git_source.rsplit_once('#').unwrap().0),
             ),
-            (1, "path", serde_json::json!(canonical.join("reverie-inguest"))),
+            (
+                1,
+                "path",
+                serde_json::json!(canonical.join("reverie-inguest")),
+            ),
             (3, "optional", serde_json::json!(false)),
         ] {
             let mut bad = runtime.clone();
             bad["packages"][0]["dependencies"][index][field] = value;
             assert!(
-                content_leaf_manifest_and_lock_pin_path(&bad, &workspace, &logical, test_leaf_decl()).is_err(),
+                content_leaf_manifest_and_lock_pin_path(
+                    &bad,
+                    &workspace,
+                    &logical,
+                    test_leaf_decl()
+                )
+                .is_err(),
                 "path leaf dependency {index}/{field}"
             );
         }
@@ -45915,15 +46899,20 @@ mod tests {
             &leaf_lock_path,
             leaf_lock.replacen(
                 "name = \"reverie-core\"\nversion = \"0.5.7\"",
-                &format!(
-                    "name = \"reverie-core\"\nversion = \"0.5.7\"\nsource = \"{git_source}\""
-                ),
+                &format!("name = \"reverie-core\"\nversion = \"0.5.7\"\nsource = \"{git_source}\""),
                 1,
             ),
         )
         .unwrap();
-        assert!(content_leaf_manifest_and_lock_pin_path(&runtime, &workspace, &logical, test_leaf_decl())
-            .is_err());
+        assert!(
+            content_leaf_manifest_and_lock_pin_path(
+                &runtime,
+                &workspace,
+                &logical,
+                test_leaf_decl()
+            )
+            .is_err()
+        );
         fs::write(&leaf_lock_path, &leaf_lock).unwrap();
         let graph = serde_json::json!({"packages": [{"name": "reverie-inguest",
             "manifest_path": logical.join("reverie-inguest/Cargo.toml")}]});
@@ -45933,22 +46922,17 @@ mod tests {
         );
         let canonical_graph = serde_json::json!({"packages": [{"name": "reverie-inguest",
             "manifest_path": canonical.join("reverie-inguest/Cargo.toml")}]});
-        assert!(content_root_binding_path(&canonical_graph, &workspace, Path::new("reverie")).is_err());
-        assert!(content_root_binding_path(&serde_json::json!({"packages": []}), &workspace, Path::new("reverie"))
-            .is_err());
-    }
-
-    // The Reverie workspace root is the parent of the run-time
-    // CARGO_MANIFEST_DIR: Cargo sets it when it runs a test, and a Buck
-    // test target points it into staged sources. Reading it at run time
-    // (not env!) keeps the compiling machine's path out of the test.
-    fn reverie_workspace_root() -> PathBuf {
-        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect(
-            "CARGO_MANIFEST_DIR names reverie-liteinst-artifact's directory at run time",
-        ))
-        .parent()
-        .expect("crate directory has a parent")
-        .to_path_buf()
+        assert!(
+            content_root_binding_path(&canonical_graph, &workspace, Path::new("reverie")).is_err()
+        );
+        assert!(
+            content_root_binding_path(
+                &serde_json::json!({"packages": []}),
+                &workspace,
+                Path::new("reverie")
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -45971,22 +46955,18 @@ mod tests {
         let _owned = OwnedScratch(root.clone());
         let real_root = reverie_workspace_root();
         let canonical = root.join("real-reverie");
-        for relative in CONTENT_REVERIE_CATALOG
-            .iter()
-            .map(|row| row.0)
-            .chain([
-                CONTENT_FIXED_GATE.0,
-                "reverie-liteinst-artifact/src/lib.rs",
-                "reverie-inguest/Cargo.toml",
-                "reverie-inguest/src/lib.rs",
-                "reverie-syscalls/Cargo.toml",
-                "reverie-syscalls/src/lib.rs",
-                "reverie-liteinst/Cargo.toml",
-                "reverie-liteinst/src/lib.rs",
-                "reverie-liteinst-preload/Cargo.toml",
-                "reverie-liteinst-preload/src/lib.rs",
-            ])
-        {
+        for relative in CONTENT_REVERIE_CATALOG.iter().map(|row| row.0).chain([
+            CONTENT_FIXED_GATE.0,
+            "reverie-liteinst-artifact/src/lib.rs",
+            "reverie-inguest/Cargo.toml",
+            "reverie-inguest/src/lib.rs",
+            "reverie-syscalls/Cargo.toml",
+            "reverie-syscalls/src/lib.rs",
+            "reverie-liteinst/Cargo.toml",
+            "reverie-liteinst/src/lib.rs",
+            "reverie-liteinst-preload/Cargo.toml",
+            "reverie-liteinst-preload/src/lib.rs",
+        ]) {
             let to = canonical.join(relative);
             fs::create_dir_all(to.parent().unwrap()).unwrap();
             fs::copy(real_root.join(relative), &to).unwrap();
@@ -46047,12 +47027,9 @@ mod tests {
                 .windows(2)
                 .all(|pair| pair[0].relative < pair[1].relative)
         );
-        let (leaf_inventory, _) = content_reverie_inventory_for_path(
-            &canonical,
-            FixedImageKind::Detcore,
-            &package_dirs,
-        )
-        .unwrap();
+        let (leaf_inventory, _) =
+            content_reverie_inventory_for_path(&canonical, FixedImageKind::Detcore, &package_dirs)
+                .unwrap();
         assert!(
             leaf_inventory
                 .iter()
@@ -46068,16 +47045,21 @@ mod tests {
             refusal.contains("reverie-inguest/src/extra_closure.rs"),
             "{refusal}"
         );
-        require_complete_reverie_closure_inventory(&canonical, &package_dirs, &relatives)
-            .unwrap();
+        require_complete_reverie_closure_inventory(&canonical, &package_dirs, &relatives).unwrap();
         let alias = canonical.join("reverie-inguest/src/alias_closure.rs");
-        symlink(canonical.join("reverie-inguest/src/extra_closure.rs"), &alias).unwrap();
-        assert!(content_reverie_inventory_for_path(
-            &canonical,
-            FixedImageKind::Standalone,
-            &package_dirs
+        symlink(
+            canonical.join("reverie-inguest/src/extra_closure.rs"),
+            &alias,
         )
-        .is_err());
+        .unwrap();
+        assert!(
+            content_reverie_inventory_for_path(
+                &canonical,
+                FixedImageKind::Standalone,
+                &package_dirs
+            )
+            .is_err()
+        );
         fs::remove_file(&alias).unwrap();
         // Source-ness follows either name (target side here): an
         // extensionless link directly to a source file refuses too.
@@ -46130,12 +47112,14 @@ mod tests {
         content_reverie_inventory_for_path(&canonical, FixedImageKind::Standalone, &package_dirs)
             .unwrap();
         fs::write(docs.join("hidden.rs"), "hidden\n").unwrap();
-        assert!(content_reverie_inventory_for_path(
-            &canonical,
-            FixedImageKind::Standalone,
-            &package_dirs
-        )
-        .is_err());
+        assert!(
+            content_reverie_inventory_for_path(
+                &canonical,
+                FixedImageKind::Standalone,
+                &package_dirs
+            )
+            .is_err()
+        );
         fs::remove_dir_all(&docs).unwrap();
         fs::remove_file(canonical.join("reverie-inguest/docs-link")).unwrap();
         // Depth counts plain-directory descent too, so a link to a
@@ -46169,8 +47153,12 @@ mod tests {
             fs::write(workspace.join(relative), format!("snapshot {relative}\n")).unwrap();
         }
         symlink(&canonical, workspace.join("reverie")).unwrap();
-        let binding =
-            CompilerRootBinding::resolve_path(&workspace.join("reverie"), &workspace, Path::new("reverie")).unwrap();
+        let binding = CompilerRootBinding::resolve_path(
+            &workspace.join("reverie"),
+            &workspace,
+            Path::new("reverie"),
+        )
+        .unwrap();
         let (workspace_inventory, _) =
             declared_inventory(&workspace, &CONTENT_WORKSPACE_FILES).unwrap();
         let workspace_digest = declared_inventory_sha256(&workspace_inventory).unwrap();
@@ -46199,13 +47187,15 @@ mod tests {
         verify().unwrap();
         // The Git-arm verifier re-derives only the reviewed catalog, so it
         // must refuse this wider path inventory rather than vouch for it.
-        assert!(verify_declared_content(
-            FixedImageKind::Standalone,
-            (&workspace, &workspace_inventory, &workspace_digest),
-            (&canonical, &inventory, &reverie_digest),
-            &binding,
-        )
-        .is_err());
+        assert!(
+            verify_declared_content(
+                FixedImageKind::Standalone,
+                (&workspace, &workspace_inventory, &workspace_digest),
+                (&canonical, &inventory, &reverie_digest),
+                &binding,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -46396,7 +47386,10 @@ mod tests {
             &mut runner,
         )
         .expect("path-sourced leaf profile must resolve without Git");
-        assert_eq!(leaf_verified.record.layout, CompiledSourceLayout::PathCheckout);
+        assert_eq!(
+            leaf_verified.record.layout,
+            CompiledSourceLayout::PathCheckout
+        );
         assert_eq!(leaf_verified.record.leaf.name, "detcore-liteinst");
         // Path-spelled sources embed workspace-relative compiler
         // filenames: the declared relative root plus the file role.
@@ -46579,10 +47572,7 @@ mod tests {
                 "update-index",
                 "--add",
                 "--cacheinfo",
-                &format!(
-                    "160000,{pin},{}",
-                    declaration.reverie_relative.display()
-                ),
+                &format!("160000,{pin},{}", declaration.reverie_relative.display()),
             ],
         );
         git(&consumer_ws, &["commit", "-qm", "fixture consumer"]);
@@ -46692,7 +47682,10 @@ mod tests {
             &mut runner,
         )
         .expect("path-spelled Git checkout must resolve under the Git checkout layout");
-        assert_eq!(resolved.record.layout, CompiledSourceLayout::GitlinkCheckout);
+        assert_eq!(
+            resolved.record.layout,
+            CompiledSourceLayout::GitlinkCheckout
+        );
         assert_eq!(resolved.record.leaf.name, test_leaf_decl().name);
         assert_eq!(resolved.record.leaf.source, None);
         assert_eq!(
@@ -46701,8 +47694,7 @@ mod tests {
         );
         assert!(
             runner.commands().iter().any(|command| {
-                command.program == "git"
-                    && command.arguments.iter().any(|arg| arg == "ls-tree")
+                command.program == "git" && command.arguments.iter().any(|arg| arg == "ls-tree")
             }),
             "the gitlink pin proof must run for the Git checkout layout"
         );
@@ -46954,7 +47946,7 @@ mod tests {
                 binding,
                 Some(test_leaf_decl()),
             )
-                .unwrap(),
+            .unwrap(),
             leaf.manifest
         );
         assert!(
@@ -47031,8 +48023,15 @@ mod tests {
             let mut bad = runtime.clone();
             bad["packages"][0][field] = value;
             assert!(
-                compiled_leaf_package(&bad, root, rv_one, Some(source), FixedImageKind::Detcore, Some(test_leaf_decl()))
-                    .is_err()
+                compiled_leaf_package(
+                    &bad,
+                    root,
+                    rv_one,
+                    Some(source),
+                    FixedImageKind::Detcore,
+                    Some(test_leaf_decl())
+                )
+                .is_err()
             );
         }
         for (field, value) in [
@@ -47047,8 +48046,15 @@ mod tests {
             let mut bad = runtime.clone();
             bad["packages"][0]["targets"][0][field] = value;
             assert!(
-                compiled_leaf_package(&bad, root, rv_one, Some(source), FixedImageKind::Detcore, Some(test_leaf_decl()))
-                    .is_err(),
+                compiled_leaf_package(
+                    &bad,
+                    root,
+                    rv_one,
+                    Some(source),
+                    FixedImageKind::Detcore,
+                    Some(test_leaf_decl())
+                )
+                .is_err(),
                 "Detcore target {field}"
             );
         }
@@ -47060,7 +48066,9 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(runtime["packages"][0].clone());
-        assert!(content_leaf_manifest_and_lock_pin(&duplicate, root, source, test_leaf_decl()).is_err());
+        assert!(
+            content_leaf_manifest_and_lock_pin(&duplicate, root, source, test_leaf_decl()).is_err()
+        );
         for index in 0..4 {
             for (field, value) in [
                 ("name", serde_json::json!("lookalike")),
@@ -47077,7 +48085,8 @@ mod tests {
                 let mut bad = runtime.clone();
                 bad["packages"][0]["dependencies"][index][field] = value;
                 assert!(
-                    content_leaf_manifest_and_lock_pin(&bad, root, source, test_leaf_decl()).is_err(),
+                    content_leaf_manifest_and_lock_pin(&bad, root, source, test_leaf_decl())
+                        .is_err(),
                     "Detcore dependency {index}/{field}"
                 );
             }
@@ -47122,7 +48131,10 @@ mod tests {
             format!("{lock_bytes}source = \"{source}\"\n"),
         ] {
             fs::write(&lock, wrong).unwrap();
-            assert!(content_leaf_manifest_and_lock_pin(&runtime, root, source, test_leaf_decl()).is_err());
+            assert!(
+                content_leaf_manifest_and_lock_pin(&runtime, root, source, test_leaf_decl())
+                    .is_err()
+            );
             fs::write(&lock, &lock_bytes).unwrap();
             content_leaf_manifest_and_lock_pin(&runtime, root, source, test_leaf_decl()).unwrap();
         }
@@ -47484,7 +48496,15 @@ mod tests {
             for git in [false, true] {
                 let valid = serde_json::json!({"packages":[package(name,target,&["cdylib"],git && image==FixedImageKind::Standalone,version)]});
                 let expected_source = git.then_some(source.as_str());
-                compiled_leaf_package(&valid, &root, &root, expected_source, image, Some(test_leaf_decl())).unwrap();
+                compiled_leaf_package(
+                    &valid,
+                    &root,
+                    &root,
+                    expected_source,
+                    image,
+                    Some(test_leaf_decl()),
+                )
+                .unwrap();
                 for (field, value) in [
                     (
                         "id",
@@ -47536,7 +48556,15 @@ mod tests {
                     let mut bad = valid.clone();
                     bad["packages"][0][field] = value;
                     assert!(
-                        compiled_leaf_package(&bad, &root, &root, expected_source, image, Some(test_leaf_decl())).is_err(),
+                        compiled_leaf_package(
+                            &bad,
+                            &root,
+                            &root,
+                            expected_source,
+                            image,
+                            Some(test_leaf_decl())
+                        )
+                        .is_err(),
                         "leaf {field}"
                     );
                 }
@@ -47555,7 +48583,15 @@ mod tests {
                     let mut bad = valid.clone();
                     bad["packages"][0]["targets"][0][field] = value;
                     assert!(
-                        compiled_leaf_package(&bad, &root, &root, expected_source, image, Some(test_leaf_decl())).is_err(),
+                        compiled_leaf_package(
+                            &bad,
+                            &root,
+                            &root,
+                            expected_source,
+                            image,
+                            Some(test_leaf_decl())
+                        )
+                        .is_err(),
                         "leaf target {field}"
                     );
                 }
@@ -47564,7 +48600,17 @@ mod tests {
                     .as_array_mut()
                     .unwrap()
                     .push(valid["packages"][0].clone());
-                assert!(compiled_leaf_package(&bad, &root, &root, expected_source, image, Some(test_leaf_decl())).is_err());
+                assert!(
+                    compiled_leaf_package(
+                        &bad,
+                        &root,
+                        &root,
+                        expected_source,
+                        image,
+                        Some(test_leaf_decl())
+                    )
+                    .is_err()
+                );
             }
         }
         let relative = "reverie-inguest/src/guest/alloc.rs";
@@ -47588,7 +48634,8 @@ mod tests {
             compiled_role_filename(CompiledSourceLayout::ReverieWorkspace, relative, &file)
                 .unwrap();
         assert_eq!(workspace, relative.as_bytes());
-        let git = compiled_role_filename(CompiledSourceLayout::GitlinkCheckout, relative, &file).unwrap();
+        let git =
+            compiled_role_filename(CompiledSourceLayout::GitlinkCheckout, relative, &file).unwrap();
         assert_eq!(git, path.as_os_str().as_encoded_bytes());
         assert!(
             compiled_role_filename(
@@ -47600,7 +48647,9 @@ mod tests {
         );
         fs::write(&path, b"changed after verification\n").unwrap();
         assert!(file.verify().is_err());
-        assert!(compiled_role_filename(CompiledSourceLayout::GitlinkCheckout, relative, &file).is_err());
+        assert!(
+            compiled_role_filename(CompiledSourceLayout::GitlinkCheckout, relative, &file).is_err()
+        );
         drop(owned);
     }
 
@@ -47659,7 +48708,6 @@ mod tests {
             logical.as_os_str().as_encoded_bytes()
         );
     }
-
 
     #[test]
     fn compiler_filename_git_spelled_inside_workspace_stays_absolute() {
@@ -47739,7 +48787,9 @@ mod tests {
             CompilerRootBinding::resolve_path(&pinned, &workspace, Path::new("pinned")).unwrap();
         let logical = binding.source_path(relative).unwrap();
         assert!(
-            binding.compiler_filename(&pinned, &logical, relative).is_err(),
+            binding
+                .compiler_filename(&pinned, &logical, relative)
+                .is_err(),
             "empty stem must refuse derivation"
         );
         // A binding deserialized without a spelling (evidence written
@@ -47826,13 +48876,17 @@ mod tests {
             0x1234,
         );
         assert!(by_pointer.contains("pointer slot differs"), "{by_pointer}");
-        assert!(by_pointer.contains("tool_region_constructor.rs"), "{by_pointer}");
+        assert!(
+            by_pointer.contains("tool_region_constructor.rs"),
+            "{by_pointer}"
+        );
         assert!(by_pointer.contains("expected=841:14"), "{by_pointer}");
         // No filename, or a row that is not a 24-byte location: the
         // previous message, byte-for-byte. The expected text is split
         // so this test adds no consumer-name line of its own.
         let plain = concat!(
-            "whole physical Det", "core readonly data differs: ",
+            "whole physical Det",
+            "core readonly data differs: ",
             "key=fixed_naked_constructor_record_location expected=841:14 address=0x1234"
         );
         assert_eq!(
@@ -71582,10 +72636,29 @@ mod tests {
                 let bitmap = bad.witnesses.get_mut("fixed_setup_bitmap_range").unwrap();
                 bitmap.kind = AuthenticatedDetcoreOperationKind::ValidateTemplate(25);
                 bitmap.scalar_storage = None;
+                // Composition selection binds the bitmap witness's exact
+                // template identity, so the mutated graph matches no
+                // composition and is refused there, before the callee arm.
                 assert_eq!(
                     check(&bad, kind, native).unwrap_err().to_string(),
-                    "naked-owner bitmap callee loses selected complete identity"
+                    "unknown or mixed naked-owner publication whole composition"
                 );
+                // With the bitmap identity correct, the callee arm still
+                // guards its scalar storage, address and transfers.
+                for mutation in 0..3 {
+                    let mut bad = naked_owner_publication_control_graph(case, false);
+                    let bitmap = bad.witnesses.get_mut("fixed_setup_bitmap_range").unwrap();
+                    match mutation {
+                        0 => bitmap.scalar_storage = None,
+                        1 => bitmap.address += 1,
+                        _ => bitmap.edges.clear(),
+                    }
+                    assert_eq!(
+                        check(&bad, kind, native).unwrap_err().to_string(),
+                        "naked-owner bitmap callee loses selected complete identity",
+                        "bitmap callee arm {case}/{mutation}"
+                    );
+                }
                 let mut old = scalar_ordinary_bit_result_control_graph(false);
                 let current = &graph.witnesses["fixed_setup_bitmap_range"];
                 old.witnesses.insert(
@@ -73717,10 +74790,11 @@ mod tests {
     #[test]
     fn source_owned_template_end_covers_stable_prepare_identities() {
         // 111 and 116 are the stable 0x100 and generated stable native 0xf8
-        // fixed_patch_alloc templates, and 117 the generated 0xf8
-        // fixed_tls_fn_once template; as appended identities they too must
-        // route a lone witness to the naked-composition check.
-        for index in [108, 109, 110, 111, 112, 113, 114, 115, 116, 117] {
+        // fixed_patch_alloc templates, 117 the generated 0xf8
+        // fixed_tls_fn_once template, and 118 the Rust 1.99.1
+        // fixed_setup_bitmap_range template; as appended identities they
+        // too must route a lone witness to the naked-composition check.
+        for index in [108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118] {
             let mut graph = scalar_ordinary_bit_result_control_graph(false);
             fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, false)
                 .unwrap();
@@ -73741,6 +74815,129 @@ mod tests {
         assert_eq!(
             FIXED_SOURCE_OWNED_TEMPLATE_END,
             DETCORE_VALIDATE_TEMPLATES.len()
+        );
+    }
+
+    // The Rust 1.99.1 bitmap bodies, found by identity and pinned by their
+    // complete digests: DetcoreValidateTemplate 118 (282 bytes, the
+    // liteinst-runtime profile body whose provenance comment carries this
+    // digest) and FIXED_ARENA_BYTES_13 (217 bytes, the standalone release
+    // body).
+    #[test]
+    fn detcore_bitmap_1_99_1_templates_are_the_observed_bodies() {
+        let template = &DETCORE_VALIDATE_TEMPLATES[118];
+        assert_eq!(template.role, "fixed_setup_bitmap_range");
+        let body = fixed_hex(template.hex);
+        assert_eq!(body.len(), 282);
+        assert_eq!(
+            sha256(&body),
+            "544a0b636ffd06ff6e12518abfa4fd7642949ae34925b2ed68b84a162dcc0077"
+        );
+        assert_eq!(FIXED_ARENA_BYTES_13.len(), 217);
+        assert_eq!(
+            sha256(FIXED_ARENA_BYTES_13),
+            "29a3f26bd4ebab85dc09740018e391f2514e7b5b75bc8cbd46fac6764d3a4666"
+        );
+    }
+
+    // Every composition row's own witness set selects exactly that row.
+    // Discrimination is by the cohort tuple, the raw syscall kind
+    // (native vs ordinary), and the bitmap witness's exact template
+    // identity where the row binds one. Templates 85 and 118 share the
+    // same pinned cohorts and incoming edges, so only that identity
+    // separates their rows; 105 binds rows on the stable ordinary
+    // cohort, in both its native-syscall and ordinary forms.
+    #[test]
+    fn naked_composition_selection_binds_each_rows_own_witnesses() {
+        fn operation(role: &str, index: usize) -> (String, AuthenticatedDetcoreOperation) {
+            (
+                role.into(),
+                AuthenticatedDetcoreOperation {
+                    role: role.into(),
+                    address: 0x1000,
+                    kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(index),
+                    edges: Vec::new(),
+                    scalar_storage: None,
+                },
+            )
+        }
+        for (row, spec) in FIXED_NAKED_COMPOSITIONS.iter().enumerate() {
+            let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> = spec
+                .cohort
+                .iter()
+                .map(|&(role, index)| operation(role, index))
+                .collect();
+            witnesses.insert(
+                "fixed_scalar_syscall".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_scalar_syscall".into(),
+                    address: 0x2000,
+                    kind: if spec.native_syscalls {
+                        AuthenticatedDetcoreOperationKind::NativeFixedSyscall3
+                    } else {
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
+                    },
+                    edges: Vec::new(),
+                    scalar_storage: None,
+                },
+            );
+            let (bridge_role, bridge) = operation("fixed_arena_mprotect", 83);
+            witnesses.insert(bridge_role, bridge);
+            if let Some(index) = spec.setup_bitmap_template {
+                let (role, witness) = operation("fixed_setup_bitmap_range", index);
+                witnesses.insert(role, witness);
+            }
+            let selected = fixed_naked_composition(&witnesses, Some(spec.image_kind))
+                .unwrap_or_else(|e| panic!("composition row {row} must select itself: {e}"));
+            // Selection with no image kind (the result-contract caller)
+            // must land on the same row.
+            let selected_none = fixed_naked_composition(&witnesses, None)
+                .unwrap_or_else(|e| panic!("composition row {row} must select itself: {e}"));
+            assert!(
+                selected_none.image_kind == selected.image_kind
+                    && selected_none.native_syscalls == selected.native_syscalls
+                    && selected_none.setup_bitmap_template == selected.setup_bitmap_template
+                    && selected_none.cohort == selected.cohort,
+                "composition row {row} must select itself with no image kind"
+            );
+            // Field-wise, not pointer, equality: the table is a const, so
+            // each use may promote a distinct copy.
+            assert!(
+                selected.image_kind == spec.image_kind
+                    && selected.native_syscalls == spec.native_syscalls
+                    && selected.setup_bitmap_template == spec.setup_bitmap_template
+                    && selected.cohort == spec.cohort
+                    && selected.incoming.len() == spec.incoming.len(),
+                "composition row {row} must select exactly itself"
+            );
+        }
+        // The 1.99.1 bitmap (118) under the host cohort, whose rows bind
+        // template 85, selects nothing and is refused.
+        let mut witnesses: BTreeMap<String, AuthenticatedDetcoreOperation> =
+            FIXED_NAKED_HOST_ORDINARY_COHORT
+                .iter()
+                .map(|&(role, index)| operation(role, index))
+                .collect();
+        witnesses.insert(
+            "fixed_scalar_syscall".into(),
+            AuthenticatedDetcoreOperation {
+                role: "fixed_scalar_syscall".into(),
+                address: 0x2000,
+                kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(26),
+                edges: Vec::new(),
+                scalar_storage: None,
+            },
+        );
+        let (bridge_role, bridge) = operation("fixed_arena_mprotect", 83);
+        witnesses.insert(bridge_role, bridge);
+        let (role, witness) = operation("fixed_setup_bitmap_range", 118);
+        witnesses.insert(role, witness);
+        assert_eq!(
+            match fixed_naked_composition(&witnesses, Some(FixedImageKind::Detcore)) {
+                Ok(_) => panic!("host cohort with the 118 bitmap must be refused"),
+                Err(error) => error,
+            },
+            "unknown or mixed naked-owner publication whole composition"
         );
     }
 
@@ -75552,6 +76749,7 @@ pub mod private_static {
     // workspace's manifests, so additions and removals require a reviewed
     // update.
     const REVERIE_WORKSPACE_PACKAGES: &[&str] = &[
+        "linux-ns-model",
         "nostd-print",
         "reverie-core",
         "reverie-examples",
@@ -75581,11 +76779,13 @@ pub mod private_static {
     ];
 
     /// Binds the resolved Reverie crates to the pin and returns the
-    /// manifest path of each bound package. For both kinds each bound
+    /// manifest path of each bound package. In the git form each bound
     /// package must appear once with the exact pinned git source; this
     /// equality, not the lock text, is what binds the compiled Reverie
-    /// crates. The Hermit kind keeps exactly these pre-generalization
-    /// checks; its gitlink root and ls-tree pin guard the checkout.
+    /// crates. A gitlink-bound workspace takes either the git form, with
+    /// exactly its pre-generalization checks, or the path form (see
+    /// [`path_bound_reverie_manifests`]); its gitlink root and ls-tree pin
+    /// guard the checkout.
     ///
     /// CargoGitRev has no gitlink root that would guard another tree,
     /// so it also requires:
@@ -75617,15 +76817,29 @@ pub mod private_static {
         pin: &str,
         leaf_id: &str,
     ) -> Result<Vec<(&'static str, &'m str)>> {
-        bound_reverie_manifests_from(metadata, binding, CargoGitRepository::DEFAULT, pin, leaf_id)
+        bound_reverie_manifests_from(
+            metadata,
+            binding,
+            CargoGitRepository::DEFAULT,
+            pin,
+            leaf_id,
+            None,
+        )
     }
 
+    /// [`bound_reverie_manifests`] with an explicit repository. A
+    /// gitlink-bound workspace may depend on its Reverie checkout by path;
+    /// the caller then passes that checkout as `pinned`, read at the pin
+    /// (see [`PinnedCheckout`]), and the path form
+    /// [`path_bound_reverie_manifests`] applies. A CargoGitRev consumer
+    /// never takes the path form.
     fn bound_reverie_manifests_from<'m>(
         metadata: &'m Value,
         binding: selected_initializers::WorkspaceBinding,
         repository: CargoGitRepository<'_>,
         pin: &str,
         leaf_id: &str,
+        pinned: Option<&PinnedCheckout<'_>>,
     ) -> Result<Vec<(&'static str, &'m str)>> {
         let packages = metadata["packages"]
             .as_array()
@@ -75638,18 +76852,11 @@ pub mod private_static {
                 format!("git+https://github.com/rrnewton/reverie.git?rev={pin}#{pin}")
             }
         };
-        let mut bound = Vec::new();
-        for name in ["reverie-inguest", "reverie-liteinst", "reverie-loader"] {
-            let rows: Vec<_> = packages.iter().filter(|p| p["name"] == name).collect();
-            require(
-                rows.len() == 1 && rows[0]["source"].as_str() == Some(source.as_str()),
-                "static metadata R source/uniqueness mismatch",
-            )?;
-            let manifest = rows[0]["manifest_path"]
-                .as_str()
-                .ok_or("static R manifest absent")?;
-            bound.push((name, manifest));
-        }
+        require(
+            pinned.is_none() || binding != selected_initializers::WorkspaceBinding::CargoGitRev,
+            "static CargoGitRev consumer cannot bind Reverie by path",
+        )?;
+        let bound = bind_reverie_packages(packages, &source, pinned)?;
         if binding == selected_initializers::WorkspaceBinding::CargoGitRev {
             require(
                 packages
@@ -75727,6 +76934,234 @@ pub mod private_static {
                 }),
                 "static CargoGitRev resolve has a workspace package outside the pinned source",
             )?;
+        }
+        Ok(bound)
+    }
+
+    /// The Reverie packages whose manifests the static source binds.
+    const BOUND_REVERIE_PACKAGES: [&str; 3] =
+        ["reverie-inguest", "reverie-liteinst", "reverie-loader"];
+
+    /// A gitlink checkout as the path form reads it: already bound to the
+    /// pin by the caller (its gitlink commit and a clean tree at the pin
+    /// before binding, its recursive source-cache identity after).
+    struct PinnedCheckout<'a> {
+        /// The checkout's canonical root.
+        root: &'a Path,
+        /// Every regular file (mode 100644 or 100755) in the pin commit's
+        /// tree, relative to `root`, read from the pin commit itself by
+        /// [`pinned_tracked_files`], never from the working tree or index.
+        tracked: &'a std::collections::BTreeSet<PathBuf>,
+        /// Resolves a path to the real regular file it names, following
+        /// every symlink: [`real_file`] in production.
+        resolve: &'a dyn Fn(&Path) -> Result<PathBuf>,
+    }
+
+    impl PinnedCheckout<'_> {
+        /// Requires `manifest` to be its own real path (no symlink or `..`
+        /// alias anywhere in it) and a regular file tracked at the pin.
+        /// An ignored path inside the checkout (a build directory, an
+        /// ignored symlink) is neither, so it refuses here, by name.
+        fn require_tracked(&self, name: &str, manifest: &str) -> Result<()> {
+            let spelled = Path::new(manifest);
+            let real = (self.resolve)(spelled).map_err(|error| {
+                format!("static metadata Reverie package {name} manifest {manifest} does not resolve: {error}")
+            })?;
+            require(
+                real == spelled,
+                format!(
+                    "static metadata Reverie package {name} manifest {manifest} is not its real path {} (a symlink or .. alias)",
+                    real.display()
+                ),
+            )?;
+            require(
+                real.strip_prefix(self.root)
+                    .is_ok_and(|relative| self.tracked.contains(relative)),
+                format!(
+                    "static metadata Reverie package {name} manifest {manifest} is not a file tracked at the pinned commit of {}",
+                    self.root.display()
+                ),
+            )
+        }
+    }
+
+    /// Every regular file in the tree of commit `pin`, relative to `root`,
+    /// from `git ls-tree` of the commit (not of the working tree or index).
+    fn pinned_tracked_files(
+        root: &Path,
+        pin: &str,
+        runner: &mut Runner,
+    ) -> Result<std::collections::BTreeSet<PathBuf>> {
+        use std::os::unix::ffi::OsStrExt;
+        require(
+            source_pin_is_full(pin),
+            "static pinned tree needs a full pin",
+        )?;
+        let raw = runner.run(
+            "git",
+            &[
+                "--no-replace-objects".into(),
+                "ls-tree".into(),
+                "-rz".into(),
+                "--full-tree".into(),
+                pin.into(),
+            ],
+            root,
+        )?;
+        let mut tracked = std::collections::BTreeSet::new();
+        for row in raw.split(|b| *b == 0).filter(|r| !r.is_empty()) {
+            require(tracked.len() < 100_000, "static pinned tree entry bound")?;
+            let at = row
+                .iter()
+                .position(|b| *b == b'\t')
+                .ok_or("static pinned tree delimiter")?;
+            let header = std::str::from_utf8(&row[..at]).map_err(|e| e.to_string())?;
+            let fields: Vec<_> = header.split(' ').collect();
+            require(fields.len() == 3, "static pinned tree row shape")?;
+            if fields[1] == "blob" && matches!(fields[0], "100644" | "100755") {
+                tracked.insert(PathBuf::from(std::ffi::OsStr::from_bytes(&row[at + 1..])));
+            }
+        }
+        require(!tracked.is_empty(), "static pinned tree lists no files")?;
+        Ok(tracked)
+    }
+
+    /// Binds each of [`BOUND_REVERIE_PACKAGES`] to exactly one resolved
+    /// package. The git form (every bound package once, at exactly
+    /// `source`) is the only form without a pinned checkout and keeps its
+    /// single refusal. With a pinned checkout, a resolve whose bound
+    /// packages are all in the git form still takes the git form; any
+    /// other resolve is judged as the path form.
+    fn bind_reverie_packages<'m>(
+        packages: &'m [Value],
+        source: &str,
+        pinned: Option<&PinnedCheckout<'_>>,
+    ) -> Result<Vec<(&'static str, &'m str)>> {
+        let rows_of = |name: &str| -> Vec<&'m Value> {
+            packages.iter().filter(|p| p["name"] == name).collect()
+        };
+        let git_bound = |name: &str| {
+            let rows = rows_of(name);
+            rows.len() == 1 && rows[0]["source"].as_str() == Some(source)
+        };
+        match pinned {
+            Some(checkout) if !BOUND_REVERIE_PACKAGES.into_iter().all(git_bound) => {
+                path_bound_reverie_manifests(packages, source, checkout)
+            }
+            _ => {
+                let mut bound = Vec::new();
+                for name in BOUND_REVERIE_PACKAGES {
+                    let rows = rows_of(name);
+                    require(
+                        rows.len() == 1 && rows[0]["source"].as_str() == Some(source),
+                        "static metadata R source/uniqueness mismatch",
+                    )?;
+                    let manifest = rows[0]["manifest_path"]
+                        .as_str()
+                        .ok_or("static R manifest absent")?;
+                    bound.push((name, manifest));
+                }
+                Ok(bound)
+            }
+        }
+    }
+
+    /// The path form: a consumer workspace that depends on its pinned
+    /// Reverie checkout by path. It binds as strictly as the git form and
+    /// refuses by name:
+    /// - each bound package appears exactly once, with a present, null
+    ///   source (Cargo's spelling of a path package) and the manifest
+    ///   `<checkout>/<name>/Cargo.toml`, which must be its own real path
+    ///   and a regular file tracked at the pin;
+    /// - once any bound package is a path package, all three must be: a
+    ///   mix with the pinned git source refuses, since it would compile
+    ///   two Reverie copies;
+    /// - every other package carrying a Reverie workspace name (a closed
+    ///   workspace name or a `reverie-` prefix) is likewise a path package
+    ///   whose manifest is its own real path and a regular file tracked at
+    ///   the pin. A fork, registry copy, second copy, or a copy under an
+    ///   ignored path of the checkout therefore cannot join the resolve.
+    fn path_bound_reverie_manifests<'m>(
+        packages: &'m [Value],
+        source: &str,
+        checkout: &PinnedCheckout<'_>,
+    ) -> Result<Vec<(&'static str, &'m str)>> {
+        let mut bound = Vec::new();
+        let mut git_bound = 0;
+        for name in BOUND_REVERIE_PACKAGES {
+            let rows: Vec<_> = packages.iter().filter(|p| p["name"] == name).collect();
+            require(
+                !rows.is_empty(),
+                format!("static metadata lacks the Reverie package {name}"),
+            )?;
+            require(
+                rows.len() == 1,
+                format!(
+                    "static metadata Reverie package {name} is not unique ({} packages)",
+                    rows.len()
+                ),
+            )?;
+            let manifest = rows[0]
+                .get("manifest_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!("static metadata Reverie package {name} lacks a manifest path")
+                })?;
+            match rows[0].get("source") {
+                Some(Value::String(git)) if git == source => git_bound += 1,
+                Some(Value::Null) => {
+                    let pinned = checkout.root.join(name).join("Cargo.toml");
+                    require(
+                        Path::new(manifest) == pinned,
+                        format!(
+                            "static metadata Reverie package {name} is a path package other than the pinned checkout's {}: {manifest}",
+                            pinned.display()
+                        ),
+                    )?;
+                    checkout.require_tracked(name, manifest)?;
+                }
+                Some(Value::String(other)) => {
+                    return Err(format!(
+                        "static metadata Reverie package {name} resolves from another source: {other}"
+                    ));
+                }
+                _ => {
+                    return Err(format!(
+                        "static metadata Reverie package {name} has neither a string nor a null source"
+                    ));
+                }
+            }
+            bound.push((name, manifest));
+        }
+        require(
+            git_bound == 0,
+            "static metadata mixes git and path Reverie sources",
+        )?;
+        for package in packages {
+            let Some(name) = package["name"].as_str() else {
+                return Err("static metadata package lacks a name".into());
+            };
+            if !(REVERIE_WORKSPACE_PACKAGES.contains(&name) || name.starts_with("reverie-")) {
+                continue;
+            }
+            require(
+                matches!(package.get("source"), Some(Value::Null)),
+                format!(
+                    "static metadata Reverie workspace package {name} is not a path package: source {}",
+                    package
+                        .get("source")
+                        .map_or("absent".to_owned(), Value::to_string)
+                ),
+            )?;
+            let manifest = package
+                .get("manifest_path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    format!(
+                        "static metadata Reverie workspace package {name} lacks a manifest path"
+                    )
+                })?;
+            checkout.require_tracked(name, manifest)?;
         }
         Ok(bound)
     }
@@ -75944,12 +77379,28 @@ pub mod private_static {
                     .ok_or("static metadata lacks packages")?;
                 let mut roots = Vec::new();
                 let id = leaf_package_id(expected.workspace, consumer)?;
+                // The gitlink checkout guarded above, with the pin commit's
+                // tracked files: what the path form binds against.
+                let pinned_tree = match gitlink {
+                    Some(relative) => {
+                        let root = expected.workspace.join(relative);
+                        let tracked = pinned_tracked_files(&root, expected.reverie_pin, runner)?;
+                        Some((root, tracked))
+                    }
+                    None => None,
+                };
+                let pinned = pinned_tree.as_ref().map(|(root, tracked)| PinnedCheckout {
+                    root,
+                    tracked,
+                    resolve: &real_file,
+                });
                 for (name, manifest) in bound_reverie_manifests_from(
                     &metadata,
                     consumer.binding(),
                     repository,
                     expected.reverie_pin,
                     &id,
+                    pinned.as_ref(),
                 )? {
                     let p = real_file(Path::new(manifest))?;
                     let root = p
@@ -77526,7 +78977,7 @@ pub mod private_static {
             let repository =
                 CargoGitRepository::new("https://github.com/facebookexperimental/reverie").unwrap();
             assert_eq!(
-                bound_reverie_manifests_from(&moved, cargo, repository, pin, leaf)
+                bound_reverie_manifests_from(&moved, cargo, repository, pin, leaf, None)
                     .unwrap()
                     .iter()
                     .map(|(name, _)| *name)
@@ -77538,7 +78989,8 @@ pub mod private_static {
                 "static metadata R source/uniqueness mismatch"
             );
             assert_eq!(
-                bound_reverie_manifests_from(&exact, cargo, repository, pin, leaf).unwrap_err(),
+                bound_reverie_manifests_from(&exact, cargo, repository, pin, leaf, None)
+                    .unwrap_err(),
                 "static metadata R source/uniqueness mismatch"
             );
             // A moved crate that still resolves from rrnewton is a second
@@ -77547,7 +78999,409 @@ pub mod private_static {
                 &moved_spelling,
                 &[("reverie-syscalls", Some(canonical(pin)))],
             );
-            assert!(bound_reverie_manifests_from(&mixed, cargo, repository, pin, leaf).is_err());
+            assert!(
+                bound_reverie_manifests_from(&mixed, cargo, repository, pin, leaf, None).is_err()
+            );
+        }
+
+        #[test]
+        fn path_form_binds_reverie_only_inside_the_pinned_checkout() {
+            let pin = "1".repeat(40);
+            let git = format!("git+https://github.com/rrnewton/reverie.git?rev={pin}#{pin}");
+            let crates_io = "registry+https://github.com/rust-lang/crates.io-index";
+            let root = Path::new("/ws/reverie");
+            let row = |name: &str, source: Option<&str>, manifest: &str| serde_json::json!({"name": name, "source": source, "manifest_path": manifest});
+            let in_checkout =
+                |name: &str| row(name, None, &format!("/ws/reverie/{name}/Cargo.toml"));
+            let exact = vec![
+                row("leaf", None, "/ws/leaf/Cargo.toml"),
+                in_checkout("reverie-inguest"),
+                in_checkout("reverie-liteinst"),
+                in_checkout("reverie-loader"),
+                in_checkout("reverie-syscalls"),
+                in_checkout("safeptrace"),
+                row(
+                    "libc",
+                    Some(crates_io),
+                    "/cargo/registry/libc-0.2.186/Cargo.toml",
+                ),
+            ];
+            let with = |name: &str, replacement: Vec<Value>| -> Vec<Value> {
+                exact
+                    .iter()
+                    .filter(|p| p["name"] != name)
+                    .cloned()
+                    .chain(replacement)
+                    .collect()
+            };
+            // The pin commit's tracked regular files, checkout-relative.
+            let tracked_files = |omit: &str| -> std::collections::BTreeSet<PathBuf> {
+                [
+                    "reverie-inguest/Cargo.toml",
+                    "reverie-liteinst/Cargo.toml",
+                    "reverie-loader/Cargo.toml",
+                    "reverie-syscalls/Cargo.toml",
+                    "safeptrace/Cargo.toml",
+                    "experimental/reverie-new/Cargo.toml",
+                ]
+                .into_iter()
+                .filter(|path| *path != omit)
+                .map(PathBuf::from)
+                .collect()
+            };
+            let tracked = tracked_files("");
+            // A stand-in for `real_file` over this synthetic tree: `..`
+            // resolves lexically, and each listed symlink redirects its
+            // subtree. `linked` is an ignored symlink out of the checkout;
+            // `alias` points at a tracked package directory.
+            let resolver = |links: &'static [(&'static str, &'static str)]| {
+                move |path: &Path| -> Result<PathBuf> {
+                    let mut real = PathBuf::new();
+                    for component in path.components() {
+                        match component {
+                            std::path::Component::ParentDir => {
+                                real.pop();
+                            }
+                            other => real.push(other),
+                        }
+                    }
+                    for (link, target) in links {
+                        if let Ok(rest) = real.strip_prefix(link) {
+                            return Ok(Path::new(target).join(rest));
+                        }
+                    }
+                    Ok(real)
+                }
+            };
+            let resolve = resolver(&[
+                ("/ws/reverie/linked", "/elsewhere/linked"),
+                ("/ws/reverie/alias", "/ws/reverie/reverie-syscalls"),
+            ]);
+            let checkout = PinnedCheckout {
+                root,
+                tracked: &tracked,
+                resolve: &resolve,
+            };
+            fn bind<'m>(
+                packages: &'m [Value],
+                git: &str,
+                checkout: &PinnedCheckout<'_>,
+            ) -> Result<Vec<(&'static str, &'m str)>> {
+                bind_reverie_packages(packages, git, Some(checkout))
+            }
+            let refusal = |packages: &[Value]| bind(packages, &git, &checkout).unwrap_err();
+
+            // A workspace bound by path to exactly the pinned checkout binds
+            // each package at its manifest there.
+            assert_eq!(
+                bind(&exact, &git, &checkout).unwrap(),
+                [
+                    ("reverie-inguest", "/ws/reverie/reverie-inguest/Cargo.toml"),
+                    (
+                        "reverie-liteinst",
+                        "/ws/reverie/reverie-liteinst/Cargo.toml"
+                    ),
+                    ("reverie-loader", "/ws/reverie/reverie-loader/Cargo.toml"),
+                ]
+            );
+            // Without a pinned checkout only the git form binds, with its
+            // unchanged refusal; a CargoGitRev consumer never binds by path.
+            assert_eq!(
+                bind_reverie_packages(&exact, &git, None).unwrap_err(),
+                "static metadata R source/uniqueness mismatch"
+            );
+            assert_eq!(
+                bound_reverie_manifests_from(
+                    &serde_json::json!({"packages": exact}),
+                    selected_initializers::WorkspaceBinding::CargoGitRev,
+                    CargoGitRepository::DEFAULT,
+                    &pin,
+                    "path+file:///ws/leaf#0.0.1",
+                    Some(&checkout),
+                )
+                .unwrap_err(),
+                "static CargoGitRev consumer cannot bind Reverie by path"
+            );
+            // The git form still binds when a checkout is offered.
+            let git_rows: Vec<_> = BOUND_REVERIE_PACKAGES
+                .into_iter()
+                .map(|name| row(name, Some(&git), &format!("/cache/r/{name}/Cargo.toml")))
+                .collect();
+            assert_eq!(bind(&git_rows, &git, &checkout).unwrap().len(), 3);
+
+            // A path anywhere but the pinned checkout's own package directory
+            // refuses by name: another checkout, a sibling whose name only
+            // shares the checkout's prefix, a parent-directory escape, and a
+            // nested copy inside the checkout.
+            for elsewhere in [
+                "/elsewhere/reverie/reverie-liteinst/Cargo.toml",
+                "/ws/reverie-fork/reverie-liteinst/Cargo.toml",
+                "/ws/reverie/../fork/reverie-liteinst/Cargo.toml",
+                "/ws/reverie/nested/reverie-liteinst/Cargo.toml",
+            ] {
+                assert_eq!(
+                    refusal(&with(
+                        "reverie-liteinst",
+                        vec![row("reverie-liteinst", None, elsewhere)]
+                    )),
+                    format!(
+                        "static metadata Reverie package reverie-liteinst is a path package other than the pinned checkout's /ws/reverie/reverie-liteinst/Cargo.toml: {elsewhere}"
+                    )
+                );
+            }
+            // A duplicate refuses even when one copy is the pinned one.
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![
+                        in_checkout("reverie-loader"),
+                        row(
+                            "reverie-loader",
+                            None,
+                            "/elsewhere/reverie-loader/Cargo.toml"
+                        ),
+                    ],
+                )),
+                "static metadata Reverie package reverie-loader is not unique (2 packages)"
+            );
+            // Uniqueness holds on its own: two rows that each satisfy every
+            // other rule still refuse.
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![in_checkout("reverie-loader"), in_checkout("reverie-loader")],
+                )),
+                "static metadata Reverie package reverie-loader is not unique (2 packages)"
+            );
+            // A missing package, a mixed git/path set, a missing or foreign
+            // source and a missing manifest path each refuse by name.
+            assert_eq!(
+                refusal(&with("reverie-inguest", vec![])),
+                "static metadata lacks the Reverie package reverie-inguest"
+            );
+            assert_eq!(
+                refusal(&with(
+                    "reverie-inguest",
+                    vec![row(
+                        "reverie-inguest",
+                        Some(&git),
+                        "/cache/r/reverie-inguest/Cargo.toml"
+                    )],
+                )),
+                "static metadata mixes git and path Reverie sources"
+            );
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![serde_json::json!({
+                        "name": "reverie-loader",
+                        "manifest_path": "/ws/reverie/reverie-loader/Cargo.toml",
+                    })],
+                )),
+                "static metadata Reverie package reverie-loader has neither a string nor a null source"
+            );
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![serde_json::json!({
+                        "name": "reverie-loader",
+                        "source": 7,
+                        "manifest_path": "/ws/reverie/reverie-loader/Cargo.toml",
+                    })],
+                )),
+                "static metadata Reverie package reverie-loader has neither a string nor a null source"
+            );
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![row(
+                        "reverie-loader",
+                        Some(crates_io),
+                        "/ws/reverie/reverie-loader/Cargo.toml"
+                    )],
+                )),
+                format!(
+                    "static metadata Reverie package reverie-loader resolves from another source: {crates_io}"
+                )
+            );
+            assert_eq!(
+                refusal(&with(
+                    "reverie-loader",
+                    vec![serde_json::json!({"name": "reverie-loader", "source": null})],
+                )),
+                "static metadata Reverie package reverie-loader lacks a manifest path"
+            );
+            // Any other Reverie workspace package that is not a path package
+            // refuses: a fork at the git source, a registry copy, or no
+            // source at all.
+            for (name, source, manifest, shown) in [
+                (
+                    "reverie-syscalls",
+                    Some(git.as_str()),
+                    "/cache/r/reverie-syscalls/Cargo.toml",
+                    format!("\"{git}\""),
+                ),
+                (
+                    "safeptrace",
+                    Some(crates_io),
+                    "/cargo/registry/safeptrace-0.1.0/Cargo.toml",
+                    format!("\"{crates_io}\""),
+                ),
+            ] {
+                assert_eq!(
+                    refusal(&with(name, vec![row(name, source, manifest)])),
+                    format!(
+                        "static metadata Reverie workspace package {name} is not a path package: source {shown}"
+                    )
+                );
+            }
+            assert_eq!(
+                refusal(&with(
+                    "reverie-syscalls",
+                    vec![serde_json::json!({
+                        "name": "reverie-syscalls",
+                        "manifest_path": "/ws/reverie/reverie-syscalls/Cargo.toml",
+                    })],
+                )),
+                "static metadata Reverie workspace package reverie-syscalls is not a path package: source absent"
+            );
+            // A Reverie path package must be a file tracked at the pin and
+            // its own real path. Lexical containment is not enough: these
+            // refuse by name, whether the package is one of the bound three,
+            // on the closed list, or named only by the `reverie-` prefix.
+            let untracked = |name: &str, manifest: &str| {
+                format!(
+                    "static metadata Reverie package {name} manifest {manifest} is not a file tracked at the pinned commit of /ws/reverie"
+                )
+            };
+            let aliased = |name: &str, manifest: &str, real: &str| {
+                format!(
+                    "static metadata Reverie package {name} manifest {manifest} is not its real path {real} (a symlink or .. alias)"
+                )
+            };
+            // Outside the checkout altogether.
+            let elsewhere = "/elsewhere/reverie-syscalls/Cargo.toml";
+            assert_eq!(
+                refusal(&with(
+                    "reverie-syscalls",
+                    vec![row("reverie-syscalls", None, elsewhere)]
+                )),
+                untracked("reverie-syscalls", elsewhere)
+            );
+            // Under an ignored build directory inside the checkout (Reverie's
+            // .gitignore ignores target/ at any depth, so the tree guards do
+            // not see it).
+            let built = "/ws/reverie/target/package/reverie-x-0.5.7/Cargo.toml";
+            let mut extra = exact.clone();
+            extra.push(row("reverie-x", None, built));
+            assert_eq!(refusal(&extra), untracked("reverie-x", built));
+            // Behind an ignored symlink inside the checkout, out of it.
+            let linked = "/ws/reverie/linked/reverie-x/Cargo.toml";
+            let mut extra = exact.clone();
+            extra.push(row("reverie-x", None, linked));
+            assert_eq!(
+                refusal(&extra),
+                aliased(
+                    "reverie-x",
+                    linked,
+                    "/elsewhere/linked/reverie-x/Cargo.toml"
+                )
+            );
+            // Behind a symlink to a tracked package directory.
+            let alias = "/ws/reverie/alias/Cargo.toml";
+            assert_eq!(
+                refusal(&with("safeptrace", vec![row("safeptrace", None, alias)])),
+                aliased(
+                    "safeptrace",
+                    alias,
+                    "/ws/reverie/reverie-syscalls/Cargo.toml"
+                )
+            );
+            // Through a parent-directory escape.
+            let escape = "/ws/reverie/../fork/reverie-unlisted/Cargo.toml";
+            let mut extra = exact.clone();
+            extra.push(row("reverie-unlisted", None, escape));
+            assert_eq!(
+                refusal(&extra),
+                aliased(
+                    "reverie-unlisted",
+                    escape,
+                    "/ws/fork/reverie-unlisted/Cargo.toml"
+                )
+            );
+            // A bound package whose manifest the pin does not track, and one
+            // whose package directory is a symlink, refuse as well.
+            let without_loader = tracked_files("reverie-loader/Cargo.toml");
+            let pinless = PinnedCheckout {
+                root,
+                tracked: &without_loader,
+                resolve: &resolve,
+            };
+            let loader = "/ws/reverie/reverie-loader/Cargo.toml";
+            assert_eq!(
+                bind(&exact, &git, &pinless).unwrap_err(),
+                untracked("reverie-loader", loader)
+            );
+            let redirect = resolver(&[("/ws/reverie/reverie-loader", "/elsewhere/reverie-loader")]);
+            let linked_dir = PinnedCheckout {
+                root,
+                tracked: &tracked,
+                resolve: &redirect,
+            };
+            assert_eq!(
+                bind(&exact, &git, &linked_dir).unwrap_err(),
+                aliased(
+                    "reverie-loader",
+                    loader,
+                    "/elsewhere/reverie-loader/Cargo.toml"
+                )
+            );
+            // A manifest that does not resolve refuses with the resolver's
+            // reason.
+            let missing = |path: &Path| -> Result<PathBuf> {
+                Err(format!("metadata {}: No such file", path.display()))
+            };
+            let unreadable = PinnedCheckout {
+                root,
+                tracked: &tracked,
+                resolve: &missing,
+            };
+            assert_eq!(
+                bind(&exact, &git, &unreadable).unwrap_err(),
+                "static metadata Reverie package reverie-inguest manifest /ws/reverie/reverie-inguest/Cargo.toml does not resolve: metadata /ws/reverie/reverie-inguest/Cargo.toml: No such file"
+            );
+            // A new package tracked anywhere in the checkout is admitted; an
+            // untracked one beside it is not.
+            let mut grown = exact.clone();
+            grown.push(row(
+                "reverie-new",
+                None,
+                "/ws/reverie/experimental/reverie-new/Cargo.toml",
+            ));
+            assert_eq!(bind(&grown, &git, &checkout).unwrap().len(), 3);
+            let other = "/ws/reverie/experimental/reverie-other/Cargo.toml";
+            grown.push(row("reverie-other", None, other));
+            assert_eq!(refusal(&grown), untracked("reverie-other", other));
+        }
+
+        #[test]
+        fn pinned_tracked_files_lists_only_regular_files_of_the_pin_commit() {
+            // The fixture's pin tracks a regular file, a symlink and a
+            // gitlink; only the regular file is the pin's.
+            let mut f = CacheFixture::new();
+            // Files the pin does not track, ignored or not, are not listed.
+            fs::create_dir_all(f.root.join("target/reverie-x")).unwrap();
+            fs::write(f.root.join("target/reverie-x/Cargo.toml"), b"[package]\n").unwrap();
+            fs::write(f.root.join("later.rs"), b"").unwrap();
+            let tracked = pinned_tracked_files(&f.root, &f.head, &mut f.runner).unwrap();
+            assert_eq!(
+                tracked.into_iter().collect::<Vec<_>>(),
+                [PathBuf::from("source.rs")]
+            );
+            assert_eq!(
+                pinned_tracked_files(&f.root, "short", &mut f.runner).unwrap_err(),
+                "static pinned tree needs a full pin"
+            );
         }
 
         #[test]
@@ -78749,22 +80603,16 @@ pub mod private_static {
             // The closed list must match the real workspace in both
             // directions. Read that from the workspace's own manifests --
             // the root manifest's member list and each member's package
-            // name -- through the run-time CARGO_MANIFEST_DIR (Cargo sets
-            // it; the Buck unittest target stages every workspace manifest
-            // and points it into the staged tree). The `cargo metadata`
+            // name -- under reverie_workspace_root (the run-time
+            // CARGO_MANIFEST_DIR's parent, where the Buck unittest target
+            // stages every workspace manifest, else the root file!() names).
+            // The `cargo metadata`
             // probe this used before assumed a Cargo binary and a full
             // checkout, which a Buck test sandbox has neither of; the
             // manifests are the same authority Cargo reads them from, and
             // any shape this reader does not understand fails by name
             // rather than guessing. Absence fails; no skip.
-            let workspace = PathBuf::from(
-                std::env::var_os("CARGO_MANIFEST_DIR").expect(
-                    "closed workspace-package check needs CARGO_MANIFEST_DIR at run time",
-                ),
-            )
-            .parent()
-            .expect("crate directory has a parent")
-            .to_path_buf();
+            let workspace = reverie_workspace_root();
             let root_manifest = fs::read_to_string(workspace.join("Cargo.toml"))
                 .expect("real workspace root manifest");
             let string_array = |key: &str| -> Vec<String> {
@@ -78787,7 +80635,10 @@ pub mod private_static {
                 .into_iter()
                 .filter(|member| !excluded.contains(member))
                 .collect();
-            assert!(!members.is_empty(), "workspace root manifest lists no members");
+            assert!(
+                !members.is_empty(),
+                "workspace root manifest lists no members"
+            );
             let mut actual = BTreeSet::new();
             for member in &members {
                 assert!(
@@ -81440,7 +83291,7 @@ mod runner_cpu_budget_tests {
                 .expect_err(shape);
             let wall = started.elapsed();
             assert!(
-                error.contains("stopped: exceeded the producer CPU budget (used "),
+                error.contains("stopped: producer CPU bound tripped (command CPU "),
                 "{shape}: {error}"
             );
             let used = runner.command_cpu.last().copied().flatten().unwrap();
@@ -81481,10 +83332,8 @@ mod runner_cpu_budget_tests {
             )
             .unwrap_err();
         assert!(
-            error.contains(
-                "stopped: exceeded the producer wall deadline (1 s wall backstop for this \
-                 producer run; command wall "
-            ) && error.contains(", CPU used "),
+            error.contains("stopped: producer wall bound tripped (command CPU ")
+                && error.contains("of 1 s backstop; command wall "),
             "{error}"
         );
         // The backstop fired at the budget (the error's command wall), and
@@ -81510,10 +83359,490 @@ mod runner_cpu_budget_tests {
             .run_cpu_bounded("/bin/true", &[], &scratch.0, Duration::from_secs(60))
             .unwrap_err();
         assert!(
-            exhausted.contains("producer wall deadline exhausted (1 s wall backstop"),
+            exhausted.contains("/bin/true not started: producer wall bound tripped (command CPU "),
             "{exhausted}"
         );
         assert_own_cgroups_removed(&runner, 1);
+    }
+
+    #[test]
+    fn total_cpu_budget_bounds_aggregate_not_wall() {
+        // Isolate producer-self CPU from the other tests sharing this
+        // process; child CPU below is real cgroup accounting.
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let scratch = Scratch::new("totalcpu");
+        // Slow wall, negligible CPU: a 2 s sleep passes a CPU budget
+        // smaller than its own wall time, where a tight wall-only
+        // deadline (the test above) refuses a sleep.
+        let mut runner = Runner::new(
+            scratch.0.join("slow-logs"),
+            Duration::from_secs(30),
+            1 << 20,
+        )
+        .unwrap();
+        runner.bound_total_cpu(Duration::from_millis(500)).unwrap();
+        runner
+            .run("/bin/sh", &sh("sleep 2"), &scratch.0)
+            .expect("a low-CPU sleep must not be refused for its wall time");
+        assert!(
+            runner.total_cpu_used() < Duration::from_millis(500),
+            "a sleep used {:?} of aggregate CPU",
+            runner.total_cpu_used()
+        );
+        assert_own_cgroups_removed(&runner, 1);
+
+        // Later commands are capped at what earlier usage left: a first
+        // command capped at 1 s of a shared 3 s budget, plus 1 s of
+        // producer-thread work, leaves the next command about 1 s of
+        // its own CPU before the aggregate trips.
+        let mut runner = Runner::new(
+            scratch.0.join("busy-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
+        runner.bound_total_cpu(Duration::from_secs(3)).unwrap();
+        let first = runner
+            .run_cpu_bounded(
+                "/bin/sh",
+                &sh("while :; do :; done"),
+                &scratch.0,
+                Duration::from_secs(1),
+            )
+            .unwrap_err();
+        assert!(
+            first.contains("stopped: producer CPU bound tripped (command CPU "),
+            "{first}"
+        );
+        let after_first = runner.total_cpu_used();
+        assert!(
+            after_first >= Duration::from_secs(1),
+            "first command left aggregate at {after_first:?}"
+        );
+        // Producer-thread work between commands counts too.
+        set_producer_thread_cpu_for_test(Some(Duration::from_secs(1)));
+        let second = runner
+            .run("/bin/sh", &sh("while :; do :; done"), &scratch.0)
+            .unwrap_err();
+        assert!(
+            second.contains("stopped: producer total CPU bound tripped (total CPU ")
+                && second.contains("of 3.00 CPU-s"),
+            "{second}"
+        );
+        let second_own = runner.command_cpu.last().copied().flatten().unwrap();
+        // The remainder the second command was capped at, derived from
+        // the measured aggregate after the first command (3 s budget
+        // minus that aggregate minus the 1 s of producer-thread work
+        // injected above), so a load-driven overshoot of the first
+        // command moves the window instead of breaking it.
+        assert!(
+            after_first < Duration::from_secs(2),
+            "first command overshot its 1 s cap to {after_first:?}"
+        );
+        let remainder = Duration::from_secs(3) - after_first - Duration::from_secs(1);
+        assert!(
+            second_own >= remainder.mul_f64(0.8)
+                && second_own < remainder + Duration::from_millis(400),
+            "second command used {second_own:?}, not near the {remainder:?} remainder"
+        );
+        // The spent budget refuses the next command before it starts.
+        let spent = runner.run("/bin/true", &[], &scratch.0).unwrap_err();
+        assert!(
+            spent.contains("/bin/true not started: producer total CPU budget exhausted ("),
+            "{spent}"
+        );
+        assert_own_cgroups_removed(&runner, 2);
+
+        // A command's own budget below the aggregate remainder trips as
+        // a command bound, not as the aggregate.
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let mut runner =
+            Runner::new(scratch.0.join("own-logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        runner.bound_total_cpu(Duration::from_secs(10)).unwrap();
+        let own = runner
+            .run_cpu_bounded(
+                "/bin/sh",
+                &sh("while :; do :; done"),
+                &scratch.0,
+                Duration::from_millis(200),
+            )
+            .unwrap_err();
+        assert!(
+            own.contains("stopped: producer CPU bound tripped (command CPU "),
+            "{own}"
+        );
+        assert_own_cgroups_removed(&runner, 1);
+
+        // A hang with a total budget set is still stopped by the wall
+        // backstop, named through the same formatter.
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let mut runner =
+            Runner::new(scratch.0.join("hang-logs"), Duration::from_secs(1), 1 << 20).unwrap();
+        runner.bound_total_cpu(Duration::from_secs(60)).unwrap();
+        let hang = runner
+            .run("/bin/sh", &sh("sleep 30"), &scratch.0)
+            .unwrap_err();
+        assert!(
+            hang.contains("stopped: producer wall bound tripped (total CPU ")
+                && hang.contains("of 60.00 CPU-s")
+                && hang.contains("of 1 s backstop"),
+            "{hang}"
+        );
+        assert_own_cgroups_removed(&runner, 1);
+        set_producer_thread_cpu_for_test(None);
+    }
+
+    #[test]
+    fn total_cpu_fallback_runs_unaccounted_under_wall_only() {
+        let scratch = Scratch::new("totalfallback");
+        let mut runner =
+            Runner::new(scratch.0.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        // A plain directory is not a cgroup: accounting is unavailable.
+        runner.cgroup_parent = Some(scratch.0.clone());
+        let bound = runner
+            .bound_total_cpu_or_wall_backstop(Duration::from_secs(20))
+            .unwrap();
+        assert!(
+            matches!(&bound, TotalCpuBound::WallBackstopOnly(reason) if reason.contains("is not a cgroup v2 directory")),
+            "{bound:?}"
+        );
+        // The same Runner still runs commands under the wall alone.
+        assert_eq!(
+            runner
+                .text("/bin/sh", &["-c", "echo ok"], &scratch.0)
+                .unwrap(),
+            "ok\n"
+        );
+        assert!(runner.created_cgroups.is_empty());
+    }
+
+    #[test]
+    fn total_cpu_budget_is_shared_across_runners() {
+        set_producer_thread_cpu_for_test(Some(Duration::ZERO));
+        let scratch = Scratch::new("totalshared");
+        let budget = ProducerCpuBudget::new(Duration::from_millis(600)).unwrap();
+        let mut first = Runner::new(
+            scratch.0.join("first-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
+        first.bound_shared_total_cpu(budget.clone()).unwrap();
+        let _ = first
+            .run_cpu_bounded(
+                "/bin/sh",
+                &sh("while :; do :; done"),
+                &scratch.0,
+                Duration::from_millis(250),
+            )
+            .unwrap_err();
+        // The second Runner sees the first Runner's child CPU through
+        // the shared budget and is capped at what remains.
+        let mut second = Runner::new(
+            scratch.0.join("second-logs"),
+            Duration::from_secs(60),
+            1 << 20,
+        )
+        .unwrap();
+        second.bound_shared_total_cpu(budget).unwrap();
+        assert!(
+            second.total_cpu_used() >= Duration::from_millis(250),
+            "shared aggregate at second Runner start: {:?}",
+            second.total_cpu_used()
+        );
+        let error = second
+            .run("/bin/sh", &sh("while :; do :; done"), &scratch.0)
+            .unwrap_err();
+        assert!(
+            error.contains("stopped: producer total CPU bound tripped (total CPU "),
+            "{error}"
+        );
+        // The second Runner's own command was capped at the shared
+        // remainder (600 ms budget minus the first Runner's >=250 ms),
+        // so its own CPU stays well under a fresh 600 ms budget; a
+        // per-Runner budget would let it reach ~600 ms and fail here.
+        let second_own = second.command_cpu.last().copied().flatten().unwrap();
+        assert!(
+            second_own < Duration::from_millis(500),
+            "second Runner command used {second_own:?}, not capped at the shared remainder"
+        );
+        assert!(
+            second.total_cpu_used() > Duration::from_millis(600)
+                && second.total_cpu_used() < Duration::from_millis(1000),
+            "shared aggregate after second Runner: {:?}",
+            second.total_cpu_used()
+        );
+        assert_own_cgroups_removed(&first, 1);
+        assert_own_cgroups_removed(&second, 1);
+        set_producer_thread_cpu_for_test(None);
+    }
+
+    #[test]
+    fn producer_thread_cpu_counts_this_threads_work() {
+        // The real getrusage(RUSAGE_THREAD) path, no override: CPU
+        // burned on this thread is a lower bound the budget must see.
+        set_producer_thread_cpu_for_test(None);
+        let budget = ProducerCpuBudget::new(Duration::from_secs(60)).unwrap();
+        let start = producer_thread_cpu().unwrap();
+        let wall = Instant::now();
+        while producer_thread_cpu().unwrap() - start < Duration::from_millis(50) {
+            assert!(
+                wall.elapsed() < Duration::from_secs(10),
+                "thread CPU did not advance"
+            );
+            std::hint::spin_loop();
+        }
+        assert!(
+            budget.used().unwrap() >= Duration::from_millis(50),
+            "budget used {:?} after burning 50 ms on this thread",
+            budget.used().unwrap()
+        );
+    }
+
+    #[test]
+    fn a_foreign_threads_cpu_does_not_count_against_the_budget() {
+        // getrusage(RUSAGE_THREAD) isolation, no override: a sibling
+        // thread burns CPU while this one sleeps; used() stays low.
+        // Under RUSAGE_SELF it would see the sibling's burn.
+        set_producer_thread_cpu_for_test(None);
+        let budget = ProducerCpuBudget::new(Duration::from_secs(60)).unwrap();
+        let burner = thread::spawn(|| {
+            let start = producer_thread_cpu().unwrap();
+            let wall = Instant::now();
+            while producer_thread_cpu().unwrap() - start < Duration::from_millis(100) {
+                assert!(
+                    wall.elapsed() < Duration::from_secs(10),
+                    "burner thread CPU did not advance"
+                );
+                std::hint::spin_loop();
+            }
+        });
+        burner.join().expect("burner thread panicked");
+        assert!(
+            budget.used().unwrap() < Duration::from_millis(50),
+            "budget used {:?} after a sibling thread burned 100 ms",
+            budget.used().unwrap()
+        );
+        // A budget created on a foreign thread is refused here by name.
+        let foreign = thread::spawn(|| ProducerCpuBudget::new(Duration::from_secs(60)))
+            .join()
+            .expect("creator thread panicked")
+            .unwrap();
+        let error = foreign.used().unwrap_err();
+        assert!(
+            error.contains("producer CPU budget used from a thread other than its creator"),
+            "{error}"
+        );
+    }
+
+    /// Writes a named skip past libtest output capture (fd 2
+    /// directly), so the counted runner reports it as skipped rather
+    /// than as a silent pass: the `REVERIE_SKIP:` line other Reverie
+    /// tests use. `test` must be the exact listed case name (the
+    /// gated runner matches it exactly, module path included); callers
+    /// pass this thread's libtest name. When skips are forbidden
+    /// (`REVERIE_FORBID_SKIPS=1`; nothing sets it in-tree yet, so
+    /// today this is the contract validation nodes opt into), the
+    /// same case fails by name instead.
+    fn report_skip_or_fail(test: &str, reason: &str, forbid_skips: bool) {
+        if forbid_skips {
+            panic!("{test} cannot run and REVERIE_FORBID_SKIPS forbids skips: {reason}");
+        }
+        let line = format!("\nREVERIE_SKIP: {test}: {reason}\n");
+        let mut rest = line.as_bytes();
+        while !rest.is_empty() {
+            // SAFETY: writing a borrowed byte slice to the stderr descriptor.
+            let written =
+                unsafe { libc::write(libc::STDERR_FILENO, rest.as_ptr().cast(), rest.len()) };
+            assert!(
+                written > 0,
+                "write the named skip for {test}: {}",
+                std::io::Error::last_os_error()
+            );
+            rest = &rest[written as usize..];
+        }
+    }
+
+    fn skips_forbidden() -> bool {
+        std::env::var_os("REVERIE_FORBID_SKIPS").is_some_and(|value| value == "1")
+    }
+
+    #[test]
+    #[should_panic(expected = "REVERIE_FORBID_SKIPS forbids skips")]
+    fn forbidden_skips_fail_by_name() {
+        report_skip_or_fail("forbidden_skips_fail_by_name", "test reason", true);
+    }
+
+    /// How the permission-denied test below gets a parent under
+    /// which creating a command cgroup is refused.
+    #[derive(Debug, PartialEq, Eq)]
+    enum DenialPlan {
+        /// This process's own cgroup: not writable by this process,
+        /// which is itself the real-world denial.
+        OwnCgroup,
+        /// A child of the own cgroup with cgroup.max.descendants = 0:
+        /// creation under it is refused even for root.
+        LimitedChild,
+        /// No cgroup v2 hierarchy at all: counted named skip.
+        SkipNoCgroupV2,
+        /// No cgroup v2 and skips forbidden: fail by name.
+        FailForbidden,
+    }
+
+    fn denial_plan(is_cgroup_v2: bool, own_writable: bool, forbid_skips: bool) -> DenialPlan {
+        match (is_cgroup_v2, own_writable, forbid_skips) {
+            (false, _, true) => DenialPlan::FailForbidden,
+            (false, _, false) => DenialPlan::SkipNoCgroupV2,
+            (true, false, _) => DenialPlan::OwnCgroup,
+            (true, true, _) => DenialPlan::LimitedChild,
+        }
+    }
+
+    #[test]
+    fn denial_plan_covers_every_host_shape() {
+        // No cgroup v2: skip, or fail by name where skips are forbidden.
+        assert_eq!(denial_plan(false, false, false), DenialPlan::SkipNoCgroupV2);
+        assert_eq!(denial_plan(false, true, false), DenialPlan::SkipNoCgroupV2);
+        assert_eq!(denial_plan(false, false, true), DenialPlan::FailForbidden);
+        assert_eq!(denial_plan(false, true, true), DenialPlan::FailForbidden);
+        // Unwritable own cgroup: the denial is direct, forbidden or not.
+        assert_eq!(denial_plan(true, false, false), DenialPlan::OwnCgroup);
+        assert_eq!(denial_plan(true, false, true), DenialPlan::OwnCgroup);
+        // Writable own cgroup (root, delegated subtree): manufacture
+        // the denial with a descendant limit — never a skip.
+        assert_eq!(denial_plan(true, true, false), DenialPlan::LimitedChild);
+        assert_eq!(denial_plan(true, true, true), DenialPlan::LimitedChild);
+    }
+
+    /// Removes the manufactured limited cgroup on drop, on every
+    /// path including panics. A failed removal panics by name when
+    /// the test is not already panicking, and prints the leaked path
+    /// when it is, so a leak into the host's real tree is never silent.
+    struct LimitedCgroup {
+        path: PathBuf,
+    }
+
+    impl Drop for LimitedCgroup {
+        fn drop(&mut self) {
+            if let Err(error) = fs::remove_dir(&self.path) {
+                if std::thread::panicking() {
+                    eprintln!(
+                        "leaked manufactured limited cgroup {}: {error}",
+                        self.path.display()
+                    );
+                } else {
+                    panic!(
+                        "remove manufactured limited cgroup {}: {error}",
+                        self.path.display()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_non_writable_cgroup_parent_falls_back_to_wall_only() {
+        // The real-world permission-denied path: the parent IS a real
+        // cgroup v2 directory (so the v2 check passes), but creating
+        // a child cgroup under it is refused. The parent is this
+        // process's OWN cgroup, where the Runner really creates its
+        // cgroups — never the host root. Where the own cgroup is not
+        // writable that is itself the denial; where it is writable
+        // (root, or a delegated subtree) a child with
+        // cgroup.max.descendants = 0 manufactures the same refusal,
+        // so this runs on every cgroup v2 host and never skips there.
+        // The only skip left is a host with no cgroup v2 at all.
+        let own = current_cgroup_directory().ok();
+        // SAFETY: an all-zero statfs is a valid output buffer for statfs.
+        let mut filesystem: libc::statfs = unsafe { std::mem::zeroed() };
+        let root_cstr = std::ffi::CString::new("/sys/fs/cgroup").unwrap();
+        // SAFETY: statfs reads the NUL-terminated path, writes the buffer.
+        let is_cgroup_v2 = own.is_some()
+            && unsafe { libc::statfs(root_cstr.as_ptr(), &mut filesystem) } == 0
+            && filesystem.f_type == 0x6367_7270;
+        let own_writable = own.as_ref().is_some_and(|own| {
+            let own_cstr = std::ffi::CString::new(own.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: faccessat reads the NUL-terminated path only.
+            // AT_EACCESS checks the effective uid, as mkdir will use.
+            let access = unsafe {
+                libc::faccessat(
+                    libc::AT_FDCWD,
+                    own_cstr.as_ptr(),
+                    libc::W_OK,
+                    libc::AT_EACCESS,
+                )
+            };
+            access == 0
+        });
+        let mut limited_child: Option<LimitedCgroup> = None;
+        let parent = match denial_plan(is_cgroup_v2, own_writable, skips_forbidden()) {
+            DenialPlan::OwnCgroup => own.clone().unwrap(),
+            DenialPlan::LimitedChild => {
+                let child = own
+                    .clone()
+                    .unwrap()
+                    .join(format!("reverie-test-limited-{}", std::process::id()));
+                fs::create_dir(&child).unwrap();
+                // Guard first, so even a panic in the write below
+                // cannot leak the child.
+                limited_child = Some(LimitedCgroup {
+                    path: child.clone(),
+                });
+                fs::write(child.join("cgroup.max.descendants"), "0").unwrap();
+                child
+            }
+            DenialPlan::SkipNoCgroupV2 | DenialPlan::FailForbidden => {
+                // The exact listed case name: the gated runner matches
+                // it exactly, module path included, and libtest names
+                // this thread by it in every binary that includes us.
+                let case = std::thread::current()
+                    .name()
+                    .unwrap_or("a_non_writable_cgroup_parent_falls_back_to_wall_only")
+                    .to_owned();
+                report_skip_or_fail(
+                    &case,
+                    "no cgroup v2 hierarchy at /sys/fs/cgroup on this host",
+                    skips_forbidden(),
+                );
+                return;
+            }
+        };
+        let scratch = Scratch::new("nonwritable");
+        let mut runner =
+            Runner::new(scratch.0.join("logs"), Duration::from_secs(60), 1 << 20).unwrap();
+        runner.cgroup_parent = Some(parent.clone());
+        let bound = runner
+            .bound_total_cpu_or_wall_backstop(Duration::from_secs(30))
+            .unwrap();
+        let output = runner
+            .run("/bin/sh", &sh("printf wall-only"), &scratch.0)
+            .unwrap();
+        // Settle `created` BEFORE the limited child goes: if the
+        // limit failed to refuse, it holds a live sub-cgroup whose
+        // presence would make removing the child fail with EBUSY and
+        // hide the real failure. Removing it first also keeps the
+        // guard's drop (end of scope, and on any panic above) able
+        // to succeed.
+        let created_is_unavailable = match CommandCgroup::create(&parent) {
+            Err(CgroupCreateError::Unavailable(_)) => true,
+            Err(CgroupCreateError::Other(error)) => {
+                panic!("expected typed Unavailable, got Other: {error}")
+            }
+            Ok(cgroup) => {
+                let _ = cgroup.remove();
+                false
+            }
+        };
+        assert!(
+            matches!(&bound, TotalCpuBound::WallBackstopOnly(_)),
+            "expected wall-only fallback, got {bound:?}"
+        );
+        assert_eq!(output, b"wall-only");
+        // The fallback carries a typed unavailable reason, not text.
+        assert!(created_is_unavailable, "expected typed Unavailable, got Ok");
+        // Explicit drop: a removal failure panics by name here rather
+        // than only printing on an unwinding path.
+        drop(limited_child);
     }
 
     #[test]
@@ -81565,7 +83894,7 @@ mod runner_cpu_budget_tests {
             .unwrap_err();
         let wall = started.elapsed();
         assert!(
-            error.contains("stopped: exceeded the producer CPU budget (used "),
+            error.contains("stopped: producer CPU bound tripped (command CPU "),
             "{error}"
         );
         let used = runner.command_cpu.last().copied().flatten().unwrap();
