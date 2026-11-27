@@ -1426,6 +1426,23 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
         crate::user_address::host_user_address_limit()
     }
 
+    /// This run's [`DescriptorProvider`](crate::DescriptorProvider):
+    /// the backend-owned handle through which the descriptor facts
+    /// and duplication of this run's tables are answered, retained
+    /// by the tool for the run at its first pre-execution boundary.
+    /// A backend that runs the guest's syscalls itself returns the
+    /// provider over the descriptor tables it keeps; the returned
+    /// handle is the run's identity for those facts, told apart from
+    /// every other run's even where task numbers coincide.
+    ///
+    /// The default states nothing (`None`): a backend whose guest
+    /// threads are host tasks needs no handle for a tool to read the
+    /// kernel's state for them itself, and an unimplemented provider
+    /// must not be mistaken for an empty answer from a real one.
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+        None
+    }
+
     /// Returns the state of this thread's open descriptor `fd` that no
     /// syscall reads without changing it: an eventfd's counter, a Unix domain
     /// socket's queued `SCM_RIGHTS` descriptors, and the locks held through
@@ -2088,6 +2105,10 @@ where
         self.inner.link_path(tid, link)
     }
 
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+        self.inner.descriptor_provider()
+    }
+
     fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
         self.inner.memory_map(tid)
     }
@@ -2610,6 +2631,10 @@ where
         link: crate::PathLink,
     ) -> Result<crate::LinkPath, crate::FactError> {
         self.inner.link_path(tid, link)
+    }
+
+    fn descriptor_provider(&self) -> Option<std::sync::Arc<dyn crate::DescriptorProvider>> {
+        self.inner.descriptor_provider()
     }
 
     fn memory_map(&self, tid: Pid) -> Result<crate::MemoryMap, crate::FactError> {
