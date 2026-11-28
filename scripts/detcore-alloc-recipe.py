@@ -10,7 +10,11 @@ Two roles read the INSTALLATION_DEPTH cell as a literal displacement, so a new
 cell needs a row for each (--role, default fixed_patch_alloc):
 
 - fixed_patch_alloc, the 241-byte TLS-arm allocation body, cell at [66..70];
-- fixed_tls_fn_once, the 22-byte FnOnce TLS thunk, cell at [16..20].
+- fixed_tls_fn_once, the 22-byte FnOnce TLS thunk, cell at [16..20];
+- fixed_patch_alloc_buck238, the reviewed 238-byte Buck cohort body, cell
+  at [69..73] (template role fixed_patch_alloc);
+- fixed_tls_fn_once_buck25, the reviewed 25-byte Buck cohort thunk, cell
+  at [19..23] (template role fixed_tls_fn_once).
 
 A third role, fixed_patch_alloc_no_scope, derives the standalone
 DETCORE_NO_SCOPE_ALLOC const instead: the same fixed_patch_alloc function's
@@ -400,10 +404,25 @@ LEGACY_FN_ONCE_ROWS = frozenset({
 
 ALLOC = Role("fixed_patch_alloc", 241, (66, 70), "TLS-arm allocation body", 0x1372580, LEGACY_ROWS)
 FN_ONCE = Role("fixed_tls_fn_once", 22, (16, 20), "FnOnce TLS thunk", 0x1372a20, LEGACY_FN_ONCE_ROWS)
+# Reviewed Buck238 cohort (candidate ELF at profile head 112dee22, cell
+# 0x200): pinned by (body SHA256, structure digest) like the legacy rows,
+# so a hand-edited body or structure is refused, never mask-widened.
+BUCK238_ALLOC_ROWS = frozenset({
+    ("a2b5ce29716ad50bab862335742a5e7b86131c0b3d6743686b883b25d7539a8b",
+     "61f577c23f447dc30615a7cf45e71ea6c749b9a1d9294f7dfea4c5bf49c63aa3"),  # 0x200
+})
+BUCK25_FN_ONCE_ROWS = frozenset({
+    ("ed861b68182dc4ecead42405b5c2049cf80268fe5df4f49d437fe74a31136297",
+     "0d0dd3fda97ea67bef83c6fe667dc40f1859088abb8a1a20884587347fd0d54a"),  # 0x200
+})
+ALLOC_BUCK238 = Role("fixed_patch_alloc_buck238", 238, (69, 73), "Buck238 TLS-arm allocation body",
+                     0x1718120, BUCK238_ALLOC_ROWS, template_role="fixed_patch_alloc")
+FN_ONCE_BUCK25 = Role("fixed_tls_fn_once_buck25", 25, (19, 23), "Buck25 FnOnce TLS thunk",
+                      0x17184D0, BUCK25_FN_ONCE_ROWS, template_role="fixed_tls_fn_once")
 NO_SCOPE = Role("fixed_patch_alloc_no_scope", 101, None, "no-installation-scope allocation body",
                 0x1372e00, frozenset(), template_role="fixed_patch_alloc",
                 const_name="DETCORE_NO_SCOPE_ALLOC")
-ROLES = {role.name: role for role in (ALLOC, FN_ONCE, NO_SCOPE)}
+ROLES = {role.name: role for role in (ALLOC, FN_ONCE, ALLOC_BUCK238, FN_ONCE_BUCK25, NO_SCOPE)}
 
 
 def got_mismatches(elf: Elf, address: int, body: bytes, structure, support: dict[str, set[str]],
@@ -909,7 +928,7 @@ def self_test(text: str) -> int:
     """self_test_role for every table role plus the no-scope const; any
     failure, or a role with no rows, fails."""
 
-    results = [self_test_role(text, role) for role in (ALLOC, FN_ONCE)]
+    results = [self_test_role(text, role) for role in (ALLOC, FN_ONCE, ALLOC_BUCK238, FN_ONCE_BUCK25)]
     results.append(self_test_no_scope(text))
     return 1 if any(failures or count == 0 for count, _generated, _controls, failures in results) else 0
 

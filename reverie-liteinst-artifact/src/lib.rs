@@ -1572,8 +1572,8 @@ pub enum CompiledSourceLayout {
     /// spelling; records written before the rename parse unchanged.
     #[serde(rename = "HermitPath")]
     PathCheckout,
-    /// Buck-materialized source tree. Compiler filenames use the materialized
-    /// absolute spelling until a real Buck ELF's embedded paths are measured;
+    /// Buck-materialized source tree. Compiler filenames use the measured
+    /// `fbcode/<reverie-relative>` spelling (see `compiled_role_filename`);
     /// machine-code recipes still gate any qualification claim.
     Buck,
 }
@@ -4312,9 +4312,34 @@ fn compiled_role_filename(
     file.verify()?;
     Ok(match layout {
         CompiledSourceLayout::ReverieWorkspace => relative.as_bytes().to_vec(),
-        CompiledSourceLayout::Buck
-        | CompiledSourceLayout::GitlinkCheckout
-        | CompiledSourceLayout::PathCheckout => file
+        // Measured on the Buck238 candidate ELF (SHA256
+        // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+        // profile head 112dee22): Buck rustc embeds exactly one filename
+        // form, `fbcode/hermetic_infra/reverie/<reverie-relative>` (82 bytes
+        // for reverie-inguest/src/guest/tool_region_constructor.rs), not
+        // the materialized absolute path. Derive it from the declared
+        // file's own path: the `fbcode/.../reverie` root that prefixes
+        // `relative` on disk, spelled from its `fbcode` component. Exactly
+        // this one form is accepted for the Buck authority; the Cargo
+        // layouts below are unchanged.
+        CompiledSourceLayout::Buck => {
+            let path = file
+                .path
+                .to_str()
+                .ok_or("compiled source filename is not UTF-8")?;
+            let root = path
+                .strip_suffix(relative)
+                .and_then(|root| root.strip_suffix('/'))
+                .ok_or("Buck compiled source filename lacks its reverie root")?;
+            let root = root
+                .split('/')
+                .position(|component| component == "fbcode")
+                .map(|at| root.split('/').skip(at).collect::<Vec<_>>().join("/"))
+                .filter(|root| root.ends_with("/reverie"))
+                .ok_or("Buck compiled source filename lacks an fbcode reverie root")?;
+            format!("{root}/{relative}").into_bytes()
+        }
+        CompiledSourceLayout::GitlinkCheckout | CompiledSourceLayout::PathCheckout => file
             .path
             .to_str()
             .ok_or("compiled source filename is not UTF-8")?
@@ -5467,6 +5492,43 @@ impl VerifiedCompiledSources {
             );
         }
         compiled_role_filename(self.record.layout, relative, file)
+    }
+    // Compiler filename for a consumer-workspace source (the Detcore
+    // leaf), by authority exactly as for the Reverie roles above.
+    // Measured on the Buck238 candidate ELF (SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // profile head 112dee22): Buck rustc embeds
+    // `fbcode/hermetic_infra/hermit/detcore-liteinst/src/lib.rs`
+    // (56 bytes) for the leaf, not the Cargo-relative spelling.
+    // Derive it from the declared file's own path, spelled from its
+    // `fbcode` component through the `hermit` workspace root; exactly
+    // this one form is accepted for the Buck authority. The Cargo
+    // layouts keep the workspace-relative spelling, unchanged.
+    fn workspace_filename(&self, relative: &str) -> Result<Vec<u8>> {
+        if self.record.layout != CompiledSourceLayout::Buck {
+            return Ok(relative.as_bytes().to_vec());
+        }
+        let file = self
+            .record
+            .files
+            .get(&format!("workspace:{relative}"))
+            .ok_or("verified source context lacks exact workspace filename role")?;
+        file.verify()?;
+        let path = file
+            .path
+            .to_str()
+            .ok_or("workspace source filename is not UTF-8")?;
+        let root = path
+            .strip_suffix(relative)
+            .and_then(|root| root.strip_suffix('/'))
+            .ok_or("Buck workspace source filename lacks its workspace root")?;
+        let root = root
+            .split('/')
+            .position(|component| component == "fbcode")
+            .map(|at| root.split('/').skip(at).collect::<Vec<_>>().join("/"))
+            .filter(|root| root.ends_with("/hermit"))
+            .ok_or("Buck workspace source filename lacks an fbcode hermit root")?;
+        Ok(format!("{root}/{relative}").into_bytes())
     }
 }
 
@@ -6686,17 +6748,26 @@ struct TlsExecutableMapping {
 const DIRECT_TLS_CENSUS_POLICY: &str =
     "installation_depth_named_getter_pt_load22_raw_loader_pointers_v1";
 // Separate from the standalone v1 contract: one observed native Detcore cohort.
+// The `pt_load22` token in these policy names is the historical 22-byte
+// FnOnce getter window the census scans for; it is not a PT_LOAD segment
+// count, and no policy here requires any number of PT_LOAD segments.
 const DETCORE_DIRECT_TLS_CENSUS_POLICY: &str =
     "detcore_e8_alloc241_named_getter_pt_load22_raw_loader_pointers_v2";
 // Semantic getter-less Detcore cohort at any accepted direct-allocation offset.
 const DETCORE_DIRECT_TLS_CENSUS_POLICY_V3: &str =
     "detcore_semantic_alloc241_named_getter_pt_load22_raw_loader_pointers_v3";
+// Buck238 cohort: 238-byte alloc body, 25-byte FnOnce thunk, cell 0x200.
+// Named for its own FnOnce window so the v1-v3 `pt_load22` token is not
+// read as a segment count or as this cohort's thunk length.
+const DETCORE_DIRECT_TLS_CENSUS_POLICY_V4: &str =
+    "detcore_semantic_alloc238_named_getter_fnonce25_raw_loader_pointers_v4";
 
 // Every accepted INSTALLATION_DEPTH cell names its source. This list is not a
-// range: each entry is a cell observed in a real image, whose 241-byte
-// fixed_patch_alloc read is also bound to the named symbol by the ELF
-// qualifier. Entries without a recorded compiler predate the qualifier's
-// move into this crate (ed29a09d) and are kept as found there.
+// range: each entry is a cell observed in a real image, whose
+// fixed_patch_alloc read (241-byte, or 238-byte for the Buck238 cohort) is
+// also bound to the named symbol by the ELF qualifier. Entries without a
+// recorded compiler predate the qualifier's move into this crate (ed29a09d)
+// and are kept as found there.
 fn detcore_direct_tls_offset_accepted(address: u64) -> bool {
     matches!(
         address,
@@ -6741,6 +6812,14 @@ fn detcore_direct_tls_offset_accepted(address: u64) -> bool {
         // NT_GNU_BUILD_ID note; fixed_patch_alloc at 0x1372580, body SHA256
         // 2d28fc7b.... Its recipe row is scripts/detcore-alloc-recipe.py output.
         | 0xf8
+        // Buck238 candidate at profile head 112dee22: LOCAL8 cell 0x200,
+        // PT_TLS filesz 0x120 memsz 0x208; ELF SHA256
+        // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+        // rustc 1.99.1 (58cf8f9c3 2026-10-13); fixed_patch_alloc at
+        // 0x1718120, 238-byte body SHA256 a2b5ce29.... Its recipe rows are
+        // the reviewed Buck238 cohort rows below (generator roles
+        // fixed_patch_alloc_buck238 / fixed_tls_fn_once_buck25).
+        | 0x200
     )
 }
 
@@ -22578,13 +22657,13 @@ fn mint_detcore_direct_allocation_tls_evidence(
     // The complete existing Detcore operation closure still binds every actual
     // operand/callee. This absence route additionally requires an accepted
     // direct-allocation offset and whole allocation shape, not an arbitrary
-    // 241-byte function.
+    // 241- or 238-byte function.
     require(
         detcore_direct_tls_offset_accepted(cell.address)
             && cell.size == 8
             && cell.binding == sym::STB_LOCAL
             && canonical_rust_symbol(&cell.name).as_deref() == Some(FIXED_TLS_CELL_ROLE)
-            && allocation_bytes.len() == 241
+            && matches!(allocation_bytes.len(), 241 | 238)
             && DETCORE_VALIDATE_TEMPLATES.iter().any(|template| {
                 template.role == "fixed_patch_alloc"
                     && fixed_template_shape(
@@ -22601,9 +22680,14 @@ fn mint_detcore_direct_allocation_tls_evidence(
             && census.getter_pointer_slots.is_empty(),
         "Detcore direct allocation TLS proof found a getter or raw loader pointer edge",
     )?;
+    let (version, policy) = if allocation_bytes.len() == 238 {
+        (4, DETCORE_DIRECT_TLS_CENSUS_POLICY_V4)
+    } else {
+        (3, DETCORE_DIRECT_TLS_CENSUS_POLICY_V3)
+    };
     Ok(DirectAllocationTlsEvidence {
-        version: 3,
-        policy: DETCORE_DIRECT_TLS_CENSUS_POLICY_V3.into(),
+        version,
+        policy: policy.into(),
         elf_sha256: sha256(bytes),
         compiled_sources_sha256,
         reverie_pin,
@@ -22650,7 +22734,16 @@ fn validate_direct_allocation_tls_evidence_in_image(
             let semantic_v3 = proof.version == 3
                 && proof.policy == DETCORE_DIRECT_TLS_CENSUS_POLICY_V3
                 && detcore_direct_tls_offset_accepted(tls.tls_cell.address);
-            (retained_v2 || semantic_v3, cell_identity, 241, 58)
+            let semantic_v4 = proof.version == 4
+                && proof.policy == DETCORE_DIRECT_TLS_CENSUS_POLICY_V4
+                && detcore_direct_tls_offset_accepted(tls.tls_cell.address);
+            let (extent, call_offset) = if semantic_v4 { (238, 61) } else { (241, 58) };
+            (
+                retained_v2 || semantic_v3 || semantic_v4,
+                cell_identity,
+                extent,
+                call_offset,
+            )
         }
     };
     let hash =
@@ -22742,33 +22835,62 @@ fn qualify_allocator_tls_boundary_in_source_context(
     let (plt, module, local_key_object, local_key_transfer) = if image_kind
         == FixedImageKind::Detcore
     {
+        // Two reviewed cohorts, never a widened mask: the 241-byte body
+        // (descriptor lea displacement at 54, __tls_get_addr call at 58,
+        // cell read at 66) and the Buck238 body (the candidate GD form:
+        // push-rbp prologue shifts the same sequence to lea at 57, direct
+        // call at 61, cell read at 69; FnOnce thunk 25 bytes, cell at 19).
+        let (module_at, plt_at, cell_at, call_offset, fn_once_len, fn_once_cell_at, fn_once_fields): (
+            (usize, usize),
+            (usize, usize),
+            usize,
+            u64,
+            usize,
+            usize,
+            [(usize, usize); 2],
+        ) = match allocation_bytes.len() {
+            241 => ((54, 58), (59, 63), 66, 58, 22, 16, [(4, 8), (9, 13)]),
+            238 => ((57, 61), (62, 66), 69, 61, 25, 19, [(7, 11), (12, 16)]),
+            _ => {
+                return Err(format!(
+                    "Detcore validate allocation/TLS shape differs: allocation length {}, cell offset {:#x}",
+                    allocation_bytes.len(),
+                    cell.address
+                ))
+            }
+        };
         require(
-            allocation_bytes.len() == 241 && detcore_direct_tls_offset_accepted(cell.address),
+            detcore_direct_tls_offset_accepted(cell.address),
             format!(
                 "Detcore validate allocation/TLS shape differs: allocation length {}, cell offset {:#x}",
                 allocation_bytes.len(),
                 cell.address
             ),
         )?;
-        let module = fixed_rip_target(allocation, allocation_bytes, 54, 58)?;
-        let plt = fixed_rip_target(allocation, allocation_bytes, 59, 63)?;
-        let encoded = u32::from_le_bytes(allocation_bytes[66..70].try_into().unwrap());
+        let module = fixed_rip_target(allocation, allocation_bytes, module_at.0, module_at.1)?;
+        let plt = fixed_rip_target(allocation, allocation_bytes, plt_at.0, plt_at.1)?;
+        let encoded =
+            u32::from_le_bytes(allocation_bytes[cell_at..cell_at + 4].try_into().unwrap());
         require(
             u64::from(encoded) == cell.address,
             "Detcore allocation reads another TLS cell",
         )?;
         callsites.push(ConstructorTransfer {
-            instruction: allocation + 58,
+            instruction: allocation + call_offset,
             target: plt,
             local_got_slot: None,
         });
         if roles.contains_key("fixed_tls_fn_once") {
             let (function, function_bytes) = bind("fixed_tls_fn_once")?;
             require(
-                function_bytes.len() == 22,
+                function_bytes.len() == fn_once_len,
                 "Detcore FnOnce whole extent differs",
             )?;
-            let encoded = u32::from_le_bytes(function_bytes[16..20].try_into().unwrap());
+            let encoded = u32::from_le_bytes(
+                function_bytes[fn_once_cell_at..fn_once_cell_at + 4]
+                    .try_into()
+                    .unwrap(),
+            );
             require(
                 u64::from(encoded) == cell.address,
                 "Detcore FnOnce reads another TLS cell",
@@ -22792,10 +22914,13 @@ fn qualify_allocator_tls_boundary_in_source_context(
                 function,
                 function_bytes,
                 template[0].hex,
-                &[(4, 8, module), (9, 13, plt)],
+                &[
+                    (fn_once_fields[0].0, fn_once_fields[0].1, module),
+                    (fn_once_fields[1].0, fn_once_fields[1].1, plt),
+                ],
             )?;
             callsites.push(ConstructorTransfer {
-                instruction: function + 8,
+                instruction: function + (fn_once_fields[1].0 as u64 - 1),
                 target: plt,
                 local_got_slot: None,
             });
@@ -23053,7 +23178,7 @@ fn qualify_allocator_tls_boundary_in_source_context(
         )?)
     } else if image_kind == FixedImageKind::Detcore
         && detcore_direct_tls_offset_accepted(cell.address)
-        && allocation_bytes.len() == 241
+        && matches!(allocation_bytes.len(), 241 | 238)
         && !roles.contains_key("fixed_tls_fn_once")
     {
         Some(derive_detcore_direct_allocation_tls_evidence(
@@ -23518,10 +23643,12 @@ fn fixed_required_publication_roles<'a>(
 /// `fixed_patch_alloc` and `fixed_tls_fn_once`) must not widen the
 /// standalone image's qualification scope, which is exactly the
 /// dh-5244-fixture failure that motivated this list. (The template
-/// index itself still carries meaning elsewhere: templates at or after
-/// FIXED_SCALAR_TEMPLATE_START derive `scalar_storage` in no-scope
-/// qualification. That is a property of a chosen template, not of a
-/// role's image scope.)
+/// index itself still carries meaning elsewhere: a pure-transport
+/// template (sole trusted GOT operand, no storage operand) derives
+/// `scalar_storage` None at any index; otherwise a template at or
+/// after FIXED_SCALAR_TEMPLATE_START derives
+/// Some((fixed_region, fixed_initializing)). That is a property of
+/// a chosen template, not of a role's image scope.)
 const FIXED_SCALAR_ROLES: &[&str] = &[
     "fixed_arena_backing",
     "fixed_arena_mprotect",
@@ -23840,16 +23967,19 @@ fn validate_existing_allocator_tls_boundary(
         }
         (None, None, None) => {
             let extent = match (image_kind, tls.tls_cell.address) {
-                (FixedImageKind::Standalone, 0x40 | 0x80) => Some(186),
+                (FixedImageKind::Standalone, 0x40 | 0x80) => Some((186, 22)),
                 // Hand-made records use the same accepted set qualify can mint.
                 (FixedImageKind::Detcore, address)
                     if detcore_direct_tls_offset_accepted(address) =>
                 {
-                    Some(241)
+                    match tls.local_chain.get("fixed_patch_alloc").map(|s| s.size) {
+                        Some(238) => Some((238, 25)),
+                        _ => Some((241, 22)),
+                    }
                 }
                 _ => None,
             };
-            if let Some(extent) = extent {
+            if let Some((extent, fn_once_extent)) = extent {
                 require(
                     tls.local_chain
                         .get("fixed_patch_alloc")
@@ -23857,7 +23987,7 @@ fn validate_existing_allocator_tls_boundary(
                         && tls
                             .local_chain
                             .get("fixed_tls_fn_once")
-                            .is_some_and(|s| s.size == 22)
+                            .is_some_and(|s| s.size == fn_once_extent)
                         && tls
                             .local_chain
                             .keys()
@@ -24881,7 +25011,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         location: true,
         hex: "00000000000000001b000000000000001d00000001000000",
         file_hex: "646574636f72652d6c697465696e73742f7372632f6c69622e7273",
-        source_context_key: None,
+        source_context_key: Some("workspace:detcore-liteinst/src/lib.rs"),
         line: 29,
         column: 1,
     },
@@ -24975,6 +25105,184 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         line: 230,
         column: 23,
     },
+    // Reviewed Buck cohort data, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2):
+    // the Buck fixed_heap_allocate panic tails reference the two
+    // precondition strings below and alloc.rs Locations at lines
+    // 204/206/234/187/229/236 (new) and 175/158/201/191/230 (the
+    // Cargo-era lines, which also occur in this ELF).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_649_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a73756220726571756972657320746861742074686520616464726573732063616c63756c6174696f6e20646f6573206e6f74206f766572666c6f770a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_656_data",
+        location: true,
+        hex: "00000000000000004000000000000000cc0000001a000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 204,
+        column: 26,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_676_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a777269746520726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_683_data",
+        location: true,
+        hex: "00000000000000004000000000000000ce0000001a000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 206,
+        column: 26,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_703_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a73756220726571756972657320746861742074686520616464726573732063616c63756c6174696f6e20646f6573206e6f74206f766572666c6f770a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_710_data",
+        location: true,
+        hex: "00000000000000004000000000000000ea00000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 234,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_730_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a777269746520726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_737_data",
+        location: true,
+        hex: "00000000000000004000000000000000bb00000029000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 187,
+        column: 41,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_757_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a777269746520726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_764_data",
+        location: true,
+        hex: "00000000000000004000000000000000e500000026000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 229,
+        column: 38,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_784_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a777269746520726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_791_data",
+        location: true,
+        hex: "00000000000000004000000000000000ec00000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 236,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_811_data",
+        location: true,
+        hex: "00000000000000004000000000000000af0000002a000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 175,
+        column: 42,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_824_data",
+        location: true,
+        hex: "00000000000000004000000000000000af0000002a000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 175,
+        column: 42,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_845_data",
+        location: true,
+        hex: "000000000000000040000000000000009e00000022000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 158,
+        column: 34,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_860_data",
+        location: true,
+        hex: "00000000000000004000000000000000c900000019000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 201,
+        column: 25,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_878_data",
+        location: true,
+        hex: "00000000000000004000000000000000c900000019000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 201,
+        column: 25,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_891_data",
+        location: true,
+        hex: "00000000000000004000000000000000bf00000029000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 191,
+        column: 41,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_allocate_900_data",
+        location: true,
+        hex: "00000000000000004000000000000000e600000017000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 230,
+        column: 23,
+    },
     DetcoreValidateDataSpec {
         key: "fixed_detcore_validate_rust_realloc_41_data",
         location: false,
@@ -24989,7 +25297,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         location: true,
         hex: "00000000000000001b000000000000001d00000001000000",
         file_hex: "646574636f72652d6c697465696e73742f7372632f6c69622e7273",
-        source_context_key: None,
+        source_context_key: Some("workspace:detcore-liteinst/src/lib.rs"),
         line: 29,
         column: 1,
     },
@@ -25133,7 +25441,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         location: true,
         hex: "00000000000000001b000000000000001d00000001000000",
         file_hex: "646574636f72652d6c697465696e73742f7372632f6c69622e7273",
-        source_context_key: None,
+        source_context_key: Some("workspace:detcore-liteinst/src/lib.rs"),
         line: 29,
         column: 1,
     },
@@ -25178,7 +25486,7 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         location: true,
         hex: "00000000000000001b000000000000001d00000001000000",
         file_hex: "646574636f72652d6c697465696e73742f7372632f6c69622e7273",
-        source_context_key: None,
+        source_context_key: Some("workspace:detcore-liteinst/src/lib.rs"),
         line: 29,
         column: 1,
     },
@@ -25216,6 +25524,47 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         file_hex: "",
         source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
         line: 632,
+        column: 18,
+    },
+    // Reviewed Buck cohort Locations, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2):
+    // the Buck fixed_generic_prepare panic tails reference
+    // tool_region_constructor.rs Locations at lines 865 and 816.
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_generic_prepare_278_data",
+        location: true,
+        hex: "00000000000000005200000000000000610300000e000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 865,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_generic_prepare_299_data",
+        location: true,
+        hex: "00000000000000005200000000000000610300000e000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 865,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_generic_prepare_312_data",
+        location: true,
+        hex: "000000000000000052000000000000003003000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 816,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_generic_prepare_333_data",
+        location: true,
+        hex: "000000000000000052000000000000003003000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 816,
         column: 18,
     },
     DetcoreValidateDataSpec {
@@ -25289,6 +25638,325 @@ const DETCORE_VALIDATE_DATA: &[DetcoreValidateDataSpec] = &[
         source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
         line: 632,
         column: 18,
+    },
+    // Reviewed Buck cohort Locations, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2):
+    // the Buck fixed_constructor_prepare panic tails reference
+    // tool_region_constructor.rs Locations at lines 841 and 816 (the
+    // Cargo-era 650/632 specs above do not occur in this ELF).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_constructor_prepare_278_data",
+        location: true,
+        hex: "00000000000000005200000000000000490300000e000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 841,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_constructor_prepare_299_data",
+        location: true,
+        hex: "00000000000000005200000000000000490300000e000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 841,
+        column: 14,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_constructor_prepare_312_data",
+        location: true,
+        hex: "000000000000000052000000000000003003000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 816,
+        column: 18,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_constructor_prepare_333_data",
+        location: true,
+        hex: "000000000000000052000000000000003003000012000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_constructor.rs"),
+        line: 816,
+        column: 18,
+    },
+    // Reviewed Buck cohort data, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2):
+    // the Buck fixed_heap_deallocate panic tails reference the two
+    // precondition strings below and alloc.rs Locations at lines
+    // 244 (new) and 254/257/261/276/278 (the Cargo-era lines, which
+    // also occur in this ELF).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_341_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a73756220726571756972657320746861742074686520616464726573732063616c63756c6174696f6e20646f6573206e6f74206f766572666c6f770a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a204c61796f75743a3a66726f6d5f73697a655f616c69676e6d656e745f756e636865636b656420726571756972657320746861742074686520726f756e6465642d757020616c6c6f636174696f6e2073697a6520646f6573206e6f7420657863656564206973697a653a3a4d41580a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_348_data",
+        location: true,
+        hex: "00000000000000004000000000000000f40000002d000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 244,
+        column: 45,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_368_data",
+        location: false,
+        hex: "756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a7265616420726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e756e7361666520707265636f6e646974696f6e2873292076696f6c617465643a207074723a3a777269746520726571756972657320746861742074686520706f696e74657220617267756d656e7420697320616c69676e656420616e64206e6f6e2d6e756c6c0a0a5468697320696e6469636174657320612062756720696e207468652070726f6772616d2e205468697320556e646566696e6564204265686176696f7220636865636b206973206f7074696f6e616c2c20616e642063616e6e6f742062652072656c696564206f6e20666f72207361666574792e",
+        file_hex: "",
+        source_context_key: None,
+        line: 0,
+        column: 0,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_375_data",
+        location: true,
+        hex: "00000000000000004000000000000000f400000055000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 244,
+        column: 85,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_395_data",
+        location: true,
+        hex: "00000000000000004000000000000000fe00000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 254,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_408_data",
+        location: true,
+        hex: "00000000000000004000000000000000fe00000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 254,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_429_data",
+        location: true,
+        hex: "00000000000000004000000000000000010100000d000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 257,
+        column: 13,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_450_data",
+        location: true,
+        hex: "00000000000000004000000000000000010100000d000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 257,
+        column: 13,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_463_data",
+        location: true,
+        hex: "000000000000000040000000000000000501000011000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 261,
+        column: 17,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_484_data",
+        location: true,
+        hex: "000000000000000040000000000000000501000011000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 261,
+        column: 17,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_497_data",
+        location: true,
+        hex: "000000000000000040000000000000001401000043000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 276,
+        column: 67,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_518_data",
+        location: true,
+        hex: "000000000000000040000000000000001401000043000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 276,
+        column: 67,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_531_data",
+        location: true,
+        hex: "000000000000000040000000000000001601000040000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 278,
+        column: 64,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_heap_deallocate_549_data",
+        location: true,
+        hex: "000000000000000040000000000000001601000040000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/alloc.rs"),
+        line: 278,
+        column: 64,
+    },
+    // Reviewed Buck cohort data, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_dealloc_203_data",
+        location: true,
+        hex: "000000000000000041000000000000007300000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 115,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_dealloc_221_data",
+        location: true,
+        hex: "000000000000000041000000000000007300000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 115,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_dealloc_234_data",
+        location: true,
+        hex: "000000000000000041000000000000006900000010000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 105,
+        column: 16,
+    },
+    // Reviewed Buck cohort data, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_realloc_378_data",
+        location: true,
+        hex: "000000000000000041000000000000007300000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 115,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_realloc_396_data",
+        location: true,
+        hex: "000000000000000041000000000000007300000018000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 115,
+        column: 24,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_realloc_409_data",
+        location: true,
+        hex: "000000000000000041000000000000006900000010000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 105,
+        column: 16,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_patch_realloc_422_data",
+        location: true,
+        hex: "00000000000000004100000000000000560000001a000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-liteinst/src/patch_alloc.rs"),
+        line: 86,
+        column: 26,
+    },
+    // Reviewed Buck cohort data, measured on the candidate ELF at
+    // profile head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2).
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_region_publication_get_opaque_52_data",
+        location: true,
+        hex: "000000000000000046000000000000005e00000024000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 94,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_region_publication_get_opaque_70_data",
+        location: true,
+        hex: "000000000000000046000000000000005e00000024000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 94,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_region_publication_set_opaque_110_data",
+        location: true,
+        hex: "000000000000000046000000000000009b00000037000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 155,
+        column: 55,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_region_publication_set_opaque_130_data",
+        location: true,
+        hex: "000000000000000046000000000000008f00000024000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 143,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_region_publication_set_opaque_151_data",
+        location: true,
+        hex: "000000000000000046000000000000008f00000024000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region.rs"),
+        line: 143,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_setup_bitmap_range_166_data",
+        location: true,
+        hex: "00000000000000004c000000000000009300000024000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 147,
+        column: 36,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_setup_bitmap_range_186_data",
+        location: true,
+        hex: "00000000000000004c000000000000008f0000001b000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
+    },
+    DetcoreValidateDataSpec {
+        key: "fixed_detcore_validate_fixed_setup_bitmap_range_207_data",
+        location: true,
+        hex: "00000000000000004c000000000000008f0000001b000000",
+        file_hex: "",
+        source_context_key: Some("rv:reverie-inguest/src/guest/tool_region_arena.rs"),
+        line: 143,
+        column: 27,
     },
 ];
 fn detcore_validate_expected_data(
@@ -31110,6 +31778,1601 @@ const DETCORE_VALIDATE_TEMPLATES: &[DetcoreValidateTemplate] = &[
         ],
         transfers: &[(263, 1), (276, 3)],
     },
+    // Reviewed Buck238 cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands were derived by review from that ELF (GOT slots resolve by
+    // unique R_X86_64_RELATIVE addend to the named callees, Location data
+    // targets match the existing 194/207/228 specs at their line/column).
+    // Generator roles fixed_patch_alloc_buck238 / fixed_tls_fn_once_buck25
+    // re-derive these rows. Never widen the 241/22 masks to fit them.
+    // fixed_patch_alloc _RNvXs3_NtCsF9SrH8tvQt_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc5alloc at VA 0x1718120, 238 bytes; INSTALLATION_DEPTH LOCAL8 cell 0x200 (PT_TLS filesz 0x120, memsz 0x208).
+    // Complete 238-byte body SHA256: a2b5ce29716ad50bab862335742a5e7b86131c0b3d6743686b883b25d7539a8b.
+    DetcoreValidateTemplate {
+        role: "fixed_patch_alloc",
+        hex: "554889e5415741564154534889d34989f6ff15212f0f004885c0747c4989c44c8b782041f6c7070f859f0000004d85ff0f84ab000000488d3d7b9a0e00e8ae4c00004883b80002000000745a498b542410498b07498d76ff49f7de31c94889c74801d772354801f772304c21f74989f84929d0724a4901d8410f92c14981f801000002410f93c24508ca750ef04d0fb10775ca4889f9eb0231c94889c85b415c415e415f5dc3bf010000004c89f64889da5b415c415e415f5dff25092f0f00488d3df28d0e00ff15349b0e00488d15158e0e00bf080000004c89feff15579d0e00488d3d008e0e00ff15c2db0e00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 19,
+                next: 23,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 57,
+                next: 61,
+                key: "fixed_publication_tls_descriptor",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 62,
+                next: 66,
+                key: "fixed_tls_get_addr_plt",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 187,
+                next: 191,
+                key: "fixed_tool_alloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 194,
+                next: 198,
+                key: "fixed_detcore_validate_fixed_patch_alloc_194_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 200,
+                next: 204,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 207,
+                next: 211,
+                key: "fixed_detcore_validate_fixed_patch_alloc_207_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 221,
+                next: 225,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 228,
+                next: 232,
+                key: "fixed_detcore_validate_fixed_patch_alloc_228_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 234,
+                next: 238,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(17, 0), (61, 2), (185, 3), (198, 5), (219, 7), (232, 9)],
+    },
+    // fixed_tls_fn_once _RNvYNCNKNvNtCsF9SrH8tvQt_16reverie_liteinst11patch_alloc18INSTALLATION_DEPTH0s_0INtNtNtCskDoe1t8SQRc_4core3ops8function6FnOnceTINtNtB1n_6option6OptionQIB22_INtNtB1n_4cell4CelljEEEEE9call_onceBa_.llvm.11673873734894562183 at VA 0x17184d0, 25 bytes; INSTALLATION_DEPTH LOCAL8 cell 0x200 (PT_TLS filesz 0x120, memsz 0x208).
+    // Complete 25-byte body SHA256: ed861b68182dc4ecead42405b5c2049cf80268fe5df4f49d437fe74a31136297.
+    DetcoreValidateTemplate {
+        role: "fixed_tls_fn_once",
+        hex: "554889e5488d3dfd960e00e830490000488d80000200005dc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 7,
+                next: 11,
+                key: "fixed_publication_tls_descriptor",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 12,
+                next: 16,
+                key: "fixed_tls_get_addr_plt",
+                got: false,
+            },
+        ],
+        transfers: &[(11, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operand was derived by review from that ELF (the GOT slot at
+    // 0x180ace8 resolves by unique R_X86_64_RELATIVE addend 0x1661b30 to
+    // reverie_inguest_trusted_syscall). Never widen the 39-byte mask to
+    // fit it.
+    // _RNvNtCs_15reverie_inguest4trap12raw_syscall6 _RNvNtCs3XbJoUHgAfR_15reverie_inguest4trap12raw_syscall6 at VA 0x1662960, 50 bytes.
+    // Complete 50-byte body SHA256: 6586f213ebe45bad4e7946a188aed45731c67b3f8cd6b97dc8e0dab9df7d7289.
+    DetcoreValidateTemplate {
+        role: "_RNvNtCs_15reverie_inguest4trap12raw_syscall6",
+        hex: "554889e54883ec10488b06488b5608488b4e104c8b46184c8b4e20488b7628488934244889c6ff155c831a004883c4105dc3",
+        operands: &[DetcoreValidateOperand {
+            displacement: 40,
+            next: 44,
+            key: "reverie_inguest_trusted_syscall",
+            got: true,
+        }],
+        transfers: &[(38, 0)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x1801d48 resolves by unique R_X86_64_RELATIVE addend
+    // 0x1718120 to fixed_patch_alloc, and the GOT slot at 0x1801cb8
+    // resolves by unique addend 0xdf6690 to panic_nounwind_fmt).
+    // _RNvCs5fGHjzWXRav_7___rustc12___rust_alloc at VA 0xcccd30, 65 bytes.
+    // Complete 65-byte body SHA256: a4dec99fae63f7d8ac7e21c5d704ef97aa745b868d121514360521e5b46892d6.
+    DetcoreValidateTemplate {
+        role: "__rust_alloc",
+        hex: "48b800000000000000804829f04839c777104889fa488d3dec064effff25f64fb300554889e5488d3db50a4eff488d0d8c20a700be0702000031d2ff15474fb300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 24,
+                next: 28,
+                key: "fixed_compiler_global_marker",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 30,
+                next: 34,
+                key: "fixed_patch_alloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 41,
+                next: 45,
+                key: "fixed_detcore_validate_rust_alloc_35_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 48,
+                next: 52,
+                key: "fixed_detcore_validate_rust_alloc_42_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 61,
+                next: 65,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+        ],
+        transfers: &[(28, 1), (59, 4)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x1801fc0 resolves by unique R_X86_64_RELATIVE addend
+    // 0x17180f0 to fixed_patch_alloc_zeroed, and the GOT slot at
+    // 0x1801cb8 resolves by unique addend 0xdf6690 to
+    // panic_nounwind_fmt).
+    // _RNvCs5fGHjzWXRav_7___rustc19___rust_alloc_zeroed at VA 0xccce20, 65 bytes.
+    // Complete 65-byte body SHA256: cd7dfe088874269bef48eab5decc2ee1e33b2410afacfb24f26981f8e2bc707b.
+    DetcoreValidateTemplate {
+        role: "__rust_alloc_zeroed",
+        hex: "48b800000000000000804829f04839c777104889fa488d3dfc054effff257e51b300554889e5488d3dc5094eff488d0d9c1fa700be0702000031d2ff15574eb300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 24,
+                next: 28,
+                key: "fixed_compiler_global_marker",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 30,
+                next: 34,
+                key: "fixed_patch_alloc_zeroed",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 41,
+                next: 45,
+                key: "fixed_detcore_validate_rust_alloc_zeroed_35_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 48,
+                next: 52,
+                key: "fixed_detcore_validate_rust_alloc_zeroed_42_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 61,
+                next: 65,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+        ],
+        transfers: &[(28, 1), (59, 4)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x1801cb0 resolves by unique R_X86_64_RELATIVE addend
+    // 0x1718210 to fixed_patch_dealloc, and the GOT slot at 0x1801cb8
+    // resolves by unique addend 0xdf6690 to panic_nounwind_fmt).
+    // _RNvCs5fGHjzWXRav_7___rustc14___rust_dealloc at VA 0xcccd80, 68 bytes.
+    // Complete 68-byte body SHA256: f9ee51751d459b4eb42ed8304f0d98fdafcaa8de126bf2fdbeea419660a2c881.
+    DetcoreValidateTemplate {
+        role: "__rust_dealloc",
+        hex: "4889f148b800000000000000804829d04839c677104889fe488d3d99064effff250b4fb300554889e5488d3d620a4eff488d0d3920a700be0702000031d2ff15f44eb300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 27,
+                next: 31,
+                key: "fixed_compiler_global_marker",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 33,
+                next: 37,
+                key: "fixed_patch_dealloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 44,
+                next: 48,
+                key: "fixed_detcore_validate_rust_dealloc_38_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 51,
+                next: 55,
+                key: "fixed_detcore_validate_rust_dealloc_45_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 64,
+                next: 68,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+        ],
+        transfers: &[(31, 1), (62, 4)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x18068c0 resolves by unique R_X86_64_RELATIVE addend
+    // 0x1718310 to fixed_patch_realloc, and the GOT slot at 0x1801cb8
+    // resolves by unique addend 0xdf6690 to panic_nounwind_fmt).
+    // _RNvCs5fGHjzWXRav_7___rustc14___rust_realloc at VA 0xcccdd0, 71 bytes.
+    // Complete 71-byte body SHA256: 75f38c906a2a0cd1230737c07bea2b1662db681fdf8db1a5f8d88b36f78838e2.
+    DetcoreValidateTemplate {
+        role: "__rust_realloc",
+        hex: "4989c84889f148b800000000000000804829d04839c677104889fe488d3d46064effff25c89ab300554889e5488d3d0f0a4eff488d0de61fa700be0702000031d2ff15a14eb300",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 30,
+                next: 34,
+                key: "fixed_compiler_global_marker",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 36,
+                next: 40,
+                key: "fixed_patch_realloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 47,
+                next: 51,
+                key: "fixed_detcore_validate_rust_realloc_41_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 54,
+                next: 58,
+                key: "fixed_detcore_validate_rust_realloc_48_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 67,
+                next: 71,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+        ],
+        transfers: &[(34, 1), (65, 4)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (all four are
+    // direct RIP-relative references to the authenticated INITIALIZING,
+    // REGION, RegionPublication::get_opaque and FIXED_BACKING targets;
+    // this body has no GOT operand).
+    // _RNvNtNtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_region5arena19fixed_arena_backing at VA 0x165a0a0, 83 bytes.
+    // Complete 83-byte body SHA256: 9bb22c87f774f199c56c0459b4f3cf4cfc64e2e04c9e77e7fd805035ae3cc19d.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_backing",
+        hex: "554889e54883ec100fb60561841c0084c0741431c0488945f8488d45f8488b45f84883c4105dc3488d054a841c00488945f0488d45f0488b7df0e8e101feff4885c074cf807810ff74c9488d051760d0feebc2",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 11,
+                next: 15,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 59,
+                next: 63,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 77,
+                next: 81,
+                key: "fixed_backing_object",
+                got: false,
+            },
+        ],
+        transfers: &[(58, 2)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the direct
+    // call targets fixed_scalar_syscall, and the GOT slot at 0x1805de8
+    // resolves by unique R_X86_64_RELATIVE addend 0xdf67b3 to
+    // panic_cannot_unwind).
+    // _RNvNtNtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_region5arena20fixed_arena_mprotect at VA 0x165a100, 35 bytes.
+    // Complete 35-byte body SHA256: 4233ed5018c489ad21105b628e119bb80d3e414c035e29f60682b5453426ac64.
+    DetcoreValidateTemplate {
+        role: "fixed_arena_mprotect",
+        hex: "554889e54889febf0a000000ba00000002b903000000e8158800005dc3ff15c5bc1a00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 23,
+                next: 27,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 31,
+                next: 35,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(22, 0), (29, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (direct calls
+    // and RIP-relative references to the authenticated from_native,
+    // REGION, publication set/get, INITIALIZING and panic-Location
+    // targets; the GOT slot at 0x1801f58 resolves by unique
+    // R_X86_64_RELATIVE addend 0xdf6857 to
+    // panic_misaligned_pointer_dereference, and the GOT slot at
+    // 0x1805dd0 resolves by unique addend 0xdf683e to
+    // panic_null_reference_constructed).
+    // reverie_inguest_constructor_adopt_entry at VA 0x1637ce0, 346 bytes.
+    // Complete 346-byte body SHA256: d1e2836189d721adbe3087cf9d84e0549c9b2fc1c4932c8a3611c5b8fa6ee869.
+    DetcoreValidateTemplate {
+        role: "fixed_constructor_prepare",
+        hex: "554889e5415741564154534883ec404889fb4989e748897db0488d45b04c897da8488d45a848c745d801000000488d45d84c8d65b84c8965d0488d45d0488b7db0488b75a8488b55d8488b4dd0e85ab9ffff85c07412b8010000004883c4405b415c415e415f5dc3f6c3070f85a50000004885db0f84b10000004c8b75b80fb645c04c897b5848b9001000000060000048894db84c8975c08845c8488d1d96a71e0048895dd8488d45d84c8965d0488d45d0488b7dd8488b75d0e88125000085c0740bb801000000807dc8fe758d41f6c60775644d85f6747449c7464803000000c60548a71e000048895db8488d45b8488b7db8e8e72400004885c00f8454ffffff4889c131c0807910ff0f854affffffe940ffffff488d15a3061a00bf080000004889deff154da11c00488d3d8e061a00ff15b8df1c00488d1591051a00bf080000004c89f6ff152ba11c00488d3d7c051a00ff1596df1c00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 78,
+                next: 82,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 158,
+                next: 162,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 187,
+                next: 191,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 227,
+                next: 232,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 281,
+                next: 285,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_278_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 295,
+                next: 299,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 302,
+                next: 306,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_299_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 308,
+                next: 312,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 315,
+                next: 319,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_312_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 329,
+                next: 333,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 336,
+                next: 340,
+                key: "fixed_detcore_validate_fixed_constructor_prepare_333_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 342,
+                next: 346,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (77, 0),
+            (186, 2),
+            (244, 4),
+            (293, 6),
+            (306, 8),
+            (327, 10),
+            (340, 12),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (direct calls
+    // and RIP-relative references to the authenticated from_native,
+    // REGION, publication set/get, INITIALIZING and panic-Location
+    // targets; the GOT slot at 0x1801f58 resolves by unique
+    // R_X86_64_RELATIVE addend 0xdf6857 to
+    // panic_misaligned_pointer_dereference, and the GOT slot at
+    // 0x1805dd0 resolves by unique addend 0xdf683e to
+    // panic_null_reference_constructed).
+    // reverie_inguest_generic_adopt_entry at VA 0x1637e40, 346 bytes.
+    // Complete 346-byte body SHA256: dfbc5763cc3a884d249e561ace0b1b9ec2068dddbcbfe72593cf871d1af8b4f0.
+    DetcoreValidateTemplate {
+        role: "fixed_generic_prepare",
+        hex: "554889e5415741564154534883ec404889fb4989e748897db0488d45b04c897da8488d45a848c745d802000000488d45d84c8d65b84c8965d0488d45d0488b7db0488b75a8488b55d8488b4dd0e8fab7ffff85c07412b8010000004883c4405b415c415e415f5dc3f6c3070f85a50000004885db0f84b10000004c8b75b80fb645c04c897b5848b9001000000060000048894db84c8975c08845c8488d1d36a61e0048895dd8488d45d84c8965d0488d45d0488b7dd8488b75d0e82124000085c0740bb801000000807dc8fe758d41f6c60775644d85f6747449c7464803000000c605e8a51e000048895db8488d45b8488b7db8e8872300004885c00f8454ffffff4889c131c0807910ff0f854affffffe940ffffff488d155b051a00bf080000004889deff15ed9f1c00488d3d46051a00ff1558de1c00488d1531041a00bf080000004c89f6ff15cb9f1c00488d3d1c041a00ff1536de1c00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 78,
+                next: 82,
+                key: "fixed_native_from_native",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 158,
+                next: 162,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 187,
+                next: 191,
+                key: "fixed_region_publication_set_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 227,
+                next: 232,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 245,
+                next: 249,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 281,
+                next: 285,
+                key: "fixed_detcore_validate_fixed_generic_prepare_278_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 295,
+                next: 299,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 302,
+                next: 306,
+                key: "fixed_detcore_validate_fixed_generic_prepare_299_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 308,
+                next: 312,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 315,
+                next: 319,
+                key: "fixed_detcore_validate_fixed_generic_prepare_312_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 329,
+                next: 333,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 336,
+                next: 340,
+                key: "fixed_detcore_validate_fixed_generic_prepare_333_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 342,
+                next: 346,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (77, 0),
+            (186, 2),
+            (244, 4),
+            (293, 6),
+            (306, 8),
+            (327, 10),
+            (340, 12),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x1801cb8 resolves by unique R_X86_64_RELATIVE addend
+    // 0xdf6690 to panic_nounwind_fmt, the GOT slot at 0x1801f60 by
+    // unique addend 0xdf67ee to panic_null_pointer_dereference, the
+    // GOT slot at 0x1801f58 by unique addend 0xdf6857 to
+    // panic_misaligned_pointer_dereference, and the GOT slot at
+    // 0x1801d20 by unique addend 0xdfed20 to
+    // panic_const_sub_overflow; the tail also calls _Unwind_Resume
+    // directly).
+    // _RNvMs2_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_12ToolHeapSpan8allocate at VA 0x1662240, 931 bytes.
+    // Complete 931-byte body SHA256: 6d988ebb02a605de8a8dfd42a9edb85a7ec6104fae168dc0ddbfbb7729b9f937.
+    DetcoreValidateTemplate {
+        role: "fixed_heap_allocate",
+        hex: "554889e54157415641554154534883ec18488975c8488b37b10131c0f00fb04e107418666666662e0f1f840000000000f39031c0f00fb04e1075f5488975d04c8b5e084d85db0f84fd000000488b7708488b45c84883f80941be080000004c0f43f04d8d7e1749f7de4883fa014989d44983d4004531d2eb130f1f80000000004d89ca4d85db0f84bd0000004e8d041e41f6c0070f859e0200004d85c00f84880200004d89d94d8b58084d8b284d01cd72ce4889f14c01c972c64883f9ef77c0488d5910488d41184839d872b34c01f94839c172ab4c21f14889c84c01e072a04829f00f82640200004883f8f877914883c0074883e0f84929c572844983fd1f0f86430100004889f24801c2488b5dd00f84c401000089d783e7070f85b90100004c892a4c895a084889c24c29ca0f82470200004989104d85d20f851901000048894308e92a010000488b5dd0488b0b4883f9014889c84883d0074883f9f877444883e0f84c8b470831c94889c64c01c672344883feef772e488d4e104c8d56184939ca721f488b4dc84883f90941b9080000004c0f43c9498d0c314883c1174c39d1731831c9c64310004889c84883c4185b415c415d415e415f5dc349f7d94c21c94883fa014883d2004801ca72d54c29c20f82740100004883faf8760831c9488b5dd0ebc04883c2074883e2f8483b5710488b5dd077ac4889d74829c70f827f0100004885f60f84e70000004189f04183e0070f85da00000048893e48c74608000000004883f9070f868f0000008d71f840f6c6070f85d3000000488941f8488913e95effffff4c89d8488b5dd04d85d20f84e7feffff4c01d640f6c6070f85f60000004885f60f84ff000000488946084883f90776108d41f8a80775244c8949f8e91effffff488d3d74fbcffe488d0d399b1700bead01000031d2ff15d4f71900488d3ddefecffe488d0d369b1700beb701000031d2ff15b9f71900488d3d3efbcffe488d0d739a1700bead01000031d2ff159ef71900488d3da8fecffe488d0da09a1700beb701000031d2ff1583f71900488d3d8dfecffe488d0d259a1700beb701000031d2ff1568f71900488d3d72fecffe488d0d3a9a1700beb701000031d2ff154df71900488d3d3e9a1700ff15e8f91900488d15319a1700bf080000004c89c6ff15cbf91900488d3da4991700ff1586f71900eb35488d15559a1700bf08000000ff15aaf91900488d3d439a1700ff15a5f91900488d3d1e9a1700eb07488d3d85991700ff154ff719000f0b488b4dd0c64110004889c7e88ddf78ff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 652,
+                next: 656,
+                key: "fixed_detcore_validate_fixed_heap_allocate_649_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 659,
+                next: 663,
+                key: "fixed_detcore_validate_fixed_heap_allocate_656_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 672,
+                next: 676,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 679,
+                next: 683,
+                key: "fixed_detcore_validate_fixed_heap_allocate_676_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 686,
+                next: 690,
+                key: "fixed_detcore_validate_fixed_heap_allocate_683_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 699,
+                next: 703,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 706,
+                next: 710,
+                key: "fixed_detcore_validate_fixed_heap_allocate_703_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 713,
+                next: 717,
+                key: "fixed_detcore_validate_fixed_heap_allocate_710_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 726,
+                next: 730,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 733,
+                next: 737,
+                key: "fixed_detcore_validate_fixed_heap_allocate_730_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 740,
+                next: 744,
+                key: "fixed_detcore_validate_fixed_heap_allocate_737_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 753,
+                next: 757,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 760,
+                next: 764,
+                key: "fixed_detcore_validate_fixed_heap_allocate_757_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 767,
+                next: 771,
+                key: "fixed_detcore_validate_fixed_heap_allocate_764_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 780,
+                next: 784,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 787,
+                next: 791,
+                key: "fixed_detcore_validate_fixed_heap_allocate_784_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 794,
+                next: 798,
+                key: "fixed_detcore_validate_fixed_heap_allocate_791_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 807,
+                next: 811,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 814,
+                next: 818,
+                key: "fixed_detcore_validate_fixed_heap_allocate_811_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 820,
+                next: 824,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 827,
+                next: 831,
+                key: "fixed_detcore_validate_fixed_heap_allocate_824_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 841,
+                next: 845,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 848,
+                next: 852,
+                key: "fixed_detcore_validate_fixed_heap_allocate_845_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 854,
+                next: 858,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 863,
+                next: 867,
+                key: "fixed_detcore_validate_fixed_heap_allocate_860_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 874,
+                next: 878,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 881,
+                next: 885,
+                key: "fixed_detcore_validate_fixed_heap_allocate_878_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 887,
+                next: 891,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 894,
+                next: 898,
+                key: "fixed_detcore_validate_fixed_heap_allocate_891_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 903,
+                next: 907,
+                key: "fixed_detcore_validate_fixed_heap_allocate_900_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 909,
+                next: 913,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 927,
+                next: 931,
+                key: "fixed_heap_unwind_resume",
+                got: false,
+            },
+        ],
+        transfers: &[
+            (670, 2),
+            (697, 5),
+            (724, 8),
+            (751, 11),
+            (778, 14),
+            (805, 17),
+            (818, 19),
+            (839, 21),
+            (852, 23),
+            (872, 25),
+            (885, 27),
+            (907, 30),
+            (926, 31),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the GOT slot
+    // at 0x1801cb8 resolves by unique R_X86_64_RELATIVE addend
+    // 0xdf6690 to panic_nounwind_fmt, the GOT slot at 0x1801f60 by
+    // unique addend 0xdf67ee to panic_null_pointer_dereference, and
+    // the GOT slot at 0x1801f58 by unique addend 0xdf6857 to
+    // panic_misaligned_pointer_dereference).
+    // _RNvMs2_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_12ToolHeapSpan10deallocate at VA 0x1662000, 562 bytes.
+    // Complete 562-byte body SHA256: be2611ed53672b4696ca57b5da73c7e332a653ebc43bb5ada648be66f20ed997.
+    DetcoreValidateTemplate {
+        role: "fixed_heap_deallocate",
+        hex: "554889e553504883fa070f86450100004883c2f8f6c2070f8553010000488b12b10131c0f00fb04f1074100f1f440000f39031c0f00fb04f1075f54c8b47084d85c00f94c04939d00f93c108c1753c4c89c166666666662e0f1f840000000000488d040ea8070f852c0100004885c00f84160100004c8b40084989c94d85c0740d4c89c14939d072d7eb034531c9488d0416a8070f85130100004885c00f841f0100004c8940084d85c974494a8d0c0ef6c1070f85160100004885c90f8422010000488951084c8b114f8d1c0a4d39cb0f92c34939d3410f95c34108db750f4c0310720a4c89114c8941084c89ca4d85c0750beb55488957084d85c0744c488d0416a8070f85e70000004885c00f84f3000000488b084c8d0c114939d1722b4d39c175264c01c640f6c6070f85e20000004885f60f84eb00000048030e720b488908488b4e0848894808c64710004883c4085b5dc3488d3de8fecffe488d0d2d9d1700bead01000031d2ff1548fb1900488d3d7801d0fe488d0d2a9d1700beb501000031d2ff152dfb1900488d3d8e9d1700ff15c8fd1900488d15819d1700bf080000004889c6ff15abfd1900488d150c9d1700bf080000004889c6ff1596fd1900488d3df79c1700ff1591fd1900488d15029d1700bf080000004889ceff1574fd1900488d3ded9c1700ff156ffd1900488d15f89c1700bf080000004889c6ff1552fd1900488d3de39c1700ff154dfd1900488d15ee9c1700bf08000000ff1533fd1900488d3ddc9c1700ff152efd1900",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 344,
+                next: 348,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_341_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 351,
+                next: 355,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_348_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 364,
+                next: 368,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 371,
+                next: 375,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_368_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 378,
+                next: 382,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_375_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 391,
+                next: 395,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 398,
+                next: 402,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_395_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 404,
+                next: 408,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 411,
+                next: 415,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_408_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 425,
+                next: 429,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 432,
+                next: 436,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_429_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 446,
+                next: 450,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 453,
+                next: 457,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_450_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 459,
+                next: 463,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 466,
+                next: 470,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_463_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 480,
+                next: 484,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 487,
+                next: 491,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_484_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 493,
+                next: 497,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 500,
+                next: 504,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_497_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 514,
+                next: 518,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 521,
+                next: 525,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_518_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 527,
+                next: 531,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 534,
+                next: 538,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_531_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 545,
+                next: 549,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 552,
+                next: 556,
+                key: "fixed_detcore_validate_fixed_heap_deallocate_549_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 558,
+                next: 562,
+                key: "fixed_heap_panic_null",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (362, 2),
+            (389, 5),
+            (402, 7),
+            (423, 9),
+            (444, 11),
+            (457, 13),
+            (478, 15),
+            (491, 17),
+            (512, 19),
+            (525, 21),
+            (543, 23),
+            (556, 25),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (the direct
+    // call binds raw_syscall3, and the GOT slot at 0x1805de8 resolves
+    // by unique R_X86_64_RELATIVE addend 0xdf67b3 to
+    // panic_cannot_unwind).
+    // _RNvNtNtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_region11constructor19native_owner_gettid at VA 0x16376e0, 28 bytes.
+    // Complete 28-byte body SHA256: a595b4452a1eef25fdc85ce725f641aac68209024c6afa649ffe77e7fffc97d6.
+    DetcoreValidateTemplate {
+        role: "fixed_native_owner_gettid",
+        hex: "554889e5bfba00000031f631d231c9e83cb202005dc3ff15ece61c00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 16,
+                next: 20,
+                key: "fixed_scalar_syscall",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 24,
+                next: 28,
+                key: "fixed_publication_cannot_unwind",
+                got: true,
+            },
+        ],
+        transfers: &[(15, 0), (22, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (see the
+    // per-template derivation notes in the commit description).
+    // _RNvXs3_NtCsF9SrH8tvQt_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc12alloc_zeroed at VA 0x17180f0, 45 bytes.
+    // Complete 45-byte body SHA256: d9a36657995edaafe55cc01d419fe13fb5415d2043a43d780ca0b00180cb5df7.
+    DetcoreValidateTemplate {
+        role: "fixed_patch_alloc_zeroed",
+        hex: "554889e553504889d3ff15499c0e004885c074124889c74889de4889c3ff15cd2f0f004889d84883c4085b5dc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 11,
+                next: 15,
+                key: "fixed_patch_alloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 31,
+                next: 35,
+                key: "fixed_zero_bytes",
+                got: true,
+            },
+        ],
+        transfers: &[(9, 0), (29, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (see the
+    // per-template derivation notes in the commit description).
+    // _RNvXs3_NtCsF9SrH8tvQt_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc7dealloc at VA 0x1718210, 247 bytes.
+    // Complete 247-byte body SHA256: 5fe69e77f64dcc954b76b0873444eac04d1531acf1863ee03a17d1a15e667a55.
+    DetcoreValidateTemplate {
+        role: "fixed_patch_dealloc",
+        hex: "554889e54157415653504889cb4989d64989f7ff152f2e0f004885c0743e488b702040f6c6070f859f0000004885f60f84a8000000488b4010483d000000fe0f83a5000000488d88000000024c39f80f96c04c39f90f97c184c875094c89ffff15332e0f00ff15dd2d0f004885c0743d488b702040f6c60775514885f6745e488b4010483d000000fe735f488d88000000024c39f80f96c04c39f90f97c184c8740b4883c4085b415e415f5dc3bf010000004c89fe4c89f24889d94883c4085b415e415f5dff25152e0f00488d15268d0e00bf08000000ff156b9c0e00488d3d148d0e00ff15d6da0e00488d3def8c0e00ff15119a0e00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 21,
+                next: 25,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 97,
+                next: 101,
+                key: "fixed_tool_require_owned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 103,
+                next: 107,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 199,
+                next: 203,
+                key: "fixed_tool_dealloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 206,
+                next: 210,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_203_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 217,
+                next: 221,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 224,
+                next: 228,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_221_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 230,
+                next: 234,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 237,
+                next: 241,
+                key: "fixed_detcore_validate_fixed_patch_dealloc_234_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 243,
+                next: 247,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (19, 0),
+            (95, 1),
+            (101, 2),
+            (197, 3),
+            (215, 5),
+            (228, 7),
+            (241, 9),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // the operands were derived by review from that ELF (see the
+    // per-template derivation notes in the commit description).
+    // _RNvXs3_NtCsF9SrH8tvQt_16reverie_liteinst11patch_allocNtB5_26FixedPrivatePatchAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc7realloc at VA 0x1718310, 435 bytes.
+    // Complete 435-byte body SHA256: 2b4e3c36c09820ad13f35220623f67366565d6ca310d348ac9981608733ef53c.
+    DetcoreValidateTemplate {
+        role: "fixed_patch_realloc",
+        hex: "554889e5415741564155415453504d89c64889cb4989d44989f7ff15282d0f004885c0743e488b702040f6c6070f85470100004885f60f8450010000488b4010483d000000fe0f834d010000488d88000000024c39f80f96c04c39f90f97c184c875094c89ffff152c2d0f00ff15d62c0f004885c07474488b702040f6c6070f85f50000004885f60f84fe000000488b50104881fa000000fe0f83fa000000488d82000000024c39fa0f96c14c39f80f97c020c83c017533c4c2f8f3cc0f95c048b900000000000000804c29e14939ce0f97c108c1743931c94889c84883c4085b415c415d415e415f5dc3bf010000004c89fe4c89e24889d94d89f04883c4085b415c415d415e415f5dff25d82c0f00488b06498d7c24ff49f7dc31c94989c54901d572b44901fd72af4d21e54d89e84929d072714d01f0410f92c14981f801000002410f93c24508ca758df04c0fb10675ca4d85ed0f847bffffff4939de490f42de4c89ff4c89ee4889daff15562c0f004c89e9e95fffffff488d15778b0e00bf08000000ff15bc9a0e00488d3d658b0e00ff1527d90e00488d3d408b0e00ff1562980e00488d3d1b8b0e00ff155d980e00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 28,
+                next: 32,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 104,
+                next: 108,
+                key: "fixed_tool_require_owned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 110,
+                next: 114,
+                key: "fixed_arena_backing",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 268,
+                next: 272,
+                key: "fixed_tool_realloc",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 366,
+                next: 370,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 381,
+                next: 385,
+                key: "fixed_detcore_validate_fixed_patch_realloc_378_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 392,
+                next: 396,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 399,
+                next: 403,
+                key: "fixed_detcore_validate_fixed_patch_realloc_396_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 405,
+                next: 409,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 412,
+                next: 416,
+                key: "fixed_detcore_validate_fixed_patch_realloc_409_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 418,
+                next: 422,
+                key: "_RNvNtNtCs_4core9panicking11panic_const24panic_const_add_overflow",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 425,
+                next: 429,
+                key: "fixed_detcore_validate_fixed_patch_realloc_422_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 431,
+                next: 435,
+                key: "fixed_heap_panic_sub_overflow",
+                got: true,
+            },
+        ],
+        transfers: &[
+            (26, 0),
+            (102, 1),
+            (108, 2),
+            (266, 3),
+            (364, 4),
+            (390, 6),
+            (403, 8),
+            (416, 10),
+            (429, 12),
+        ],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvNtNtCs3XbJoUHgAfR_15reverie_inguest5guest5alloc25refuse_foreign_allocation at VA 0x1664e40, 55 bytes.
+    // Complete 55-byte body SHA256: 301b0c39a78c8490afe1850e5b191393a07bab798a5b35848932dd4109d31302.
+    DetcoreValidateTemplate {
+        role: "fixed_refuse_foreign",
+        hex: "554889e54883ec3048c745d07f000000c5f857c0c5fc1145d848c745f800000000488d75d0bfe7000000c5f877ff15150f1a000f0b0f0b",
+        operands: &[DetcoreValidateOperand {
+            displacement: 47,
+            next: 51,
+            key: "_RNvNtCs_15reverie_inguest4trap12raw_syscall6",
+            got: true,
+        }],
+        transfers: &[(45, 0)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvNtCs3XbJoUHgAfR_15reverie_inguest4trap12raw_syscall3 at VA 0x1662930, 34 bytes.
+    // Complete 34-byte body SHA256: 9623103054a46cc897b0e4fb7203cb6254ed147b4e40a54babbc45190a34644b.
+    DetcoreValidateTemplate {
+        role: "fixed_scalar_syscall",
+        hex: "554889e54883ec1048c70424000000004531c04531c9ff159c831a004883c4105dc3",
+        operands: &[DetcoreValidateOperand {
+            displacement: 24,
+            next: 28,
+            key: "reverie_inguest_trusted_syscall",
+            got: true,
+        }],
+        transfers: &[(22, 0)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvNtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_region5arena24fixed_tool_heap_metadata at VA 0x165a130, 86 bytes.
+    // Complete 86-byte body SHA256: 3a16da055fb66099768a7240cb03edab859bb06d22904c45e89e16d2e31cf43d.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_heap_metadata",
+        hex: "554889e54883ec100fb605d1831c0084c0741431c0488945f8488d45f8488b45f84883c4105dc3488d05ba831c00488945f0488d45f0488b7df0e85101feff4885c074cf807810ff74c948b80030020000600000ebbf",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 11,
+                next: 15,
+                key: "fixed_initializing",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 42,
+                next: 46,
+                key: "fixed_region",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 59,
+                next: 63,
+                key: "fixed_region_publication_get_opaque",
+                got: false,
+            },
+        ],
+        transfers: &[(58, 2)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvXs7_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_18FixedToolAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc5alloc at VA 0x16652f0, 81 bytes.
+    // Complete 81-byte body SHA256: 3f7124a301140f86a2d3a54508a28de2a31572d03419636602fa4266dd1d9ae5.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_alloc",
+        hex: "554889e54156534883ec204889d34989f6e82a4effff4885c0742b488945d848b80000001000600000488945e048c745e800000002488d7dd84c89f64889dae80ccfffffeb0231c04883c4205b415e5dc3",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 18,
+                next: 22,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 64,
+                next: 68,
+                key: "fixed_heap_allocate",
+                got: false,
+            },
+        ],
+        transfers: &[(17, 0), (63, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvXs7_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_18FixedToolAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc7dealloc at VA 0x1665350, 67 bytes.
+    // Complete 67-byte body SHA256: 555ac41959c63adbdf2ab1376c8b763dbcb0e888aa4884b6a0dbf95fac66824e.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_dealloc",
+        hex: "554889e553504889f3e8d24dffff4885c0742b4889d948c1e9194881f908003000751b48be00000010006000004889c74889da4883c4085b5de972ccffffe8adfaffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 10,
+                next: 14,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 58,
+                next: 62,
+                key: "fixed_heap_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 63,
+                next: 67,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(9, 0), (57, 1), (62, 2)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvMs6_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_18FixedToolAllocator21require_owned_address at VA 0x16625f0, 44 bytes.
+    // Complete 44-byte body SHA256: 179e10ad1694709008aa35fafe2e11c19b6ca1fe16ff9c9a1f204ff0e15b4013.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_require_owned",
+        hex: "554889e553504889fbe8327bffff4885c0741448c1eb194881fb0800300075074883c4085b5dc3e824280000",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 10,
+                next: 14,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 40,
+                next: 44,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(9, 0), (39, 1)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvMs_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10get_opaque at VA 0x163a2c0, 83 bytes.
+    // Complete 83-byte body SHA256: 5aabb7cfb8380e9f7914b82d3907a13e36caa1fc34b3d1dcb234a9247c7936c8.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_get_opaque",
+        hex: "554889e54883ec104889fe40f6c60775234885f674300fb6461831c984c0480f45ce48894df8488d45f8488b45f84883c4105dc3488d155de71900bf08000000ff15527c1c00488d3d4be71900ff15bdba1c00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 55,
+                next: 59,
+                key: "fixed_detcore_validate_fixed_region_publication_get_opaque_52_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 66,
+                next: 70,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 73,
+                next: 77,
+                key: "fixed_detcore_validate_fixed_region_publication_get_opaque_70_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 79,
+                next: 83,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(64, 1), (77, 3)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvMs_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_regionNtB4_17RegionPublication10set_opaque at VA 0x163a320, 164 bytes.
+    // Complete 164-byte body SHA256: a710dd13b0a3348d2ac43c177f4ffff6d45532f5beda0c4bf284329086296001.
+    DetcoreValidateTemplate {
+        role: "fixed_region_publication_set_opaque",
+        hex: "554889e54883ec1040f6c70775744885ff0f84800000000fb6471884c07414c745fc0b000000488d45fc8b45fc4883c4105dc34885f6742f89f083e0077528c5f81006488b461048894710c5f81107c6471801c745fc00000000488d45fc8b45fc4883c4105dc3488d3d7a08d2fe488d0df3e61900beb501000031d2ff1516791c00488d15c7e619004889febf08000000ff15a17b1c00488d3db2e61900ff150cba1c00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 113,
+                next: 117,
+                key: "fixed_detcore_validate_fixed_region_publication_set_opaque_110_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 126,
+                next: 130,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 133,
+                next: 137,
+                key: "fixed_detcore_validate_fixed_region_publication_set_opaque_130_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 147,
+                next: 151,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 154,
+                next: 158,
+                key: "fixed_detcore_validate_fixed_region_publication_set_opaque_151_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 160,
+                next: 164,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(124, 1), (145, 3), (158, 5)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvNtNtNtCs3XbJoUHgAfR_15reverie_inguest5guest11tool_region5arena18fixed_bitmap_range at VA 0x1659fc0, 220 bytes.
+    // Complete 220-byte body SHA256: 0ce5d6622f04846794f6aca42bbee21181548ccb60ddf084afdef648da470ee2.
+    DetcoreValidateTemplate {
+        role: "fixed_setup_bitmap_range",
+        hex: "554889e540f6c7070f85ac0000004885ff0f84b8000000b0014839d6737f4883c7084989f849f7d084c9743bb9010000006666666666662e0f1f8400000000004989f149c1e9064e8d14cd000000004d39c2774bc462c9f7d14e0914cf48ffc64839f275dbeb3648ffcab901000000904889f048c1e8064c8d0cc5000000004d39c1771bc462c9f7c94c230cc70f94c04839f2740848ffc64d85c974d35dc3488d3dca60d0fe488d0dbb151800bead01000031d2ff153e7c1a00488d158f1518004889febf08000000ff15c97e1a00488d3d7a151800ff1534bd1a00",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 169,
+                next: 173,
+                key: "fixed_detcore_validate_fixed_setup_bitmap_range_166_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 182,
+                next: 186,
+                key: "fixed_panic_nounwind_fmt",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 189,
+                next: 193,
+                key: "fixed_detcore_validate_fixed_setup_bitmap_range_186_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 203,
+                next: 207,
+                key: "fixed_heap_panic_misaligned",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 210,
+                next: 214,
+                key: "fixed_detcore_validate_fixed_setup_bitmap_range_207_data",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 216,
+                next: 220,
+                key: "fixed_panic_null_reference",
+                got: true,
+            },
+        ],
+        transfers: &[(180, 1), (201, 3), (214, 5)],
+    },
+    // Reviewed Buck cohort, measured on the candidate ELF at profile
+    // head 112dee22 (ELF SHA256
+    // 1b7c93830d14757cb2aaf2ff496012289e1aa011abd7f4d80629ec368883bca2,
+    // rustc version 1.99.1 (58cf8f9c3 2026-10-13)); not generator output:
+    // operands derived by review from that ELF (objdump/readelf dumps,
+    // GOT R_X86_64_RELATIVE addends checked unique).
+    // _RNvXs7_NtNtCs3XbJoUHgAfR_15reverie_inguest5guest5allocNtB5_18FixedToolAllocatorNtNtNtCskDoe1t8SQRc_4core5alloc6global11GlobalAlloc7realloc at VA 0x16653a0, 211 bytes.
+    // Complete 211-byte body SHA256: 28eb446ec01743da85a1d66260c143f92307ba5750db886c571dfce1fc4122e7.
+    DetcoreValidateTemplate {
+        role: "fixed_tool_realloc",
+        hex: "554889e54157415641554154534883ec184d89c44989ce4989d54889f3e86e4dffff4885c00f84a30000004989c748b800000010006000004c897dc0488945c848c745d0000000024889d848c1e819483d080030007577c4c2f8f3cd0f95c048b900000000000000804c29e94939cc0f97c108c17547488d7dc04c89ee4c89e2e81bceffff4885c074334d39f44d0f42f44889df4889c64c89f24989c6ff15955c1a004c89ff48be00000010006000004889dae8a8cbffff4c89f0eb0231c04883c4185b415c415d415e415f5dc3e8cdf9ffff",
+        operands: &[
+            DetcoreValidateOperand {
+                displacement: 30,
+                next: 34,
+                key: "fixed_tool_heap_metadata",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 129,
+                next: 133,
+                key: "fixed_span_allocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 159,
+                next: 163,
+                key: "fixed_copy_bytes",
+                got: true,
+            },
+            DetcoreValidateOperand {
+                displacement: 180,
+                next: 184,
+                key: "fixed_span_deallocate",
+                got: false,
+            },
+            DetcoreValidateOperand {
+                displacement: 207,
+                next: 211,
+                key: "fixed_refuse_foreign",
+                got: false,
+            },
+        ],
+        transfers: &[(29, 0), (128, 1), (157, 2), (179, 3), (206, 4)],
+    },
 ];
 
 // Distinct from every historical TLS-bearing241B recipe. Measured in the true
@@ -31501,7 +33764,19 @@ fn fixed_detcore_validate_recipe_in_scope(
     let mut fields = Vec::new();
     let mut resolved = Vec::new();
     if role == "fixed_patch_alloc" || role == "fixed_tls_fn_once" {
-        let at = if role == "fixed_patch_alloc" { 66 } else { 16 };
+        // Cell read displacement by reviewed cohort body length.
+        let at = match (role, bytes.len()) {
+            ("fixed_patch_alloc", 241) => 66,
+            ("fixed_patch_alloc", 238) => 69,
+            ("fixed_tls_fn_once", 22) => 16,
+            ("fixed_tls_fn_once", 25) => 19,
+            _ => {
+                return Err(format!(
+                    "validate TLS read has no reviewed cohort for {role} length {}",
+                    bytes.len()
+                ));
+            }
+        };
         let encoded = u32::from_le_bytes(
             bytes
                 .get(at..at + 4)
@@ -31916,6 +34191,29 @@ const DETCORE_VALIDATE_GUARDED_TERMINAL_PAIRS: &[(&str, &str, &str)] = &[
         "fixed_heap_panic_null",
         "native_authenticated_record_region_metadata_storage",
     ),
+    // D1c parity: Buck cohort callers reach fixed_panic_nounwind_fmt
+    // directly where the Cargo cohort reaches distinct heap panic
+    // terminals; discharge each under the caller's existing premise.
+    (
+        "fixed_heap_allocate",
+        "fixed_panic_nounwind_fmt",
+        "valid_layout_intact_locked_metadata",
+    ),
+    (
+        "fixed_heap_deallocate",
+        "fixed_panic_nounwind_fmt",
+        "valid_layout_intact_locked_metadata",
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        "fixed_panic_nounwind_fmt",
+        "scalar_publication_actual_aligned_live_region",
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        "fixed_panic_nounwind_fmt",
+        "native_authenticated_record_region_metadata_storage",
+    ),
 ];
 
 fn fixed_guarded_terminal_pairs(
@@ -31948,6 +34246,10 @@ fn fixed_detcore_compiled_filenames(
                 sources.filename(relative.as_bytes())?,
             );
         }
+        context.insert(
+            "workspace:detcore-liteinst/src/lib.rs".to_owned(),
+            sources.workspace_filename("detcore-liteinst/src/lib.rs")?,
+        );
     }
     Ok(context)
 }
@@ -32635,6 +34937,29 @@ struct AuthenticatedDetcoreOperation {
     // publication/gate address even when the two public maps agree.
     scalar_storage: Option<(u64, u64)>,
 }
+fn fixed_detcore_is_pure_transport(template_index: usize) -> bool {
+    let template = &DETCORE_VALIDATE_TEMPLATES[template_index];
+    template.operands.len() == 1
+        && template.operands[0].got
+        && template.operands[0].key == "reverie_inguest_trusted_syscall"
+}
+fn fixed_detcore_scalar_storage(
+    template_index: usize,
+    targets: &BTreeMap<String, u64>,
+) -> Result<Option<(u64, u64)>> {
+    if template_index < FIXED_SCALAR_TEMPLATE_START
+        || fixed_detcore_is_pure_transport(template_index)
+    {
+        return Ok(None);
+    }
+    let region = *targets
+        .get("fixed_region")
+        .ok_or("scalar recipe lacks authenticated REGION")?;
+    let initializing = *targets
+        .get("fixed_initializing")
+        .ok_or("scalar recipe lacks authenticated INITIALIZING")?;
+    Ok(Some((region, initializing)))
+}
 fn fixed_detcore_no_scope_qualified_operation(
     role: &str,
     address: u64,
@@ -32652,18 +34977,7 @@ fn fixed_detcore_no_scope_qualified_operation(
         )
     } else {
         let recipe = fixed_detcore_validate_recipe_in_scope(role, address, bytes, bindings, None)?;
-        let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START {
-            Some((
-                *targets
-                    .get("fixed_region")
-                    .ok_or("scalar recipe lacks authenticated REGION")?,
-                *targets
-                    .get("fixed_initializing")
-                    .ok_or("scalar recipe lacks authenticated INITIALIZING")?,
-            ))
-        } else {
-            None
-        };
+        let scalar_storage = fixed_detcore_scalar_storage(recipe.template_index, targets)?;
         (
             AuthenticatedDetcoreOperationKind::ValidateTemplate(recipe.template_index),
             recipe.edges,
@@ -32692,18 +35006,7 @@ fn fixed_detcore_qualified_operation(
     let targets = bindings.targets;
     let recipe =
         fixed_detcore_validate_recipe_identity(role, address, bytes, bindings, tls_cell_offset)?;
-    let scalar_storage = if recipe.template_index >= FIXED_SCALAR_TEMPLATE_START {
-        Some((
-            *targets
-                .get("fixed_region")
-                .ok_or("scalar recipe lacks authenticated REGION")?,
-            *targets
-                .get("fixed_initializing")
-                .ok_or("scalar recipe lacks authenticated INITIALIZING")?,
-        ))
-    } else {
-        None
-    };
+    let scalar_storage = fixed_detcore_scalar_storage(recipe.template_index, targets)?;
     fixed_census_transfers(
         instructions,
         address,
@@ -33761,6 +36064,100 @@ const FIXED_NAKED_STABLE_STANDALONE_INCOMING: &[FixedScalarHelperIncoming] = &[
         &[("fixed_native_owner_gettid", 12, false)],
     ),
 ];
+// The Buck ordinary composition: same 13 roles and order as the other
+// ordinary cohorts, with the reviewed Buck template indices. Templates
+// 78 (fixed_native_from_native, 301B) and 82 (fixed_arena_setup, 250B)
+// are reused and masked-pass the candidate bodies: masked search of
+// candidate 1b7c9383... finds 78 uniquely at VA 0x163368c and 82
+// uniquely at VA 0x1657740 (the initialize_fixed_arenas_opaque symbol).
+// Incoming offsets below are measured from the candidate, not copied
+// from Cargo: for each cohort body VA, `objdump -d
+// --start-address=<VA> --stop-address=<VA+len> <candidate>` shows the
+// direct E8 calls at caller+58 (metadata/backing -> get_opaque),
+// caller+186 (prepares -> set_opaque), caller+9/+17/+9/+29 (tool
+// helpers -> metadata), caller+77 (prepares -> native), caller+15
+// (gettid -> scalar); all are direct (GOT=false). Cross-checked
+// against DETCORE_VALIDATE_TEMPLATES rows 126-145 transfers.
+const FIXED_NAKED_BUCK_ORDINARY_COHORT: &[(&str, usize)] = &[
+    ("fixed_region_publication_get_opaque", 142),
+    ("fixed_region_publication_set_opaque", 143),
+    ("fixed_tool_heap_metadata", 138),
+    ("fixed_arena_backing", 126),
+    ("fixed_tool_require_owned", 141),
+    ("fixed_tool_alloc", 139),
+    ("fixed_tool_dealloc", 140),
+    ("fixed_tool_realloc", 145),
+    ("fixed_native_from_native", 78),
+    ("fixed_constructor_prepare", 128),
+    ("fixed_generic_prepare", 129),
+    ("fixed_arena_setup", 82),
+    ("fixed_native_owner_gettid", 132),
+];
+const FIXED_NAKED_BUCK_ORDINARY_INCOMING: &[FixedScalarHelperIncoming] = &[
+    (
+        "fixed_region_publication_get_opaque",
+        &[
+            ("fixed_tool_heap_metadata", 58, false),
+            ("fixed_arena_backing", 58, false),
+            ("fixed_native_from_native", 176, false),
+            ("fixed_constructor_prepare", 244, false),
+            ("fixed_generic_prepare", 244, false),
+        ],
+    ),
+    (
+        "fixed_region_publication_set_opaque",
+        &[
+            ("fixed_constructor_prepare", 186, false),
+            ("fixed_generic_prepare", 186, false),
+        ],
+    ),
+    (
+        "fixed_tool_heap_metadata",
+        &[
+            ("fixed_tool_require_owned", 9, false),
+            ("fixed_tool_alloc", 17, false),
+            ("fixed_tool_dealloc", 9, false),
+            ("fixed_tool_realloc", 29, false),
+        ],
+    ),
+    (
+        "fixed_native_from_native",
+        &[
+            ("fixed_constructor_prepare", 77, false),
+            ("fixed_generic_prepare", 77, false),
+        ],
+    ),
+    (
+        "fixed_arena_setup",
+        &[("fixed_native_from_native", 257, false)],
+    ),
+    (
+        "fixed_native_owner_gettid",
+        &[("fixed_native_from_native", 116, false)],
+    ),
+    (
+        "fixed_arena_mprotect",
+        &[
+            ("fixed_arena_setup", 95, false),
+            ("fixed_arena_setup", 119, false),
+        ],
+    ),
+    (
+        "fixed_setup_bitmap_range",
+        &[
+            ("fixed_arena_setup", 16, false),
+            ("fixed_arena_setup", 44, false),
+            ("fixed_arena_setup", 72, false),
+            ("fixed_arena_setup", 184, false),
+            ("fixed_arena_setup", 207, false),
+            ("fixed_arena_setup", 230, false),
+        ],
+    ),
+    (
+        "fixed_scalar_syscall",
+        &[("fixed_native_owner_gettid", 15, false)],
+    ),
+];
 const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
     FixedNakedComposition {
         image_kind: FixedImageKind::Standalone,
@@ -33868,6 +36265,15 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
         incoming: FIXED_NAKED_PINNED_ORDINARY_INCOMING,
         setup_bitmap_template: Some(118),
     },
+    // Buck ordinary (entry 13): follows the STABLE_ORDINARY precedent of
+    // an indivisible cohort+incoming tuple selected only as a whole.
+    FixedNakedComposition {
+        image_kind: FixedImageKind::Detcore,
+        native_syscalls: false,
+        cohort: FIXED_NAKED_BUCK_ORDINARY_COHORT,
+        incoming: FIXED_NAKED_BUCK_ORDINARY_INCOMING,
+        setup_bitmap_template: Some(144),
+    },
 ];
 // Exclusive end of the source-owned appended template identities
 // (78..END). The contiguous range is a deliberate over-approximation:
@@ -33889,7 +36295,41 @@ const FIXED_NAKED_COMPOSITIONS: &[FixedNakedComposition] = &[
 // does the generated stable native 0xf8 alloc template at 116, and its
 // generated 0xf8 FnOnce template at 117. So does the stable Rust 1.99.1
 // bitmap template at 118.
-const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 119;
+// generated 0xf8 FnOnce template at 117. So do the reviewed Buck238
+// cohort templates at 119 (238-byte alloc) and 120 (25-byte FnOnce),
+// the reviewed Buck raw_syscall6 template at 121 (50-byte body), and
+// the reviewed Buck __rust_alloc template at 122 (65-byte body), and
+// the reviewed Buck __rust_alloc_zeroed template at 123 (65-byte body),
+// and the reviewed Buck __rust_dealloc template at 124 (68-byte body),
+// and the reviewed Buck __rust_realloc template at 125 (71-byte body),
+// and the reviewed Buck fixed_arena_backing template at 126 (83-byte
+// body), and the reviewed Buck fixed_arena_mprotect template at 127
+// (35-byte body), and the reviewed Buck fixed_constructor_prepare
+// template at 128 (346-byte body), and the reviewed Buck
+// fixed_generic_prepare template at 129 (346-byte body), and the
+// reviewed Buck fixed_heap_allocate template at 130 (931-byte body),
+// and the reviewed Buck fixed_heap_deallocate template at 131
+// (562-byte body), and the reviewed Buck
+// fixed_native_owner_gettid template at 132 (28-byte body), and
+// the reviewed Buck fixed_patch_alloc_zeroed template at 133
+// (45-byte body), and the reviewed Buck fixed_patch_dealloc
+// template at 134 (247-byte body), and the reviewed Buck
+// fixed_patch_realloc template at 135 (435-byte body), and the
+// reviewed Buck fixed_refuse_foreign template at 136 (55-byte body),
+// and the reviewed Buck fixed_scalar_syscall template at 137
+// (34-byte body), and the reviewed Buck fixed_tool_heap_metadata
+// template at 138 (86-byte body), and the reviewed Buck
+// fixed_tool_alloc template at 139 (81-byte body), and the
+// reviewed Buck fixed_tool_dealloc template at 140 (67-byte body),
+// and the reviewed Buck fixed_tool_require_owned template at 141
+// (44-byte body), and the reviewed Buck
+// fixed_region_publication_get_opaque template at 142 (83-byte
+// body), and the reviewed Buck fixed_region_publication_set_opaque
+// template at 143 (164-byte body), and the reviewed Buck
+// fixed_setup_bitmap_range template at 144 (220-byte body), and
+// the reviewed Buck fixed_tool_realloc template at 145 (211-byte
+// body).
+const FIXED_SOURCE_OWNED_TEMPLATE_END: usize = 146;
 
 fn fixed_naked_publication_present(
     witnesses: &BTreeMap<String, AuthenticatedDetcoreOperation>,
@@ -33919,6 +36359,13 @@ fn fixed_naked_composition(
                 && raw.kind
                     == if spec.native_syscalls {
                         AuthenticatedDetcoreOperationKind::NativeFixedSyscall3
+                    } else if spec.cohort == FIXED_NAKED_BUCK_ORDINARY_COHORT {
+                        // Buck transport measured from candidate template
+                        // 136 body at VA 0x1662930: `objdump -d
+                        // --start-address=0x1662930
+                        // --stop-address=0x1662952 <candidate>` shows the
+                        // sole GOT call `ff 15 9c 83 1a 00` at +22.
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(137)
                     } else {
                         AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
                     }
@@ -33944,7 +36391,7 @@ fn fixed_naked_composition(
     require(
         matches!(
             bridge.kind,
-            AuthenticatedDetcoreOperationKind::ValidateTemplate(83 | 84)
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(83 | 84 | 127)
         ),
         "naked-owner mprotect bridge lacks its exact C ABI body",
     )?;
@@ -33971,6 +36418,13 @@ fn fixed_naked_mprotect_bridge(
     let (raw_pc, landing_pc) = match w.kind {
         AuthenticatedDetcoreOperationKind::ValidateTemplate(83) => (19_u64, Some(26_u64)),
         AuthenticatedDetcoreOperationKind::ValidateTemplate(84) => (18_u64, None),
+        // Buck bridge measured from candidate fixed_arena_mprotect
+        // (row 126, 35B at 0x165a100): `objdump -d
+        // --start-address=0x165a100 --stop-address=0x165a123
+        // <candidate>` shows `e8 15 88 00 00 call raw_syscall3` at
+        // +22 (0x165a116) and `ff 15 c5 bc 1a 00 call *GOT` landing
+        // at +29 (0x165a11d), with POP/RET at +27/+28 between them.
+        AuthenticatedDetcoreOperationKind::ValidateTemplate(127) => (22_u64, Some(29_u64)),
         _ => return Err("naked-owner mprotect bridge lacks its exact C ABI body".into()),
     };
     require(
@@ -34055,8 +36509,12 @@ fn fixed_naked_publication_cohort(
     )?;
     let bridge_raw_pc =
         fixed_naked_mprotect_bridge(witnesses, transfers, selected, targets, &mut addresses)?;
+    // Buck transport edge measured above at template 136 +22; the
+    // native [30, 52] and ordinary [15] arms are unchanged.
     let raw_offsets: &[u64] = if spec.native_syscalls {
         &[30, 52]
+    } else if raw.kind == AuthenticatedDetcoreOperationKind::ValidateTemplate(137) {
+        &[22]
     } else {
         &[15]
     };
@@ -48723,6 +51181,106 @@ mod tests {
                 .unwrap(),
             logical.as_os_str().as_encoded_bytes()
         );
+    }
+
+    #[test]
+    fn buck_compiler_filename_is_the_measured_fbcode_form() {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let parent = fs::canonicalize(std::env::temp_dir()).unwrap();
+        let root = parent.join(format!(
+            "compiler-filename-buck-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let reverie_root = root.join("fbcode/hermetic_infra/reverie");
+        let relative = "reverie-inguest/src/guest/tool_region_constructor.rs";
+        fs::create_dir_all(reverie_root.join("reverie-inguest/src/guest")).unwrap();
+        let _cleanup = ContentFixtureCleanup(root.clone());
+        fs::write(reverie_root.join(relative), b"buck blob\n").unwrap();
+        let file = exact_source_file(&reverie_root, relative).unwrap();
+        let buck = compiled_role_filename(CompiledSourceLayout::Buck, relative, &file).unwrap();
+        assert_eq!(
+            buck,
+            b"fbcode/hermetic_infra/reverie/reverie-inguest/src/guest/tool_region_constructor.rs"
+                .as_slice(),
+            "Buck filename must be the measured fbcode form"
+        );
+        assert_eq!(buck.len(), 82, "measured Buck filename is 82 bytes");
+        // A tree with no fbcode reverie root cannot spell the Buck form.
+        let plain_root = root.join("plain/reverie");
+        fs::create_dir_all(plain_root.join("reverie-inguest/src/guest")).unwrap();
+        fs::write(plain_root.join(relative), b"plain blob\n").unwrap();
+        let plain_file = exact_source_file(&plain_root, relative).unwrap();
+        assert!(
+            compiled_role_filename(CompiledSourceLayout::Buck, relative, &plain_file).is_err(),
+            "Buck filename without an fbcode root must refuse"
+        );
+    }
+
+    #[test]
+    fn buck238_cohort_templates_are_the_candidate_bodies() {
+        let alloc = DETCORE_VALIDATE_TEMPLATES
+            .iter()
+            .find(|t| t.role == "fixed_patch_alloc" && fixed_hex(t.hex).len() == 238)
+            .expect("Buck238 alloc template present");
+        let alloc_body = fixed_hex(alloc.hex);
+        assert_eq!(
+            sha256(&alloc_body),
+            "a2b5ce29716ad50bab862335742a5e7b86131c0b3d6743686b883b25d7539a8b",
+            "Buck238 alloc body must be the candidate body"
+        );
+        assert_eq!(&alloc_body[69..73], &0x200_u32.to_le_bytes());
+        assert_eq!(
+            alloc
+                .operands
+                .iter()
+                .map(|op| (op.displacement, op.next, op.key, op.got))
+                .collect::<Vec<_>>(),
+            vec![
+                (19, 23, "fixed_arena_backing", true),
+                (57, 61, "fixed_publication_tls_descriptor", false),
+                (62, 66, "fixed_tls_get_addr_plt", false),
+                (187, 191, "fixed_tool_alloc", true),
+                (
+                    194,
+                    198,
+                    "fixed_detcore_validate_fixed_patch_alloc_194_data",
+                    false
+                ),
+                (200, 204, "fixed_heap_panic_sub_overflow", true),
+                (
+                    207,
+                    211,
+                    "fixed_detcore_validate_fixed_patch_alloc_207_data",
+                    false
+                ),
+                (221, 225, "fixed_heap_panic_misaligned", true),
+                (
+                    228,
+                    232,
+                    "fixed_detcore_validate_fixed_patch_alloc_228_data",
+                    false
+                ),
+                (234, 238, "fixed_panic_null_reference", true),
+            ]
+        );
+        assert_eq!(
+            alloc.transfers,
+            &[(17, 0), (61, 2), (185, 3), (198, 5), (219, 7), (232, 9)]
+        );
+        let fn_once = DETCORE_VALIDATE_TEMPLATES
+            .iter()
+            .find(|t| t.role == "fixed_tls_fn_once" && fixed_hex(t.hex).len() == 25)
+            .expect("Buck238 FnOnce template present");
+        let fn_once_body = fixed_hex(fn_once.hex);
+        assert_eq!(
+            sha256(&fn_once_body),
+            "ed861b68182dc4ecead42405b5c2049cf80268fe5df4f49d437fe74a31136297",
+            "Buck238 FnOnce body must be the candidate body"
+        );
+        assert_eq!(&fn_once_body[19..23], &0x200_u32.to_le_bytes());
+        assert_eq!(fn_once.transfers, &[(11, 1)]);
+        assert!(detcore_direct_tls_offset_accepted(0x200));
     }
 
     #[test]
@@ -68111,6 +70669,10 @@ mod tests {
         context.insert("rv:reverie-inguest/src/guest/tool_region_arena.rs".to_owned(),fixed_hex("2f6275696c642f2e636172676f2f6769742f636865636b6f7574732f726576657269652d326663373730663761396338303830332f666334623438642f726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f6172656e612e7273"));
         context.insert("rv:reverie-inguest/src/guest/tool_region_constructor.rs".to_owned(),fixed_hex("2f6275696c642f2e636172676f2f6769742f636865636b6f7574732f726576657269652d326663373730663761396338303830332f666334623438642f726576657269652d696e67756573742f7372632f67756573742f746f6f6c5f726567696f6e5f636f6e7374727563746f722e7273"));
         context.insert("rv:reverie-liteinst/src/patch_alloc.rs".to_owned(),fixed_hex("2f6275696c642f2e636172676f2f6769742f636865636b6f7574732f726576657269652d326663373730663761396338303830332f666334623438642f726576657269652d6c697465696e73742f7372632f70617463685f616c6c6f632e7273"));
+        context.insert(
+            "workspace:detcore-liteinst/src/lib.rs".to_owned(),
+            b"detcore-liteinst/src/lib.rs".to_vec(),
+        );
         let mapping_context = detcore_validate_control_context("b0dc3d1");
         let event_context = detcore_validate_control_context("6cbe1b7");
         // Unit-only synthetic filename context; actual producer qualification
@@ -69487,6 +72049,175 @@ mod tests {
         assert_eq!(witness.scalar_storage, None);
     }
 
+    #[test]
+    fn pure_transport_raw_syscall6_buck121_derives_no_scalar_storage() {
+        // Structural pure transport (sole GOT reverie_inguest_trusted_syscall
+        // operand, no storage operand) derives None at any index, through
+        // both producer sites, with or without REGION/INITIALIZING present.
+        let address = 0x100000_u64;
+        let body = fixed_hex(DETCORE_VALIDATE_TEMPLATES[121].hex);
+        let offsets = [
+            0_usize, 1, 4, 7, 11, 14, 17, 20, 23, 26, 29, 32, 35, 38, 44, 48, 49,
+        ];
+        let instructions: Vec<EncodedConstructorInstruction> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &offset)| EncodedConstructorInstruction {
+                address: address + offset as u64,
+                bytes: body[offset..offsets.get(i + 1).copied().unwrap_or(body.len())].to_vec(),
+            })
+            .collect();
+        let slot = fixed_rip_target(address, &body, 40, 44).unwrap();
+        let got = BTreeMap::from([(slot, 0x210000_u64)]);
+        let targets = BTreeMap::from([
+            ("reverie_inguest_trusted_syscall".to_string(), 0x210000_u64),
+            ("fixed_initializing".to_string(), 0x600000_u64),
+            ("fixed_region".to_string(), 0x600008_u64),
+        ]);
+        let readonly = BTreeMap::new();
+        let context = BTreeMap::new();
+        let role = DETCORE_VALIDATE_TEMPLATES[121].role;
+        let witness = fixed_detcore_no_scope_qualified_operation(
+            role,
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &targets,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(121)
+        );
+        assert_eq!(witness.scalar_storage, None);
+        let witness = fixed_detcore_qualified_operation(
+            role,
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &targets,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(121)
+        );
+        assert_eq!(witness.scalar_storage, None);
+        let bare = BTreeMap::from([("reverie_inguest_trusted_syscall".to_string(), 0x210000_u64)]);
+        let witness = fixed_detcore_no_scope_qualified_operation(
+            role,
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &bare,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(witness.scalar_storage, None);
+    }
+
+    #[test]
+    fn pure_transport_fixed_scalar_syscall_buck137_derives_no_scalar_storage() {
+        // Structural pure transport (sole GOT reverie_inguest_trusted_syscall
+        // operand, no storage operand) derives None at any index, through
+        // both producer sites, with or without REGION/INITIALIZING present.
+        let address = 0x100000_u64;
+        let body = fixed_hex(DETCORE_VALIDATE_TEMPLATES[137].hex);
+        let offsets = [0_usize, 1, 4, 7, 11, 19, 22, 28, 32, 33];
+        let instructions: Vec<EncodedConstructorInstruction> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, &offset)| EncodedConstructorInstruction {
+                address: address + offset as u64,
+                bytes: body[offset..offsets.get(i + 1).copied().unwrap_or(body.len())].to_vec(),
+            })
+            .collect();
+        let slot = fixed_rip_target(address, &body, 24, 28).unwrap();
+        let got = BTreeMap::from([(slot, 0x210000_u64)]);
+        let targets = BTreeMap::from([
+            ("reverie_inguest_trusted_syscall".to_string(), 0x210000_u64),
+            ("fixed_initializing".to_string(), 0x600000_u64),
+            ("fixed_region".to_string(), 0x600008_u64),
+        ]);
+        let readonly = BTreeMap::new();
+        let context = BTreeMap::new();
+        let witness = fixed_detcore_no_scope_qualified_operation(
+            "fixed_scalar_syscall",
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &targets,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(137)
+        );
+        assert_eq!(witness.scalar_storage, None);
+        let witness = fixed_detcore_qualified_operation(
+            "fixed_scalar_syscall",
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &targets,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            0,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            witness.kind,
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(137)
+        );
+        assert_eq!(witness.scalar_storage, None);
+        let bare = BTreeMap::from([("reverie_inguest_trusted_syscall".to_string(), 0x210000_u64)]);
+        let witness = fixed_detcore_no_scope_qualified_operation(
+            "fixed_scalar_syscall",
+            address,
+            (&body, &instructions),
+            DetcoreRecipeBindings {
+                targets: &bare,
+                got: &got,
+                readonly: &readonly,
+                context: &context,
+            },
+            false,
+        )
+        .unwrap();
+        assert_eq!(witness.scalar_storage, None);
+    }
+
+    #[test]
+    fn pure_transport_template_set_is_exactly_four() {
+        let pure: Vec<usize> = (0..DETCORE_VALIDATE_TEMPLATES.len())
+            .filter(|&index| fixed_detcore_is_pure_transport(index))
+            .collect();
+        assert_eq!(pure, vec![13, 26, 121, 137]);
+    }
+
     // The stable-built Detcore image at Reverie 2465470e carries
     // INSTALLATION_DEPTH at TLS cell 0x100 (size 8, local), with the
     // same 241-byte fixed_patch_alloc shape as the 0x110/0x128 cohorts
@@ -70110,11 +72841,18 @@ mod tests {
         assert!(accepted.contains(&0xf8) && accepted.len() >= 11);
         let mut missing_fn_once = Vec::new();
         for &cell in &accepted {
+            // Each accepted cell is carried by exactly one reviewed cohort:
+            // 241-byte alloc at 66 with 22-byte FnOnce at 16, or the
+            // Buck238 238-byte alloc at 69 with 25-byte FnOnce at 19.
             assert!(
-                reads("fixed_patch_alloc", 241, 66, cell) >= 1,
+                reads("fixed_patch_alloc", 241, 66, cell)
+                    + reads("fixed_patch_alloc", 238, 69, cell)
+                    >= 1,
                 "accepted cell {cell:#x} has no fixed_patch_alloc row"
             );
-            match reads("fixed_tls_fn_once", 22, 16, cell) {
+            match reads("fixed_tls_fn_once", 22, 16, cell)
+                + reads("fixed_tls_fn_once", 25, 19, cell)
+            {
                 0 => missing_fn_once.push(cell),
                 1 => {}
                 n => panic!("accepted cell {cell:#x} has {n} fixed_tls_fn_once rows"),
@@ -70312,7 +73050,7 @@ mod tests {
     }
 
     fn detcore_validate_control_context(pin: &str) -> BTreeMap<String, Vec<u8>> {
-        [
+        let mut context: BTreeMap<String, Vec<u8>> = [
             "reverie-inguest/src/guest/alloc.rs",
             "reverie-inguest/src/guest/tool_region_arena.rs",
             "reverie-inguest/src/guest/tool_region.rs",
@@ -70327,7 +73065,12 @@ mod tests {
                     .into_bytes(),
             )
         })
-        .collect()
+        .collect();
+        context.insert(
+            "workspace:detcore-liteinst/src/lib.rs".to_owned(),
+            b"detcore-liteinst/src/lib.rs".to_vec(),
+        );
+        context
     }
 
     struct DetcorePublicationControlGraph {
@@ -72751,6 +75494,91 @@ mod tests {
                 "pinned-subset mask {mask:#06b} must refuse"
             );
         }
+        // Buck ordinary (entry 13): selection requires the whole Buck
+        // tuple with the 136 transport and 126 bridge. Witness kinds
+        // alone select the composition here; whole-body qualification
+        // is covered by the per-role controls above.
+        let buck_witnesses = |transport: AuthenticatedDetcoreOperationKind,
+                              backing: usize|
+         -> BTreeMap<String, AuthenticatedDetcoreOperation> {
+            let mut witnesses = BTreeMap::new();
+            for (i, &(role, index)) in FIXED_NAKED_BUCK_ORDINARY_COHORT.iter().enumerate() {
+                let index = if role == "fixed_arena_backing" {
+                    backing
+                } else {
+                    index
+                };
+                witnesses.insert(
+                    role.to_owned(),
+                    AuthenticatedDetcoreOperation {
+                        role: role.to_owned(),
+                        address: 0x100000 + i as u64 * 0x1000,
+                        kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(index),
+                        edges: Vec::new(),
+                        scalar_storage: Some((0x600008, 0x600000)),
+                    },
+                );
+            }
+            witnesses.insert(
+                "fixed_scalar_syscall".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_scalar_syscall".into(),
+                    address: 0x180000,
+                    kind: transport,
+                    edges: Vec::new(),
+                    scalar_storage: None,
+                },
+            );
+            witnesses.insert(
+                "fixed_arena_mprotect".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_arena_mprotect".into(),
+                    address: 0x190000,
+                    kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(127),
+                    edges: Vec::new(),
+                    scalar_storage: Some((0x600008, 0x600000)),
+                },
+            );
+            witnesses.insert(
+                "fixed_setup_bitmap_range".into(),
+                AuthenticatedDetcoreOperation {
+                    role: "fixed_setup_bitmap_range".into(),
+                    address: 0x1a0000,
+                    kind: AuthenticatedDetcoreOperationKind::ValidateTemplate(144),
+                    edges: Vec::new(),
+                    scalar_storage: Some((0x600008, 0x600000)),
+                },
+            );
+            witnesses
+        };
+        let buck = buck_witnesses(
+            AuthenticatedDetcoreOperationKind::ValidateTemplate(137),
+            126,
+        );
+        let selected = fixed_naked_composition(&buck, Some(FixedImageKind::Detcore)).unwrap();
+        assert_eq!(selected.cohort, FIXED_NAKED_BUCK_ORDINARY_COHORT);
+        assert_eq!(selected.incoming, FIXED_NAKED_BUCK_ORDINARY_INCOMING);
+        assert!(!selected.native_syscalls);
+        assert_eq!(selected.setup_bitmap_template, Some(144));
+        // One donor substitution (Buck backing 125 -> Cargo 74) refuses
+        // with the exact whole-composition string.
+        let donor = buck_witnesses(AuthenticatedDetcoreOperationKind::ValidateTemplate(137), 74);
+        assert_eq!(
+            fixed_naked_composition(&donor, Some(FixedImageKind::Detcore))
+                .err()
+                .unwrap()
+                .to_string(),
+            "unknown or mixed naked-owner publication whole composition"
+        );
+        // Native-flip of the Buck transport likewise refuses.
+        let flipped = buck_witnesses(AuthenticatedDetcoreOperationKind::NativeFixedSyscall3, 126);
+        assert_eq!(
+            fixed_naked_composition(&flipped, Some(FixedImageKind::Detcore))
+                .err()
+                .unwrap()
+                .to_string(),
+            "unknown or mixed naked-owner publication whole composition"
+        );
     }
 
     #[test]
@@ -74810,7 +77638,10 @@ mod tests {
         // fixed_tls_fn_once template, and 118 the Rust 1.99.1
         // fixed_setup_bitmap_range template; as appended identities they
         // too must route a lone witness to the naked-composition check.
-        for index in [108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118] {
+        for index in [
+            108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124,
+            125, 126, 127, 128, 129, 130,
+        ] {
             let mut graph = scalar_ordinary_bit_result_control_graph(false);
             fixed_scalar_publication_syscall_mode(&graph.witnesses, FixedImageKind::Detcore, false)
                 .unwrap();
@@ -74890,6 +77721,10 @@ mod tests {
                     address: 0x2000,
                     kind: if spec.native_syscalls {
                         AuthenticatedDetcoreOperationKind::NativeFixedSyscall3
+                    } else if spec.cohort == FIXED_NAKED_BUCK_ORDINARY_COHORT {
+                        // Buck transport is template 137 after the renumber
+                        // restack (seated 136); selection binds that exact kind.
+                        AuthenticatedDetcoreOperationKind::ValidateTemplate(137)
                     } else {
                         AuthenticatedDetcoreOperationKind::ValidateTemplate(26)
                     },
